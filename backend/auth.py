@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import base64
+import asyncio
 from datetime import datetime
 from functools import wraps
 
-from quart import request, jsonify
+from quart import request, jsonify, make_response
 from sqlalchemy import select, update, or_
 from sqlalchemy.orm import selectinload
 
@@ -151,20 +152,72 @@ def stream_key_required(func):
             _, basic_password = _get_basic_auth_credentials()
             stream_key = basic_password
         request._stream_key = stream_key
-        return await func(*args, **kwargs)
+        ip_address = request.remote_addr
+        user_agent = request.headers.get("User-Agent")
+        if not getattr(func, "_skip_stream_connect_audit", False):
+            await audit_stream_event(
+                user,
+                "stream_connect",
+                request.path,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+        response = await func(*args, **kwargs)
+        if not getattr(func, "_skip_stream_connect_audit", False):
+            response = await make_response(response)
+            try:
+                response.call_on_close(
+                    lambda: asyncio.create_task(
+                        audit_stream_event(
+                            user,
+                            "stream_disconnect",
+                            request.path,
+                            ip_address=ip_address,
+                            user_agent=user_agent,
+                        )
+                    )
+                )
+            except Exception:
+                await audit_stream_event(
+                    user,
+                    "stream_disconnect",
+                    request.path,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+        return response
 
     return decorated_function
 
 
-async def audit_stream_event(user: User, event_type: str, endpoint: str, details: str = None):
+def skip_stream_connect_audit(func):
+    func._skip_stream_connect_audit = True
+    return func
+
+
+async def audit_stream_event(
+    user: User,
+    event_type: str,
+    endpoint: str,
+    details: str = None,
+    ip_address: str = None,
+    user_agent: str = None,
+):
     async with Session() as session:
         async with session.begin():
+            ip_value = ip_address or getattr(request, "remote_addr", None)
+            user_agent_value = user_agent
+            if user_agent_value is None:
+                try:
+                    user_agent_value = request.headers.get("User-Agent")
+                except Exception:
+                    user_agent_value = None
             log = StreamAuditLog(
                 user_id=user.id if user else None,
                 event_type=event_type,
                 endpoint=endpoint,
-                ip_address=request.remote_addr,
-                user_agent=request.headers.get("User-Agent"),
+                ip_address=ip_value,
+                user_agent=user_agent_value,
                 details=details,
                 created_at=datetime.utcnow(),
             )

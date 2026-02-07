@@ -174,13 +174,17 @@ async def update_tvh_muxes(app):
 
 async def sync_user_to_tvh(config, user_id):
     logger.info("Syncing user to TVH - user_id=%s", user_id)
+    from backend.users import set_user_tvh_sync_status
+    await set_user_tvh_sync_status(user_id, "running", None)
     from backend.users import get_user_by_id
     user = await get_user_by_id(user_id)
     if not user:
         logger.warning("User not found for TVH sync - user_id=%s", user_id)
+        await set_user_tvh_sync_status(user_id, "failed", "User not found")
         return
     if not user.streaming_key:
         logger.warning("User has no streaming key; skipping TVH sync - user_id=%s", user_id)
+        await set_user_tvh_sync_status(user_id, "skipped", "User has no streaming key")
         return
     role_names = [role.name for role in user.roles] if user.roles else []
     is_admin = "admin" in role_names
@@ -193,16 +197,22 @@ async def sync_user_to_tvh(config, user_id):
         tvh_user_access_comment_prefix,
         tvh_user_password_comment_prefix,
     )
-    await ensure_tvh_sync_user(config)
-    async with await get_tvh(config) as tvh:
-        await tvh.upsert_user(
-            user.username,
-            user.streaming_key,
-            is_admin=is_admin,
-            enabled=user.is_active and is_streamer,
-            access_comment=f"{tvh_user_access_comment_prefix}:{user.username}",
-            password_comment=f"{tvh_user_password_comment_prefix}:{user.username}",
-        )
+    try:
+        await ensure_tvh_sync_user(config)
+        async with await get_tvh(config) as tvh:
+            await tvh.upsert_user(
+                user.username,
+                user.streaming_key,
+                is_admin=is_admin,
+                enabled=user.is_active and is_streamer,
+                access_comment=f"{tvh_user_access_comment_prefix}:{user.username}",
+                password_comment=f"{tvh_user_password_comment_prefix}:{user.username}",
+            )
+    except Exception as exc:
+        logger.exception("Failed to sync TVH user - user_id=%s", user_id)
+        await set_user_tvh_sync_status(user_id, "failed", str(exc))
+        return
+    await set_user_tvh_sync_status(user_id, "success", None)
 
 
 async def map_new_tvh_services(app):

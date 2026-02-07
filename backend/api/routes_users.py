@@ -17,6 +17,7 @@ from backend.users import (
     rotate_stream_key,
     change_user_password,
     get_user_by_id,
+    set_user_tvh_sync_status,
 )
 
 
@@ -28,10 +29,14 @@ def _serialize_user(user: User):
         "is_active": user.is_active,
         "streaming_key": user.streaming_key,
         "streaming_key_created_at": user.streaming_key_created_at.isoformat() if user.streaming_key_created_at else None,
+        "tvh_sync_status": user.tvh_sync_status,
+        "tvh_sync_error": user.tvh_sync_error,
+        "tvh_sync_updated_at": user.tvh_sync_updated_at.isoformat() if user.tvh_sync_updated_at else None,
     }
 
 
 async def _queue_user_sync(user_id: int, username: str):
+    await set_user_tvh_sync_status(user_id, "queued", None)
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task(
         {

@@ -13,7 +13,7 @@ from collections import deque
 from quart import current_app, Response, stream_with_context, request
 
 from backend.api import blueprint
-from backend.auth import stream_key_required, audit_stream_event
+from backend.auth import stream_key_required, audit_stream_event, skip_stream_connect_audit
 import aiohttp
 from urllib.parse import urlparse
 
@@ -471,6 +471,7 @@ async def proxy_ts(encoded_url):
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/stream/<encoded_url>', methods=['GET'])
 @stream_key_required
+@skip_stream_connect_audit
 async def stream_ts(encoded_url):
     await audit_stream_event(request._stream_user, "hls_stream", request.path)
     # Decode the Base64 encoded URL

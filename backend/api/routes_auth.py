@@ -25,6 +25,9 @@ def _serialize_user(user: User):
         "is_active": user.is_active,
         "streaming_key": user.streaming_key,
         "streaming_key_created_at": user.streaming_key_created_at.isoformat() if user.streaming_key_created_at else None,
+        "tvh_sync_status": user.tvh_sync_status,
+        "tvh_sync_error": user.tvh_sync_error,
+        "tvh_sync_updated_at": user.tvh_sync_updated_at.isoformat() if user.tvh_sync_updated_at else None,
     }
 
 

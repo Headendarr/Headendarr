@@ -160,6 +160,20 @@ async def rotate_stream_key(user_id: int):
             return user, stream_key
 
 
+async def set_user_tvh_sync_status(user_id: int, status: str, error: str = None):
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalars().first()
+            if not user:
+                return None
+            user.tvh_sync_status = status
+            user.tvh_sync_error = error
+            user.tvh_sync_updated_at = datetime.utcnow()
+            session.add(user)
+            return user
+
+
 async def verify_user_password_for_login(user: User, password: str):
     if not user or not user.password_hash:
         return False, False

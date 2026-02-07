@@ -222,6 +222,9 @@ class User(Base):
     streaming_key = Column(String(255), unique=True, nullable=True)
     streaming_key_hash = Column(String(255), unique=True, nullable=True)
     streaming_key_created_at = Column(DateTime, nullable=True)
+    tvh_sync_status = Column(String(32), nullable=True)
+    tvh_sync_error = Column(String(1024), nullable=True)
+    tvh_sync_updated_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
