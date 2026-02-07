@@ -24,6 +24,9 @@ def _get_bearer_token():
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[len("Bearer "):].strip()
+    cookie_token = request.cookies.get("tic_auth_token")
+    if cookie_token:
+        return cookie_token
     return None
 
 

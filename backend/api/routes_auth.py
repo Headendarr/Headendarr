@@ -72,13 +72,22 @@ async def auth_login():
             session.add(session_obj)
             session.add(user)
 
-    return jsonify(
+    response = jsonify(
         {
             "success": True,
             "token": token,
             "user": _serialize_user(user),
         }
     )
+    # Cookie-based auth for iframe usage (e.g., /tic-tvh/).
+    response.set_cookie(
+        "tic_auth_token",
+        token,
+        httponly=True,
+        samesite="Lax",
+        path="/",
+    )
+    return response
 
 
 @blueprint.route('/tic-api/auth/me', methods=['GET'])
@@ -110,4 +119,6 @@ async def auth_logout():
             if session_obj:
                 session_obj.revoked = True
                 session.add(session_obj)
-    return jsonify({"success": True})
+    response = jsonify({"success": True})
+    response.delete_cookie("tic_auth_token", path="/")
+    return response
