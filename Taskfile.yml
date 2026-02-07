@@ -1,0 +1,56 @@
+version: '3'
+
+vars:
+  COMPOSE_FILE: ./docker/docker-compose.dev-aio.yml
+
+
+tasks:
+  backend:start:
+    desc: Start backend (tic) service in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d tic
+
+  backend:stop:
+    desc: Stop backend (tic) service in dev AIO stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} stop tic
+
+  backend:logs:
+    desc: Tail backend (tic) service logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} tic
+
+  backend:build:
+    desc: Build backend (tic) service image
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} build tic
+
+  frontend:start:
+    desc: Start frontend dev server service in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d frontend
+
+  frontend:stop:
+    desc: Stop frontend dev server service in dev AIO stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} stop frontend
+
+  frontend:logs:
+    desc: Tail frontend dev server logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} frontend
+
+  docs:start:
+    desc: Start docs dev server service in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d docs
+
+  docs:stop:
+    desc: Stop docs dev server service in dev AIO stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} stop docs
+
+  docs:logs:
+    desc: Tail docs dev server logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} docs

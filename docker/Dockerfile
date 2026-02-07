@@ -7,7 +7,7 @@ FROM ${BASE_IMAGE} AS base_image
 # |  _| |  _ <| |_| | |\  | | | | |___| |\  | |_| |  ___) || |/ ___ \ |_| | |___
 # |_|   |_| \_\\___/|_| \_| |_| |_____|_| \_|____/  |____/ |_/_/   \_\____|_____|
 #
-FROM node:20-bookworm AS frontend_build_stage
+FROM node:22-bookworm AS frontend_build_stage
 
 COPY ./frontend/package.json /build/
 COPY ./frontend/package-lock.json /build/
@@ -21,6 +21,7 @@ RUN \
             build-essential \
             libffi-dev \
             libssl-dev \
+            pkg-config \
             python3-dev \
             python3-pip \
             python3-setuptools \
@@ -58,6 +59,7 @@ RUN \
             build-essential \
             libffi-dev \
             libssl-dev \
+            pkg-config \
             python3-dev \
             python3-pip \
             python3-setuptools \

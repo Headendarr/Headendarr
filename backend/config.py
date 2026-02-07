@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import subprocess
+import secrets
 
 import aiofiles
 import yaml
@@ -133,6 +134,7 @@ class Config:
         # Set default directories
         self.config_path = os.path.join(get_home_dir(), '.tvh_iptv_config')
         self.config_file = os.path.join(self.config_path, 'settings.yml')
+        self.tvh_sync_user_file = os.path.join(self.config_path, 'tvh_sync_user.json')
         # Set default settings
         self.settings = None
         self.tvh_local = is_tvh_process_running_locally_sync()
@@ -147,16 +149,12 @@ class Config:
                     "password": "",
                 },
                 "app_url":                  None,
-                "enable_admin_user":        True if self.tvh_local else False,
                 "admin_password":           "admin",
                 "enable_stream_buffer":     True,
                 "default_ffmpeg_pipe_args": "-hide_banner -loglevel error "
                                             "-probesize 10M -analyzeduration 0 -fpsprobesize 0 "
                                             "-i [URL] -c copy -metadata service_name=[SERVICE_NAME] "
                                             "-f mpegts pipe:1",
-                "create_client_user":       True,
-                "client_username":          "client",
-                "client_password":          "client",
                 "epgs":                     {
                     "enable_tmdb_metadata":                False,
                     "tmdb_api_key":                        "",
@@ -184,6 +182,33 @@ class Config:
         self.settings = recursive_dict_update(self.default_settings, yaml_settings)
         return self.settings
 
+    def ensure_tvh_sync_user(self):
+        if os.path.exists(self.tvh_sync_user_file):
+            return
+        if not os.path.exists(os.path.dirname(self.tvh_sync_user_file)):
+            os.makedirs(os.path.dirname(self.tvh_sync_user_file))
+        sync_user = {
+            "username": "tic-admin",
+            "password": secrets.token_urlsafe(18),
+            "provisioned": False,
+        }
+        with open(self.tvh_sync_user_file, "w") as f:
+            json.dump(sync_user, f, indent=2)
+
+    def get_tvh_sync_user(self):
+        self.ensure_tvh_sync_user()
+        try:
+            with open(self.tvh_sync_user_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {"username": "tic-admin", "password": "", "provisioned": False}
+
+    def update_tvh_sync_user(self, data):
+        if not os.path.exists(os.path.dirname(self.tvh_sync_user_file)):
+            os.makedirs(os.path.dirname(self.tvh_sync_user_file))
+        with open(self.tvh_sync_user_file, "w") as f:
+            json.dump(data, f, indent=2)
+
     def save_settings(self):
         if self.settings is None:
             self.create_default_settings_yaml()
@@ -196,13 +221,18 @@ class Config:
 
     async def tvh_connection_settings(self):
         settings = await asyncio.to_thread(self.read_settings)
+        sync_user = await asyncio.to_thread(self.get_tvh_sync_user)
         if await is_tvh_process_running_locally():
             # Note: Host can be localhost here because the app will publish to TVH from the backend
             tvh_host = '127.0.0.1'
             tvh_port = '9981'
             tvh_path = '/tic-tvh'
-            tvh_username = 'admin'
-            tvh_password = await get_local_tvh_proc_admin_password()
+            if sync_user.get("provisioned"):
+                tvh_username = sync_user.get("username", "tic-admin")
+                tvh_password = sync_user.get("password")
+            else:
+                tvh_username = 'admin'
+                tvh_password = await get_local_tvh_proc_admin_password()
             return {
                 'tvh_local':    True,
                 'tvh_host':     tvh_host,
@@ -211,13 +241,19 @@ class Config:
                 'tvh_username': tvh_username,
                 'tvh_password': tvh_password,
             }
+        if sync_user.get("provisioned") and sync_user.get("password"):
+            tvh_username = sync_user.get("username", "tic-admin")
+            tvh_password = sync_user.get("password")
+        else:
+            tvh_username = settings['settings']['tvheadend']['username']
+            tvh_password = settings['settings']['tvheadend']['password']
         return {
             'tvh_local':    False,
             'tvh_host':     settings['settings']['tvheadend']['host'],
             'tvh_port':     settings['settings']['tvheadend']['port'],
             'tvh_path':     settings['settings']['tvheadend']['path'],
-            'tvh_username': settings['settings']['tvheadend']['username'],
-            'tvh_password': settings['settings']['tvheadend']['password'],
+            'tvh_username': tvh_username,
+            'tvh_password': tvh_password,
         }
 
 

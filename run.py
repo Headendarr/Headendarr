@@ -88,17 +88,18 @@ async def every_12_hours():
         }, priority=200)
 
 
-if __name__ == "__main__":
-    # Create a custom loop
-    loop = asyncio.get_event_loop()
-
-    # Start scheduler
+async def main():
+    # Start scheduler inside a running event loop (required by APScheduler on Py 3.13+)
     app.logger.info("Starting scheduler...")
     scheduler.start()
     app.logger.info("Scheduler started.")
 
     # Start Quart server
     app.logger.info("Starting Quart server...")
-    app.run(loop=loop, host=config.flask_run_host, port=config.flask_run_port,
-            debug=config.enable_app_debugging, use_reloader=config.enable_app_debugging)
+    await app.run_task(host=config.flask_run_host, port=config.flask_run_port,
+                       debug=config.enable_app_debugging)
     app.logger.info("Quart server completed.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

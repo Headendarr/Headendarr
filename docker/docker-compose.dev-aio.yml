@@ -50,3 +50,33 @@ services:
       - ../dev_env/config:/config
       # Application source passthrough
       - ../:/app
+
+  # -- FRONTEND DEV SERVER --
+  frontend:
+    image: node:22-bookworm
+    working_dir: /app/frontend
+    command: bash -lc "npm install && npx quasar dev --host 0.0.0.0 --port 8080 --debug"
+    network_mode: host
+    depends_on:
+      - tic
+    environment:
+      - NODE_ENV=development
+      - QUASAR_DEV_PORT=8080
+      - QUASAR_DEV_HOST=0.0.0.0
+    volumes:
+      - ../:/app
+
+  # -- DOCS DEV SERVER --
+  docs:
+    image: node:22-bookworm
+    working_dir: /app/docs
+    command: bash -lc "npm install && npm start"
+    network_mode: host
+    depends_on:
+      - tic
+    environment:
+      - NODE_ENV=development
+      - DOCUSAURUS_DEV_PORT=8030
+      - DOCUSAURUS_DEV_HOST=0.0.0.0
+    volumes:
+      - ../:/app

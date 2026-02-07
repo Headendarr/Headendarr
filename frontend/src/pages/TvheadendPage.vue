@@ -42,7 +42,7 @@
                     v-model="tvhUsername"
                     :readonly="aioMode"
                     label="TVheadend Admin Username"
-                    hint="This is optional. If your TVH server is not configured with an admin user, leave this blank."
+                    hint="Optional for external TVH. Leave blank if TVH has no admin user configured."
                   />
                 </div>
                 <div>
@@ -53,7 +53,7 @@
                     v-else
                     v-model="tvhPassword"
                     label="TVheadend Admin Password"
-                    hint="This is optional. If your TVH server is not configured with an admin user, leave this blank."
+                    hint="Optional for external TVH. Leave blank if TVH has no admin user configured."
                     :type="hideTvhPassword ? 'password' : 'text'">
                     <template v-slot:append>
                       <q-icon
@@ -77,67 +77,12 @@
                 <q-separator />
               </div>
 
-              <h5 class="text-primary q-mb-none">TVheadend Users Config</h5>
-
-              <div v-if="aioMode === false"
-              >
-                <q-item tag="label" dense class="q-pl-none q-mr-none">
-                  <q-item-section avatar>
-                    <q-checkbox v-model="createClientUser" val="createClientUser" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Create a client user</q-item-label>
-                    <q-item-label caption>If checked, this will create a user for clients to connect to TVH.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-              </div>
-
-              <div
-                v-if="createClientUser || aioMode === true"
-              >
-                <div>
-                  <q-skeleton
-                    v-if="clientUsername === null"
-                    type="QInput" />
-                  <q-input
-                    v-else
-                    v-model="clientUsername"
-                    :rules="[clientUsername => !!clientUsername || 'Username cannot be blank']"
-                    label="TVheadend Client Username"
-                    :hint="(aioMode === true) ? `Since an admin user is configured, a client user is required.`: ``"
-                  />
-                </div>
-                <div>
-                  <q-skeleton
-                    v-if="clientPassword === null"
-                    type="QInput" />
-                  <q-input
-                    v-else
-                    v-model="clientPassword"
-                    :rules="[clientPassword => !!clientPassword || 'A password is required']"
-                    :type="hideclientPassword ? 'password' : 'text'"
-                    label="TVheadend Client Password"
-                    :hint="(aioMode === true) ? `Since an admin user is configured, a client password is required.`: `This is optional. If your TVH server is not configured with an admin user, leave this blank.`"
-                  >
-                    <template v-slot:append>
-                      <q-icon
-                        :name="hideclientPassword ? 'visibility_off' : 'visibility'"
-                        class="cursor-pointer"
-                        @click="hideclientPassword = !hideclientPassword"
-                      />
-                    </template>
-                  </q-input>
-                </div>
-              </div>
-
-
               <h5 class="text-primary q-mb-none">Stream Config</h5>
 
               <div>
                 <q-item tag="label" dense class="q-pl-none q-mr-none">
                   <q-item-section avatar>
-                    <q-checkbox v-model="enableStreamBuffer" val="createClientUser" />
+                    <q-checkbox v-model="enableStreamBuffer" val="enableStreamBuffer" />
                   </q-item-section>
                   <q-item-section>
                     <q-item-label>Enable Stream Buffer</q-item-label>
@@ -179,15 +124,6 @@
 
                 <q-separator inset spaced />
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Configure the Client username and password.
-                      This will be applied to the playlists and guide data supplied to any clients.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-
               </q-list>
             </q-card-section>
             <q-card-section>
@@ -197,12 +133,13 @@
                 <q-separator inset spaced />
 
                 <q-item-label class="text-primary">
-                  TVheadend Users Config:
+                  TVheadend Admin Credentials:
                 </q-item-label>
                 <q-item>
                   <q-item-section>
                     <q-item-label>
-                      If you want to have additional client users created, they can be added in the TVheadend Backend.
+                      TIC uses an internal sync account to apply configuration changes in the background.
+                      Only provide admin credentials here for external TVheadend instances that require authentication.
                     </q-item-label>
                   </q-item-section>
                 </q-item>
@@ -247,7 +184,6 @@ export default defineComponent({
     return {
       // UI Elements
       hideTvhPassword: ref(true),
-      hideclientPassword: ref(true),
       aioMode: ref(null),
 
       // Application Settings
@@ -259,9 +195,6 @@ export default defineComponent({
       hlsProxyPrefix: ref(null),
       enableStreamBuffer: ref(null),
       defaultFfmpegPipeArgs: ref(null),
-      createClientUser: ref(null),
-      clientUsername: ref(null),
-      clientPassword: ref(null),
 
       // Defaults
       defSet: ref({
@@ -273,9 +206,6 @@ export default defineComponent({
         hlsProxyPrefix: 'http://' + window.location.host.split(':')[0] + ':9987',
         enableStreamBuffer: true,
         defaultFfmpegPipeArgs: '-hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1',
-        createClientUser: false,
-        clientUsername: 'user',
-        clientPassword: 'user',
       }),
     };
   },

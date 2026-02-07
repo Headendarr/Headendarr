@@ -33,6 +33,13 @@ export default route(function (/* { store, ssrContext } */) {
     if (to.meta.requiresAuth) {
       await authStore.checkAuthentication();
       if (authStore.isAuthenticated) {
+        if (to.meta.requiresAdmin) {
+          const roles = authStore.user?.roles || [];
+          if (!roles.includes('admin')) {
+            next('/');
+            return;
+          }
+        }
         next();
       } else {
         next('/login');

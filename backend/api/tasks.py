@@ -172,6 +172,39 @@ async def update_tvh_muxes(app):
     await publish_channel_muxes(config)
 
 
+async def sync_user_to_tvh(config, user_id):
+    logger.info("Syncing user to TVH - user_id=%s", user_id)
+    from backend.users import get_user_by_id
+    user = await get_user_by_id(user_id)
+    if not user:
+        logger.warning("User not found for TVH sync - user_id=%s", user_id)
+        return
+    if not user.streaming_key:
+        logger.warning("User has no streaming key; skipping TVH sync - user_id=%s", user_id)
+        return
+    role_names = [role.name for role in user.roles] if user.roles else []
+    is_admin = "admin" in role_names
+    is_streamer = "streamer" in role_names or is_admin
+    if not is_streamer:
+        logger.info("User has no streaming roles; disabling in TVH - user_id=%s", user_id)
+    from backend.tvheadend.tvh_requests import (
+        ensure_tvh_sync_user,
+        get_tvh,
+        tvh_user_access_comment_prefix,
+        tvh_user_password_comment_prefix,
+    )
+    await ensure_tvh_sync_user(config)
+    async with await get_tvh(config) as tvh:
+        await tvh.upsert_user(
+            user.username,
+            user.streaming_key,
+            is_admin=is_admin,
+            enabled=user.is_active and is_streamer,
+            access_comment=f"{tvh_user_access_comment_prefix}:{user.username}",
+            password_comment=f"{tvh_user_password_comment_prefix}:{user.username}",
+        )
+
+
 async def map_new_tvh_services(app):
     logger.info("Mapping new services in TVH")
     config = app.config['APP_CONFIG']

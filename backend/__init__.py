@@ -79,6 +79,8 @@ def init_db(app):
 
 def register_blueprints(app):
     module = import_module('backend.api.routes')
+    import_module('backend.api.routes_auth')
+    import_module('backend.api.routes_users')
     import_module('backend.api.routes_playlists')
     import_module('backend.api.routes_epgs')
     import_module('backend.api.routes_channels')
@@ -91,6 +93,7 @@ def create_app():
     # Fetch app config
     app_config = config.Config()
     app_config.runtime_key = int(time.time())
+    app_config.ensure_tvh_sync_user()
     # Create app
     app = Quart(__name__, instance_relative_config=True)
     app.config["SECRET_KEY"] = config.secret_key

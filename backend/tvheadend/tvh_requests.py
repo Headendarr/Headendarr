@@ -49,6 +49,10 @@ tvh_config = {
 tvh_imagecache_config = {"enabled": False, "ignore_sslcert": True, "expire": 7, "ok_period": 168, "fail_period": 24}
 tvh_client_access_entry_comment = "TVH IPTV Config client access entry"
 tvh_client_password_comment = "TVH IPTV Config client password entry"
+tvh_sync_access_entry_comment = "TVH IPTV Config sync access entry"
+tvh_sync_password_comment = "TVH IPTV Config sync password entry"
+tvh_user_access_comment_prefix = "TVH IPTV Config user access entry"
+tvh_user_password_comment_prefix = "TVH IPTV Config user password entry"
 tvh_client_access_entry = {
     "comment":             "COMMENT",
     "enabled":             True,
@@ -458,6 +462,81 @@ class Tvheadend:
         if password_uuid:
             await self.idnode_delete(password_uuid)
 
+    async def _get_access_entries(self):
+        url = f"{self.api_url}/{api_accessentry_grid}"
+        response = await self.__post(url, payload={'groupBy': 'false', 'groupDir': 'ASC'})
+        try:
+            json_list = json.loads(response)
+        except json.JSONDecodeError:
+            json_list = {"entries": []}
+        return json_list.get("entries", [])
+
+    async def _get_password_entries(self):
+        url = f"{self.api_url}/{api_password_grid}"
+        response = await self.__post(url, payload={'groupBy': 'false', 'groupDir': 'ASC'})
+        try:
+            json_list = json.loads(response)
+        except json.JSONDecodeError:
+            json_list = {"entries": []}
+        return json_list.get("entries", [])
+
+    async def upsert_user(
+        self,
+        username,
+        password,
+        is_admin=False,
+        enabled=True,
+        access_comment=None,
+        password_comment=None,
+    ):
+        access_comment = access_comment or f"{tvh_user_access_comment_prefix}:{username}"
+        password_comment = password_comment or f"{tvh_user_password_comment_prefix}:{username}"
+
+        access_entries = await self._get_access_entries()
+        password_entries = await self._get_password_entries()
+
+        access_node = (tvh_admin_access_entry if is_admin else tvh_client_access_entry).copy()
+        access_node["comment"] = access_comment
+        existing_access = next((entry for entry in access_entries if entry.get("comment") == access_comment), None)
+        if existing_access:
+            access_node["uuid"] = existing_access["uuid"]
+
+        if not access_node.get("uuid"):
+            post_data = {"conf": json.dumps(access_node)}
+            url = f"{self.api_url}/{api_accessentry_config_create}"
+            response = await self.__post(url, payload=post_data)
+            try:
+                json_list = json.loads(response)
+            except json.JSONDecodeError:
+                json_list = {}
+            access_node["uuid"] = json_list.get("uuid")
+
+        access_node["username"] = username
+        access_node["enabled"] = enabled
+        access_node["admin"] = True if is_admin else False
+        access_node["webui"] = True if is_admin else False
+        await self.idnode_save(access_node)
+
+        password_node = tvh_u_password.copy()
+        password_node["comment"] = password_comment
+        existing_password = next((entry for entry in password_entries if entry.get("comment") == password_comment), None)
+        if existing_password:
+            password_node["uuid"] = existing_password["uuid"]
+        if not password_node.get("uuid"):
+            post_data = {"conf": json.dumps(password_node)}
+            url = f"{self.api_url}/{api_password_config_create}"
+            response = await self.__post(url, payload=post_data)
+            try:
+                json_list = json.loads(response)
+            except json.JSONDecodeError:
+                json_list = {}
+            password_node["uuid"] = json_list.get("uuid")
+
+        password_node["username"] = username
+        password_node["password"] = password
+        password_node["enabled"] = enabled
+        await self.idnode_save(password_node)
+
     async def enable_xmltv_url_epg_grabber(self, tic_base_url):
         url = f"{self.api_url}/{api_epggrab_list}"
         response = await self.__get(url, payload={}, rformat='json')
@@ -690,11 +769,8 @@ async def configure_tvh(config):
         await tvh.save_tvh_config(tvh_config)
         # Update Image Cache Config
         await tvh.save_imagecache_config(tvh_imagecache_config)
-        # Create a client user
-        enable_client_user = settings.get('settings', {}).get('create_client_user', False)
-        username = settings.get('settings', {}).get('client_username', '')
-        password = settings.get('settings', {}).get('client_password', '')
-        await tvh.manage_client_user_access(enable_client_user, username, password)
+        # Ensure internal sync user exists
+        await ensure_tvh_sync_user(config)
         # Configure EPG Grab Config
         await tvh.save_epggrab_config(epggrab_config)
         # Disable all EPG grabbers
@@ -710,8 +786,24 @@ async def configure_tvh(config):
         await tvh.configure_default_recorder_profile()
         # Configure the timeshift settings
         await tvh.configure_timeshift()
-        # Update admin user (should be done last)
-        if tvh.local_conn:
-            admin_password = settings.get('settings', {}).get('tvheadend', {}).get('password', 'admin')
-            await tvh.update_admin_user_password(admin_password)
-            await asyncio.sleep(.5)  # Added a sleep here because the password change takes a few seconds to process
+
+
+async def ensure_tvh_sync_user(config):
+    sync_user = await asyncio.to_thread(config.get_tvh_sync_user)
+    if not sync_user.get("username") or not sync_user.get("password"):
+        return
+    try:
+        async with await get_tvh(config) as tvh:
+            await tvh.upsert_user(
+                sync_user.get("username", "tic-admin"),
+                sync_user.get("password"),
+                is_admin=True,
+                enabled=True,
+                access_comment=tvh_sync_access_entry_comment,
+                password_comment=tvh_sync_password_comment,
+            )
+        if not sync_user.get("provisioned"):
+            sync_user["provisioned"] = True
+            await asyncio.to_thread(config.update_tvh_sync_user, sync_user)
+    except Exception as exc:
+        logger.exception("Failed to provision TVH sync user: %s", exc)

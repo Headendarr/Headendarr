@@ -6,7 +6,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/GeneralPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -18,7 +18,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/GeneralPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -30,7 +30,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/TvheadendPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -42,7 +42,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/PlaylistsPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -54,7 +54,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/EpgsPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -66,6 +66,30 @@ const routes = [
       {
         path: '',
         component: () => import('pages/ChannelsPage.vue'),
+        meta: {requiresAuth: true, requiresAdmin: true},
+      },
+    ],
+  },
+  {
+    name: 'users',
+    path: '/users',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/UsersPage.vue'),
+        meta: {requiresAuth: true, requiresAdmin: true},
+      },
+    ],
+  },
+  {
+    name: 'user-settings',
+    path: '/user-settings',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/UserSettingsPage.vue'),
         meta: {requiresAuth: true},
       },
     ],

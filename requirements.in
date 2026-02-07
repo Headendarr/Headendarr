@@ -37,18 +37,18 @@ SQLAlchemy>=2.0.32,<3.0
 alembic~=1.13
     #   Reason:             SQLAlchemy database migrations for the application
     #   Import example:     from alembic import context
-APScheduler~=3.10
+APScheduler~=3.11
     #   Reason:             Adds APScheduler for running scheduled tasks
     #   Import example:     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # -- Support libraries
-aiosqlite>=0.20
+aiosqlite>=0.22
     #   Reason:             Async SQLite driver.
     #   Import example:     sqlite+aiosqlite:///
-aiohttp>=3.9
+aiohttp>=3.13
     #   Reason:             Async http client/server framework (asyncio). Required for the proxy server.
     #   Import example:     import aiohttp
-m3u-ipytv~=0.2.7
+m3u-ipytv~=1.0
     #   Reason:             A library for handling M3U playlists for IPTV (AKA m3u_plus)
     #   Import example:     from ipytv import playlist
 mergedeep>=1.3.4
@@ -57,12 +57,15 @@ mergedeep>=1.3.4
 PyYAML~=6.0
     #   Reason:             YAML parser and emitter for Python
     #   Import example:     import yaml
-requests>=2.31.0
+requests>=2.32
     #   Reason:             HTTP requests
     #   Import example:     import requests
-beautifulsoup4>=4.12.3
+beautifulsoup4>=4.14
     #   Reason:             HTTP parsing
     #   Import example:     from bs4 import BeautifulSoup
-psutil>=5.9.8
+argon2-cffi>=25.1
+    #   Reason:             Secure password hashing (Argon2id)
+    #   Import example:     from argon2 import PasswordHasher
+psutil>=7.2
     #   Reason:             Optional process/memory metrics used by HLS proxy cache cleanup task
     #   Import example:     import psutil

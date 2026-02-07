@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import relationship, sessionmaker, declarative_base
 
@@ -201,3 +201,85 @@ class ChannelSource(Base):
 
     def __repr__(self):
         return '<ChannelSource {}>'.format(self.id)
+
+
+user_roles_association_table = Table(
+    'user_roles',
+    Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), nullable=False),
+    Column('role_id', Integer, ForeignKey('roles.id'), nullable=False),
+)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+
+    username = Column(String(64), index=True, unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    streaming_key = Column(String(255), unique=True, nullable=True)
+    streaming_key_hash = Column(String(255), unique=True, nullable=True)
+    streaming_key_created_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+
+    roles = relationship("Role", secondary=user_roles_association_table, back_populates="users")
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+    stream_audits = relationship("StreamAuditLog", back_populates="user", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return '<User {}>'.format(self.id)
+
+
+class Role(Base):
+    __tablename__ = "roles"
+    id = Column(Integer, primary_key=True)
+
+    name = Column(String(32), index=True, unique=True, nullable=False)
+    description = Column(String(255), nullable=True)
+
+    users = relationship("User", secondary=user_roles_association_table, back_populates="roles")
+
+    def __repr__(self):
+        return '<Role {}>'.format(self.id)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    id = Column(Integer, primary_key=True)
+
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    token_hash = Column(String(128), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    revoked = Column(Boolean, nullable=False, default=False)
+    user_agent = Column(String(255), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+
+    user = relationship("User", back_populates="sessions")
+
+    def __repr__(self):
+        return '<UserSession {}>'.format(self.id)
+
+
+class StreamAuditLog(Base):
+    __tablename__ = "stream_audit_logs"
+    id = Column(Integer, primary_key=True)
+
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    event_type = Column(String(64), index=True, nullable=False)
+    endpoint = Column(String(255), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    details = Column(String(1024), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="stream_audits")
+
+    def __repr__(self):
+        return '<StreamAuditLog {}>'.format(self.id)

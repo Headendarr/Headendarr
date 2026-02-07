@@ -9,56 +9,6 @@
 
             <q-form @submit="save" class="q-gutter-md">
 
-              <h5 class="text-primary q-mb-none">Authentication</h5>
-
-              <div v-if="aioMode === false"
-                   class="q-gutter-sm">
-                <q-item tag="label" dense class="q-pl-none q-mr-none">
-                  <q-item-section avatar>
-                    <q-checkbox v-model="enableAdminUser" val="enableAdminUser" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Enable authentication on TIC web interface</q-item-label>
-                  </q-item-section>
-                </q-item>
-              </div>
-
-              <div
-                v-if="aioMode === true || enableAdminUser === true"
-                class="q-gutter-sm">
-                <q-skeleton
-                  v-if="adminUsername === null"
-                  type="QInput" />
-                <q-input
-                  v-else
-                  v-model="adminUsername"
-                  readonly
-                  label="Admin Username"
-                  :hint="(aioMode === true) ? `Note: This admin user is for both TIC and TVheadend (username cannot be modified).` : `Note: Username cannot be modified.`"
-                />
-              </div>
-              <div
-                v-if="aioMode === true || enableAdminUser === true"
-                class="q-gutter-sm">
-                <q-skeleton
-                  v-if="adminPassword === null"
-                  type="QInput" />
-                <q-input
-                  v-else
-                  v-model="adminPassword"
-                  label="Admin Password"
-                  :hint="(aioMode === true) ? `Note: The admin password configured here will be also applied to TVheadend.` : ``"
-                  :type="hideAdminPassword ? 'password' : 'text'">
-                  <template v-slot:append>
-                    <q-icon
-                      :name="hideAdminPassword ? 'visibility_off' : 'visibility'"
-                      class="cursor-pointer"
-                      @click="hideAdminPassword = !hideAdminPassword"
-                    />
-                  </template>
-                </q-input>
-              </div>
-
               <h5 class="text-primary q-mb-none">Connections</h5>
 
               <div class="q-gutter-sm">
@@ -86,19 +36,10 @@
               <div class="text-h5 q-mb-none">Setup Steps:</div>
               <q-list>
 
-                <q-separator inset spaced v-if="aioMode === true" />
-
                 <q-item v-if="aioMode === true">
                   <q-item-section>
                     <q-item-label>
-                      1. Configure the Admin username and password. This user should not be used for streaming clients.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item v-if="aioMode === true">
-                  <q-item-section>
-                    <q-item-label>
-                      2. Configure the connection details that clients should use to connect to TIC.
+                      1. Configure the connection details that clients should use to connect to TIC.
                       This will be applied to the playlists and guide data supplied to these clients.
                     </q-item-label>
                   </q-item-section>
@@ -109,20 +50,6 @@
             <q-card-section>
               <div class="text-h5 q-mb-none">Notes:</div>
               <q-list>
-
-                <q-separator inset spaced v-if="aioMode === true" />
-
-                <q-item-label class="text-primary" v-if="aioMode === true">
-                  Authentication:
-                </q-item-label>
-                <q-item v-if="aioMode === true">
-                  <q-item-section>
-                    <q-item-label>
-                      Authentication is shared between TIC and the TVheadend Backend.
-                      Updating the admin user here will also update the admin user in TVheadend.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
 
               </q-list>
             </q-card-section>
@@ -150,20 +77,13 @@ export default defineComponent({
     return {
       // UI Elements
       aioMode: ref(null),
-      hideAdminPassword: ref(true),
-      prevAdminPassword: ref(null),
 
       // Application Settings
       appUrl: ref(null),
-      enableAdminUser: ref(null),
-      adminUsername: ref('admin'),
-      adminPassword: ref(null),
 
       // Defaults
       defSet: ref({
         appUrl: window.location.origin,
-        enableAdminUser: false,
-        adminPassword: '',
       }),
     };
   },
@@ -192,8 +112,6 @@ export default defineComponent({
             this[key] = this.defSet[key];
           }
         });
-        // Write the previous admin password as the one fetched
-        this.prevAdminPassword = this.adminPassword;
       }).catch(() => {
         this.$q.notify({
           color: 'negative',

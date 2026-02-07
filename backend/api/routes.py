@@ -2,14 +2,15 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import os
+import aiofiles
 
 from quart import request, jsonify, redirect, send_from_directory, current_app
 
 from backend.api import blueprint
 
 from backend.api.tasks import TaskQueueBroker
-from backend.auth import admin_auth_required, check_auth
-from backend.config import is_tvh_process_running_locally, get_local_tvh_proc_admin_password
+from backend.auth import admin_auth_required, get_user_from_token, stream_key_required, audit_stream_event
+from backend.config import is_tvh_process_running_locally
 from backend.tvheadend.tvh_requests import configure_tvh
 
 
@@ -39,16 +40,52 @@ async def serve_static(path):
 
 
 @blueprint.route('/tic-web/epg.xml')
-def serve_epg_static():
+@stream_key_required
+async def serve_epg_static():
+    await audit_stream_event(request._stream_user, "epg_xml", request.path)
     config = current_app.config['APP_CONFIG']
-    return send_from_directory(os.path.join(config.config_path), 'epg.xml')
+    return await send_from_directory(os.path.join(config.config_path), 'epg.xml')
+
+
+async def _build_playlist_with_epg():
+    config = current_app.config['APP_CONFIG']
+    stream_key = request.args.get('stream_key') or request.args.get('password')
+    username = request.args.get('username')
+    epg_url = f'{request.url_root.rstrip("/")}/xmltv.php'
+    if stream_key:
+        if username:
+            epg_url = f'{epg_url}?username={username}&password={stream_key}'
+        else:
+            epg_url = f'{epg_url}?stream_key={stream_key}'
+    m3u_path = os.path.join(config.config_path, 'playlist.m3u8')
+    async with aiofiles.open(m3u_path, mode='r', encoding='utf8', errors='ignore') as f:
+        content = await f.read()
+    lines = content.splitlines()
+    if lines:
+        lines[0] = f'#EXTM3U url-tvg="{epg_url}"'
+    return Response("\n".join(lines), mimetype='application/vnd.apple.mpegurl')
 
 
 @blueprint.route('/tic-web/playlist.m3u8')
-def serve_playlist_static():
+@stream_key_required
+async def serve_playlist_static():
+    await audit_stream_event(request._stream_user, "playlist_m3u8", request.path)
+    return await _build_playlist_with_epg()
+
+
+@blueprint.route('/get.php', methods=['GET'])
+@stream_key_required
+async def xtreamcodes_get():
+    await audit_stream_event(request._stream_user, "xtream_get", request.path)
+    return await _build_playlist_with_epg()
+
+
+@blueprint.route('/xmltv.php', methods=['GET'])
+@stream_key_required
+async def xtreamcodes_xmltv():
+    await audit_stream_event(request._stream_user, "xtream_xmltv", request.path)
     config = current_app.config['APP_CONFIG']
-    response = send_from_directory(os.path.join(config.config_path), 'playlist.m3u8')
-    return response
+    return await send_from_directory(os.path.join(config.config_path), 'epg.xml')
 
 
 @blueprint.route('/tic-api/ping')
@@ -88,11 +125,18 @@ async def tvh_any_redirect(subpath: str):
 @blueprint.route('/tic-api/check-auth')
 async def api_check_auth():
     config = current_app.config['APP_CONFIG']
-    if await check_auth():
+    user = await get_user_from_token()
+    if user:
         return jsonify(
             {
                 "success":     True,
-                "runtime_key": config.runtime_key
+                "runtime_key": config.runtime_key,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "roles": [role.name for role in user.roles] if user.roles else [],
+                    "streaming_key": user.streaming_key,
+                },
             }
         ), 200
     return jsonify(
@@ -161,28 +205,6 @@ async def api_save_config():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
 
-    # Update auth for AIO container
-    if await is_tvh_process_running_locally():
-        admin_username = 'admin'
-        if json_data.get('settings', {}).get('first_run'):
-            json_data['settings']['admin_password'] = admin_username
-        # Force admin login
-        json_data['settings']['enable_admin_user'] = True
-        # Update TVH password also
-        if json_data.get('settings', {}).get('admin_password'):
-            if not json_data.get('settings', {}).get('tvheadend'):
-                json_data['settings']['tvheadend'] = {}
-            json_data['settings']['tvheadend']['username'] = admin_username
-            json_data['settings']['tvheadend']['password'] = json_data['settings']['admin_password']
-        # Force the creation of a client user
-        json_data['settings']['create_client_user'] = True
-        client_username = json_data.get('settings', {}).get('client_username')
-        if not client_username or client_username == '':
-            json_data['settings']['client_username'] = 'client'
-        client_password = json_data.get('settings', {}).get('client_password')
-        if not client_password or client_password == '':
-            json_data['settings']['client_password'] = 'client'
-
     # Mark first run as complete
     json_data['settings']['first_run'] = False
 
@@ -215,10 +237,6 @@ async def api_get_config_tvheadend():
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
     return_data = settings.get('settings', {})
-    if await is_tvh_process_running_locally():
-        tvh_password = await get_local_tvh_proc_admin_password()
-        return_data['tvheadend']['username'] = 'admin'
-        return_data['tvheadend']['password'] = tvh_password
     return jsonify(
         {
             "success": True,

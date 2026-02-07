@@ -10,9 +10,10 @@ import time
 import uuid
 from collections import deque
 
-from quart import current_app, Response, stream_with_context
+from quart import current_app, Response, stream_with_context, request
 
 from backend.api import blueprint
+from backend.auth import stream_key_required, audit_stream_event
 import aiohttp
 from urllib.parse import urlparse
 
@@ -300,7 +301,7 @@ async def prefetch_segments(segment_urls):
                     proxy_logger.error("Failed to prefetch URL '%s': %s", url, e)
 
 
-def generate_base64_encoded_url(url_to_encode, extension):
+def generate_base64_encoded_url(url_to_encode, extension, stream_key=None, username=None):
     full_url_encoded = base64.b64encode(url_to_encode.encode('utf-8')).decode('utf-8')
     host_base_url = ''
     host_base_url_prefix = 'http'
@@ -311,10 +312,15 @@ def generate_base64_encoded_url(url_to_encode, extension):
         host_base_url_port = f':{hls_proxy_port}'
     if hls_proxy_host_ip:
         host_base_url = f'{host_base_url_prefix}://{hls_proxy_host_ip}{host_base_url_port}{hls_proxy_prefix}/'
-    return f'{host_base_url}{full_url_encoded}.{extension}'
+    url = f'{host_base_url}{full_url_encoded}.{extension}'
+    if stream_key:
+        if username:
+            return f'{url}?username={username}&password={stream_key}'
+        return f'{url}?stream_key={stream_key}'
+    return url
 
 
-async def fetch_and_update_playlist(decoded_url):
+async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None):
     async with aiohttp.ClientSession() as session:
         async with session.get(decoded_url) as resp:
             if resp.status != 200:
@@ -328,7 +334,7 @@ async def fetch_and_update_playlist(decoded_url):
             playlist_content = await resp.text()
 
             # Update child URLs in the playlist
-            updated_playlist = update_child_urls(playlist_content, response_url)
+            updated_playlist = update_child_urls(playlist_content, response_url, stream_key=stream_key, username=username)
             return updated_playlist
 
 
@@ -343,7 +349,7 @@ def get_key_uri_from_ext_x_key(line):
     return None
 
 
-def update_child_urls(playlist_content, source_url):
+def update_child_urls(playlist_content, source_url, stream_key=None, username=None):
     proxy_logger.debug(f"Original Playlist Content:\n{playlist_content}")
 
     updated_lines = []
@@ -365,7 +371,7 @@ def update_child_urls(playlist_content, source_url):
         if line.startswith("#EXT-X-KEY"):
             key_uri = get_key_uri_from_ext_x_key(line)
             if key_uri:
-                new_key_uri = generate_base64_encoded_url(key_uri, 'key')
+                new_key_uri = generate_base64_encoded_url(key_uri, 'key', stream_key=stream_key, username=username)
                 updated_lines.append(line.replace(key_uri, new_key_uri))
                 segment_urls.append(key_uri)
             else:
@@ -380,7 +386,7 @@ def update_child_urls(playlist_content, source_url):
         if stripped_line.endswith('m3u8'):
             extension = 'm3u8'
         url_to_encode = f"{source_base_url}/{stripped_line}"
-        updated_lines.append(generate_base64_encoded_url(url_to_encode, extension))
+        updated_lines.append(generate_base64_encoded_url(url_to_encode, extension, stream_key=stream_key, username=username))
 
         # Add any ts files to list of segments to pre-fetch
         if extension == 'ts':
@@ -396,11 +402,15 @@ def update_child_urls(playlist_content, source_url):
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.m3u8', methods=['GET'])
+@stream_key_required
 async def proxy_m3u8(encoded_url):
+    await audit_stream_event(request._stream_user, "hls_m3u8", request.path)
     # Decode the Base64 encoded URL
     decoded_url = base64.b64decode(encoded_url).decode('utf-8')
+    stream_key = request.args.get("stream_key") or request.args.get("password")
+    username = request.args.get("username")
 
-    updated_playlist = await fetch_and_update_playlist(decoded_url)
+    updated_playlist = await fetch_and_update_playlist(decoded_url, stream_key=stream_key, username=username)
     if updated_playlist is None:
         proxy_logger.error("Failed to fetch the original playlist '%s'", decoded_url)
         return Response("Failed to fetch the original playlist.", status=404)
@@ -410,7 +420,9 @@ async def proxy_m3u8(encoded_url):
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.key', methods=['GET'])
+@stream_key_required
 async def proxy_key(encoded_url):
+    await audit_stream_event(request._stream_user, "hls_key", request.path)
     # Decode the Base64 encoded URL
     decoded_url = base64.b64decode(encoded_url).decode('utf-8')
 
@@ -433,7 +445,9 @@ async def proxy_key(encoded_url):
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.ts', methods=['GET'])
+@stream_key_required
 async def proxy_ts(encoded_url):
+    await audit_stream_event(request._stream_user, "hls_ts", request.path)
     # Decode the Base64 encoded URL
     decoded_url = base64.b64decode(encoded_url).decode('utf-8')
 
@@ -456,7 +470,9 @@ async def proxy_ts(encoded_url):
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/stream/<encoded_url>', methods=['GET'])
+@stream_key_required
 async def stream_ts(encoded_url):
+    await audit_stream_event(request._stream_user, "hls_stream", request.path)
     # Decode the Base64 encoded URL
     decoded_url = base64.b64decode(encoded_url).decode('utf-8')
 
@@ -479,6 +495,7 @@ async def stream_ts(encoded_url):
 
     # Add a new buffer for this connection
     stream.add_buffer(connection_id)
+    await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
 
     # Create a generator to stream data from the connection-specific buffer
     @stream_with_context
@@ -502,6 +519,7 @@ async def stream_ts(encoded_url):
                     break
         finally:
             stream.remove_buffer(connection_id)  # Remove the buffer on connection close
+            await audit_stream_event(request._stream_user, "hls_stream_disconnect", request.path)
 
     # Create a response object with the correct content type and set timeout to None
     response = Response(generate(), content_type='video/mp2t')

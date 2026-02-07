@@ -83,7 +83,8 @@ module.exports = configure(function(ctx) {
       server: {
         type: 'http',
       },
-      port: 8080,
+      host: process.env.QUASAR_DEV_HOST || '127.0.0.1',
+      port: Number(process.env.QUASAR_DEV_PORT || 8080),
       proxy: {
         '/tic-api': 'http://localhost:9985',
         '/tic-web/epg.xml': 'http://localhost:9985',

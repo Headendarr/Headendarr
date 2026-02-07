@@ -180,7 +180,7 @@
                     <q-item-label header>Proxied M3U Playlists</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
                             clickable
-                            @click="copyUrlToClipboard(`${appUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u`)"
+                            @click="copyUrlToClipboard(`${appUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
                             tabindex="0">
                       <q-item-section avatar>
                         <q-avatar
@@ -191,7 +191,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u
+                        <q-item-label caption>{{ appUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
                         </q-item-label>
                         <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
                       </q-item-section>
@@ -204,7 +204,7 @@
 
                     <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
-                            clickable @click="copyUrlToClipboard(`${appUrl}/tic-api/hdhr_device/${playlist.id}`)"
+                            clickable @click="copyUrlToClipboard(`${appUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
                             tabindex="0">
                       <q-item-section avatar>
                         <q-avatar size="2rem" font-size="82px">
@@ -213,7 +213,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-green-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/hdhr_device/{{ playlist.id }}</q-item-label>
+                        <q-item-label caption>{{ appUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
                       </q-item-section>
                       <q-item-section side>
                         <q-icon name="content_copy" />
@@ -234,51 +234,81 @@
       show-if-above
       elevated
       side="left" behavior="desktop"
+      class="drawer-layout"
     >
-      <q-list>
-        <q-item-label header>
-          <!--          Essential Links-->
-        </q-item-label>
+      <div class="drawer-content">
+        <div class="drawer-scroll">
+          <q-list>
+            <q-item-label header>
+              <!--          Essential Links-->
+            </q-item-label>
 
-        <EssentialLink
-          v-for="link in essentialLinks"
-          :key="link.title"
-          v-bind="link"
-        />
-      </q-list>
+            <EssentialLink
+              v-for="link in essentialLinks"
+              :key="link.title"
+              v-bind="link"
+            />
+          </q-list>
 
-      <q-separator class="q-my-lg" />
+          <q-separator class="q-my-lg" />
 
-      <q-list>
-        <q-item-label style="padding-left:10px" header>
-          <q-btn
-            flat round dense
-            :color="pendingTasksStatus === 'paused' ? '' : ''"
-            :icon="pendingTasksStatus === 'paused' ? 'play_circle' : 'pause_circle'"
-            :tooltip="'running'"
-            @click="tasksPauseResume">
-            <q-tooltip class="bg-accent">
-              Background task queue {{ pendingTasksStatus }}
-            </q-tooltip>
-          </q-btn>
-          Upcoming background tasks:
-        </q-item-label>
-        <q-item
-          v-for="(task, index) in pendingTasks"
-          :key="index">
-          <q-item-section avatar>
-            <q-icon
-              color="primary"
-              :class="pendingTasksStatus === 'paused' ? 'rotating-icon' : ''"
-              :name="pendingTasksStatus === 'paused' ? 'motion_photos_on' : task.icon" />
-          </q-item-section>
+          <q-list>
+            <q-item-label style="padding-left:10px" header>
+              <q-btn
+                flat round dense
+                :color="pendingTasksStatus === 'paused' ? '' : ''"
+                :icon="pendingTasksStatus === 'paused' ? 'play_circle' : 'pause_circle'"
+                :tooltip="'running'"
+                @click="tasksPauseResume">
+                <q-tooltip class="bg-accent">
+                  Background task queue {{ pendingTasksStatus }}
+                </q-tooltip>
+              </q-btn>
+              Upcoming background tasks:
+            </q-item-label>
+            <q-item
+              v-for="(task, index) in pendingTasks"
+              :key="index">
+              <q-item-section avatar>
+                <q-icon
+                  color="primary"
+                  :class="pendingTasksStatus === 'paused' ? 'rotating-icon' : ''"
+                  :name="pendingTasksStatus === 'paused' ? 'motion_photos_on' : task.icon" />
+              </q-item-section>
 
-          <q-item-section>
-            <q-item-label caption>{{ task.name }}</q-item-label>
-          </q-item-section>
-        </q-item>
-      </q-list>
+              <q-item-section>
+                <q-item-label caption>{{ task.name }}</q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </div>
 
+        <div class="drawer-footer">
+          <q-separator class="q-my-md" />
+          <q-list>
+            <q-item>
+              <q-item-section>
+                <q-item-label>{{ currentUsername }}</q-item-label>
+                <q-item-label caption>User</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-btn dense flat icon="account_circle">
+                  <q-menu>
+                    <q-list style="min-width: 160px;">
+                      <q-item clickable v-close-popup @click="goToUserSettings">
+                        <q-item-section>Settings</q-item-section>
+                      </q-item>
+                      <q-item clickable v-close-popup @click="logout">
+                        <q-item-section>Logout</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-btn>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </div>
+      </div>
     </q-drawer>
 
     <q-page-container>
@@ -350,15 +380,38 @@
   padding-left: 8px;
   border-left: solid thin var(--q-primary);
 }
+
+.drawer-layout {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.drawer-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.drawer-footer {
+  margin-top: auto;
+  padding-bottom: 8px;
+}
 </style>
 
 <script>
-import {defineComponent, onMounted, ref} from 'vue';
+import {defineComponent, onMounted, ref, computed} from 'vue';
 import EssentialLink from 'components/EssentialLink.vue';
 import pollForBackgroundTasks from 'src/mixins/backgroundTasksMixin';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 import axios from 'axios';
 import {copyToClipboard, useQuasar} from 'quasar';
+import {useAuthStore} from 'stores/auth';
+import {useRouter} from 'vue-router';
 
 const linksList = [
   {
@@ -391,6 +444,13 @@ const linksList = [
     icon: 'queue_play_next',
     link: '/channels',
   },
+  {
+    title: 'Users',
+    caption: 'Manage users and roles',
+    icon: 'manage_accounts',
+    link: '/users',
+    adminOnly: true,
+  },
 ];
 
 export default defineComponent({
@@ -402,6 +462,8 @@ export default defineComponent({
 
   setup() {
     const $q = useQuasar();
+    const router = useRouter();
+    const authStore = useAuthStore();
     const leftDrawerOpen = ref(false);
     const tasksArePaused = ref(false);
     const {pendingTasks, pendingTasksStatus} = pollForBackgroundTasks();
@@ -410,7 +472,6 @@ export default defineComponent({
     const loadTvheadendAdmin = ref(true);
     const showTvheadendAdmin = ref(false);
     const appUrl = ref(window.location.origin);
-    const epgUrl = ref(`${window.location.origin}/tic-web/epg.xml`);
 
     const enabledPlaylists = ref([]);
 
@@ -459,7 +520,6 @@ export default defineComponent({
         url: '/tic-api/get-settings',
       }).then((response) => {
         appUrl.value = response.data.data.app_url;
-        epgUrl.value = `${response.data.data.app_url}/tic-web/epg.xml`;
       }).catch(() => {
       });
       // Fetch playlists list
@@ -472,6 +532,22 @@ export default defineComponent({
       });
     });
 
+    const isAdmin = computed(() => (authStore.user?.roles || []).includes('admin'));
+    const filteredLinks = computed(() => linksList.filter((link) => !link.adminOnly || isAdmin.value));
+    const currentUsername = computed(() => authStore.user?.username || 'User');
+    const currentStreamingKey = computed(() => authStore.user?.streaming_key || 'STREAM_KEY');
+
+    const logout = async () => {
+      await authStore.logout();
+      await router.push({path: '/login'});
+    };
+
+    const goToUserSettings = async () => {
+      await router.push({path: '/user-settings'});
+    };
+
+    const epgUrl = computed(() => `${appUrl.value}/xmltv.php?stream_key=${currentStreamingKey.value}`);
+
     return {
       firstRun,
       aioMode,
@@ -480,7 +556,9 @@ export default defineComponent({
       enabledPlaylists,
       appUrl,
       epgUrl,
-      essentialLinks: linksList,
+      essentialLinks: filteredLinks,
+      currentUsername,
+      currentStreamingKey,
       leftDrawerOpen,
       toggleLeftDrawer() {
         leftDrawerOpen.value = !leftDrawerOpen.value;
@@ -490,6 +568,8 @@ export default defineComponent({
       pendingTasksStatus,
       tasksPauseResume,
       tasksArePaused,
+      logout,
+      goToUserSettings,
     };
   },
 });
