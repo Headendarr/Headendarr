@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from backend.api import blueprint
-from backend.auth import get_user_from_token, unauthorized_response
+from backend.auth import get_user_from_token, unauthorized_response, _get_bearer_token
 from backend.models import Session, UserSession, User
 from backend.security import (
     generate_session_token,
@@ -108,10 +108,9 @@ async def auth_me():
 
 @blueprint.route('/tic-api/auth/logout', methods=['POST'])
 async def auth_logout():
-    token = request.headers.get("Authorization", "")
-    if not token.startswith("Bearer "):
+    token_value = _get_bearer_token()
+    if not token_value:
         return unauthorized_response()
-    token_value = token[len("Bearer "):].strip()
     token_hash = hash_session_token(token_value)
     async with Session() as session:
         async with session.begin():

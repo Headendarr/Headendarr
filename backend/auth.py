@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 from functools import wraps
 
-from quart import request, jsonify, make_response
+from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket
 from sqlalchemy import select, update, or_
 from sqlalchemy.orm import selectinload
 
@@ -22,17 +22,27 @@ def forbidden_response(message="Forbidden"):
 
 
 def _get_bearer_token():
-    auth = request.headers.get("Authorization", "")
+    auth = ""
+    cookie_token = None
+    if has_request_context():
+        auth = request.headers.get("Authorization", "")
+        cookie_token = request.cookies.get("tic_auth_token")
+    elif has_websocket_context():
+        auth = websocket.headers.get("Authorization", "")
+        cookie_token = websocket.cookies.get("tic_auth_token")
     if auth.startswith("Bearer "):
         return auth[len("Bearer "):].strip()
-    cookie_token = request.cookies.get("tic_auth_token")
     if cookie_token:
         return cookie_token
     return None
 
 
 def _get_basic_auth_credentials():
-    auth = request.headers.get("Authorization", "")
+    auth = ""
+    if has_request_context():
+        auth = request.headers.get("Authorization", "")
+    elif has_websocket_context():
+        auth = websocket.headers.get("Authorization", "")
     if auth.startswith("Basic "):
         try:
             username, password = base64.b64decode(auth[len("Basic "):].strip()).decode().split(':', 1)

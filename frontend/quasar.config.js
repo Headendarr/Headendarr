@@ -89,7 +89,7 @@ module.exports = configure(function(ctx) {
         '/tic-api': 'http://localhost:9985',
         '/tic-web/epg.xml': 'http://localhost:9985',
         '/tic-tvh': {
-          target: 'ws://localhost:9985',
+          target: 'http://localhost:9985',
           ws: true,
         },
       },
