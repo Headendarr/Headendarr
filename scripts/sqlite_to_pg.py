@@ -68,7 +68,7 @@ def reset_sequences(pg_engine, pg_meta):
                 max_id = 0
             conn.execute(
                 text("SELECT setval(:seq, :val, :is_called)"),
-                {"seq": seq, "val": int(max_id), "is_called": bool(max_id)},
+                {"seq": seq, "val": int(max_id) if max_id > 0 else 1, "is_called": bool(max_id)},
             )
 
 
