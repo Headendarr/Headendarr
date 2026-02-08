@@ -48,6 +48,8 @@ services:
     volumes:
       # Configuration files
       - ../dev_env/config:/config
+      - ../dev_env/recordings:/recordings
+      - ../dev_env/timeshift:/timeshift
       # Application source passthrough
       - ../:/app
 

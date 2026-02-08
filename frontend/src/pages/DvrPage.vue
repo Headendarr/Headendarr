@@ -1,77 +1,136 @@
 <template>
   <q-page padding>
-    <q-card flat>
-      <q-card-section class="row items-center q-gutter-md">
-        <div class="text-h5">DVR</div>
-        <q-space />
-        <q-btn color="primary" label="Refresh" @click="refreshAll" />
-      </q-card-section>
+    <div class="row q-col-gutter-md">
+      <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <q-card flat>
+          <q-card-section class="row items-center q-gutter-md">
+            <div class="text-h5">DVR</div>
+            <q-space />
+            <q-btn color="primary" label="Refresh" @click="refreshAll" />
+          </q-card-section>
 
-      <q-tabs v-model="tab" class="text-primary">
-        <q-tab name="recordings" label="Recordings" />
-        <q-tab name="rules" label="Recording Rules" />
-      </q-tabs>
+          <q-tabs v-model="tab" class="text-primary">
+            <q-tab name="recordings" label="Recordings" />
+            <q-tab name="rules" label="Recording Rules" />
+          </q-tabs>
 
-      <q-separator />
+          <q-separator />
 
-      <q-tab-panels v-model="tab" animated>
-        <q-tab-panel name="recordings">
-          <q-btn
-            color="primary"
-            label="Schedule Recording"
-            class="q-mb-md"
-            @click="showScheduleDialog = true"
-          />
-          <q-table
-            :rows="recordings"
-            :columns="recordingColumns"
-            row-key="id"
-            flat
-            dense
-          >
-            <template v-slot:body-cell-actions="props">
-              <q-td :props="props">
-                <q-btn
-                  dense
-                  flat
-                  icon="cancel"
-                  color="negative"
-                  @click="cancelRecording(props.row.id)"
-                />
-              </q-td>
-            </template>
-          </q-table>
-        </q-tab-panel>
+          <q-tab-panels v-model="tab" animated>
+            <q-tab-panel name="recordings">
+              <q-btn
+                color="primary"
+                label="Schedule Recording"
+                class="q-mb-md"
+                @click="showScheduleDialog = true"
+              />
+              <q-table
+                :rows="recordings"
+                :columns="recordingColumns"
+                row-key="id"
+                flat
+                dense
+              >
+                <template v-slot:body-cell-actions="props">
+                  <q-td :props="props">
+                    <q-btn
+                      dense
+                      flat
+                      icon="cancel"
+                      color="negative"
+                      @click="cancelRecording(props.row.id)"
+                    />
+                  </q-td>
+                </template>
+              </q-table>
+            </q-tab-panel>
 
-        <q-tab-panel name="rules">
-          <q-btn
-            color="primary"
-            label="Add Rule"
-            class="q-mb-md"
-            @click="showRuleDialog = true"
-          />
-          <q-table
-            :rows="rules"
-            :columns="ruleColumns"
-            row-key="id"
-            flat
-            dense
-          >
-            <template v-slot:body-cell-actions="props">
-              <q-td :props="props">
-                <q-btn
-                  dense
-                  flat
-                  icon="delete"
-                  color="negative"
-                  @click="deleteRule(props.row.id)"
-                />
-              </q-td>
-            </template>
-          </q-table>
-        </q-tab-panel>
-      </q-tab-panels>
-    </q-card>
+            <q-tab-panel name="rules">
+              <q-btn
+                color="primary"
+                label="Add Rule"
+                class="q-mb-md"
+                @click="showRuleDialog = true"
+              />
+              <q-table
+                :rows="rules"
+                :columns="ruleColumns"
+                row-key="id"
+                flat
+                dense
+              >
+                <template v-slot:body-cell-actions="props">
+                  <q-td :props="props">
+                    <q-btn
+                      dense
+                      flat
+                      icon="delete"
+                      color="negative"
+                      @click="deleteRule(props.row.id)"
+                    />
+                  </q-td>
+                </template>
+              </q-table>
+            </q-tab-panel>
+          </q-tab-panels>
+        </q-card>
+      </div>
+      <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
+        <q-slide-transition>
+          <q-card v-show="uiStore.showHelp" class="note-card q-my-md">
+            <q-card-section>
+              <div class="text-h5 q-mb-none">Setup Steps:</div>
+              <q-list>
+
+                <q-separator inset spaced />
+
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      1. Use <b>Schedule Recording</b> to create a one-time recording for a channel and time window.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      2. Use <b>Recording Rules</b> to create recurring rules that automatically schedule future
+                      recordings by title match.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      3. After creating a recording or rule, check the <b>Sync</b> status to confirm it has been
+                      pushed to TVHeadend.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+
+              </q-list>
+            </q-card-section>
+            <q-card-section>
+              <div class="text-h5 q-mb-none">Notes:</div>
+              <q-list>
+
+                <q-separator inset spaced />
+
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      Recordings are queued and synced to TVHeadend in the background. TVHeadend performs the actual
+                      recording. If a sync fails, click <b>Refresh</b> to reload the current status.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+
+              </q-list>
+            </q-card-section>
+          </q-card>
+        </q-slide-transition>
+      </div>
+    </div>
 
     <q-dialog v-model="showScheduleDialog">
       <q-card style="width: 520px; max-width: 95vw;">
@@ -153,8 +212,9 @@
 </template>
 
 <script>
-import {defineComponent, ref, onMounted, computed} from 'vue';
+import {defineComponent, ref, onMounted, onBeforeUnmount, computed} from 'vue';
 import axios from 'axios';
+import {useUiStore} from 'stores/ui';
 
 export default defineComponent({
   name: 'DvrPage',
@@ -183,7 +243,7 @@ export default defineComponent({
       {name: 'start_ts', label: 'Start', field: row => formatTs(row.start_ts), align: 'left'},
       {name: 'stop_ts', label: 'Stop', field: row => formatTs(row.stop_ts), align: 'left'},
       {name: 'status', label: 'Status', field: 'status', align: 'left'},
-      {name: 'sync_status', label: 'Sync', field: 'sync_status', align: 'left'},
+      {name: 'sync_status', label: 'TVH Sync Status', field: 'sync_status', align: 'left'},
       {name: 'actions', label: '', field: 'actions', align: 'right'},
     ];
 
@@ -198,7 +258,7 @@ export default defineComponent({
       channels.value.map((channel) => ({
         label: channel.name,
         value: channel.id,
-      }))
+      })),
     );
 
     const formatTs = (ts) => {
@@ -258,9 +318,35 @@ export default defineComponent({
       await loadRules();
     };
 
-    onMounted(refreshAll);
+    let pollingActive = true;
+
+    const pollRecordings = async () => {
+      while (pollingActive) {
+        try {
+          const response = await axios.get('/tic-api/recordings/poll', {
+            params: {
+              wait: 1,
+              timeout: 25,
+            },
+          });
+          recordings.value = response.data.data || [];
+        } catch (error) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+    };
+
+    onMounted(async () => {
+      await refreshAll();
+      pollRecordings();
+    });
+
+    onBeforeUnmount(() => {
+      pollingActive = false;
+    });
 
     return {
+      uiStore: useUiStore(),
       tab,
       recordings,
       rules,

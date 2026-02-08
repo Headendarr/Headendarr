@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+import asyncio
+
 from quart import request, jsonify, current_app
 
 from backend.api import blueprint
 from backend.auth import streamer_or_admin_required
-from backend.api.tasks import TaskQueueBroker, reconcile_dvr
+from backend.api.tasks import TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules
 from backend.dvr import list_recordings, list_rules, create_recording, cancel_recording, create_rule, delete_rule
 
 
@@ -13,6 +15,34 @@ from backend.dvr import list_recordings, list_rules, create_recording, cancel_re
 async def api_list_recordings():
     records = await list_recordings()
     return jsonify({"success": True, "data": records})
+
+
+@blueprint.route('/tic-api/recordings/poll', methods=['GET'])
+@streamer_or_admin_required
+async def api_poll_recordings():
+    wait = request.args.get('wait', '0')
+    timeout = request.args.get('timeout', '0')
+    try:
+        wait = int(wait)
+    except ValueError:
+        wait = 0
+    try:
+        timeout = int(timeout)
+    except ValueError:
+        timeout = 0
+
+    data = await list_recordings()
+    if wait and timeout:
+        start = asyncio.get_event_loop().time()
+        while True:
+            await asyncio.sleep(1)
+            updated = await list_recordings()
+            if updated != data:
+                data = updated
+                break
+            if (asyncio.get_event_loop().time() - start) >= timeout:
+                break
+    return jsonify({"success": True, "data": data}), 200
 
 
 @blueprint.route('/tic-api/recordings', methods=['POST'])
@@ -41,7 +71,7 @@ async def api_create_recording():
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
         'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr,
+        'function': reconcile_dvr_recordings,
         'args': [current_app],
     }, priority=20)
 
@@ -57,7 +87,7 @@ async def api_cancel_recording(recording_id):
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
         'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr,
+        'function': reconcile_dvr_recordings,
         'args': [current_app],
     }, priority=20)
     return jsonify({"success": True})
@@ -82,8 +112,13 @@ async def api_create_recording_rule():
     rule_id = await create_rule(channel_id, title_match, lookahead_days=int(lookahead_days))
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
+        'name': f'Applying DVR recording rules',
+        'function': apply_dvr_rules,
+        'args': [current_app],
+    }, priority=19)
+    await task_broker.add_task({
         'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr,
+        'function': reconcile_dvr_recordings,
         'args': [current_app],
     }, priority=20)
     return jsonify({"success": True, "rule_id": rule_id})

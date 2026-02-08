@@ -270,6 +270,16 @@ async def reconcile_tvh_recordings(config):
                     continue
 
                 if rec.tvh_uuid and rec.tvh_uuid in tvh_map:
+                    entry = tvh_map.get(rec.tvh_uuid, {})
+                    rec.status = entry.get("state") or rec.status
+                    if entry.get("start"):
+                        rec.start_ts = entry.get("start")
+                    if entry.get("stop"):
+                        rec.stop_ts = entry.get("stop")
+                    if entry.get("title"):
+                        rec.title = entry.get("title")
+                    if entry.get("description"):
+                        rec.description = entry.get("description")
                     rec.sync_status = "synced"
                     rec.sync_error = None
                     continue
