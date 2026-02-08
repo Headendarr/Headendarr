@@ -336,18 +336,14 @@ async def api_save_config():
     config.update_settings(json_data)
     config.save_settings()
 
-    # Store settings for TVH service
+    # Store settings for TVH service (async via task queue)
     if json_data.get('settings', {}).get('tvheadend'):
-        try:
-            await configure_tvh(config)
-            pass
-        except Exception as e:
-            current_app.logger.exception(f"Error while configuring TVH: %s", e)
-            return jsonify(
-                {
-                    "success": False
-                }
-            ), 400
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task({
+            'name':     'Configure TVH settings',
+            'function': configure_tvh,
+            'args':     [config],
+        }, priority=15)
     return jsonify(
         {
             "success": True

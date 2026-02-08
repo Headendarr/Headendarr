@@ -4,7 +4,7 @@
     <div class="q-pa-none">
 
       <div class="row">
-        <div class="col-sm-7 col-md-8">
+        <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
@@ -93,11 +93,12 @@
             </q-card-section>
           </q-card>
         </div>
-        <div class="col-sm-5 col-md-4">
-          <q-card class="note-card q-my-md">
-            <q-card-section>
-              <div class="text-h5 q-mb-none">Setup Steps:</div>
-              <q-list>
+        <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
+          <q-slide-transition>
+            <q-card v-show="uiStore.showHelp" class="note-card q-my-md">
+              <q-card-section>
+                <div class="text-h5 q-mb-none">Setup Steps:</div>
+                <q-list>
 
                 <q-separator inset spaced />
 
@@ -117,11 +118,11 @@
                   </q-item-section>
                 </q-item>
 
-              </q-list>
-            </q-card-section>
-            <q-card-section>
-              <div class="text-h5 q-mb-none">Notes:</div>
-              <q-list>
+                </q-list>
+              </q-card-section>
+              <q-card-section>
+                <div class="text-h5 q-mb-none">Notes:</div>
+                <q-list>
 
                 <q-separator inset spaced />
 
@@ -149,9 +150,10 @@
                   </q-item-section>
                 </q-item>
 
-              </q-list>
-            </q-card-section>
-          </q-card>
+                </q-list>
+              </q-card-section>
+            </q-card>
+          </q-slide-transition>
         </div>
       </div>
 
@@ -165,12 +167,15 @@ import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import PlaylistInfoDialog from 'components/PlaylistInfoDialog.vue';
 import {copyToClipboard} from 'quasar';
+import {useUiStore} from 'stores/ui';
 
 export default defineComponent({
   name: 'PlaylistsPage',
 
   setup() {
-    return {};
+    return {
+      uiStore: useUiStore(),
+    };
   },
   data() {
     return {
@@ -340,3 +345,21 @@ export default defineComponent({
   },
 });
 </script>
+
+<style scoped>
+.help-main {
+  transition: flex-basis 0.25s ease, max-width 0.25s ease;
+}
+
+.help-main--full {
+  flex: 0 0 100%;
+  max-width: 100%;
+}
+
+.help-panel--hidden {
+  flex: 0 0 0%;
+  max-width: 0%;
+  padding: 0;
+  overflow: hidden;
+}
+</style>

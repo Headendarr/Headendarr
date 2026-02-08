@@ -89,8 +89,7 @@ async def add_new_playlist(config, data):
             )
             # This is a new entry. Add it to the session before commit
             session.add(playlist)
-    # Publish changes to TVH
-    await publish_playlist_networks(config)
+    return playlist.id
 
 
 async def update_playlist(config, playlist_id, data):
@@ -105,22 +104,15 @@ async def update_playlist(config, playlist_id, data):
             playlist.use_hls_proxy = data.get('use_hls_proxy', playlist.use_hls_proxy)
             playlist.use_custom_hls_proxy = data.get('use_custom_hls_proxy', playlist.use_custom_hls_proxy)
             playlist.hls_proxy_path = data.get('hls_proxy_path', playlist.hls_proxy_path)
-    # Publish changes to TVH
-    await publish_playlist_networks(config)
 
 
 async def delete_playlist(config, playlist_id):
+    net_uuid = None
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
             playlist = result.scalar_one()
             net_uuid = playlist.tvh_uuid
-            # Remove from TVH
-            if net_uuid:
-                try:
-                    await delete_playlist_network_in_tvh(config, net_uuid)
-                except Exception as e:
-                    logger.warning("Failed to remove playlist from TVH by UUID")
             # Remove cached copy of playlist
             cache_files = [
                 os.path.join(config.config_path, 'cache', 'playlists', f"{playlist_id}.m3u"),
@@ -131,6 +123,7 @@ async def delete_playlist(config, playlist_id):
                     os.remove(f)
             # Remove from DB
             await session.delete(playlist)
+    return net_uuid
 
 
 async def download_playlist_file(url, output):

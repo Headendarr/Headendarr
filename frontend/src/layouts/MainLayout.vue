@@ -58,6 +58,77 @@
               <q-card-section horizontal>
                 <q-card-section>
 
+                  <q-list>
+
+                    <q-item-label header>EPG</q-item-label>
+                    <q-item clickable @click="copyUrlToClipboard(epgUrl)"
+                            tabindex="0">
+                      <q-item-section avatar>
+                        <q-avatar
+                          icon="calendar_month"
+                          color="secondary"
+                          text-color="white" />
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label class="text-bold text-orange-7">XMLTV Guide</q-item-label>
+                        <q-item-label caption>{{ epgUrl }}</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-icon name="content_copy" />
+                      </q-item-section>
+                    </q-item>
+
+                    <q-separator inset spaced />
+
+                    <q-item-label header>Proxied M3U Playlists</q-item-label>
+                    <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
+                            clickable
+                            @click="copyUrlToClipboard(`${appUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
+                            tabindex="0">
+                      <q-item-section avatar>
+                        <q-avatar
+                          v-if="true"
+                          icon="playlist_play"
+                          color="secondary"
+                          text-color="white" />
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
+                        <q-item-label caption>{{ appUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
+                        </q-item-label>
+                        <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-icon name="content_copy" />
+                      </q-item-section>
+                    </q-item>
+
+                    <q-separator inset spaced />
+
+                    <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
+                    <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
+                            clickable @click="copyUrlToClipboard(`${appUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
+                            tabindex="0">
+                      <q-item-section avatar>
+                        <q-avatar size="2rem" font-size="82px">
+                          <img src="~assets/hd-icon.png">
+                        </q-avatar>
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label class="text-bold text-green-7">{{ playlist.name }}</q-item-label>
+                        <q-item-label caption>{{ appUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-icon name="content_copy" />
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-card-section>
+
+                <q-separator vertical />
+
+                <q-card-section>
+
                   <q-card class="note-card q-my-md">
                     <q-card-section>
                       <div class="text-h6">How to use the Proxied M3U Playlists:</div>
@@ -150,81 +221,21 @@
                     </q-card-section>
                   </q-card>
                 </q-card-section>
-
-                <q-separator vertical />
-
-                <q-card-section>
-
-                  <q-list>
-
-                    <q-item-label header>EPG</q-item-label>
-                    <q-item clickable @click="copyUrlToClipboard(epgUrl)"
-                            tabindex="0">
-                      <q-item-section avatar>
-                        <q-avatar
-                          icon="calendar_month"
-                          color="secondary"
-                          text-color="white" />
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label class="text-bold text-orange-7">XMLTV Guide</q-item-label>
-                        <q-item-label caption>{{ epgUrl }}</q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <q-icon name="content_copy" />
-                      </q-item-section>
-                    </q-item>
-
-                    <q-separator inset spaced />
-
-                    <q-item-label header>Proxied M3U Playlists</q-item-label>
-                    <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
-                            clickable
-                            @click="copyUrlToClipboard(`${appUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
-                            tabindex="0">
-                      <q-item-section avatar>
-                        <q-avatar
-                          v-if="true"
-                          icon="playlist_play"
-                          color="secondary"
-                          text-color="white" />
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
-                        </q-item-label>
-                        <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <q-icon name="content_copy" />
-                      </q-item-section>
-                    </q-item>
-
-                    <q-separator inset spaced />
-
-                    <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
-                    <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
-                            clickable @click="copyUrlToClipboard(`${appUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
-                            tabindex="0">
-                      <q-item-section avatar>
-                        <q-avatar size="2rem" font-size="82px">
-                          <img src="~assets/hd-icon.png">
-                        </q-avatar>
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label class="text-bold text-green-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <q-icon name="content_copy" />
-                      </q-item-section>
-                    </q-item>
-                  </q-list>
-                </q-card-section>
               </q-card-section>
             </q-card>
           </q-btn-dropdown>
           <q-separator dark vertical inset />
+          <q-btn
+            flat
+            round
+            dense
+            icon="help_outline"
+            class="q-ml-sm"
+            @click="toggleHelp">
+            <q-tooltip class="bg-white text-primary">
+              {{ uiStore.showHelp ? 'Hide setup help' : 'Show setup help' }}
+            </q-tooltip>
+          </q-btn>
         </q-tabs>
       </q-toolbar>
     </q-header>
@@ -411,6 +422,7 @@ import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 import axios from 'axios';
 import {copyToClipboard, useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
+import {useUiStore} from 'stores/ui';
 import {useRouter} from 'vue-router';
 
 const linksList = [
@@ -464,6 +476,7 @@ export default defineComponent({
     const $q = useQuasar();
     const router = useRouter();
     const authStore = useAuthStore();
+    const uiStore = useUiStore();
     const leftDrawerOpen = ref(false);
     const tasksArePaused = ref(false);
     const {pendingTasks, pendingTasksStatus} = pollForBackgroundTasks();
@@ -547,6 +560,9 @@ export default defineComponent({
     };
 
     const epgUrl = computed(() => `${appUrl.value}/xmltv.php?stream_key=${currentStreamingKey.value}`);
+    const toggleHelp = () => {
+      uiStore.toggleHelp();
+    };
 
     return {
       firstRun,
@@ -570,6 +586,8 @@ export default defineComponent({
       tasksArePaused,
       logout,
       goToUserSettings,
+      uiStore,
+      toggleHelp,
     };
   },
 });

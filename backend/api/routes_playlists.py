@@ -7,7 +7,8 @@ from backend.auth import admin_auth_required
 from backend.channels import queue_background_channel_update_tasks
 from backend.playlists import read_config_all_playlists, add_new_playlist, read_config_one_playlist, update_playlist, \
     delete_playlist, import_playlist_data, read_stream_details_from_all_playlists, probe_playlist_stream, \
-    read_filtered_stream_details_from_all_playlists, get_playlist_groups
+    read_filtered_stream_details_from_all_playlists, get_playlist_groups, publish_playlist_networks, \
+    delete_playlist_network_in_tvh
 
 from backend.api import blueprint
 from quart import request, jsonify, current_app
@@ -34,7 +35,13 @@ async def api_get_playlists_list():
 async def api_add_new_playlist():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
-    await add_new_playlist(config, json_data)
+    playlist_id = await add_new_playlist(config, json_data)
+    task_broker = await TaskQueueBroker.get_instance()
+    await task_broker.add_task({
+        'name':     f'Publish playlist networks - add {playlist_id}',
+        'function': publish_playlist_networks,
+        'args':     [config],
+    }, priority=20)
     return jsonify(
         {
             "success": True
@@ -61,6 +68,12 @@ async def api_set_config_playlists(playlist_id):
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
     await update_playlist(config, playlist_id, json_data)
+    task_broker = await TaskQueueBroker.get_instance()
+    await task_broker.add_task({
+        'name':     f'Publish playlist networks - update {playlist_id}',
+        'function': publish_playlist_networks,
+        'args':     [config],
+    }, priority=20)
     return jsonify(
         {
             "success": True
@@ -72,7 +85,14 @@ async def api_set_config_playlists(playlist_id):
 @admin_auth_required
 async def api_delete_playlist(playlist_id):
     config = current_app.config['APP_CONFIG']
-    await delete_playlist(config, playlist_id)
+    net_uuid = await delete_playlist(config, playlist_id)
+    if net_uuid:
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task({
+            'name':     f'Delete playlist network - {playlist_id}',
+            'function': delete_playlist_network_in_tvh,
+            'args':     [config, net_uuid],
+        }, priority=20)
     await queue_background_channel_update_tasks(config)
     return jsonify(
         {
@@ -171,4 +191,3 @@ async def api_get_playlist_groups():
         "success": True,
         "data": groups_data
     })
-
