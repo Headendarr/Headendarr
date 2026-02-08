@@ -104,6 +104,23 @@ const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
 const isMobile = ref(window.innerWidth < 600);
 const volumeHandler = ref(null);
+const videoErrorHandler = ref(null);
+const videoPlayingHandler = ref(null);
+const videoWaitingHandler = ref(null);
+const loadTimeout = ref(null);
+const loadingStartedAt = ref(0);
+
+async function safePlay(el) {
+  try {
+    await el.play();
+    return true;
+  } catch (error) {
+    console.warn('[FloatingPlayer] play failed', error);
+    errorMessage.value = 'Unable to start playback. The stream may be invalid or unsupported.';
+    isLoading.value = false;
+    return false;
+  }
+}
 
 function getVideoElement() {
   return videoEl.value || document.querySelector('.floating-player__video');
@@ -163,6 +180,24 @@ function cleanupPlayer() {
       el.removeEventListener('volumechange', volumeHandler.value);
       volumeHandler.value = null;
     }
+    if (videoErrorHandler.value) {
+      el.removeEventListener('error', videoErrorHandler.value);
+      videoErrorHandler.value = null;
+    }
+    if (videoPlayingHandler.value) {
+      el.removeEventListener('playing', videoPlayingHandler.value);
+      el.removeEventListener('canplay', videoPlayingHandler.value);
+      videoPlayingHandler.value = null;
+    }
+    if (videoWaitingHandler.value) {
+      el.removeEventListener('waiting', videoWaitingHandler.value);
+      el.removeEventListener('stalled', videoWaitingHandler.value);
+      videoWaitingHandler.value = null;
+    }
+    if (loadTimeout.value) {
+      clearTimeout(loadTimeout.value);
+      loadTimeout.value = null;
+    }
     try {
       el.pause();
     } catch (error) {
@@ -204,11 +239,62 @@ async function initPlayer() {
   videoEl.value = el;
   el.controls = true;
   el.volume = typeof videoStore.volume === 'number' ? videoStore.volume : 1;
+  loadingStartedAt.value = Date.now();
   if (!volumeHandler.value) {
     volumeHandler.value = () => {
       videoStore.setVolume(el.volume);
     };
     el.addEventListener('volumechange', volumeHandler.value);
+  }
+  if (!videoErrorHandler.value) {
+    videoErrorHandler.value = () => {
+      const mediaError = el.error;
+      if (mediaError) {
+        console.warn('[FloatingPlayer] media error', mediaError);
+      }
+      if (mediaError?.code === 1) {
+        errorMessage.value = 'Stream loading was aborted.';
+      } else if (mediaError?.code === 2) {
+        errorMessage.value = 'Network error while loading the stream.';
+      } else if (mediaError?.code === 3) {
+        errorMessage.value = 'Stream could not be decoded. The format may be unsupported.';
+      } else if (mediaError?.code === 4) {
+        errorMessage.value = 'Stream is not supported or is invalid.';
+      } else {
+        errorMessage.value = 'Unable to load stream. Please try again.';
+      }
+      isLoading.value = false;
+    };
+    el.addEventListener('error', videoErrorHandler.value);
+  }
+  if (!videoPlayingHandler.value) {
+    videoPlayingHandler.value = () => {
+      errorMessage.value = '';
+      isLoading.value = false;
+      if (loadTimeout.value) {
+        clearTimeout(loadTimeout.value);
+        loadTimeout.value = null;
+      }
+    };
+    el.addEventListener('playing', videoPlayingHandler.value);
+    el.addEventListener('canplay', videoPlayingHandler.value);
+  }
+  if (!videoWaitingHandler.value) {
+    videoWaitingHandler.value = () => {
+      if (!errorMessage.value) {
+        isLoading.value = true;
+      }
+    };
+    el.addEventListener('waiting', videoWaitingHandler.value);
+    el.addEventListener('stalled', videoWaitingHandler.value);
+  }
+  if (!loadTimeout.value) {
+    loadTimeout.value = setTimeout(() => {
+      if (!errorMessage.value && isLoading.value) {
+        errorMessage.value = 'No data received from the stream.';
+        isLoading.value = false;
+      }
+    }, 12000);
   }
   const type = detectStreamType(url, videoStore.streamType);
   isLoading.value = true;
@@ -222,17 +308,32 @@ async function initPlayer() {
       hls.loadSource(url);
       hls.attachMedia(el);
       hls.on(Hls.Events.MANIFEST_PARSED, async () => {
-        try {
-          await el.play();
-        } catch (error) {
+        const started = await safePlay(el);
+        if (!started) {
           errorMessage.value = 'Playback blocked by browser. Press play to start.';
         }
-        isLoading.value = false;
+        isLoading.value = !started;
         snapToAspectRatio();
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          errorMessage.value = 'Stream error. Please try again.';
+        console.warn('[FloatingPlayer] HLS error', data);
+        const status = data?.response?.code;
+        const details = data?.details;
+        if (status === 401 || status === 403) {
+          errorMessage.value = 'Stream rejected (unauthorized).';
+        } else if (status === 404) {
+          errorMessage.value = 'Stream not found.';
+        } else if (details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
+          errorMessage.value = 'Stream manifest failed to load.';
+        } else if (details === Hls.ErrorDetails.LEVEL_LOAD_ERROR) {
+          errorMessage.value = 'Stream level failed to load.';
+        } else if (details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
+          errorMessage.value = 'Stream data failed to load.';
+        } else if (data?.fatal) {
+          errorMessage.value = 'Unable to load stream. Please try again.';
+        }
+        if (data?.fatal || details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
+          isLoading.value = false;
         }
       });
       return;
@@ -248,14 +349,19 @@ async function initPlayer() {
       mpegtsInstances.add(player);
       player.attachMediaElement(el);
       player.load();
-      player.play();
+      await safePlay(el);
       isLoading.value = false;
       snapToAspectRatio();
+      player.on?.(mpegts.Events.ERROR, (err) => {
+        console.warn('[FloatingPlayer] MPEGTS error', err);
+        errorMessage.value = 'Unable to load stream. Please try again.';
+        isLoading.value = false;
+      });
       return;
     }
 
     el.src = url;
-    await el.play();
+    await safePlay(el);
     isLoading.value = false;
     snapToAspectRatio();
   } catch (error) {
