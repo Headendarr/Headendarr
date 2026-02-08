@@ -1,4 +1,4 @@
-"""add dvr tables
+"""add dvr tables and user agent fields
 
 Revision ID: 3a1f6d2a6a1f
 Revises: 9a2a9b7c7d3e
@@ -17,6 +17,9 @@ depends_on = None
 
 
 def upgrade():
+    op.add_column('playlists', sa.Column('user_agent', sa.String(length=255), nullable=True))
+    op.add_column('epgs', sa.Column('user_agent', sa.String(length=255), nullable=True))
+
     op.create_table(
         'recording_rules',
         sa.Column('id', sa.Integer(), primary_key=True),
@@ -56,6 +59,9 @@ def upgrade():
 
 
 def downgrade():
+    op.drop_column('epgs', 'user_agent')
+    op.drop_column('playlists', 'user_agent')
+
     op.drop_index('ix_recordings_tvh_uuid', table_name='recordings')
     op.drop_index('ix_recordings_sync_status', table_name='recordings')
     op.drop_index('ix_recordings_status', table_name='recordings')
