@@ -170,6 +170,10 @@ class Config:
                                             "-probesize 10M -analyzeduration 0 -fpsprobesize 0 "
                                             "-i [URL] -c copy -metadata service_name=[SERVICE_NAME] "
                                             "-f mpegts pipe:1",
+                "dvr":                      {
+                    "pre_padding_mins":  2,
+                    "post_padding_mins": 5,
+                },
                 "epgs":                     {
                     "enable_tmdb_metadata":                False,
                     "tmdb_api_key":                        "",

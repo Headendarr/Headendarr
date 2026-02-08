@@ -630,11 +630,13 @@ class Tvheadend:
                 node['uuid'] = profile['key']
                 await self.idnode_save(node)
 
-    async def configure_default_recorder_profile(self):
+    async def configure_default_recorder_profile(self, pre_padding_mins=2, post_padding_mins=5):
         response = await self.idnode_load({'enum': 1, 'class': 'dvrconfig'})
         for profile in response.get('entries', []):
             if profile['val'] == "(Default profile)":
                 node = default_recorder_profile_template.copy()
+                node["pre-extra-time"] = int(pre_padding_mins or 0)
+                node["post-extra-time"] = int(post_padding_mins or 0)
                 node['uuid'] = profile['key']
                 await self.idnode_save(node)
 
@@ -846,7 +848,10 @@ async def configure_tvh(config):
         # Configure the htsp stream profile
         await tvh.configure_htsp_stream_profile()
         # Configure the default recorder profile
-        await tvh.configure_default_recorder_profile()
+        dvr_settings = settings.get('settings', {}).get('dvr', {})
+        pre_padding_mins = dvr_settings.get('pre_padding_mins', 2)
+        post_padding_mins = dvr_settings.get('post_padding_mins', 5)
+        await tvh.configure_default_recorder_profile(pre_padding_mins, post_padding_mins)
         # Configure the timeshift settings
         await tvh.configure_timeshift()
 

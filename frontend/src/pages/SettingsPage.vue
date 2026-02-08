@@ -82,6 +82,27 @@
                 </template>
               </q-table>
 
+              <q-separator class="q-my-lg" />
+
+              <h5 class="text-primary q-mb-none">DVR Settings</h5>
+
+              <div class="q-gutter-sm">
+                <q-input
+                  v-model.number="dvr.pre_padding_mins"
+                  type="number"
+                  min="0"
+                  label="Pre-recording padding (minutes)"
+                  hint="Minutes to record before the scheduled start time."
+                />
+                <q-input
+                  v-model.number="dvr.post_padding_mins"
+                  type="number"
+                  min="0"
+                  label="Post-recording padding (minutes)"
+                  hint="Minutes to record after the scheduled end time."
+                />
+              </div>
+
               <div>
                 <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
               </div>
@@ -96,29 +117,36 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
-                      This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                      When disabled, clients stream directly via TIC.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      3. Add User Agents for provider compatibility. You can select these per source or EPG.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
+                        This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
+                        When disabled, clients stream directly via TIC.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        3. Add User Agents for provider compatibility. You can select these per source or EPG.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        4. Set DVR padding to record extra minutes before and after each scheduled recording.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -126,22 +154,29 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
-                      other devices can reach.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
-                      clients; choose a compatible agent if downloads fail.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
+                        other devices can reach.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
+                        clients; choose a compatible agent if downloads fail.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        DVR padding is applied when syncing recording defaults to TVHeadend.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -178,6 +213,10 @@ export default defineComponent({
       appUrl: ref(null),
       routePlaylistsThroughTvh: ref(false),
       userAgents: ref([]),
+      dvr: ref({
+        pre_padding_mins: 2,
+        post_padding_mins: 5,
+      }),
 
       // Defaults
       defSet: ref({
@@ -185,9 +224,16 @@ export default defineComponent({
         routePlaylistsThroughTvh: false,
         userAgents: [
           {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
-          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+          {
+            name: 'Chrome',
+            value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+          },
           {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
         ],
+        dvr: {
+          pre_padding_mins: 2,
+          post_padding_mins: 5,
+        },
       }),
       userAgentColumns: [
         {name: 'name', label: 'Name', field: 'name', align: 'left'},
@@ -234,6 +280,10 @@ export default defineComponent({
           }
         });
         this.userAgents = this.normalizeUserAgents(appSettings.user_agents ?? this.defSet.userAgents);
+        this.dvr = {
+          pre_padding_mins: Number(appSettings.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
+          post_padding_mins: Number(appSettings.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
+        };
         // Fill in any missing values from defaults
         Object.keys(this.defSet).forEach((key) => {
           if (this[key] === undefined || this[key] === null) {
@@ -242,6 +292,9 @@ export default defineComponent({
         });
         if (!this.userAgents.length) {
           this.userAgents = this.normalizeUserAgents(this.defSet.userAgents);
+        }
+        if (!this.dvr) {
+          this.dvr = {...this.defSet.dvr};
         }
       }).catch(() => {
         this.$q.notify({
@@ -269,6 +322,10 @@ export default defineComponent({
         name: agent.name,
         value: agent.value,
       }));
+      postData.settings.dvr = {
+        pre_padding_mins: Number(this.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
+        post_padding_mins: Number(this.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
+      };
       this.$q.loading.show();
       axios({
         method: 'POST',

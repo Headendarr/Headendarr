@@ -362,7 +362,14 @@ async def api_save_config():
     config.save_settings()
 
     # Store settings for TVH service (async via task queue)
-    if json_data.get('settings', {}).get('tvheadend'):
+    tvh_update_requested = any(
+        key in (json_data.get('settings') or {})
+        for key in ('tvheadend', 'dvr', 'route_playlists_through_tvh')
+    )
+    tvh_cfg = config.read_settings().get('settings', {}).get('tvheadend', {})
+    tvh_is_configured = bool(tvh_cfg.get('host')) or bool(tvh_cfg.get('port')) or bool(tvh_cfg.get('path'))
+    tvh_is_local = await is_tvh_process_running_locally()
+    if tvh_update_requested and (tvh_is_configured or tvh_is_local):
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task({
             'name':     'Configure TVH settings',
