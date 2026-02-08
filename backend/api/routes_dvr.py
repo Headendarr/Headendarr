@@ -17,6 +17,7 @@ from backend.dvr import (
     delete_recording,
     create_rule,
     delete_rule,
+    update_rule,
 )
 from backend.tvheadend.tvh_requests import ensure_tvh_sync_user
 
@@ -369,4 +370,35 @@ async def api_delete_recording_rule(rule_id):
     ok = await delete_rule(rule_id)
     if not ok:
         return jsonify({"success": False, "message": "Rule not found"}), 404
+    return jsonify({"success": True})
+
+
+@blueprint.route('/tic-api/recording-rules/<int:rule_id>', methods=['PUT'])
+@streamer_or_admin_required
+async def api_update_recording_rule(rule_id):
+    payload = await request.get_json()
+    channel_id = payload.get("channel_id")
+    title_match = payload.get("title_match")
+    lookahead_days = payload.get("lookahead_days")
+    enabled = payload.get("enabled")
+    ok = await update_rule(
+        rule_id,
+        channel_id=channel_id,
+        title_match=title_match,
+        lookahead_days=lookahead_days,
+        enabled=enabled,
+    )
+    if not ok:
+        return jsonify({"success": False, "message": "Rule not found"}), 404
+    task_broker = await TaskQueueBroker.get_instance()
+    await task_broker.add_task({
+        'name': f'Applying DVR recording rules',
+        'function': apply_dvr_rules,
+        'args': [current_app],
+    }, priority=19)
+    await task_broker.add_task({
+        'name': f'Reconcile DVR recordings',
+        'function': reconcile_dvr_recordings,
+        'args': [current_app],
+    }, priority=20)
     return jsonify({"success": True})

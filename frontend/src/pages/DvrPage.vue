@@ -17,13 +17,13 @@
           <q-separator />
 
           <q-tab-panels v-model="tab" animated>
-        <q-tab-panel name="recordings">
-          <q-btn
-            color="primary"
-            label="Schedule Recording"
-            class="q-mb-md"
-            @click="showScheduleDialog = true"
-          />
+            <q-tab-panel name="recordings">
+              <q-btn
+                color="primary"
+                label="Schedule Recording"
+                class="q-mb-md"
+                @click="showScheduleDialog = true"
+              />
               <q-table
                 :rows="recordings"
                 :columns="recordingColumns"
@@ -31,42 +31,48 @@
                 flat
                 dense
               >
-            <template v-slot:body-cell-actions="props">
-              <q-td :props="props">
-                <q-btn
-                  v-if="isRecordingPlayable(props.row)"
-                  dense
-                  flat
-                  icon="play_arrow"
-                  color="primary"
-                  @click="playRecording(props.row)"
-                />
-                <q-btn
-                  v-if="canCancelRecording(props.row)"
-                  dense
-                  flat
-                  icon="cancel"
-                  color="negative"
-                  @click="cancelRecording(props.row.id)"
-                />
-                <q-btn
-                  dense
-                  flat
-                  icon="delete"
-                  color="negative"
-                  @click="confirmDeleteRecording(props.row)"
-                />
-              </q-td>
-            </template>
-          </q-table>
-        </q-tab-panel>
+                <template v-slot:body-cell-actions="props">
+                  <q-td :props="props">
+                    <q-btn
+                      v-if="isRecordingPlayable(props.row)"
+                      dense
+                      flat
+                      icon="play_arrow"
+                      color="primary"
+                      @click="playRecording(props.row)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Play recording</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      v-if="canCancelRecording(props.row)"
+                      dense
+                      flat
+                      icon="cancel"
+                      color="negative"
+                      @click="cancelRecording(props.row.id)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Cancel recording</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      dense
+                      flat
+                      icon="delete"
+                      color="negative"
+                      @click="confirmDeleteRecording(props.row)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Delete recording</q-tooltip>
+                    </q-btn>
+                  </q-td>
+                </template>
+              </q-table>
+            </q-tab-panel>
 
             <q-tab-panel name="rules">
               <q-btn
                 color="primary"
                 label="Add Rule"
                 class="q-mb-md"
-                @click="showRuleDialog = true"
+                @click="openRuleDialog()"
               />
               <q-table
                 :rows="rules"
@@ -77,13 +83,24 @@
               >
                 <template v-slot:body-cell-actions="props">
                   <q-td :props="props">
-                <q-btn
-                  dense
-                  flat
-                  icon="delete"
-                  color="negative"
-                  @click="confirmDeleteRule(props.row)"
-                />
+                    <q-btn
+                      dense
+                      flat
+                      icon="edit"
+                      color="primary"
+                      @click="openRuleDialog(props.row)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Edit rule</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      dense
+                      flat
+                      icon="delete"
+                      color="negative"
+                      @click="confirmDeleteRule(props.row)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Delete rule</q-tooltip>
+                    </q-btn>
                   </q-td>
                 </template>
               </q-table>
@@ -193,7 +210,7 @@
     <q-dialog v-model="showRuleDialog">
       <q-card style="width: 520px; max-width: 95vw;">
         <q-card-section class="bg-primary text-white">
-          <div class="text-h6">Create Recording Rule</div>
+          <div class="text-h6">{{ isEditingRule ? 'Edit Recording Rule' : 'Create Recording Rule' }}</div>
         </q-card-section>
         <q-card-section>
           <q-select
@@ -245,6 +262,8 @@ export default defineComponent({
     const channels = ref([]);
     const showScheduleDialog = ref(false);
     const showRuleDialog = ref(false);
+    const isEditingRule = ref(false);
+    const activeRuleId = ref(null);
     const scheduleForm = ref({
       channel_id: null,
       title: '',
@@ -329,12 +348,22 @@ export default defineComponent({
     };
 
     const submitRule = async () => {
-      await axios.post('/tic-api/recording-rules', {
-        channel_id: ruleForm.value.channel_id,
-        title_match: ruleForm.value.title_match,
-        lookahead_days: ruleForm.value.lookahead_days,
-      });
+      if (isEditingRule.value && activeRuleId.value) {
+        await axios.put(`/tic-api/recording-rules/${activeRuleId.value}`, {
+          channel_id: ruleForm.value.channel_id,
+          title_match: ruleForm.value.title_match,
+          lookahead_days: ruleForm.value.lookahead_days,
+        });
+      } else {
+        await axios.post('/tic-api/recording-rules', {
+          channel_id: ruleForm.value.channel_id,
+          title_match: ruleForm.value.title_match,
+          lookahead_days: ruleForm.value.lookahead_days,
+        });
+      }
       showRuleDialog.value = false;
+      isEditingRule.value = false;
+      activeRuleId.value = null;
       await loadRules();
     };
 
@@ -389,6 +418,27 @@ export default defineComponent({
       });
     };
 
+    const openRuleDialog = (rule = null) => {
+      if (rule) {
+        isEditingRule.value = true;
+        activeRuleId.value = rule.id;
+        ruleForm.value = {
+          channel_id: rule.channel_id ?? null,
+          title_match: rule.title_match ?? '',
+          lookahead_days: rule.lookahead_days ?? 7,
+        };
+      } else {
+        isEditingRule.value = false;
+        activeRuleId.value = null;
+        ruleForm.value = {
+          channel_id: null,
+          title_match: '',
+          lookahead_days: 7,
+        };
+      }
+      showRuleDialog.value = true;
+    };
+
     let pollingActive = true;
 
     const pollRecordings = async () => {
@@ -425,6 +475,8 @@ export default defineComponent({
       ruleColumns,
       showScheduleDialog,
       showRuleDialog,
+      isEditingRule,
+      openRuleDialog,
       scheduleForm,
       ruleForm,
       channelOptions,

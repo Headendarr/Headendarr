@@ -144,6 +144,25 @@ async def delete_rule(rule_id):
         return True
 
 
+async def update_rule(rule_id, channel_id=None, title_match=None, lookahead_days=None, enabled=None):
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(RecordingRule).where(RecordingRule.id == rule_id))
+            rule = result.scalar_one_or_none()
+            if not rule:
+                return False
+            if channel_id is not None:
+                rule.channel_id = channel_id
+            if title_match is not None:
+                rule.title_match = title_match
+            if lookahead_days is not None:
+                rule.lookahead_days = int(lookahead_days)
+            if enabled is not None:
+                rule.enabled = bool(enabled)
+        await session.commit()
+        return True
+
+
 async def apply_recurring_rules(config):
     async with Session() as session:
         result = await session.execute(
