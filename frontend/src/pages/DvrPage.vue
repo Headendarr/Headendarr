@@ -18,18 +18,41 @@
 
           <q-tab-panels v-model="tab" animated>
             <q-tab-panel name="recordings">
-              <q-btn
-                color="primary"
-                label="Schedule Recording"
-                class="q-mb-md"
-                @click="showScheduleDialog = true"
-              />
+              <div class="row items-center q-gutter-md q-mb-md">
+                <q-btn
+                  color="primary"
+                  label="Schedule Recording"
+                  @click="showScheduleDialog = true"
+                />
+                <q-select
+                  v-model="statusFilter"
+                  :options="statusOptions"
+                  label="Status Filter"
+                  dense
+                  outlined
+                  clearable
+                  emit-value
+                  map-options
+                  style="min-width: 220px;"
+                />
+                <q-input
+                  v-model="recordingsSearch"
+                  dense
+                  outlined
+                  clearable
+                  debounce="200"
+                  placeholder="Search recordings"
+                  style="min-width: 240px;"
+                />
+              </div>
               <q-table
-                :rows="recordings"
+                :rows="filteredRecordings"
                 :columns="recordingColumns"
                 row-key="id"
                 flat
                 dense
+                :pagination="recordingsPagination"
+                @update:pagination="onRecordingsPagination"
               >
                 <template v-slot:body-cell-actions="props">
                   <q-td :props="props">
@@ -68,18 +91,30 @@
             </q-tab-panel>
 
             <q-tab-panel name="rules">
-              <q-btn
-                color="primary"
-                label="Add Rule"
-                class="q-mb-md"
-                @click="openRuleDialog()"
-              />
+              <div class="row items-center q-gutter-md q-mb-md">
+                <q-btn
+                  color="primary"
+                  label="Add Rule"
+                  @click="openRuleDialog()"
+                />
+                <q-input
+                  v-model="rulesSearch"
+                  dense
+                  outlined
+                  clearable
+                  debounce="200"
+                  placeholder="Search rules"
+                  style="min-width: 240px;"
+                />
+              </div>
               <q-table
-                :rows="rules"
+                :rows="filteredRules"
                 :columns="ruleColumns"
                 row-key="id"
                 flat
                 dense
+                :pagination="rulesPagination"
+                @update:pagination="onRulesPagination"
               >
                 <template v-slot:body-cell-actions="props">
                   <q-td :props="props">
@@ -264,6 +299,11 @@ export default defineComponent({
     const showRuleDialog = ref(false);
     const isEditingRule = ref(false);
     const activeRuleId = ref(null);
+    const recordingsPagination = ref({rowsPerPage: 25});
+    const rulesPagination = ref({rowsPerPage: 25});
+    const statusFilter = ref(null);
+    const recordingsSearch = ref('');
+    const rulesSearch = ref('');
     const scheduleForm = ref({
       channel_id: null,
       title: '',
@@ -325,55 +365,128 @@ export default defineComponent({
     };
 
     const cancelRecording = async (id) => {
-      await axios.post(`/tic-api/recordings/${id}/cancel`);
-      await loadRecordings();
+      try {
+        await axios.post(`/tic-api/recordings/${id}/cancel`);
+        $q.notify({color: 'positive', message: 'Recording canceled'});
+        await loadRecordings();
+      } catch (error) {
+        $q.notify({color: 'negative', message: 'Failed to cancel recording'});
+      }
     };
 
     const deleteRecording = async (id) => {
-      await axios.delete(`/tic-api/recordings/${id}`);
-      await loadRecordings();
+      try {
+        await axios.delete(`/tic-api/recordings/${id}`);
+        $q.notify({color: 'positive', message: 'Recording deleted'});
+        await loadRecordings();
+      } catch (error) {
+        $q.notify({color: 'negative', message: 'Failed to delete recording'});
+      }
     };
 
     const submitSchedule = async () => {
       const startTs = Math.floor(new Date(scheduleForm.value.start).getTime() / 1000);
       const stopTs = Math.floor(new Date(scheduleForm.value.stop).getTime() / 1000);
-      await axios.post('/tic-api/recordings', {
-        channel_id: scheduleForm.value.channel_id,
-        title: scheduleForm.value.title,
-        start_ts: startTs,
-        stop_ts: stopTs,
-      });
-      showScheduleDialog.value = false;
-      await loadRecordings();
+      try {
+        await axios.post('/tic-api/recordings', {
+          channel_id: scheduleForm.value.channel_id,
+          title: scheduleForm.value.title,
+          start_ts: startTs,
+          stop_ts: stopTs,
+        });
+        $q.notify({color: 'positive', message: 'Recording scheduled'});
+        showScheduleDialog.value = false;
+        await loadRecordings();
+      } catch (error) {
+        $q.notify({color: 'negative', message: 'Failed to schedule recording'});
+      }
     };
 
     const submitRule = async () => {
-      if (isEditingRule.value && activeRuleId.value) {
-        await axios.put(`/tic-api/recording-rules/${activeRuleId.value}`, {
-          channel_id: ruleForm.value.channel_id,
-          title_match: ruleForm.value.title_match,
-          lookahead_days: ruleForm.value.lookahead_days,
-        });
-      } else {
-        await axios.post('/tic-api/recording-rules', {
-          channel_id: ruleForm.value.channel_id,
-          title_match: ruleForm.value.title_match,
-          lookahead_days: ruleForm.value.lookahead_days,
-        });
+      try {
+        if (isEditingRule.value && activeRuleId.value) {
+          await axios.put(`/tic-api/recording-rules/${activeRuleId.value}`, {
+            channel_id: ruleForm.value.channel_id,
+            title_match: ruleForm.value.title_match,
+            lookahead_days: ruleForm.value.lookahead_days,
+          });
+          $q.notify({color: 'positive', message: 'Recording rule updated'});
+        } else {
+          await axios.post('/tic-api/recording-rules', {
+            channel_id: ruleForm.value.channel_id,
+            title_match: ruleForm.value.title_match,
+            lookahead_days: ruleForm.value.lookahead_days,
+          });
+          $q.notify({color: 'positive', message: 'Recording rule created'});
+        }
+        showRuleDialog.value = false;
+        isEditingRule.value = false;
+        activeRuleId.value = null;
+        await loadRules();
+      } catch (error) {
+        $q.notify({color: 'negative', message: 'Failed to save recording rule'});
       }
-      showRuleDialog.value = false;
-      isEditingRule.value = false;
-      activeRuleId.value = null;
-      await loadRules();
     };
 
     const deleteRule = async (id) => {
-      await axios.delete(`/tic-api/recording-rules/${id}`);
-      await loadRules();
+      try {
+        await axios.delete(`/tic-api/recording-rules/${id}`);
+        $q.notify({color: 'positive', message: 'Recording rule deleted'});
+        await loadRules();
+      } catch (error) {
+        $q.notify({color: 'negative', message: 'Failed to delete recording rule'});
+      }
     };
 
     const completedStates = new Set(['completed', 'finished', 'done', 'success', 'recorded']);
     const activeStates = new Set(['scheduled', 'recording', 'running', 'in_progress']);
+    const statusOptions = [
+      {label: 'All', value: null},
+      {label: 'Scheduled', value: 'scheduled'},
+      {label: 'Recording', value: 'recording'},
+      {label: 'Completed', value: 'completed'},
+      {label: 'Canceled', value: 'canceled'},
+      {label: 'Deleted', value: 'deleted'},
+      {label: 'Failed', value: 'failed'},
+    ];
+
+    const filteredRecordings = computed(() => {
+      const filter = statusFilter.value;
+      const normalized = filter ? String(filter).toLowerCase() : null;
+      const search = recordingsSearch.value.trim().toLowerCase();
+      return (recordings.value || []).filter((rec) => {
+        const status = String(rec.status || '').toLowerCase();
+        const channelName = String(rec.channel_name || '').toLowerCase();
+        const title = String(rec.title || '').toLowerCase();
+        const matchesSearch = !search || channelName.includes(search) || title.includes(search);
+        if (!matchesSearch) return false;
+        if (!normalized) return true;
+        if (normalized === 'recording') {
+          return status === 'recording' || status.includes('running') || status.includes('in_progress');
+        }
+        if (normalized === 'completed') {
+          return (
+            status.includes('completed') ||
+            status.includes('finished') ||
+            status.includes('done') ||
+            status.includes('success') ||
+            status.includes('recorded') ||
+            status.includes('ok')
+          );
+        }
+        return status.includes(normalized);
+      });
+    });
+
+    const filteredRules = computed(() => {
+      const search = rulesSearch.value.trim().toLowerCase();
+      if (!search) return rules.value;
+      return (rules.value || []).filter((rule) => {
+        const channelName = String(rule.channel_name || '').toLowerCase();
+        const titleMatch = String(rule.title_match || '').toLowerCase();
+        return channelName.includes(search) || titleMatch.includes(search);
+      });
+    });
 
     const isRecordingPlayable = (rec) => {
       if (!rec || !rec.status) return false;
@@ -458,6 +571,14 @@ export default defineComponent({
     };
 
     onMounted(async () => {
+      const storedRecordings = localStorage.getItem('tic_dvr_recordings_rows');
+      const storedRules = localStorage.getItem('tic_dvr_rules_rows');
+      if (storedRecordings) {
+        recordingsPagination.value = {rowsPerPage: Number(storedRecordings) || 25};
+      }
+      if (storedRules) {
+        rulesPagination.value = {rowsPerPage: Number(storedRules) || 25};
+      }
       await refreshAll();
       pollRecordings();
     });
@@ -480,6 +601,14 @@ export default defineComponent({
       scheduleForm,
       ruleForm,
       channelOptions,
+      recordingsPagination,
+      rulesPagination,
+      statusFilter,
+      statusOptions,
+      recordingsSearch,
+      rulesSearch,
+      filteredRecordings,
+      filteredRules,
       refreshAll,
       cancelRecording,
       deleteRecording,
@@ -491,6 +620,18 @@ export default defineComponent({
       playRecording,
       confirmDeleteRecording,
       confirmDeleteRule,
+      onRecordingsPagination: (p) => {
+        recordingsPagination.value = p;
+        if (p?.rowsPerPage) {
+          localStorage.setItem('tic_dvr_recordings_rows', String(p.rowsPerPage));
+        }
+      },
+      onRulesPagination: (p) => {
+        rulesPagination.value = p;
+        if (p?.rowsPerPage) {
+          localStorage.setItem('tic_dvr_rules_rows', String(p.rowsPerPage));
+        }
+      },
     };
   },
 });
