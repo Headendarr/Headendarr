@@ -4,6 +4,7 @@ import logging
 import os
 
 import aiofiles
+import asyncio
 import aiohttp
 import time
 from operator import attrgetter
@@ -146,14 +147,72 @@ async def download_playlist_file(settings, url, output, user_agent=None):
         os.makedirs(os.path.dirname(output))
     headers = {
         'User-Agent': _resolve_user_agent(settings, user_agent),
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity',
+        'Connection': 'keep-alive',
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            response.raise_for_status()
-            async with aiofiles.open(output, 'wb') as f:
-                async for chunk in response.content.iter_chunked(8192):
-                    await f.write(chunk)
-    return output
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers, allow_redirects=True) as response:
+                    if response.status < 200 or response.status >= 400:
+                        # Some providers return non-standard status codes but still send a valid M3U.
+                        peek = b''
+                        try:
+                            peek = await response.content.read(2048)
+                        except Exception:
+                            peek = b''
+                        signature = peek.lstrip()[:7].upper()
+                        if signature.startswith(b'#EXTM3U'):
+                            logger.warning(
+                                "Non-2xx status '%s' but playlist signature detected. Continuing download for url '%s'.",
+                                response.status,
+                                url,
+                            )
+                            async with aiofiles.open(output, 'wb') as f:
+                                if peek:
+                                    await f.write(peek)
+                                async for chunk in response.content.iter_chunked(8192):
+                                    await f.write(chunk)
+                            return output
+
+                        body_preview = ''
+                        try:
+                            body_preview = (peek.decode(errors='ignore'))[:500]
+                        except Exception:
+                            body_preview = ''
+                        logger.error(
+                            "Failed to download playlist. status=%s reason='%s' url='%s' body_preview='%s'",
+                            response.status,
+                            response.reason,
+                            url,
+                            body_preview,
+                        )
+                        raise aiohttp.ClientResponseError(
+                            response.request_info,
+                            response.history,
+                            status=response.status,
+                            message=response.reason or '',
+                            headers=response.headers,
+                        )
+
+                    async with aiofiles.open(output, 'wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            await f.write(chunk)
+            return output
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            last_error = exc
+            logger.warning(
+                "Playlist download attempt %s/3 failed for url '%s': %s",
+                attempt,
+                url,
+                exc,
+            )
+            if attempt < 3:
+                await asyncio.sleep(attempt)
+    raise last_error
 
 
 async def store_playlist_streams(config, playlist_id):
