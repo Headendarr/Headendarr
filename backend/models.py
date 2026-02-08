@@ -111,6 +111,9 @@ class Playlist(Base):
     name = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(64), index=True, unique=True)
     url = Column(String(500), index=True, unique=False)
+    account_type = Column(String(16), nullable=False, unique=False, default="M3U")
+    xc_username = Column(String(255), nullable=True, unique=False)
+    xc_password = Column(String(255), nullable=True, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False)
     use_custom_hls_proxy = Column(Boolean, nullable=False, unique=False)
     hls_proxy_path = Column(String(256), unique=False)
@@ -135,6 +138,9 @@ class PlaylistStreams(Base):
     tvg_chno = Column(Integer, index=False, unique=False)
     tvg_id = Column(String(500), index=True, unique=False)
     tvg_logo = Column(String(500), index=False, unique=False)
+    source_type = Column(String(16), index=True, unique=False, default="M3U")
+    xc_stream_id = Column(Integer, index=True, unique=False)
+    xc_category_id = Column(Integer, index=True, unique=False)
 
     # Link with a playlist
     playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)

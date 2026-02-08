@@ -15,7 +15,7 @@
                       @click="openPlaylistSettings(null)"
                       color="primary"
                       icon-right="add"
-                      label="Add Playlist" />
+                      label="Add Source" />
                   </q-btn-group>
                 </div>
               </div>
@@ -67,7 +67,7 @@
                                 <q-icon color="grey-8" name="tune" />
                               </q-item-section>
                               <q-item-section>
-                                <q-item-label>Configure</q-item-label>
+                                <q-item-label>Configure Source</q-item-label>
                               </q-item-section>
                             </q-item>
 
@@ -100,23 +100,41 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Add one or more playlists. Configure these playlists with a name, URL and connection limit.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      2. Click on the kebab menu for each added playlist and click on the <b>Update</b> button to fetch
-                      the playlist and import it into TIC's database.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        1. Add one or more stream sources. Configure these sources with a name, URL and connection
+                        limit. The connection limit is used to pick a fallback source if a provider has reached its
+                        allowed concurrent connections.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        2. Choose a <b>Source Type</b>. M3U sources use a direct URL, while Xtream Codes sources use a
+                        host, username and password to pull data via the XC API.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        3. Optionally select a User Agent. This is used when TIC fetches M3U or XC data to avoid
+                        provider blocks and improve compatibility.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        4. Click on the kebab menu for each added source and click on the <b>Update</b> button to fetch
+                        the stream list and import it into TIC's database.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -124,34 +142,49 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item-label class="text-primary">
-                  Use HLS proxy:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      Configuring a HLS proxy for your playlist will proxy any requests through that proxy server.
-                      <br>
-                      This has the benefit of:
-                      <ul>
-                        <li>
-                          Inject custom HTTP headers in all outbound proxied requests.
-                        </li>
-                        <li>
-                          Prefetch and caching video segments (.ts files) so multiple clients only download from one common source.
-                        </li>
-                        <li>
-                          Bypass CORS restrictions.
-                        </li>
-                      </ul>
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item-label class="text-primary">
+                    Use HLS proxy:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Configuring a HLS proxy for your source will proxy any requests through that proxy server.
+                        <br>
+                        This has the benefit of:
+                        <ul>
+                          <li>
+                            Inject custom HTTP headers in all outbound proxied requests.
+                          </li>
+                          <li>
+                            Prefetch and caching video segments (.ts files) so multiple clients only download from one
+                            common source.
+                          </li>
+                          <li>
+                        Bypass CORS restrictions.
+                      </li>
+                    </ul>
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
 
-                </q-list>
-              </q-card-section>
+              <q-separator inset spaced />
+
+              <q-item-label class="text-primary">
+                Initial update is manual:
+              </q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    Adding a source does not download it immediately. Use the kebab menu and click <b>Update</b>
+                    to fetch the stream list.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+
+            </q-list>
+          </q-card-section>
             </q-card>
           </q-slide-transition>
         </div>

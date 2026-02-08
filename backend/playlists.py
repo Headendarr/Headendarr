@@ -17,6 +17,117 @@ from backend.tvheadend.tvh_requests import get_tvh, network_template
 
 logger = logging.getLogger('tic.playlists')
 
+XC_ACCOUNT_TYPE = "XC"
+M3U_ACCOUNT_TYPE = "M3U"
+
+
+def _normalize_xc_host(host_url):
+    if not host_url:
+        return host_url
+    host_url = host_url.rstrip('/')
+    if '://' in host_url:
+        proto, rest = host_url.split('://', 1)
+        host = rest.split('/', 1)[0]
+        return f"{proto}://{host}"
+    return host_url
+
+
+async def _xc_request(session, host_url, params, retries=3):
+    url = f"{host_url}/player_api.php"
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            async with session.get(url, params=params, timeout=30) as response:
+                response.raise_for_status()
+                return await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            last_error = exc
+            if attempt < retries:
+                await asyncio.sleep(attempt)
+                continue
+            raise
+    if last_error:
+        raise last_error
+
+
+async def _import_xc_playlist_streams(settings, playlist):
+    host_url = _normalize_xc_host(playlist.url)
+    if not host_url or not playlist.xc_username or not playlist.xc_password:
+        logger.error("XC playlist %s missing host/credentials", playlist.id)
+        return False
+
+    user_agent = _resolve_user_agent(settings, playlist.user_agent)
+    headers = {}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        auth_info = await _xc_request(session, host_url, {
+            "username": playlist.xc_username,
+            "password": playlist.xc_password,
+        })
+        if not isinstance(auth_info, dict) or not auth_info.get("user_info"):
+            logger.error("XC auth failed for playlist %s", playlist.id)
+            return False
+
+        categories = await _xc_request(session, host_url, {
+            "username": playlist.xc_username,
+            "password": playlist.xc_password,
+            "action": "get_live_categories",
+        })
+        if not isinstance(categories, list):
+            logger.error("XC categories response invalid for playlist %s", playlist.id)
+            return False
+        category_map = {str(c.get("category_id")): c.get("category_name") for c in categories}
+
+        streams = await _xc_request(session, host_url, {
+            "username": playlist.xc_username,
+            "password": playlist.xc_password,
+            "action": "get_live_streams",
+        })
+        if not isinstance(streams, list):
+            logger.error("XC streams response invalid for playlist %s", playlist.id)
+            return False
+
+    items = []
+    for stream in streams:
+        stream_id = stream.get("stream_id")
+        if not stream_id:
+            continue
+        category_id = stream.get("category_id")
+        epg_id = (stream.get("epg_channel_id") or "").strip() or stream.get("tvg_id")
+        tvg_logo = stream.get("tvg_logo") or stream.get("stream_icon")
+        tvg_chno = stream.get("tvg_chno")
+        try:
+            tvg_chno = int(tvg_chno) if tvg_chno is not None else None
+        except (TypeError, ValueError):
+            tvg_chno = None
+
+        items.append({
+            "playlist_id": playlist.id,
+            "name": stream.get("name"),
+            "url": f"{host_url}/live/{playlist.xc_username}/{playlist.xc_password}/{stream_id}.ts",
+            "channel_id": stream.get("epg_channel_id") or stream.get("tvg_id"),
+            "group_title": category_map.get(str(category_id)),
+            "tvg_chno": tvg_chno,
+            "tvg_id": epg_id,
+            "tvg_logo": tvg_logo,
+            "source_type": XC_ACCOUNT_TYPE,
+            "xc_stream_id": stream_id,
+            "xc_category_id": int(category_id) if category_id is not None and str(category_id).isdigit() else None,
+        })
+
+    async with Session() as session:
+        async with session.begin():
+            stmt = delete(PlaylistStreams).where(PlaylistStreams.playlist_id == playlist.id)
+            await session.execute(stmt)
+            if items:
+                await session.execute(insert(PlaylistStreams), items)
+            await session.commit()
+
+    logger.info("Imported %s XC streams for playlist #%s", len(items), playlist.id)
+    return True
+
 
 async def read_config_all_playlists(config, output_for_export=False):
     return_list = []
@@ -33,6 +144,8 @@ async def read_config_all_playlists(config, output_for_export=False):
                         'connections':          result.connections,
                         'name':                 result.name,
                         'url':                  result.url,
+                        'account_type':         result.account_type,
+                        'xc_username':          result.xc_username,
                         'user_agent':           result.user_agent,
                         'use_hls_proxy':        result.use_hls_proxy,
                         'use_custom_hls_proxy': result.use_custom_hls_proxy,
@@ -45,6 +158,9 @@ async def read_config_all_playlists(config, output_for_export=False):
                     'connections':          result.connections,
                     'name':                 result.name,
                     'url':                  result.url,
+                    'account_type':         result.account_type,
+                    'xc_username':          result.xc_username,
+                    'xc_password_set':      bool(result.xc_password),
                     'user_agent':           result.user_agent,
                     'use_hls_proxy':        result.use_hls_proxy,
                     'use_custom_hls_proxy': result.use_custom_hls_proxy,
@@ -69,6 +185,9 @@ async def read_config_one_playlist(config, playlist_id):
                     'name':                 result.name,
                     'url':                  result.url,
                     'connections':          result.connections,
+                    'account_type':         result.account_type,
+                    'xc_username':          result.xc_username,
+                    'xc_password_set':      bool(result.xc_password),
                     'user_agent':           result.user_agent,
                     'use_hls_proxy':        result.use_hls_proxy,
                     'use_custom_hls_proxy': result.use_custom_hls_proxy,
@@ -86,6 +205,9 @@ async def add_new_playlist(config, data):
                 enabled=data.get('enabled'),
                 name=data.get('name'),
                 url=data.get('url'),
+                account_type=data.get('account_type', 'M3U'),
+                xc_username=data.get('xc_username'),
+                xc_password=data.get('xc_password'),
                 connections=data.get('connections'),
                 user_agent=data.get('user_agent'),
                 use_hls_proxy=data.get('use_hls_proxy', False),
@@ -105,6 +227,11 @@ async def update_playlist(config, playlist_id, data):
             playlist.enabled = data.get('enabled', playlist.enabled)
             playlist.name = data.get('name', playlist.name)
             playlist.url = data.get('url', playlist.url)
+            playlist.account_type = data.get('account_type', playlist.account_type)
+            if 'xc_username' in data:
+                playlist.xc_username = data.get('xc_username')
+            if data.get('xc_password'):
+                playlist.xc_password = data.get('xc_password')
             playlist.connections = data.get('connections', playlist.connections)
             playlist.user_agent = data.get('user_agent', playlist.user_agent)
             playlist.use_hls_proxy = data.get('use_hls_proxy', playlist.use_hls_proxy)
@@ -245,6 +372,9 @@ async def store_playlist_streams(config, playlist_id):
                     'tvg_chno':    int(tvg_channel_number) if tvg_channel_number is not None else None,
                     'tvg_id':      stream.attributes.get('tvg-id'),
                     'tvg_logo':    stream.attributes.get('tvg-logo'),
+                    'source_type': M3U_ACCOUNT_TYPE,
+                    'xc_stream_id': None,
+                    'xc_category_id': None,
                 })
             # Perform bulk insert
             await session.execute(insert(PlaylistStreams), items)
@@ -269,13 +399,22 @@ def fetch_playlist_streams(playlist_id):
 
 
 async def import_playlist_data(config, playlist_id):
-    playlist = await read_config_one_playlist(config, playlist_id)
     settings = config.read_settings()
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
+            playlist = result.scalar_one()
+
+    if playlist.account_type == XC_ACCOUNT_TYPE:
+        logger.info("Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url)
+        await _import_xc_playlist_streams(settings, playlist)
+        return
+
     # Download playlist data and save to YAML cache file
-    logger.info("Downloading updated M3U file for playlist #%s from url - '%s'", playlist_id, playlist['url'])
+    logger.info("Downloading updated M3U file for playlist #%s from url - '%s'", playlist_id, playlist.url)
     start_time = time.time()
     m3u_file = os.path.join(config.config_path, 'cache', 'playlists', f"{playlist_id}.m3u")
-    await download_playlist_file(settings, playlist['url'], m3u_file, playlist.get('user_agent'))
+    await download_playlist_file(settings, playlist.url, m3u_file, playlist.user_agent)
     execution_time = time.time() - start_time
     logger.info("Updated M3U file for playlist #%s was downloaded in '%s' seconds", playlist_id, int(execution_time))
     # Parse the M3U file and cache the data in a YAML file for faster parsing
@@ -309,6 +448,7 @@ async def read_stream_details_from_all_playlists():
             'tvg_chno':      result.tvg_chno,
             'tvg_id':        result.tvg_id,
             'tvg_logo':      result.tvg_logo,
+            'source_type':   result.source_type,
         })
     return playlist_streams
 
@@ -322,6 +462,13 @@ def read_filtered_stream_details_from_all_playlists(request_json):
     query = db.session.query(PlaylistStreams)
     # Get total records count
     results['records_total'] = query.count()
+    # Filter results by playlist/group
+    playlist_id = request_json.get('playlist_id')
+    if playlist_id:
+        query = query.filter(PlaylistStreams.playlist_id == playlist_id)
+    group_title = request_json.get('group_title')
+    if group_title:
+        query = query.filter(PlaylistStreams.group_title == group_title)
     # Filter results by search value
     search_value = request_json.get('search_value')
     if search_value:
@@ -362,6 +509,7 @@ def read_filtered_stream_details_from_all_playlists(request_json):
             'tvg_chno':      result.tvg_chno,
             'tvg_id':        result.tvg_id,
             'tvg_logo':      result.tvg_logo,
+            'source_type':   result.source_type,
         })
     return results
 
@@ -378,6 +526,8 @@ async def publish_playlist_networks(config):
         existing_uuids = []
         net_priority = 0
         for result in db.session.query(Playlist).all():
+            if result.account_type == XC_ACCOUNT_TYPE:
+                continue
             net_priority += 1
             net_uuid = result.tvh_uuid
             playlist_name = result.name

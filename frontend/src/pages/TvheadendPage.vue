@@ -133,19 +133,21 @@
 
                 <q-separator inset spaced />
 
-                <q-item-label class="text-primary">
-                  TVheadend Admin Credentials:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      TIC uses an internal sync account to apply configuration changes in the background.
-                      Only provide admin credentials here for external TVheadend instances that require authentication.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                <template v-if="aioMode === false">
+                  <q-item-label class="text-primary">
+                    TVheadend Admin Credentials:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        TIC uses an internal sync account to apply configuration changes in the background.
+                        Only provide admin credentials here for external TVheadend instances that require authentication.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
+                </template>
 
                 <q-item-label class="text-primary">
                   Stream Config:

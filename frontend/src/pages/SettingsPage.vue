@@ -96,11 +96,26 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-item v-if="aioMode === true">
+                <q-item>
                   <q-item-section>
                     <q-item-label>
-                      1. Configure the connection details that clients should use to connect to TIC.
-                      This will be applied to the playlists and guide data supplied to these clients.
+                      1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
+                      This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
+                      When disabled, clients stream directly via TIC.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      3. Add User Agents for provider compatibility. You can select these per source or EPG.
                     </q-item-label>
                   </q-item-section>
                 </q-item>
@@ -116,6 +131,14 @@
                     <q-item-label>
                       TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
                       other devices can reach.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
+                      clients; choose a compatible agent if downloads fail.
                     </q-item-label>
                   </q-item-section>
                 </q-item>

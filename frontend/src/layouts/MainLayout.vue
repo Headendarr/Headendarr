@@ -496,14 +496,14 @@ const linksList = [
     link: '/tvheadend',
   },
   {
-    title: 'Playlists',
-    caption: 'Configure Playlist Sources',
+    title: 'Sources',
+    caption: 'Configure Stream Sources',
     icon: 'playlist_play',
     link: '/playlists',
   },
   {
     title: 'EPGs',
-    caption: 'Configure a list of EPG sources',
+    caption: 'Configure EPG Sources',
     icon: 'calendar_month',
     link: '/epgs',
   },

@@ -477,7 +477,7 @@ watch(
     if (videoStore.isVisible) {
       initPlayer();
     }
-  }
+  },
 );
 
 watch(
@@ -488,7 +488,7 @@ watch(
       return;
     }
     initPlayer();
-  }
+  },
 );
 
 onBeforeUnmount(() => {
@@ -517,7 +517,7 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   overflow: hidden;
-  z-index: 3000;
+  z-index: 10000;
   display: flex;
   flex-direction: column;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
@@ -560,6 +560,7 @@ onUnmounted(() => {
   display: block;
   background: #000;
 }
+
 .floating-player__video--loading {
   opacity: 0;
   pointer-events: none;

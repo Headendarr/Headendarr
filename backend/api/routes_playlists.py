@@ -107,7 +107,7 @@ async def api_update_playlist(playlist_id):
     config = current_app.config['APP_CONFIG']
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
-        'name':     f'Update playlist - ID: {playlist_id}',
+        'name':     f'Update source - ID: {playlist_id}',
         'function': import_playlist_data,
         'args':     [config, playlist_id],
     }, priority=20)

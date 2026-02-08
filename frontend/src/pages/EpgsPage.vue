@@ -165,24 +165,24 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Add one or more program guides. Configure these EPGs with a name and URL.
-                      URLs can be gzip compressed (.xml.gz) or uncompressed (.xml).
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
-                      the EPG and import it into TIC's database.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        1. Add one or more program guides. Configure EPG sources with a name and URL.
+                        URLs can be gzip compressed (.xml.gz) or uncompressed (.xml).
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
+                        the EPG and import it into TIC's database.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -190,35 +190,49 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item-label class="text-primary">
-                  Fetch missing data from TMDB:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      Configuring the background EPG builder to fetch missing data from TMDB will add significant time
-                      to the process.
-                      Everytime the programme guide is updated, this background EPG builder process will have to
-                      re-fetch any images.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item-label class="text-primary">
+                    Fetch missing data from TMDB:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Configuring the background EPG builder to fetch missing data from TMDB will add significant time
+                        to the process.
+                        Everytime the programme guide is updated, this background EPG builder process will have to
+                        re-fetch any images.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item-label class="text-primary">
-                  Attempt to fetch missing programme images from Google Image Search:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      This will cause a lot of google image searches.
-                      It is highly likely that you will flag your IP as a bot source with google if you enable this.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item-label class="text-primary">
+                    Attempt to fetch missing programme images from Google Image Search:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        This will cause a lot of google image searches.
+                        It is highly likely that you will flag your IP as a bot source with google if you enable this.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+
+                  <q-separator inset spaced />
+
+                  <q-item-label class="text-primary">
+                    Initial update is manual:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Adding an EPG source does not download it immediately. Use the kebab menu and click
+                        <b>Update</b> to fetch and import the guide data.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>

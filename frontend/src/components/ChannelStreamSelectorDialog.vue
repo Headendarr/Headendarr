@@ -138,11 +138,43 @@
                 no-results-label="The filter didn't uncover any results"
               >
                 <template v-slot:top-right>
-                  <q-input borderless dense debounce="300" v-model="filter" placeholder="Search">
-                    <template v-slot:append>
-                      <q-icon name="search" />
-                    </template>
-                  </q-input>
+                  <div class="row items-center q-gutter-sm">
+                    <q-select
+                      dense
+                      outlined
+                      v-model="selectedPlaylistId"
+                      :options="playlistOptions"
+                      option-value="value"
+                      option-label="label"
+                      emit-value
+                      map-options
+                      label="Playlist"
+                      style="min-width: 180px"
+                    />
+                    <div>
+                      <q-select
+                        dense
+                        outlined
+                        v-model="selectedGroup"
+                        :options="groupOptions"
+                        option-value="value"
+                        option-label="label"
+                        emit-value
+                        map-options
+                        label="Group"
+                        style="min-width: 180px"
+                        :disable="!selectedPlaylistId"
+                      />
+                      <q-tooltip v-if="!selectedPlaylistId" class="bg-white text-primary">
+                        Select a playlist first
+                      </q-tooltip>
+                    </div>
+                    <q-input outlined dense debounce="300" v-model="filter" placeholder="Search">
+                      <template v-slot:append>
+                        <q-icon name="search" />
+                      </template>
+                    </q-input>
+                  </div>
                 </template>
 
                 <template v-slot:no-data="{ icon, message, filter }">
@@ -159,9 +191,20 @@
                       <q-checkbox v-model="props.selected" color="primary" />
                     </q-td>
                     <q-td key="name" :props="props" style="max-width: 60px;">
-                      <q-avatar rounded>
-                        <img :src="props.row.tvg_logo" style="height:40px; width:auto; max-width:120px;" />
-                      </q-avatar>
+                      <div class="stream-logo-wrap">
+                        <img
+                          v-if="props.row.tvg_logo"
+                          :src="props.row.tvg_logo"
+                          alt="logo"
+                          class="stream-logo-img"
+                        />
+                        <q-icon
+                          v-else
+                          name="play_arrow"
+                          size="18px"
+                          color="grey-6"
+                        />
+                      </div>
                     </q-td>
                     <q-td key="name" :props="props"
                           style="max-width: 200px; white-space: normal; word-wrap: break-word;">
@@ -242,6 +285,7 @@ export default {
     // (don't change its name --> "show")
     show() {
       this.$refs.channelStreamSelectorDialogRef.show();
+      this.fetchPlaylists();
       this.fetchStreamsList({
         pagination: this.pagination,
         filter: this.filter,
@@ -292,6 +336,8 @@ export default {
         search_value: filter,
         order_by: sortBy,
         order_direction: descending ? 'desc' : 'asc',
+        playlist_id: this.selectedPlaylistId || null,
+        group_title: this.selectedGroup || null,
       };
       // Fetch from server
       this.rows = [];
@@ -315,6 +361,7 @@ export default {
             playlist_id: stream.playlist_id,
             playlist_name: stream.playlist_name,
             tvg_logo: stream.tvg_logo,
+            group_title: stream.group_title,
           };
         }
 
@@ -329,6 +376,51 @@ export default {
 
         // Hide loading animation
         this.loading = false;
+      });
+    },
+    fetchPlaylists() {
+      axios({
+        method: 'GET',
+        url: '/tic-api/playlists/get',
+      }).then((response) => {
+        const options = [{label: 'All', value: null}];
+        for (const playlist of response.data.data || []) {
+          options.push({
+            label: playlist.name,
+            value: playlist.id,
+          });
+        }
+        this.playlistOptions = options;
+      });
+    },
+    fetchGroups(playlistId) {
+      if (!playlistId) {
+        this.groupOptions = [{label: 'All', value: null}];
+        return;
+      }
+      axios({
+        method: 'POST',
+        url: '/tic-api/playlists/groups',
+        data: {
+          playlist_id: playlistId,
+          start: 0,
+          length: 500,
+          search_value: '',
+          order_by: 'name',
+          order_direction: 'asc',
+        },
+      }).then((response) => {
+        const groups = response.data.data?.groups || response.data.data || [];
+        const options = [{label: 'All', value: null}];
+        for (const group of groups) {
+          options.push({
+            label: group.name,
+            value: group.name,
+          });
+        }
+        this.groupOptions = options;
+      }).catch(() => {
+        this.groupOptions = [{label: 'All', value: null}];
       });
     },
     buildPreviewUrl(streamUrl) {
@@ -383,6 +475,22 @@ export default {
       return this.$pinia?.state?.value?.auth?.user || null;
     },
   },
+  watch: {
+    selectedPlaylistId(newValue) {
+      this.selectedGroup = null;
+      this.fetchGroups(newValue);
+      this.fetchStreamsList({
+        pagination: this.pagination,
+        filter: this.filter,
+      });
+    },
+    selectedGroup() {
+      this.fetchStreamsList({
+        pagination: this.pagination,
+        filter: this.filter,
+      });
+    },
+  },
   data: function() {
     return {
       maximizedToggle: true,
@@ -403,6 +511,10 @@ export default {
         rowsNumber: 10,
       }),
       loading: ref(false),
+      playlistOptions: ref([{label: 'All', value: null}]),
+      groupOptions: ref([{label: 'All', value: null}]),
+      selectedPlaylistId: ref(null),
+      selectedGroup: ref(null),
 
     };
   },
@@ -412,3 +524,23 @@ export default {
   },
 };
 </script>
+
+<style>
+.stream-logo-wrap {
+  width: 44px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #f5f7fb;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.stream-logo-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+</style>

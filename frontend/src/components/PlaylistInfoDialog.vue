@@ -50,7 +50,7 @@
 
           <div class="col">
             <div class="text-h6 text-blue-10">
-              Playlist Settings
+              Stream Source Settings
             </div>
           </div>
 
@@ -93,7 +93,7 @@
                 <q-input
                   v-else
                   v-model="name"
-                  label="Playlist Name"
+                  label="Source Name"
                 />
               </div>
               <div class="q-gutter-sm">
@@ -104,7 +104,42 @@
                   v-else
                   v-model="url"
                   type="textarea"
-                  label="Playlist URL"
+                  :label="accountType === 'XC' ? 'Host' : 'Source URL'"
+                />
+              </div>
+              <div class="q-gutter-sm">
+                <q-skeleton
+                  v-if="accountType === null"
+                  type="QInput" />
+                <q-select
+                  v-else
+                  v-model="accountType"
+                  :options="accountTypeOptions"
+                  option-value="value"
+                  option-label="label"
+                  emit-value
+                  map-options
+                  label="Source Type"
+                  hint="M3U for direct playlist URLs, Xtream Codes for panel-based services"
+                />
+              </div>
+              <div
+                v-if="accountType === 'XC'"
+                class="q-gutter-sm">
+                <q-input
+                  v-model="xcUsername"
+                  label="Username"
+                  hint="Username for Xtream Codes authentication"
+                />
+              </div>
+              <div
+                v-if="accountType === 'XC'"
+                class="q-gutter-sm">
+                <q-input
+                  v-model="xcPassword"
+                  type="password"
+                  label="Password"
+                  :hint="xcPasswordHint"
                 />
               </div>
               <div class="q-gutter-sm">
@@ -134,6 +169,7 @@
                   label="User Agent"
                   hint="User-Agent header to use when fetching this playlist"
                   clearable
+                  @update:model-value="onUserAgentChange"
                 />
               </div>
               <div class="q-gutter-sm">
@@ -200,31 +236,40 @@
 
 <script>
 
-import axios from "axios";
-import { ref } from "vue";
+import axios from 'axios';
+import {ref} from 'vue';
 
 export default {
-  name: "PlaylistInfoDialog",
+  name: 'PlaylistInfoDialog',
   props: {
     playlistId: {
-      type: String
-    }
+      type: String,
+    },
   },
   emits: [
     // REQUIRED
-    "ok", "hide", "path"
+    'ok', 'hide', 'path',
   ],
   data() {
     return {
       enabled: ref(null),
       name: ref(null),
       url: ref(null),
+      accountType: ref(null),
+      accountTypeOptions: [
+        {label: 'M3U', value: 'M3U'},
+        {label: 'Xtream Codes', value: 'XC'},
+      ],
+      xcUsername: ref(null),
+      xcPassword: ref(null),
+      xcPasswordSet: ref(false),
       connections: ref(null),
       userAgent: ref(null),
       userAgents: ref([]),
+      userAgentTouched: ref(false),
       useHlsProxy: ref(null),
       useCustomHlsProxy: ref(null),
-      hlsProxyPath: ref(null)
+      hlsProxyPath: ref(null),
     };
   },
   methods: {
@@ -239,10 +284,15 @@ export default {
         }
         // Set default values for new playlist
         this.enabled = true;
-        this.name = "";
-        this.url = "";
+        this.name = '';
+        this.url = '';
+        this.accountType = 'M3U';
+        this.xcUsername = '';
+        this.xcPassword = '';
+        this.xcPasswordSet = false;
         this.connections = 1;
         this.userAgent = this.getPreferredUserAgent('VLC');
+        this.userAgentTouched = false;
         this.useHlsProxy = false;
         this.useCustomHlsProxy = false;
         this.hlsProxyPath = window.location.origin + '/tic-hls-proxy/[B64_URL].m3u8';
@@ -258,21 +308,27 @@ export default {
     onDialogHide() {
       // required to be emitted
       // when QDialog emits "hide" event
-      this.$emit("ok", {});
-      this.$emit("hide");
+      this.$emit('ok', {});
+      this.$emit('hide');
     },
 
     fetchPlaylistData: function() {
       // Fetch from server
       axios({
-        method: "GET",
-        url: "/tic-api/playlists/settings/" + this.playlistId
+        method: 'GET',
+        url: '/tic-api/playlists/settings/' + this.playlistId,
       }).then((response) => {
         this.enabled = response.data.data.enabled;
         this.name = response.data.data.name;
         this.url = response.data.data.url;
+        const incomingType = response.data.data.account_type || response.data.data.source_type;
+        this.accountType = incomingType || 'M3U';
+        this.xcUsername = response.data.data.xc_username || '';
+        this.xcPassword = '';
+        this.xcPasswordSet = !!response.data.data.xc_password_set;
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
+        this.userAgentTouched = false;
         this.useHlsProxy = response.data.data.use_hls_proxy;
         this.useCustomHlsProxy = response.data.data.use_custom_hls_proxy;
         this.hlsProxyPath = response.data.data.hls_proxy_path;
@@ -291,14 +347,20 @@ export default {
         if (!this.userAgents.length) {
           this.userAgents = [
             {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
-            {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+            {
+              name: 'Chrome',
+              value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+            },
             {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
           ];
         }
       }).catch(() => {
         this.userAgents = [
           {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
-          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+          {
+            name: 'Chrome',
+            value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+          },
           {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
         ];
       });
@@ -309,7 +371,8 @@ export default {
       return (match || this.userAgents[0]).value;
     },
     save: function() {
-      let url = "/tic-api/playlists/new";
+      let url = '/tic-api/playlists/new';
+      const isNew = !this.playlistId;
       if (this.playlistId) {
         url = `/tic-api/playlists/settings/${this.playlistId}/save`;
       }
@@ -317,32 +380,38 @@ export default {
         enabled: this.enabled,
         name: this.name,
         url: this.url,
+        account_type: this.accountType,
+        xc_username: this.xcUsername,
+        xc_password: this.xcPassword,
         connections: this.connections,
         user_agent: this.userAgent,
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
-        hls_proxy_path: this.hlsProxyPath
+        hls_proxy_path: this.hlsProxyPath,
       };
       axios({
-        method: "POST",
+        method: 'POST',
         url: url,
-        data: data
+        data: data,
       }).then((response) => {
         // Save success, show feedback
         this.$q.notify({
-          color: "positive",
-          icon: "cloud_done",
-          message: "Saved",
-          timeout: 200
+          color: 'positive',
+          icon: 'cloud_done',
+          message: 'Saved',
+          timeout: 200,
         });
+        if (isNew && this.accountType === 'XC') {
+          this.promptCreateXcEpgSource();
+        }
         this.hide();
       }).catch(() => {
         this.$q.notify({
-          color: "negative",
-          position: "top",
-          message: "Failed to save settings",
-          icon: "report_problem",
-          actions: [{ icon: "close", color: "white" }]
+          color: 'negative',
+          position: 'top',
+          message: 'Failed to save settings',
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
         });
       });
     },
@@ -355,15 +424,86 @@ export default {
         }
       }
       this.save();
-    }
+    },
+    normalizeHost(url) {
+      if (!url) return url;
+      let trimmed = url.replace(/\s+/g, '').replace(/\/+$/, '');
+      const match = trimmed.match(/^(https?:\/\/[^/]+)/i);
+      return match ? match[1] : trimmed;
+    },
+    promptCreateXcEpgSource() {
+      if (!this.url || !this.xcUsername || !this.xcPassword) {
+        return;
+      }
+      const ok = window.confirm(
+        'Create an EPG source for this Xtream Codes account now?',
+      );
+      if (!ok) {
+        return;
+      }
+      const host = this.normalizeHost(this.url);
+      const epgUrl = `${host}/xmltv.php?username=${encodeURIComponent(this.xcUsername)}&password=${encodeURIComponent(
+        this.xcPassword)}`;
+      const epgName = `${this.name} (XC)`;
+      axios({
+        method: 'POST',
+        url: '/tic-api/epgs/settings/new',
+        data: {
+          enabled: true,
+          name: epgName,
+          url: epgUrl,
+          user_agent: this.userAgent,
+        },
+      }).then(() => {
+        this.$q.notify({
+          color: 'positive',
+          icon: 'cloud_done',
+          message: 'EPG source created',
+          timeout: 800,
+        });
+      }).catch(() => {
+        this.$q.notify({
+          color: 'negative',
+          position: 'top',
+          message: 'Failed to create EPG source',
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
+        });
+      });
+    },
+    onUserAgentChange() {
+      this.userAgentTouched = true;
+    },
+  },
+  computed: {
+    xcPasswordHint() {
+      if (this.accountType !== 'XC') {
+        return '';
+      }
+      if (this.playlistId && this.xcPasswordSet) {
+        return 'Password for Xtream Codes authentication. Leave blank to keep existing password.';
+      }
+      return 'Password for Xtream Codes authentication.';
+    },
   },
   watch: {
     uuid(value) {
       if (value.length > 0) {
         this.currentUuid = this.uuid;
       }
-    }
-  }
+    },
+    accountType(newValue, oldValue) {
+      if (this.playlistId) {
+        return;
+      }
+      if (newValue !== 'XC') {
+        return;
+      }
+      if (!this.userAgentTouched) {
+        this.userAgent = this.getPreferredUserAgent('TiviMate');
+      }
+    },
+  },
 };
 </script>
 
