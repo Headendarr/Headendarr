@@ -281,9 +281,9 @@ export default defineComponent({
         }
       }
       const options = [{label: 'All groups', value: 'all'}];
-      Array.from(groups)
-        .sort((a, b) => a.localeCompare(b))
-        .forEach((group) => options.push({label: group, value: group}));
+      Array.from(groups).
+        sort((a, b) => a.localeCompare(b)).
+        forEach((group) => options.push({label: group, value: group}));
       return options;
     });
 
@@ -520,9 +520,11 @@ export default defineComponent({
           stop_ts: programme.stop_ts,
           epg_programme_id: programme.id,
         });
+        $q.notify({color: 'positive', message: 'Recording scheduled'});
         await loadRecordings();
       } catch (error) {
         console.error('Recording failed:', error);
+        $q.notify({color: 'negative', message: 'Failed to schedule recording'});
       }
     };
 
@@ -530,9 +532,11 @@ export default defineComponent({
       if (!recording?.id) return;
       try {
         await axios.post(`/tic-api/recordings/${recording.id}/cancel`);
+        $q.notify({color: 'positive', message: 'Recording canceled'});
         await loadRecordings();
       } catch (error) {
         console.error('Cancel recording failed:', error);
+        $q.notify({color: 'negative', message: 'Failed to cancel recording'});
       }
     };
 
@@ -543,8 +547,10 @@ export default defineComponent({
           title_match: programme.title,
           lookahead_days: 7,
         });
+        $q.notify({color: 'positive', message: 'Recording rule created'});
       } catch (error) {
         console.error('Rule failed:', error);
+        $q.notify({color: 'negative', message: 'Failed to create recording rule'});
       }
     };
 
@@ -699,11 +705,15 @@ export default defineComponent({
           const viewportWidth = bodyEl?.clientWidth || 0;
           if (programmeLeft < scrollLeft + 10) {
             const targetLeft = Math.max(0, programmeLeft - 10);
-            bodyEls.forEach((el) => { el.scrollLeft = targetLeft; });
+            bodyEls.forEach((el) => {
+              el.scrollLeft = targetLeft;
+            });
             if (headerEl) headerEl.scrollLeft = targetLeft;
           } else if (programmeRight > scrollLeft + viewportWidth - 10) {
             const targetLeft = Math.max(0, programmeRight - viewportWidth + 10);
-            bodyEls.forEach((el) => { el.scrollLeft = targetLeft; });
+            bodyEls.forEach((el) => {
+              el.scrollLeft = targetLeft;
+            });
             if (headerEl) headerEl.scrollLeft = targetLeft;
           }
         });
