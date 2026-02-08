@@ -148,8 +148,13 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
             source = channel_details['sources'][0] if channel_details.get('sources') else None
             source_url = source.get('stream_url') if source else None
             if source_url:
-                base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
-                channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+                is_manual = source.get('source_type') == 'manual'
+                use_hls_proxy = bool(source.get('use_hls_proxy', False))
+                if is_manual and not use_hls_proxy:
+                    channel_url = source_url
+                else:
+                    base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+                    channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
 
         if channel_url:
             lineup_list.append(
@@ -201,7 +206,12 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
             source = channel_details['sources'][0] if channel_details.get('sources') else None
             source_url = source.get('stream_url') if source else None
             if source_url:
-                channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+                is_manual = source.get('source_type') == 'manual'
+                use_hls_proxy = bool(source.get('use_hls_proxy', False))
+                if is_manual and not use_hls_proxy:
+                    channel_url = source_url
+                else:
+                    channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
 
         if channel_url:
             playlist.append(channel_url)

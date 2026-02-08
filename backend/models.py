@@ -137,7 +137,7 @@ class PlaylistStreams(Base):
     tvg_logo = Column(String(500), index=False, unique=False)
 
     # Link with a playlist
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False)
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
 
     def __repr__(self):
         return '<PlaylistStreams {}>'.format(self.id)
@@ -195,9 +195,10 @@ class ChannelSource(Base):
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
 
     # Link with a playlist
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False)
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
     playlist_stream_name = Column(String(500), index=True, unique=False)
     playlist_stream_url = Column(String(500), index=True, unique=False)
+    use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 

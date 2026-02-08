@@ -79,19 +79,24 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                     # If filtering on playlist IDs, then only return sources from that playlist
                     if filter_playlist_ids and source.playlist_id not in filter_playlist_ids:
                         continue
+                    playlist_name = source.playlist.name if source.playlist else "Manual URL"
+                    source_type = "playlist" if source.playlist_id else "manual"
                     if output_for_export:
                         sources.append({
-                            'playlist_name': source.playlist.name,
+                            'playlist_name': playlist_name,
                             'priority':      source.priority,
                             'stream_name':   source.playlist_stream_name,
                         })
                         continue
                     sources.append({
+                        'id':            source.id,
                         'playlist_id':   source.playlist_id,
-                        'playlist_name': source.playlist.name,
+                        'playlist_name': playlist_name,
                         'priority':      source.priority,
                         'stream_name':   source.playlist_stream_name,
                         'stream_url':    source.playlist_stream_url,
+                        'use_hls_proxy': bool(getattr(source, "use_hls_proxy", False)),
+                        'source_type':   source_type,
                     })
                 # Filter out this channel if we have provided a playlist ID filter list and no sources were found
                 if filter_playlist_ids and not sources:
@@ -143,11 +148,17 @@ def read_config_one_channel(channel_id):
             tags.append(tag.name)
         sources = []
         for source in result.sources:
+            playlist_name = source.playlist.name if source.playlist else "Manual URL"
+            source_type = "playlist" if source.playlist_id else "manual"
             sources.append({
+                'id':            source.id,
                 'playlist_id':   source.playlist_id,
-                'playlist_name': source.playlist.name,
+                'playlist_name': playlist_name,
                 'priority':      source.priority,
                 'stream_name':   source.playlist_stream_name,
+                'stream_url':    source.playlist_stream_url,
+                'use_hls_proxy': bool(getattr(source, "use_hls_proxy", False)),
+                'source_type':   source_type,
             })
         return_item = {
             'id':       result.id,
@@ -266,6 +277,20 @@ async def add_new_channel(config, data, commit=True, publish=True):
     # Sources
     new_sources = []
     for source_info in data.get('sources', []):
+        is_manual = source_info.get('source_type') == 'manual' or not source_info.get('playlist_id')
+        if is_manual:
+            stream_url = (source_info.get('stream_url') or '').strip()
+            if not stream_url:
+                continue
+            channel_source = ChannelSource(
+                playlist_id=None,
+                playlist_stream_name=source_info.get('stream_name') or 'Manual URL',
+                playlist_stream_url=stream_url,
+                use_hls_proxy=bool(source_info.get('use_hls_proxy', False)),
+            )
+            new_sources.append(channel_source)
+            continue
+
         playlist_info = db.session.query(Playlist).filter(Playlist.id == source_info['playlist_id']).one()
         playlist_streams = fetch_playlist_streams(playlist_info.id)
         playlist_stream = playlist_streams.get(source_info['stream_name'])
@@ -341,10 +366,15 @@ async def update_channel(config, channel_id, data):
             guide_info = data.get('guide', {})
             if guide_info.get('epg_id'):
                 query = await session.execute(select(Epg).filter(Epg.id == guide_info['epg_id']))
-                channel_guide_source = query.scalar_one()
-                channel.guide_id = channel_guide_source.id
-                channel.guide_name = guide_info['epg_name']
-                channel.guide_channel_id = guide_info['channel_id']
+                channel_guide_source = query.scalar_one_or_none()
+                if channel_guide_source:
+                    channel.guide_id = channel_guide_source.id
+                    channel.guide_name = guide_info.get('epg_name')
+                    channel.guide_channel_id = guide_info.get('channel_id')
+                else:
+                    channel.guide_id = None
+                    channel.guide_name = None
+                    channel.guide_channel_id = None
 
             # Sources
             new_source_ids = []
@@ -352,84 +382,120 @@ async def update_channel(config, channel_id, data):
             priority = len(data.get('sources', []))
             logger.info("Updating channel sources")
             for source_info in data.get('sources', []):
-                query = await session.execute(select(ChannelSource)
-                                              .filter(and_(ChannelSource.channel_id == channel.id,
-                                                           ChannelSource.playlist_id == source_info['playlist_id'],
-                                                           ChannelSource.playlist_stream_name == source_info[
-                                                               'stream_name']
-                                                           )))
-                channel_source = query.scalar_one_or_none()
-                if not channel_source:
-                    logger.info("    - Adding new channel source for channel %s 'Playlist:%s - %s'", channel.name,
-                                source_info['playlist_id'], source_info['stream_name'])
+                source_id = source_info.get('id')
+                is_manual = source_info.get('source_type') == 'manual' or not source_info.get('playlist_id')
+                channel_source = None
+                if source_id:
+                    query = await session.execute(select(ChannelSource).filter(ChannelSource.id == source_id))
+                    channel_source = query.scalar_one_or_none()
+                if not channel_source and not is_manual:
+                    query = await session.execute(select(ChannelSource)
+                                                  .filter(and_(ChannelSource.channel_id == channel.id,
+                                                               ChannelSource.playlist_id == source_info['playlist_id'],
+                                                               ChannelSource.playlist_stream_name == source_info[
+                                                                   'stream_name']
+                                                               )))
+                    channel_source = query.scalar_one_or_none()
+                if not channel_source and is_manual:
+                    query = await session.execute(select(ChannelSource)
+                                                  .filter(and_(ChannelSource.channel_id == channel.id,
+                                                               ChannelSource.playlist_id.is_(None),
+                                                               ChannelSource.playlist_stream_url == source_info.get(
+                                                                   'stream_url')))
+                                                  )
+                    channel_source = query.scalar_one_or_none()
 
-                    query = await session.execute(select(Playlist).filter(Playlist.id == source_info['playlist_id']))
-                    playlist_info = query.scalar_one()
-                    playlist_streams = fetch_playlist_streams(playlist_info.id)
-                    playlist_stream = playlist_streams.get(source_info['stream_name'])
-                    if playlist_info.use_hls_proxy:
-                        if not playlist_info.use_custom_hls_proxy:
-                            app_url = settings['settings']['app_url']
-                            playlist_url = playlist_stream['url']
-                            extension = 'ts'
-                            if playlist_url.endswith('m3u8'):
-                                extension = 'm3u8'
-                            encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
-                            # noinspection HttpUrlsUsage
-                            playlist_stream['url'] = f'{app_url}/tic-hls-proxy/{encoded_playlist_url}.{extension}'
-                        else:
-                            hls_proxy_path = playlist_info.hls_proxy_path
-                            playlist_url = playlist_stream['url']
-                            encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
-                            hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
-                            hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)
-                            playlist_stream['url'] = hls_proxy_path
-                    channel_source = ChannelSource(
-                        playlist_id=playlist_info.id,
-                        playlist_stream_name=source_info['stream_name'],
-                        playlist_stream_url=playlist_stream['url'],
-                    )
+                if is_manual:
+                    stream_url = (source_info.get('stream_url') or '').strip()
+                    if not stream_url:
+                        continue
+                    if not channel_source:
+                        logger.info("    - Adding new manual channel source for channel %s", channel.name)
+                        channel_source = ChannelSource(
+                            playlist_id=None,
+                            playlist_stream_name=source_info.get('stream_name') or 'Manual URL',
+                            playlist_stream_url=stream_url,
+                            use_hls_proxy=bool(source_info.get('use_hls_proxy', False)),
+                        )
+                    else:
+                        logger.info("    - Updating manual channel source for channel %s", channel.name)
+                        channel_source.playlist_stream_name = source_info.get('stream_name') or 'Manual URL'
+                        channel_source.playlist_stream_url = stream_url
+                        channel_source.use_hls_proxy = bool(source_info.get('use_hls_proxy', False))
+                    if channel_source.id:
+                        new_source_ids.append(channel_source.id)
                 else:
-                    logger.info("    - Found existing channel source for channel %s 'Playlist:%s - %s'", channel.name,
-                                source_info['playlist_id'], source_info['stream_name'])
-                    new_source_ids.append(channel_source.id)
-                    # Filter sources to refresh here. Things not added to the new_source_ids list are removed and re-added
-                    for refresh_source_info in data.get('refresh_sources', []):
-                        if (refresh_source_info['playlist_id'] == source_info['playlist_id']
-                                and refresh_source_info['stream_name'] == source_info['stream_name']):
-                            logger.info("    - Channel %s source marked for refresh 'Playlist:%s - %s'", channel.name,
-                                        source_info['playlist_id'], source_info['stream_name'])
-                            query = await session.execute(
-                                select(Playlist).filter(
-                                    Playlist.id == source_info['playlist_id']))
-                            playlist_info = query.scalar_one()
-                            playlist_streams = fetch_playlist_streams(playlist_info.id)
-                            playlist_stream = playlist_streams.get(source_info['stream_name'])
-                            if playlist_info.use_hls_proxy:
-                                if not playlist_info.use_custom_hls_proxy:
-                                    app_url = settings['settings']['app_url']
-                                    playlist_url = playlist_stream['url']
-                                    extension = 'ts'
-                                    if playlist_url.endswith('m3u8'):
-                                        extension = 'm3u8'
-                                    encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
-                                        'utf-8')
-                                    # noinspection HttpUrlsUsage
-                                    playlist_stream[
-                                        'url'] = f'{app_url}/tic-hls-proxy/{encoded_playlist_url}.{extension}'
-                                else:
-                                    hls_proxy_path = playlist_info.hls_proxy_path
-                                    playlist_url = playlist_stream['url']
-                                    encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
-                                        'utf-8')
-                                    hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
-                                    hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)
-                                    playlist_stream['url'] = hls_proxy_path
-                            # Update playlist stream url
-                            logger.info("    - Updating channel %s source from '%s' to '%s'", channel.name,
-                                        channel_source.playlist_stream_url, playlist_stream['url'])
-                            channel_source.playlist_stream_url = playlist_stream['url']
-                            break
+                    if not channel_source:
+                        logger.info("    - Adding new channel source for channel %s 'Playlist:%s - %s'", channel.name,
+                                    source_info['playlist_id'], source_info['stream_name'])
+
+                        query = await session.execute(select(Playlist).filter(Playlist.id == source_info['playlist_id']))
+                        playlist_info = query.scalar_one()
+                        playlist_streams = fetch_playlist_streams(playlist_info.id)
+                        playlist_stream = playlist_streams.get(source_info['stream_name'])
+                        if playlist_info.use_hls_proxy:
+                            if not playlist_info.use_custom_hls_proxy:
+                                app_url = settings['settings']['app_url']
+                                playlist_url = playlist_stream['url']
+                                extension = 'ts'
+                                if playlist_url.endswith('m3u8'):
+                                    extension = 'm3u8'
+                                encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                                # noinspection HttpUrlsUsage
+                                playlist_stream['url'] = f'{app_url}/tic-hls-proxy/{encoded_playlist_url}.{extension}'
+                            else:
+                                hls_proxy_path = playlist_info.hls_proxy_path
+                                playlist_url = playlist_stream['url']
+                                encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                                hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
+                                hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)
+                                playlist_stream['url'] = hls_proxy_path
+                        channel_source = ChannelSource(
+                            playlist_id=playlist_info.id,
+                            playlist_stream_name=source_info['stream_name'],
+                            playlist_stream_url=playlist_stream['url'],
+                        )
+                    else:
+                        logger.info("    - Found existing channel source for channel %s 'Playlist:%s - %s'", channel.name,
+                                    source_info['playlist_id'], source_info['stream_name'])
+                        new_source_ids.append(channel_source.id)
+                        # Filter sources to refresh here. Things not added to the new_source_ids list are removed and re-added
+                        for refresh_source_info in data.get('refresh_sources', []):
+                            if (refresh_source_info['playlist_id'] == source_info['playlist_id']
+                                    and refresh_source_info['stream_name'] == source_info['stream_name']):
+                                logger.info("    - Channel %s source marked for refresh 'Playlist:%s - %s'", channel.name,
+                                            source_info['playlist_id'], source_info['stream_name'])
+                                query = await session.execute(
+                                    select(Playlist).filter(
+                                        Playlist.id == source_info['playlist_id']))
+                                playlist_info = query.scalar_one()
+                                playlist_streams = fetch_playlist_streams(playlist_info.id)
+                                playlist_stream = playlist_streams.get(source_info['stream_name'])
+                                if playlist_info.use_hls_proxy:
+                                    if not playlist_info.use_custom_hls_proxy:
+                                        app_url = settings['settings']['app_url']
+                                        playlist_url = playlist_stream['url']
+                                        extension = 'ts'
+                                        if playlist_url.endswith('m3u8'):
+                                            extension = 'm3u8'
+                                        encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
+                                            'utf-8')
+                                        # noinspection HttpUrlsUsage
+                                        playlist_stream[
+                                            'url'] = f'{app_url}/tic-hls-proxy/{encoded_playlist_url}.{extension}'
+                                    else:
+                                        hls_proxy_path = playlist_info.hls_proxy_path
+                                        playlist_url = playlist_stream['url']
+                                        encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
+                                            'utf-8')
+                                        hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
+                                        hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)
+                                        playlist_stream['url'] = hls_proxy_path
+                                # Update playlist stream url
+                                logger.info("    - Updating channel %s source from '%s' to '%s'", channel.name,
+                                            channel_source.playlist_stream_url, playlist_stream['url'])
+                                channel_source.playlist_stream_url = playlist_stream['url']
+                                break
                 # Update source priority (higher means higher priority)
                 channel_source.priority = priority
                 priority -= 1

@@ -41,9 +41,16 @@ async def api_get_channels_basic():
         })
     return jsonify({"success": True, "data": basic})
 
-def _build_preview_url(app_url, source_url, stream_key):
+def _build_preview_url(app_url, source_url, stream_key, use_hls_proxy=True):
     if not source_url:
         return None, None
+    if not use_hls_proxy:
+        parsed_direct = urlparse(source_url)
+        if parsed_direct.path.lower().endswith('.m3u8'):
+            return source_url, "hls"
+        if parsed_direct.path.lower().endswith('.ts'):
+            return source_url, "mpegts"
+        return source_url, "auto"
     if source_url.startswith(app_url) and '/tic-hls-proxy/' in source_url:
         parsed = urlparse(source_url)
         query = parse_qs(parsed.query)
@@ -95,10 +102,15 @@ async def api_get_channel_preview(channel_id):
     else:
         if not preview_base_url:
             preview_base_url = app_url
+        is_manual = not source.playlist_id
+        use_hls_proxy = True
+        if is_manual:
+            use_hls_proxy = bool(getattr(source, "use_hls_proxy", False))
         preview_url, stream_type = _build_preview_url(
             preview_base_url,
             source.playlist_stream_url,
-            user.streaming_key
+            user.streaming_key,
+            use_hls_proxy=use_hls_proxy
         )
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 

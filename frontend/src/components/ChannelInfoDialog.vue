@@ -240,6 +240,21 @@
                             <!--TODO: Limit length of description-->
                             {{ element.playlist_name }}
                           </q-item-label>
+                          <q-input
+                            v-if="element.source_type === 'manual' || !element.playlist_id"
+                            v-model="element.stream_url"
+                            dense
+                            outlined
+                            class="q-mt-sm"
+                            label="Stream URL"
+                          />
+                          <q-checkbox
+                            v-if="element.source_type === 'manual' || !element.playlist_id"
+                            v-model="element.use_hls_proxy"
+                            class="q-mt-xs q-ml-sm"
+                            label="Use HLS proxy"
+                            dense
+                          />
                         </q-item-section>
                         <!--END NAME / DESCRIPTION-->
 
@@ -248,6 +263,7 @@
                         <q-item-section side class="q-mr-none">
                           <div class="text-grey-8 q-gutter-xs">
                             <q-btn size="12px" flat dense round color="primary" icon="refresh"
+                                   v-if="element.source_type !== 'manual' && element.playlist_id"
                                    @click="refreshChannelSourceFromPlaylist(index)">
                               <q-tooltip class="bg-white text-primary">Refresh source from playlist</q-tooltip>
                             </q-btn>
@@ -276,6 +292,15 @@
                     color="primary"
                     icon="add"
                     @click="selectChannelSourceFromList">
+                    <q-tooltip class="bg-white text-primary">Add source from playlist</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    round
+                    flat
+                    color="primary"
+                    icon="add_link"
+                    @click="addManualChannelSource">
+                    <q-tooltip class="bg-white text-primary">Add manual stream URL</q-tooltip>
                   </q-btn>
                 </q-bar>
               </div>
@@ -410,7 +435,12 @@ export default {
         this.epgSourceName = response.data.data.guide.epg_name;
         this.epgChannel = response.data.data.guide.channel_id;
         // Fetch list of channel sources and pipe to a list ordered by the 'priority'
-        this.listOfChannelSources = response.data.data.sources.sort((a, b) => b.priority - a.priority);
+        this.listOfChannelSources = response.data.data.sources
+          .map((source) => ({
+            ...source,
+            use_hls_proxy: !!source.use_hls_proxy
+          }))
+          .sort((a, b) => b.priority - a.priority);
         this.listOfChannelSourcesToRefresh = [];
         // Enable saving the form
         this.canSave = true;
@@ -600,9 +630,11 @@ export default {
               return parseInt(item.id) === parseInt(payload.selectedStreams[i].playlist_id);
             });
             enabledStreams.push({
+              source_type: "playlist",
               playlist_id: payload.selectedStreams[i].playlist_id,
               playlist_name: playlistDetails.name,
-              stream_name: payload.selectedStreams[i].stream_name
+              stream_name: payload.selectedStreams[i].stream_name,
+              use_hls_proxy: false
             });
           }
           this.listOfChannelSources = enabledStreams;
@@ -612,6 +644,9 @@ export default {
       });
     },
     refreshChannelSourceFromPlaylist: function(index) {
+      if (!this.listOfChannelSources[index].playlist_id) {
+        return;
+      }
       let refreshSources = structuredClone(this.listOfChannelSourcesToRefresh);
       // TODO: Add logic to not add the same thing multiple times
       refreshSources.push({
@@ -623,6 +658,18 @@ export default {
     },
     removeChannelSourceFromList: function(index) {
       this.listOfChannelSources.splice(index, 1);
+    },
+    addManualChannelSource: function() {
+      let enabledStreams = structuredClone(this.listOfChannelSources);
+      enabledStreams.push({
+        source_type: "manual",
+        playlist_id: null,
+        playlist_name: "Manual URL",
+        stream_name: "Manual URL",
+        stream_url: "",
+        use_hls_proxy: false
+      });
+      this.listOfChannelSources = enabledStreams;
     }
   },
   computed: {
