@@ -120,6 +120,23 @@
                 />
               </div>
               <div class="q-gutter-sm">
+                <q-skeleton
+                  v-if="userAgent === null"
+                  type="QInput" />
+                <q-select
+                  v-else
+                  v-model="userAgent"
+                  :options="userAgents"
+                  option-value="value"
+                  option-label="name"
+                  emit-value
+                  map-options
+                  label="User Agent"
+                  hint="User-Agent header to use when fetching this playlist"
+                  clearable
+                />
+              </div>
+              <div class="q-gutter-sm">
                 <q-item tag="label" v-ripple>
                   <q-item-section avatar>
                     <q-skeleton
@@ -203,6 +220,8 @@ export default {
       name: ref(null),
       url: ref(null),
       connections: ref(null),
+      userAgent: ref(null),
+      userAgents: ref([]),
       useHlsProxy: ref(null),
       useCustomHlsProxy: ref(null),
       hlsProxyPath: ref(null)
@@ -213,18 +232,21 @@ export default {
     // (don't change its name --> "show")
     show() {
       this.$refs.playlistInfoDialogRef.show();
-      if (this.playlistId) {
-        this.fetchPlaylistData();
-        return;
-      }
-      // Set default values for new playlist
-      this.enabled = true;
-      this.name = "";
-      this.url = "";
-      this.connections = 1;
-      this.useHlsProxy = false;
-      this.useCustomHlsProxy = false;
-      this.hlsProxyPath = window.location.origin + '/tic-hls-proxy/[B64_URL].m3u8';
+      this.fetchUserAgents().then(() => {
+        if (this.playlistId) {
+          this.fetchPlaylistData();
+          return;
+        }
+        // Set default values for new playlist
+        this.enabled = true;
+        this.name = "";
+        this.url = "";
+        this.connections = 1;
+        this.userAgent = this.getPreferredUserAgent('VLC');
+        this.useHlsProxy = false;
+        this.useCustomHlsProxy = false;
+        this.hlsProxyPath = window.location.origin + '/tic-hls-proxy/[B64_URL].m3u8';
+      });
     },
 
     // following method is REQUIRED
@@ -250,10 +272,41 @@ export default {
         this.name = response.data.data.name;
         this.url = response.data.data.url;
         this.connections = response.data.data.connections;
+        this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
         this.useHlsProxy = response.data.data.use_hls_proxy;
         this.useCustomHlsProxy = response.data.data.use_custom_hls_proxy;
         this.hlsProxyPath = response.data.data.hls_proxy_path;
       });
+    },
+    fetchUserAgents() {
+      return axios({
+        method: 'get',
+        url: '/tic-api/get-settings',
+      }).then((response) => {
+        const agents = response.data.data.user_agents || [];
+        this.userAgents = agents.map((agent) => ({
+          name: agent.name,
+          value: agent.value,
+        }));
+        if (!this.userAgents.length) {
+          this.userAgents = [
+            {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+            {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+            {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+          ];
+        }
+      }).catch(() => {
+        this.userAgents = [
+          {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+          {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+        ];
+      });
+    },
+    getPreferredUserAgent(preferredName) {
+      if (!this.userAgents.length) return null;
+      const match = this.userAgents.find((agent) => agent.name === preferredName);
+      return (match || this.userAgents[0]).value;
     },
     save: function() {
       let url = "/tic-api/playlists/new";
@@ -265,6 +318,7 @@ export default {
         name: this.name,
         url: this.url,
         connections: this.connections,
+        user_agent: this.userAgent,
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
         hls_proxy_path: this.hlsProxyPath

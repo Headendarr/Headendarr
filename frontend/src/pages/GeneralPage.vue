@@ -23,6 +23,62 @@
                 />
               </div>
 
+              <q-toggle
+                v-model="routePlaylistsThroughTvh"
+                label="Route playlists & HDHomeRun through TVHeadend"
+                hint="When disabled, playlists and HDHomeRun URLs stream directly through TIC."
+              />
+
+              <q-separator class="q-mt-md" />
+
+              <div class="q-mt-md">
+                <div class="row items-center justify-between">
+                  <div class="text-subtitle1 text-primary">User Agents</div>
+                  <q-btn
+                    dense
+                    outline
+                    color="primary"
+                    icon="add"
+                    label="Add User Agent"
+                    @click="addUserAgent"
+                  />
+                </div>
+
+                <q-table
+                  class="q-mt-sm"
+                  flat
+                  bordered
+                  hide-bottom
+                  :rows="userAgents"
+                  :columns="userAgentColumns"
+                  row-key="id"
+                  no-data-label="No user agents configured"
+                >
+                  <template v-slot:body-cell-name="props">
+                    <q-td :props="props">
+                      <q-input v-model="props.row.name" dense outlined placeholder="Name" />
+                    </q-td>
+                  </template>
+                  <template v-slot:body-cell-value="props">
+                    <q-td :props="props">
+                      <q-input v-model="props.row.value" dense outlined placeholder="User-Agent string" />
+                    </q-td>
+                  </template>
+                  <template v-slot:body-cell-actions="props">
+                    <q-td :props="props">
+                      <q-btn
+                        dense
+                        flat
+                        round
+                        icon="delete"
+                        color="negative"
+                        @click="removeUserAgent(props.row.id)"
+                      />
+                    </q-td>
+                  </template>
+                </q-table>
+              </div>
+
               <div>
                 <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
               </div>
@@ -85,16 +141,47 @@ export default defineComponent({
 
       // Application Settings
       appUrl: ref(null),
+      routePlaylistsThroughTvh: ref(false),
+      userAgents: ref([]),
 
       // Defaults
       defSet: ref({
         appUrl: window.location.origin,
+        routePlaylistsThroughTvh: false,
+        userAgents: [
+          {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+          {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+        ],
       }),
+      userAgentColumns: [
+        {name: 'name', label: 'Name', field: 'name', align: 'left'},
+        {name: 'value', label: 'User-Agent', field: 'value', align: 'left'},
+        {name: 'actions', label: '', field: 'actions', align: 'right'},
+      ],
     };
   },
   methods: {
     convertToCamelCase(str) {
       return str.replace(/([-_][a-z])/g, (group) => group.toUpperCase().replace('-', '').replace('_', ''));
+    },
+    normalizeUserAgents(list) {
+      const safeList = Array.isArray(list) ? list : [];
+      return safeList.map((item, index) => ({
+        id: item.id || `ua-${index}-${Date.now()}`,
+        name: item.name || '',
+        value: item.value || '',
+      }));
+    },
+    addUserAgent() {
+      this.userAgents.push({
+        id: `ua-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+        name: '',
+        value: '',
+      });
+    },
+    removeUserAgent(id) {
+      this.userAgents = this.userAgents.filter((agent) => agent.id !== id);
     },
     fetchSettings: function() {
       // Fetch current settings
@@ -111,12 +198,16 @@ export default defineComponent({
             this[camelCaseKey] = value;
           }
         });
+        this.userAgents = this.normalizeUserAgents(appSettings.user_agents ?? this.defSet.userAgents);
         // Fill in any missing values from defaults
         Object.keys(this.defSet).forEach((key) => {
           if (this[key] === undefined || this[key] === null) {
             this[key] = this.defSet[key];
           }
         });
+        if (!this.userAgents.length) {
+          this.userAgents = this.normalizeUserAgents(this.defSet.userAgents);
+        }
       }).catch(() => {
         this.$q.notify({
           color: 'negative',
@@ -139,6 +230,10 @@ export default defineComponent({
         const snakeCaseKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
         postData.settings[snakeCaseKey] = this[key] ?? this.defSet[key];
       });
+      postData.settings.user_agents = this.userAgents.map((agent) => ({
+        name: agent.name,
+        value: agent.value,
+      }));
       this.$q.loading.show();
       axios({
         method: 'POST',

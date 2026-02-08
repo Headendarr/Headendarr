@@ -149,6 +149,21 @@ class Config:
                     "password": "",
                 },
                 "app_url":                  None,
+                "route_playlists_through_tvh": False,
+                "user_agents":              [
+                    {
+                        "name":  "VLC",
+                        "value": "VLC/3.0.21 LibVLC/3.0.21",
+                    },
+                    {
+                        "name":  "Chrome",
+                        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3",
+                    },
+                    {
+                        "name":  "TiviMate",
+                        "value": "TiviMate/5.1.6 (Android 12)",
+                    },
+                ],
                 "admin_password":           "admin",
                 "enable_stream_buffer":     True,
                 "default_ffmpeg_pipe_args": "-hide_banner -loglevel error "

@@ -39,6 +39,9 @@ api_services_mapper = "service/mapper/save"
 api_services_list = "service/list"
 api_int_epggrab_run = "epggrab/internal/rerun"
 api_epggrab_list = "epggrab/module/list"
+api_dvr_entry_grid = "dvr/entry/grid"
+api_dvr_entry_create = "dvr/entry/create"
+api_dvr_entry_cancel = "dvr/entry/cancel"
 
 tvh_config = {
     "server_name":    "TVH-IPTV",
@@ -308,6 +311,53 @@ class Tvheadend:
     async def idnode_save(self, node):
         url = f"{self.api_url}/{api_idnode_save}"
         await self.__post(url, payload={"node": json.dumps(node)})
+
+    async def list_dvr_entries(self):
+        url = f"{self.api_url}/{api_dvr_entry_grid}"
+        response = await self.__post(url, payload={"limit": 2000, "sort": "start", "dir": "ASC"})
+        try:
+            json_list = json.loads(response)
+        except json.JSONDecodeError:
+            json_list = {"entries": []}
+        entries = []
+        for entry in json_list.get("entries", []):
+            title = None
+            if isinstance(entry.get("title"), dict):
+                title = next(iter(entry.get("title").values()), None)
+            entries.append({
+                "uuid": entry.get("uuid"),
+                "channel": entry.get("channel"),
+                "channelname": entry.get("channelname"),
+                "start": entry.get("start"),
+                "stop": entry.get("stop"),
+                "state": entry.get("status") or entry.get("state"),
+                "title": entry.get("disp_title") or title,
+                "description": entry.get("disp_description") or entry.get("disp_summary"),
+            })
+        return entries
+
+    async def create_dvr_entry(self, channel_uuid, start_ts, stop_ts, title, description=None):
+        conf = {
+            "channel": channel_uuid,
+            "start": int(start_ts),
+            "stop": int(stop_ts),
+            "title": {"eng": title},
+            "config_name": "",
+        }
+        if description:
+            conf["description"] = {"eng": description}
+            conf["comment"] = description
+        url = f"{self.api_url}/{api_dvr_entry_create}"
+        response = await self.__post(url, payload={"conf": json.dumps(conf)})
+        try:
+            json_data = json.loads(response)
+        except json.JSONDecodeError:
+            json_data = {}
+        return json_data.get("uuid")
+
+    async def delete_dvr_entry(self, uuid):
+        url = f"{self.api_url}/{api_dvr_entry_cancel}"
+        await self.__post(url, payload={"uuid": uuid})
 
     async def idnode_delete(self, node_uuid):
         url = f"{self.api_url}/{api_idnode_delete}"

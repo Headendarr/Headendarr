@@ -172,6 +172,24 @@
                         {{ props.row.playlist_name }}
                       </q-badge>
                     </q-td>
+                    <q-td key="actions" :props="props" class="text-right">
+                      <div class="text-grey-8 q-gutter-xs">
+                        <q-btn
+                          size="12px"
+                          flat dense round
+                          icon="play_arrow"
+                          @click.stop="previewStream(props.row)">
+                          <q-tooltip class="bg-white text-primary">Preview Stream</q-tooltip>
+                        </q-btn>
+                        <q-btn
+                          size="12px"
+                          flat dense round
+                          icon="link"
+                          @click.stop="copyStreamUrl(props.row)">
+                          <q-tooltip class="bg-white text-primary">Copy Stream URL</q-tooltip>
+                        </q-btn>
+                      </div>
+                    </q-td>
                   </q-tr>
                 </template>
 
@@ -194,11 +212,14 @@
 
 import axios from 'axios';
 import {ref} from 'vue';
+import {useVideoStore} from 'stores/video';
+import {copyToClipboard} from 'quasar';
 
 const columns = [
   {name: 'tvg_logo', required: true, align: 'left', label: 'Logo', field: 'tvg_logo', sortable: false},
   {name: 'name', required: true, align: 'left', label: 'Name', field: 'name', sortable: true},
   {name: 'playlist_name', required: true, align: 'left', label: 'Playlist', field: 'playlist_name', sortable: false},
+  {name: 'actions', required: true, align: 'right', label: '', field: 'actions', sortable: false},
 ];
 
 export default {
@@ -310,6 +331,36 @@ export default {
         this.loading = false;
       });
     },
+    buildPreviewUrl(streamUrl) {
+      if (!streamUrl) return null;
+      const streamKey = this.streamingKey;
+      const encoded = btoa(streamUrl);
+      if (streamUrl.toLowerCase().includes('.m3u8')) {
+        return `${window.location.origin}/tic-hls-proxy/${encoded}.m3u8?stream_key=${streamKey}`;
+      }
+      return `${window.location.origin}/tic-hls-proxy/stream/${encoded}?stream_key=${streamKey}`;
+    },
+    previewStream(stream) {
+      const previewUrl = this.buildPreviewUrl(stream.url);
+      if (!previewUrl) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      this.videoStore.showPlayer({
+        url: previewUrl,
+        title: stream.name,
+        type: stream.url && stream.url.toLowerCase().includes('.m3u8') ? 'hls' : 'mpegts',
+      });
+    },
+    async copyStreamUrl(stream) {
+      const previewUrl = this.buildPreviewUrl(stream.url);
+      if (!previewUrl) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      await copyToClipboard(previewUrl);
+      this.$q.notify({color: 'positive', message: 'Stream URL copied'});
+    },
     getSelectedString: function() {
       return this.selected.length === 0 ?
         '' :
@@ -325,6 +376,12 @@ export default {
       const tableHeight = (dialogHeight - 150);
       return `height:${tableHeight}px;`;
     },
+    streamingKey() {
+      return this.authUser?.streaming_key || '';
+    },
+    authUser() {
+      return this.$pinia?.state?.value?.auth?.user || null;
+    },
   },
   data: function() {
     return {
@@ -335,7 +392,7 @@ export default {
       columns,
       rows: ref([]),
 
-      visibleColumns: ref(['name', 'playlist_name', 'logo']),
+      visibleColumns: ref(['name', 'playlist_name', 'logo', 'actions']),
       filter: ref(''),
       selected: ref([]),
       pagination: ref({
@@ -348,6 +405,10 @@ export default {
       loading: ref(false),
 
     };
+  },
+  setup() {
+    const videoStore = useVideoStore();
+    return {videoStore};
   },
 };
 </script>

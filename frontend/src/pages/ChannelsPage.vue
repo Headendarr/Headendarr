@@ -347,6 +347,20 @@
                             <q-btn
                               size="12px"
                               flat dense round
+                              icon="play_arrow"
+                              @click="previewChannel(element)">
+                              <q-tooltip class="bg-white text-primary">Preview Stream</q-tooltip>
+                            </q-btn>
+                            <q-btn
+                              size="12px"
+                              flat dense round
+                              icon="link"
+                              @click="copyStreamUrl(element)">
+                              <q-tooltip class="bg-white text-primary">Copy Stream URL</q-tooltip>
+                            </q-btn>
+                            <q-btn
+                              size="12px"
+                              flat dense round
                               icon="tune"
                               @click="openChannelSettings(element)">
                               <q-tooltip class="bg-white text-primary">Configure</q-tooltip>
@@ -472,6 +486,7 @@ import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import draggable from 'vuedraggable';
 import {useUiStore} from 'stores/ui';
+import {useVideoStore} from 'stores/video';
 import ChannelInfoDialog from 'components/ChannelInfoDialog.vue';
 import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.vue';
 import ChannelGroupSelectorDialog from 'components/ChannelGroupSelectorDialog.vue';
@@ -484,8 +499,11 @@ export default defineComponent({
   },
 
   setup() {
+    const uiStore = useUiStore();
+    const videoStore = useVideoStore();
     return {
-      uiStore: useUiStore(),
+      uiStore,
+      videoStore,
     };
   },
   data() {
@@ -599,6 +617,37 @@ export default defineComponent({
         icon: 'category',
         timeout: 2000
       });
+    },
+    async previewChannel(channel) {
+      try {
+        const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
+        if (response.data.success) {
+          this.videoStore.showPlayer({
+            url: response.data.preview_url,
+            title: channel.name,
+            type: response.data.stream_type || 'auto',
+          });
+          return;
+        }
+        this.$q.notify({color: 'negative', message: response.data.message || 'Failed to load preview'});
+      } catch (error) {
+        console.error('Preview channel error:', error);
+        this.$q.notify({color: 'negative', message: 'Failed to load preview'});
+      }
+    },
+    async copyStreamUrl(channel) {
+      try {
+        const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
+        if (response.data.success) {
+          await copyToClipboard(response.data.preview_url);
+          this.$q.notify({color: 'positive', message: 'Stream URL copied'});
+          return;
+        }
+        this.$q.notify({color: 'negative', message: response.data.message || 'Failed to copy stream URL'});
+      } catch (error) {
+        console.error('Copy stream URL error:', error);
+        this.$q.notify({color: 'negative', message: 'Failed to copy stream URL'});
+      }
     },
     updateNumbers: function(myList, index) {
       for (let i = index + 1; i < myList.length; i++) {

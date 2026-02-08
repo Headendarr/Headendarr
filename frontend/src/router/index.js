@@ -40,6 +40,13 @@ export default route(function (/* { store, ssrContext } */) {
             return;
           }
         }
+        if (to.meta.requiresStreamer) {
+          const roles = authStore.user?.roles || [];
+          if (!roles.includes('admin') && !roles.includes('streamer')) {
+            next('/');
+            return;
+          }
+        }
         next();
       } else {
         next('/login');

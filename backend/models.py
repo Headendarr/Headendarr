@@ -24,6 +24,7 @@ class Epg(Base):
     enabled = Column(Boolean, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
     url = Column(String(500), index=True, unique=False)
+    user_agent = Column(String(255), nullable=True)
 
     # Backref to all associated linked channels
     epg_channels = relationship('EpgChannels', backref='guide', lazy=True, cascade="all, delete-orphan")
@@ -113,6 +114,7 @@ class Playlist(Base):
     use_hls_proxy = Column(Boolean, nullable=False, unique=False)
     use_custom_hls_proxy = Column(Boolean, nullable=False, unique=False)
     hls_proxy_path = Column(String(256), unique=False)
+    user_agent = Column(String(255), nullable=True)
 
     # Backref to all associated linked sources
     channel_sources = relationship('ChannelSource', backref='playlist', lazy=True, cascade="all, delete-orphan")
@@ -201,6 +203,52 @@ class ChannelSource(Base):
 
     def __repr__(self):
         return '<ChannelSource {}>'.format(self.id)
+
+
+class RecordingRule(Base):
+    __tablename__ = "recording_rules"
+    id = Column(Integer, primary_key=True)
+
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
+    title_match = Column(String(500), index=True, unique=False)
+    enabled = Column(Boolean, nullable=False, unique=False, default=True)
+    lookahead_days = Column(Integer, nullable=False, default=7)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    # Backref to channel
+    channel = relationship('Channel', backref='recording_rules')
+
+    def __repr__(self):
+        return '<RecordingRule {}>'.format(self.id)
+
+
+class Recording(Base):
+    __tablename__ = "recordings"
+    id = Column(Integer, primary_key=True)
+
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
+    rule_id = Column(Integer, ForeignKey('recording_rules.id'), nullable=True)
+    epg_programme_id = Column(Integer, nullable=True)
+
+    title = Column(String(500), index=True, unique=False)
+    description = Column(String(2000), index=False, unique=False)
+    start_ts = Column(Integer, index=True, unique=False)
+    stop_ts = Column(Integer, index=True, unique=False)
+
+    status = Column(String(32), index=True, unique=False, default="scheduled")
+    sync_status = Column(String(32), index=True, unique=False, default="pending")
+    sync_error = Column(String(1024), index=False, unique=False)
+    tvh_uuid = Column(String(128), index=True, unique=False)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    channel = relationship('Channel', backref='recordings')
+    rule = relationship('RecordingRule', backref='recordings')
+
+    def __repr__(self):
+        return '<Recording {}>'.format(self.id)
 
 
 user_roles_association_table = Table(

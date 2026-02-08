@@ -6,6 +6,8 @@ export default function pollForBackgroundTasks() {
   const notifications = ref({});
   const pendingTasksStatus = ref('running');
   let timerId = null;
+  let abortController = null;
+  let isActive = true;
 
   const displayCurrentTask = (messageId, taskName) => {
     if (!(messageId in notifications.value)) {
@@ -37,50 +39,70 @@ export default function pollForBackgroundTasks() {
   };
 
   async function fetchData() {
-    const response = await fetch('/tic-api/get-background-tasks');
-    // Check if authentication is required
-    if ([401, 502, 504].includes(response.status)) {
-      // Stop polling
+    if (!isActive) {
       return;
     }
-    if (response.ok) {
-      let payload = await response.json();
-      let tasks = [];
-      if (payload.data['current_task']) {
-        tasks.push({
-          'icon': 'pending',
-          'name': payload.data['current_task'],
-        });
+    if (abortController) {
+      abortController.abort();
+    }
+    abortController = new AbortController();
+    try {
+      const response = await fetch('/tic-api/get-background-tasks?wait=1&timeout=25', {
+        signal: abortController.signal,
+        cache: 'no-store',
+      });
+      // Check if authentication is required
+      if ([401, 502, 504].includes(response.status)) {
+        // Stop polling
+        return;
       }
-      for (let i in payload.data['pending_tasks']) {
-        tasks.push({
-          'icon': 'radio_button_unchecked',
-          'name': payload.data['pending_tasks'][i],
-        });
+      if (response.ok) {
+        let payload = await response.json();
+        let tasks = [];
+        if (payload.data['current_task']) {
+          tasks.push({
+            'icon': 'pending',
+            'name': payload.data['current_task'],
+          });
+        }
+        for (let i in payload.data['pending_tasks']) {
+          tasks.push({
+            'icon': 'radio_button_unchecked',
+            'name': payload.data['pending_tasks'][i],
+          });
+        }
+        pendingTasks.value = tasks;
+        pendingTasksStatus.value = payload.data['task_queue_status'];
+        if (payload.data['current_task']) {
+          displayCurrentTask('currentTask', payload.data['current_task']);
+        } else {
+          dismissMessages('currentTask');
+        }
       }
-      pendingTasks.value = tasks;
-      pendingTasksStatus.value = payload.data['task_queue_status'];
-      if (payload.data['current_task']) {
-        displayCurrentTask('currentTask', payload.data['current_task']);
-      } else {
-        dismissMessages('currentTask');
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        console.error('Background task poll failed:', error);
       }
     }
     startTimer();
   }
 
   function startTimer() {
-    timerId = setTimeout(fetchData, 1000);
+    timerId = setTimeout(fetchData, 250);
   }
 
   function stopTimer() {
     clearTimeout(timerId);
     dismissMessages('currentTask');
+    if (abortController) {
+      abortController.abort();
+    }
   }
 
   fetchData();
 
   onBeforeUnmount(() => {
+    isActive = false;
     stopTimer();
   });
 

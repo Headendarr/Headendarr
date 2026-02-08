@@ -325,6 +325,8 @@
     <q-page-container>
       <router-view />
     </q-page-container>
+
+    <FloatingPlayer />
   </q-layout>
 </template>
 
@@ -417,6 +419,7 @@
 <script>
 import {defineComponent, onMounted, ref, computed} from 'vue';
 import EssentialLink from 'components/EssentialLink.vue';
+import FloatingPlayer from 'components/FloatingPlayer.vue';
 import pollForBackgroundTasks from 'src/mixins/backgroundTasksMixin';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 import axios from 'axios';
@@ -457,6 +460,20 @@ const linksList = [
     link: '/channels',
   },
   {
+    title: 'TV Guide',
+    caption: 'View EPG grid and preview streams',
+    icon: 'schedule',
+    link: '/guide',
+    streamerOnly: true,
+  },
+  {
+    title: 'DVR',
+    caption: 'Schedule and manage recordings',
+    icon: 'movie',
+    link: '/dvr',
+    streamerOnly: true,
+  },
+  {
     title: 'Users',
     caption: 'Manage users and roles',
     icon: 'manage_accounts',
@@ -470,6 +487,7 @@ export default defineComponent({
 
   components: {
     EssentialLink,
+    FloatingPlayer,
   },
 
   setup() {
@@ -545,8 +563,18 @@ export default defineComponent({
       });
     });
 
-    const isAdmin = computed(() => (authStore.user?.roles || []).includes('admin'));
-    const filteredLinks = computed(() => linksList.filter((link) => !link.adminOnly || isAdmin.value));
+    const roles = computed(() => authStore.user?.roles || []);
+    const isAdmin = computed(() => roles.value.includes('admin'));
+    const isStreamer = computed(() => roles.value.includes('streamer'));
+    const filteredLinks = computed(() => linksList.filter((link) => {
+      if (link.adminOnly && !isAdmin.value) {
+        return false;
+      }
+      if (link.streamerOnly && !(isAdmin.value || isStreamer.value)) {
+        return false;
+      }
+      return true;
+    }));
     const currentUsername = computed(() => authStore.user?.username || 'User');
     const currentStreamingKey = computed(() => authStore.user?.streaming_key || 'STREAM_KEY');
 

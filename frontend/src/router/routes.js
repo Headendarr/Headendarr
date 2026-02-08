@@ -71,6 +71,30 @@ const routes = [
     ],
   },
   {
+    name: 'tv-guide',
+    path: '/guide',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/TvGuidePage.vue'),
+        meta: {requiresAuth: true, requiresStreamer: true},
+      },
+    ],
+  },
+  {
+    name: 'dvr',
+    path: '/dvr',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/DvrPage.vue'),
+        meta: {requiresAuth: true, requiresStreamer: true},
+      },
+    ],
+  },
+  {
     name: 'users',
     path: '/users',
     component: () => import('layouts/MainLayout.vue'),

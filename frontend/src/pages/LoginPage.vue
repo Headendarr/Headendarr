@@ -8,14 +8,16 @@
             <div class="text-caption text-grey-7">Use your username and password</div>
           </q-card-section>
 
-          <q-card-section>
-            <q-input v-model="username" label="Username" autofocus />
-            <q-input v-model="password" label="Password" type="password" class="q-mt-md" />
-          </q-card-section>
+          <q-form @submit.prevent="handleLogin">
+            <q-card-section>
+              <q-input v-model="username" label="Username" autofocus />
+              <q-input v-model="password" label="Password" type="password" class="q-mt-md" />
+            </q-card-section>
 
-          <q-card-actions align="right">
-            <q-btn color="primary" label="Login" :loading="loading" @click="handleLogin" />
-          </q-card-actions>
+            <q-card-actions align="right">
+              <q-btn color="primary" label="Login" :loading="loading" type="submit" />
+            </q-card-actions>
+          </q-form>
         </q-card>
       </q-page>
     </q-page-container>

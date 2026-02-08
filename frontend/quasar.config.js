@@ -88,6 +88,7 @@ module.exports = configure(function(ctx) {
       proxy: {
         '/tic-api': 'http://localhost:9985',
         '/tic-web/epg.xml': 'http://localhost:9985',
+        '/tic-hls-proxy': 'http://localhost:9985',
         '/tic-tvh': {
           target: 'http://localhost:9985',
           ws: true,

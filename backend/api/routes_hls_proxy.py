@@ -4,18 +4,19 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
 import uuid
 from collections import deque
 
-from quart import current_app, Response, stream_with_context, request
+from quart import current_app, Response, stream_with_context, request, redirect
 
 from backend.api import blueprint
 from backend.auth import stream_key_required, audit_stream_event, skip_stream_connect_audit
 import aiohttp
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 # Test:
 #       > mkfifo /tmp/ffmpegpipe
@@ -32,6 +33,7 @@ if not hls_proxy_prefix.startswith("/"):
 
 hls_proxy_host_ip = os.environ.get('HLS_PROXY_HOST_IP')
 hls_proxy_port = os.environ.get('HLS_PROXY_PORT')
+hls_proxy_max_buffer_bytes = int(os.environ.get('HLS_PROXY_MAX_BUFFER_BYTES', '262144'))
 
 proxy_logger = logging.getLogger("proxy")
 ffmpeg_logger = logging.getLogger("ffmpeg")
@@ -301,18 +303,32 @@ async def prefetch_segments(segment_urls):
                     proxy_logger.error("Failed to prefetch URL '%s': %s", url, e)
 
 
+def _build_proxy_base_url():
+    if hls_proxy_host_ip:
+        host_base_url_prefix = 'http'
+        host_base_url_port = ''
+        if hls_proxy_port:
+            if hls_proxy_port == '443':
+                host_base_url_prefix = 'https'
+            host_base_url_port = f':{hls_proxy_port}'
+        return f'{host_base_url_prefix}://{hls_proxy_host_ip}{host_base_url_port}{hls_proxy_prefix}'
+    return f'{request.host_url.rstrip("/")}{hls_proxy_prefix}'
+
+
+def _infer_extension(url_value):
+    parsed = urlparse(url_value)
+    path = (parsed.path or '').lower()
+    if path.endswith('.m3u8'):
+        return 'm3u8'
+    if path.endswith('.key'):
+        return 'key'
+    return 'ts'
+
+
 def generate_base64_encoded_url(url_to_encode, extension, stream_key=None, username=None):
     full_url_encoded = base64.b64encode(url_to_encode.encode('utf-8')).decode('utf-8')
-    host_base_url = ''
-    host_base_url_prefix = 'http'
-    host_base_url_port = ''
-    if hls_proxy_port:
-        if hls_proxy_port == '443':
-            host_base_url_prefix = 'https'
-        host_base_url_port = f':{hls_proxy_port}'
-    if hls_proxy_host_ip:
-        host_base_url = f'{host_base_url_prefix}://{hls_proxy_host_ip}{host_base_url_port}{hls_proxy_prefix}/'
-    url = f'{host_base_url}{full_url_encoded}.{extension}'
+    base_url = _build_proxy_base_url().rstrip('/')
+    url = f'{base_url}/{full_url_encoded}.{extension}'
     if stream_key:
         if username:
             return f'{url}?username={username}&password={stream_key}'
@@ -320,33 +336,10 @@ def generate_base64_encoded_url(url_to_encode, extension, stream_key=None, usern
     return url
 
 
-async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url) as resp:
-            if resp.status != 200:
-                return None
-
-            # Get actual URL after any redirects
-            parsed_response_url = urlparse(str(resp.url))
-            response_url = f"{parsed_response_url.scheme}://{parsed_response_url.hostname}"
-
-            # Read the original playlist content
-            playlist_content = await resp.text()
-
-            # Update child URLs in the playlist
-            updated_playlist = update_child_urls(playlist_content, response_url, stream_key=stream_key, username=username)
-            return updated_playlist
-
-
-def get_key_uri_from_ext_x_key(line):
-    """
-    Extract the URI value from an #EXT-X-KEY line.
-    """
-    parts = line.split(',')
-    for part in parts:
-        if part.startswith('URI='):
-            return part.split('=', 1)[1].strip('"')
-    return None
+def _rewrite_uri_value(uri_value, source_url, stream_key=None, username=None):
+    absolute_url = urljoin(source_url, uri_value)
+    extension = _infer_extension(absolute_url)
+    return generate_base64_encoded_url(absolute_url, extension, stream_key=stream_key, username=username), absolute_url, extension
 
 
 def update_child_urls(playlist_content, source_url, stream_key=None, username=None):
@@ -356,49 +349,106 @@ def update_child_urls(playlist_content, source_url, stream_key=None, username=No
     lines = playlist_content.splitlines()
     segment_urls = []
 
-    # Generate the source base URL
-    parsed_source_base_url = urlparse(source_url)
-    source_base_url = f"{parsed_source_base_url.scheme}://{parsed_source_base_url.hostname}"
-
     for line in lines:
-        stripped_line = line.strip()
+        updated_line, new_segment_urls = rewrite_playlist_line(
+            line,
+            source_url,
+            stream_key=stream_key,
+            username=username,
+        )
+        if updated_line:
+            updated_lines.append(updated_line)
+        if new_segment_urls:
+            segment_urls.extend(new_segment_urls)
 
-        # Ignore empty lines
-        if not stripped_line:
-            continue
+    if segment_urls:
+        asyncio.create_task(prefetch_segments(segment_urls))
 
-        # Lines starting with # are preserved as is
-        if line.startswith("#EXT-X-KEY"):
-            key_uri = get_key_uri_from_ext_x_key(line)
-            if key_uri:
-                new_key_uri = generate_base64_encoded_url(key_uri, 'key', stream_key=stream_key, username=username)
-                updated_lines.append(line.replace(key_uri, new_key_uri))
-                segment_urls.append(key_uri)
-            else:
-                updated_lines.append(line)
-            continue
-        elif stripped_line.startswith('#'):
-            updated_lines.append(line)
-            continue
-
-        # Encode regular URL lines
-        extension = 'ts'
-        if stripped_line.endswith('m3u8'):
-            extension = 'm3u8'
-        url_to_encode = f"{source_base_url}/{stripped_line}"
-        updated_lines.append(generate_base64_encoded_url(url_to_encode, extension, stream_key=stream_key, username=username))
-
-        # Add any ts files to list of segments to pre-fetch
-        if extension == 'ts':
-            segment_urls.append(url_to_encode)
-
-    # Start prefetching segments in the background
-    asyncio.create_task(prefetch_segments(segment_urls))
-
-    # Join the updated lines into a single string
     modified_playlist = "\n".join(updated_lines)
     proxy_logger.debug(f"Modified Playlist Content:\n{modified_playlist}")
     return modified_playlist
+
+
+def rewrite_playlist_line(line, source_url, stream_key=None, username=None):
+    stripped_line = line.strip()
+    if not stripped_line:
+        return None, []
+
+    segment_urls = []
+    if stripped_line.startswith('#'):
+        def replace_uri(match):
+            original_uri = match.group(1)
+            new_uri, absolute_url, extension = _rewrite_uri_value(
+                original_uri,
+                source_url,
+                stream_key=stream_key,
+                username=username,
+            )
+            if extension == 'ts':
+                segment_urls.append(absolute_url)
+            return f'URI="{new_uri}"'
+
+        updated_line = re.sub(r'URI="([^"]+)"', replace_uri, line)
+        return updated_line, segment_urls
+
+    absolute_url = urljoin(source_url, stripped_line)
+    extension = _infer_extension(absolute_url)
+    if extension == 'ts':
+        segment_urls.append(absolute_url)
+    return generate_base64_encoded_url(absolute_url, extension, stream_key=stream_key, username=username), segment_urls
+
+
+async def _stream_updated_playlist(resp, response_url, stream_key=None, username=None):
+    buffer = ""
+    async for chunk in resp.content.iter_chunked(8192):
+        buffer += chunk.decode('utf-8', errors='ignore')
+        while '\n' in buffer:
+            line, buffer = buffer.split('\n', 1)
+            updated_line, _ = rewrite_playlist_line(
+                line,
+                response_url,
+                stream_key=stream_key,
+                username=username,
+            )
+            if updated_line:
+                yield updated_line + "\n"
+    if buffer:
+        updated_line, _ = rewrite_playlist_line(
+            buffer,
+            response_url,
+            stream_key=stream_key,
+            username=username,
+        )
+        if updated_line:
+            yield updated_line + "\n"
+
+
+async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(decoded_url) as resp:
+            if resp.status != 200:
+                return None, None, False
+
+            response_url = str(resp.url)
+            content_type = resp.headers.get('Content-Type') or 'application/vnd.apple.mpegurl'
+            content_length = resp.content_length or 0
+
+            if content_length and content_length > hls_proxy_max_buffer_bytes:
+                return _stream_updated_playlist(
+                    resp,
+                    response_url,
+                    stream_key=stream_key,
+                    username=username,
+                ), content_type, True
+
+            playlist_content = await resp.text()
+            updated_playlist = update_child_urls(
+                playlist_content,
+                response_url,
+                stream_key=stream_key,
+                username=username
+            )
+            return updated_playlist, content_type, False
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.m3u8', methods=['GET'])
@@ -410,13 +460,37 @@ async def proxy_m3u8(encoded_url):
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
 
-    updated_playlist = await fetch_and_update_playlist(decoded_url, stream_key=stream_key, username=username)
+    updated_playlist, content_type, is_stream = await fetch_and_update_playlist(
+        decoded_url,
+        stream_key=stream_key,
+        username=username
+    )
     if updated_playlist is None:
         proxy_logger.error("Failed to fetch the original playlist '%s'", decoded_url)
         return Response("Failed to fetch the original playlist.", status=404)
 
     proxy_logger.info(f"[MISS] Serving m3u8 URL '%s' without cache", decoded_url)
-    return Response(updated_playlist, content_type='application/vnd.apple.mpegurl')
+    if is_stream:
+        return Response(updated_playlist, content_type=content_type)
+    return Response(updated_playlist, content_type=content_type)
+
+
+@blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/proxy.m3u8', methods=['GET'])
+@stream_key_required
+async def proxy_m3u8_redirect():
+    url = request.args.get('url')
+    if not url:
+        return Response("Missing url parameter.", status=400)
+    encoded = base64.b64encode(url.encode('utf-8')).decode('utf-8')
+    stream_key = request.args.get("stream_key") or request.args.get("password")
+    username = request.args.get("username")
+    target = f'{hls_proxy_prefix.rstrip("/")}/{encoded}.m3u8'
+    if stream_key:
+        if username:
+            target = f'{target}?username={username}&password={stream_key}'
+        else:
+            target = f'{target}?stream_key={stream_key}'
+    return redirect(target, code=302)
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.key', methods=['GET'])

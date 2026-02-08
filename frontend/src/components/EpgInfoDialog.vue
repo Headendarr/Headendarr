@@ -107,6 +107,23 @@
                   label="EPG URL"
                 />
               </div>
+              <div class="q-gutter-sm">
+                <q-skeleton
+                  v-if="userAgent === null"
+                  type="QInput" />
+                <q-select
+                  v-else
+                  v-model="userAgent"
+                  :options="userAgents"
+                  option-value="value"
+                  option-label="name"
+                  emit-value
+                  map-options
+                  label="User Agent"
+                  hint="User-Agent header to use when fetching this EPG"
+                  clearable
+                />
+              </div>
 
               <div>
                 <q-btn label="Save" type="submit" color="primary"/>
@@ -147,6 +164,8 @@ export default {
       enabled: ref(null),
       name: ref(null),
       url: ref(null),
+      userAgent: ref(null),
+      userAgents: ref([]),
     }
   },
   methods: {
@@ -154,13 +173,16 @@ export default {
     // (don't change its name --> "show")
     show() {
       this.$refs.epgInfoDialogRef.show();
-      if (this.epgId) {
-        this.fetchPlaylistData();
-        return
-      }
-      this.enabled = true
-      this.name = ''
-      this.url = ''
+      this.fetchUserAgents().then(() => {
+        if (this.epgId) {
+          this.fetchPlaylistData();
+          return
+        }
+        this.enabled = true
+        this.name = ''
+        this.url = ''
+        this.userAgent = this.getPreferredUserAgent('Chrome')
+      });
     },
 
     // following method is REQUIRED
@@ -185,7 +207,38 @@ export default {
         this.enabled = response.data.data.enabled
         this.name = response.data.data.name
         this.url = response.data.data.url
+        this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('Chrome')
       });
+    },
+    fetchUserAgents() {
+      return axios({
+        method: 'get',
+        url: '/tic-api/get-settings',
+      }).then((response) => {
+        const agents = response.data.data.user_agents || []
+        this.userAgents = agents.map((agent) => ({
+          name: agent.name,
+          value: agent.value,
+        }));
+        if (!this.userAgents.length) {
+          this.userAgents = [
+            {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+            {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+            {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+          ];
+        }
+      }).catch(() => {
+        this.userAgents = [
+          {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
+          {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+        ];
+      });
+    },
+    getPreferredUserAgent(preferredName) {
+      if (!this.userAgents.length) return null;
+      const match = this.userAgents.find((agent) => agent.name === preferredName);
+      return (match || this.userAgents[0]).value;
     },
     save: function () {
       let url = '/tic-api/epgs/settings/new'
@@ -196,6 +249,7 @@ export default {
         enabled: this.enabled,
         name: this.name,
         url: this.url,
+        user_agent: this.userAgent,
       }
       axios({
         method: 'POST',

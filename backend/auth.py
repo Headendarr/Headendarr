@@ -114,6 +114,20 @@ def user_auth_required(func):
     return decorated_function
 
 
+def streamer_or_admin_required(func):
+    @wraps(func)
+    async def decorated_function(*args, **kwargs):
+        user = await get_user_from_token()
+        if not user:
+            return unauthorized_response()
+        if not (user_has_role(user, "admin") or user_has_role(user, "streamer")):
+            return forbidden_response()
+        request._current_user = user
+        return await func(*args, **kwargs)
+
+    return decorated_function
+
+
 def _extract_stream_key():
     if request.view_args and request.view_args.get("stream_key"):
         return request.view_args.get("stream_key")

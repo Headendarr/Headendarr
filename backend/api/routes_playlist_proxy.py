@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+import base64
 import re
 import sqlalchemy.exc
 
@@ -10,6 +11,7 @@ from quart import jsonify, current_app, render_template_string, Response
 
 from backend.auth import stream_key_required, audit_stream_event
 from backend.config import is_tvh_process_running_locally
+from urllib.parse import urlparse
 
 device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
@@ -28,6 +30,15 @@ device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
         <UDN>uuid:{{ data.DeviceID }}</UDN>
     </device>
 </root>"""
+
+
+def _build_proxy_stream_url(base_url, source_url, stream_key):
+    parsed_source = urlparse(source_url)
+    is_hls = parsed_source.path.lower().endswith('.m3u8')
+    encoded_url = base64.b64encode(source_url.encode('utf-8')).decode('utf-8')
+    if is_hls:
+        return f'{base_url}/tic-hls-proxy/{encoded_url}.m3u8?stream_key={stream_key}'
+    return f'{base_url}/tic-hls-proxy/stream/{encoded_url}?stream_key={stream_key}'
 
 
 async def _get_tvh_settings(include_auth=True, stream_profile='pass', stream_username=None, stream_key=None):
@@ -116,7 +127,9 @@ async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=Non
 
 
 async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
-    use_tvh_source = True
+    config = current_app.config['APP_CONFIG']
+    settings = config.read_settings()
+    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
     tvh_settings = await _get_tvh_settings(
         include_auth=True,
         stream_username=stream_username,
@@ -126,30 +139,41 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
     from backend.epgs import generate_epg_channel_id
     for channel_details in await _get_channels(playlist_id):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
-        # TODO: Add support for fetching a stream from this application without using TVH as a proxy
+        channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
             channel_url = f'{tvh_settings["tvh_http_url"]}/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
-            url = f'{channel_url}{path_args}'
+            channel_url = f'{channel_url}{path_args}'
+        else:
+            source = channel_details['sources'][0] if channel_details.get('sources') else None
+            source_url = source.get('stream_url') if source else None
+            if source_url:
+                base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+                channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+
+        if channel_url:
             lineup_list.append(
                 {
                     'GuideNumber': channel_id,
                     'GuideName':   channel_details['name'],
-                    'URL':         url
+                    'URL':         channel_url
                 }
             )
     return lineup_list
 
 
 async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile='pass', stream_key=None, username=None):
-    use_tvh_source = True
+    config = current_app.config['APP_CONFIG']
+    settings = config.read_settings()
+    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
     tvh_settings = await _get_tvh_settings(
         include_auth=include_auth,
         stream_profile=stream_profile,
         stream_username=username,
         stream_key=stream_key,
     )
-    epg_url = f'{tvh_settings["tic_base_url"]}/xmltv.php'
+    base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+    epg_url = f'{base_url}/xmltv.php'
     if stream_key:
         if username:
             epg_url = f'{epg_url}?username={username}&password={stream_key}'
@@ -168,12 +192,19 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
             group_title = channel_details['tags'][0]
             line += f' group-title="{group_title}"'
         playlist.append(line)
-        # TODO: Add support for fetching a stream from this application without using TVH as a proxy
+        channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
             channel_url = f'{tvh_settings["tvh_http_url"]}/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
-            url = f'{channel_url}{path_args}'
-            playlist.append(url)
+            channel_url = f'{channel_url}{path_args}'
+        else:
+            source = channel_details['sources'][0] if channel_details.get('sources') else None
+            source_url = source.get('stream_url') if source else None
+            if source_url:
+                channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+
+        if channel_url:
+            playlist.append(channel_url)
     return playlist
 
 

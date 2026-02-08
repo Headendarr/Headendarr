@@ -283,16 +283,41 @@ async def api_require_auth():
 @blueprint.route('/tic-api/get-background-tasks', methods=['GET'])
 @admin_auth_required
 async def api_get_background_tasks():
+    async def snapshot(task_broker):
+        return {
+            "task_queue_status": await task_broker.get_status(),
+            "current_task":      await task_broker.get_currently_running_task(),
+            "pending_tasks":     await task_broker.get_pending_tasks(),
+        }
+
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.get_pending_tasks()
+    wait = request.args.get('wait', '0')
+    timeout = request.args.get('timeout', '0')
+    try:
+        wait = int(wait)
+    except ValueError:
+        wait = 0
+    try:
+        timeout = int(timeout)
+    except ValueError:
+        timeout = 0
+
+    data = await snapshot(task_broker)
+    if wait and timeout:
+        start = asyncio.get_event_loop().time()
+        while True:
+            await asyncio.sleep(1)
+            updated = await snapshot(task_broker)
+            if updated != data:
+                data = updated
+                break
+            if (asyncio.get_event_loop().time() - start) >= timeout:
+                break
     return jsonify(
         {
             "success": True,
-            "data":    {
-                "task_queue_status": await task_broker.get_status(),
-                "current_task":      await task_broker.get_currently_running_task(),
-                "pending_tasks":     await task_broker.get_pending_tasks(),
-            },
+            "data":    data,
         }
     ), 200
 

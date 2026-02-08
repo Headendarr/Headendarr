@@ -32,6 +32,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                         'connections':          result.connections,
                         'name':                 result.name,
                         'url':                  result.url,
+                        'user_agent':           result.user_agent,
                         'use_hls_proxy':        result.use_hls_proxy,
                         'use_custom_hls_proxy': result.use_custom_hls_proxy,
                         'hls_proxy_path':       result.hls_proxy_path if result.hls_proxy_path else f'{app_url}/tic-hls-proxy/[B64_URL].m3u8',
@@ -43,6 +44,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                     'connections':          result.connections,
                     'name':                 result.name,
                     'url':                  result.url,
+                    'user_agent':           result.user_agent,
                     'use_hls_proxy':        result.use_hls_proxy,
                     'use_custom_hls_proxy': result.use_custom_hls_proxy,
                     'hls_proxy_path':       result.hls_proxy_path if result.hls_proxy_path else f'{app_url}/tic-hls-proxy/[B64_URL].m3u8',
@@ -66,6 +68,7 @@ async def read_config_one_playlist(config, playlist_id):
                     'name':                 result.name,
                     'url':                  result.url,
                     'connections':          result.connections,
+                    'user_agent':           result.user_agent,
                     'use_hls_proxy':        result.use_hls_proxy,
                     'use_custom_hls_proxy': result.use_custom_hls_proxy,
                     'hls_proxy_path':       result.hls_proxy_path if result.hls_proxy_path else f'{app_url}/tic-hls-proxy/[B64_URL].m3u8',
@@ -83,6 +86,7 @@ async def add_new_playlist(config, data):
                 name=data.get('name'),
                 url=data.get('url'),
                 connections=data.get('connections'),
+                user_agent=data.get('user_agent'),
                 use_hls_proxy=data.get('use_hls_proxy', False),
                 use_custom_hls_proxy=data.get('use_custom_hls_proxy', False),
                 hls_proxy_path=data.get('hls_proxy_path', f'{app_url}/tic-hls-proxy/[B64_URL].m3u8'),
@@ -101,6 +105,7 @@ async def update_playlist(config, playlist_id, data):
             playlist.name = data.get('name', playlist.name)
             playlist.url = data.get('url', playlist.url)
             playlist.connections = data.get('connections', playlist.connections)
+            playlist.user_agent = data.get('user_agent', playlist.user_agent)
             playlist.use_hls_proxy = data.get('use_hls_proxy', playlist.use_hls_proxy)
             playlist.use_custom_hls_proxy = data.get('use_custom_hls_proxy', playlist.use_custom_hls_proxy)
             playlist.hls_proxy_path = data.get('hls_proxy_path', playlist.hls_proxy_path)
@@ -126,12 +131,21 @@ async def delete_playlist(config, playlist_id):
     return net_uuid
 
 
-async def download_playlist_file(url, output):
+def _resolve_user_agent(settings, user_agent):
+    if user_agent:
+        return user_agent
+    defaults = settings.get('settings', {}).get('user_agents', [])
+    if isinstance(defaults, list) and defaults:
+        return defaults[0].get('value') or defaults[0].get('name')
+    return 'VLC/3.0.21 LibVLC/3.0.21'
+
+
+async def download_playlist_file(settings, url, output, user_agent=None):
     logger.info("Downloading Playlist from url - '%s'", url)
     if not os.path.exists(os.path.dirname(output)):
         os.makedirs(os.path.dirname(output))
     headers = {
-        'User-Agent': 'VLC/3.0.0-git LibVLC/3.0.0-gi',
+        'User-Agent': _resolve_user_agent(settings, user_agent),
     }
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
@@ -197,11 +211,12 @@ def fetch_playlist_streams(playlist_id):
 
 async def import_playlist_data(config, playlist_id):
     playlist = await read_config_one_playlist(config, playlist_id)
+    settings = config.read_settings()
     # Download playlist data and save to YAML cache file
     logger.info("Downloading updated M3U file for playlist #%s from url - '%s'", playlist_id, playlist['url'])
     start_time = time.time()
     m3u_file = os.path.join(config.config_path, 'cache', 'playlists', f"{playlist_id}.m3u")
-    await download_playlist_file(playlist['url'], m3u_file)
+    await download_playlist_file(settings, playlist['url'], m3u_file, playlist.get('user_agent'))
     execution_time = time.time() - start_time
     logger.info("Updated M3U file for playlist #%s was downloaded in '%s' seconds", playlist_id, int(execution_time))
     # Parse the M3U file and cache the data in a YAML file for faster parsing

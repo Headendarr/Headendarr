@@ -91,6 +91,7 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                         'playlist_name': source.playlist.name,
                         'priority':      source.priority,
                         'stream_name':   source.playlist_stream_name,
+                        'stream_url':    source.playlist_stream_url,
                     })
                 # Filter out this channel if we have provided a playlist ID filter list and no sources were found
                 if filter_playlist_ids and not sources:

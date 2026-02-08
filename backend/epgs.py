@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from mimetypes import guess_extension
 from urllib.parse import quote
@@ -44,6 +45,7 @@ async def read_config_all_epgs(output_for_export=False):
                         'enabled': result.enabled,
                         'name':    result.name,
                         'url':     result.url,
+                        'user_agent': result.user_agent,
                     })
                     continue
                 return_list.append({
@@ -51,6 +53,7 @@ async def read_config_all_epgs(output_for_export=False):
                     'enabled': result.enabled,
                     'name':    result.name,
                     'url':     result.url,
+                    'user_agent': result.user_agent,
                 })
     return return_list
 
@@ -67,6 +70,7 @@ async def read_config_one_epg(epg_id):
                     'enabled': results.enabled,
                     'name':    results.name,
                     'url':     results.url,
+                    'user_agent': results.user_agent,
                 }
     return return_item
 
@@ -78,6 +82,7 @@ async def add_new_epg(data):
                 enabled=data.get('enabled'),
                 name=data.get('name'),
                 url=data.get('url'),
+                user_agent=data.get('user_agent'),
             )
             # This is a new entry. Add it to the session before commit
             session.add(epg)
@@ -91,6 +96,7 @@ async def update_epg(epg_id, data):
             epg.enabled = data.get('enabled')
             epg.name = data.get('name')
             epg.url = data.get('url')
+            epg.user_agent = data.get('user_agent', epg.user_agent)
 
 
 async def delete_epg(config, epg_id):
@@ -134,11 +140,20 @@ async def clear_epg_channel_data(epg_id):
                 await session.execute(delete(EpgChannels).where(EpgChannels.id.in_(channel_ids)))
 
 
-async def download_xmltv_epg(url, output):
+def _resolve_user_agent(settings, user_agent):
+    if user_agent:
+        return user_agent
+    defaults = settings.get('settings', {}).get('user_agents', [])
+    if isinstance(defaults, list) and defaults:
+        return defaults[0].get('value') or defaults[0].get('name')
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+
+
+async def download_xmltv_epg(settings, url, output, user_agent=None):
     logger.info("Downloading EPG from url - '%s'", url)
     if not os.path.exists(os.path.dirname(output)):
         os.makedirs(os.path.dirname(output))
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"}
+    headers = {"User-Agent": _resolve_user_agent(settings, user_agent)}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             response.raise_for_status()
@@ -237,6 +252,17 @@ async def store_epg_programmes(config, epg_id, channel_id_list):
                 stop = programme.attrib.get('stop', None)
                 start_timestamp = programme.attrib.get('start_timestamp', None)
                 stop_timestamp = programme.attrib.get('stop_timestamp', None)
+                # Some XMLTV sources omit start_timestamp/stop_timestamp. Derive from start/stop.
+                if start and not start_timestamp:
+                    try:
+                        start_timestamp = str(int(datetime.strptime(start, "%Y%m%d%H%M%S %z").timestamp()))
+                    except Exception:
+                        start_timestamp = None
+                if stop and not stop_timestamp:
+                    try:
+                        stop_timestamp = str(int(datetime.strptime(stop, "%Y%m%d%H%M%S %z").timestamp()))
+                    except Exception:
+                        stop_timestamp = None
                 # Parse sub-elements
                 title = programme.findtext("title", default=None)
                 sub_title = programme.findtext("sub-title", default=None)
@@ -282,11 +308,12 @@ async def store_epg_programmes(config, epg_id, channel_id_list):
 
 async def import_epg_data(config, epg_id):
     epg = await read_config_one_epg(epg_id)
+    settings = config.read_settings()
     # Download a new local copy of the EPG
     logger.info("Downloading updated XMLTV file for EPG #%s from url - '%s'", epg_id, epg['url'])
     start_time = time.time()
     xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
-    await download_xmltv_epg(epg['url'], xmltv_file)
+    await download_xmltv_epg(settings, epg['url'], xmltv_file, epg.get('user_agent'))
     execution_time = time.time() - start_time
     logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
     # Read and save EPG data to DB

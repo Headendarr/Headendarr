@@ -3,7 +3,7 @@
 
 from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, rebuild_custom_epg, \
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
-    TaskQueueBroker
+    TaskQueueBroker, reconcile_dvr
 from backend import create_app, config
 import asyncio
 
@@ -34,6 +34,17 @@ async def every_5_mins():
             'function': map_new_tvh_services,
             'args':     [app],
         }, priority=10)
+
+
+@scheduler.scheduled_job('interval', id='do_1_min', minutes=1, misfire_grace_time=30)
+async def every_1_min():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task({
+            'name':     'Reconciling DVR recordings',
+            'function': reconcile_dvr,
+            'args':     [app],
+        }, priority=20)
 
 
 @scheduler.scheduled_job('interval', id='do_60_mins', minutes=60, misfire_grace_time=300)

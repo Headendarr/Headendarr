@@ -19,6 +19,8 @@
     "@quasar/extras": "^1.16.12",
     "axios": "^1.2.1",
     "core-js": "^3.39.0",
+    "hls.js": "^1.5.18",
+    "mpegts.js": "^1.7.3",
     "pinia": "^2.2.5",
     "quasar": "^2.17.1",
     "stream": "^0.0.3",

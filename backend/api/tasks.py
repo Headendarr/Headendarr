@@ -223,3 +223,11 @@ async def map_new_tvh_services(app):
     await map_all_services(config)
     # Clear out old channels
     await cleanup_old_channels(config)
+
+
+async def reconcile_dvr(app):
+    logger.info("Reconciling DVR recordings")
+    config = app.config['APP_CONFIG']
+    from backend.dvr import apply_recurring_rules, reconcile_tvh_recordings
+    await apply_recurring_rules(config)
+    await reconcile_tvh_recordings(config)
