@@ -118,8 +118,11 @@ async def main():
 
     # Start Quart server
     app.logger.info("Starting Quart server...")
-    await app.run_task(host=config.flask_run_host, port=config.flask_run_port,
-                       debug=config.enable_app_debugging)
+    await app.run_task(
+        host=config.flask_run_host,
+        port=config.flask_run_port,
+        debug=config.enable_app_debugging
+    )
     app.logger.info("Quart server completed.")
 
 

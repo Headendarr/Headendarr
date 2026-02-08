@@ -28,7 +28,8 @@ function persistState(state) {
       JSON.stringify({
         size: state.size,
         position: state.position,
-      })
+        volume: state.volume,
+      }),
     );
   } catch (error) {
     console.warn('Failed to persist video player state:', error);
@@ -43,6 +44,7 @@ export const useVideoStore = defineStore('video', {
     streamType: 'auto',
     size: loadState().size || DEFAULT_SIZE,
     position: loadState().position || DEFAULT_POSITION,
+    volume: typeof loadState().volume === 'number' ? loadState().volume : 1,
   }),
   actions: {
     showPlayer({url, title = null, type = 'auto'}) {
@@ -63,6 +65,10 @@ export const useVideoStore = defineStore('video', {
     },
     setPosition(position) {
       this.position = position;
+      persistState(this);
+    },
+    setVolume(volume) {
+      this.volume = volume;
       persistState(this);
     },
   },

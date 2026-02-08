@@ -17,13 +17,13 @@
           <q-separator />
 
           <q-tab-panels v-model="tab" animated>
-            <q-tab-panel name="recordings">
-              <q-btn
-                color="primary"
-                label="Schedule Recording"
-                class="q-mb-md"
-                @click="showScheduleDialog = true"
-              />
+        <q-tab-panel name="recordings">
+          <q-btn
+            color="primary"
+            label="Schedule Recording"
+            class="q-mb-md"
+            @click="showScheduleDialog = true"
+          />
               <q-table
                 :rows="recordings"
                 :columns="recordingColumns"
@@ -31,19 +31,35 @@
                 flat
                 dense
               >
-                <template v-slot:body-cell-actions="props">
-                  <q-td :props="props">
-                    <q-btn
-                      dense
-                      flat
-                      icon="cancel"
-                      color="negative"
-                      @click="cancelRecording(props.row.id)"
-                    />
-                  </q-td>
-                </template>
-              </q-table>
-            </q-tab-panel>
+            <template v-slot:body-cell-actions="props">
+              <q-td :props="props">
+                <q-btn
+                  v-if="isRecordingPlayable(props.row)"
+                  dense
+                  flat
+                  icon="play_arrow"
+                  color="primary"
+                  @click="playRecording(props.row)"
+                />
+                <q-btn
+                  v-if="canCancelRecording(props.row)"
+                  dense
+                  flat
+                  icon="cancel"
+                  color="negative"
+                  @click="cancelRecording(props.row.id)"
+                />
+                <q-btn
+                  dense
+                  flat
+                  icon="delete"
+                  color="negative"
+                  @click="confirmDeleteRecording(props.row)"
+                />
+              </q-td>
+            </template>
+          </q-table>
+        </q-tab-panel>
 
             <q-tab-panel name="rules">
               <q-btn
@@ -61,13 +77,13 @@
               >
                 <template v-slot:body-cell-actions="props">
                   <q-td :props="props">
-                    <q-btn
-                      dense
-                      flat
-                      icon="delete"
-                      color="negative"
-                      @click="deleteRule(props.row.id)"
-                    />
+                <q-btn
+                  dense
+                  flat
+                  icon="delete"
+                  color="negative"
+                  @click="confirmDeleteRule(props.row)"
+                />
                   </q-td>
                 </template>
               </q-table>
@@ -215,10 +231,14 @@
 import {defineComponent, ref, onMounted, onBeforeUnmount, computed} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
+import {useVideoStore} from 'stores/video';
+import {useQuasar} from 'quasar';
 
 export default defineComponent({
   name: 'DvrPage',
   setup() {
+    const videoStore = useVideoStore();
+    const $q = useQuasar();
     const tab = ref('recordings');
     const recordings = ref([]);
     const rules = ref([]);
@@ -290,6 +310,11 @@ export default defineComponent({
       await loadRecordings();
     };
 
+    const deleteRecording = async (id) => {
+      await axios.delete(`/tic-api/recordings/${id}`);
+      await loadRecordings();
+    };
+
     const submitSchedule = async () => {
       const startTs = Math.floor(new Date(scheduleForm.value.start).getTime() / 1000);
       const stopTs = Math.floor(new Date(scheduleForm.value.stop).getTime() / 1000);
@@ -316,6 +341,52 @@ export default defineComponent({
     const deleteRule = async (id) => {
       await axios.delete(`/tic-api/recording-rules/${id}`);
       await loadRules();
+    };
+
+    const completedStates = new Set(['completed', 'finished', 'done', 'success', 'recorded']);
+    const activeStates = new Set(['scheduled', 'recording', 'running', 'in_progress']);
+
+    const isRecordingPlayable = (rec) => {
+      if (!rec || !rec.status) return false;
+      const normalized = String(rec.status).toLowerCase().trim();
+      if (completedStates.has(normalized)) return true;
+      return normalized.includes('completed') || normalized.includes('finished') || normalized.includes('success');
+    };
+
+    const canCancelRecording = (rec) => {
+      if (!rec || !rec.status) return false;
+      return activeStates.has(String(rec.status).toLowerCase());
+    };
+
+    const playRecording = (rec) => {
+      if (!rec?.id) return;
+      videoStore.showPlayer({
+        url: `/tic-api/recordings/${rec.id}/hls.m3u8`,
+        title: rec.title || 'Recording',
+        type: 'application/x-mpegURL',
+      });
+    };
+
+    const confirmDeleteRecording = (rec) => {
+      $q.dialog({
+        title: 'Delete recording?',
+        message: 'This will remove the recording from TIC and delete it from TVHeadend if available.',
+        cancel: true,
+        persistent: true,
+      }).onOk(async () => {
+        await deleteRecording(rec.id);
+      });
+    };
+
+    const confirmDeleteRule = (rule) => {
+      $q.dialog({
+        title: 'Delete recording rule?',
+        message: 'This will remove the rule and will not delete already scheduled recordings.',
+        cancel: true,
+        persistent: true,
+      }).onOk(async () => {
+        await deleteRule(rule.id);
+      });
     };
 
     let pollingActive = true;
@@ -359,9 +430,15 @@ export default defineComponent({
       channelOptions,
       refreshAll,
       cancelRecording,
+      deleteRecording,
       submitSchedule,
       submitRule,
       deleteRule,
+      isRecordingPlayable,
+      canCancelRecording,
+      playRecording,
+      confirmDeleteRecording,
+      confirmDeleteRule,
     };
   },
 });

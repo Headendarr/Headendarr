@@ -23,13 +23,14 @@ export const useAuthStore = defineStore('auth', {
       delete axios.defaults.headers.common.Authorization;
     },
     async login(username, password) {
-        const response = await axios.post('/tic-api/auth/login', {username, password});
-        if (response.status === 200 && response.data.success) {
-          this.setToken(response.data.token);
-          this.user = response.data.user;
-          this.isAuthenticated = true;
-        }
-        return response;
+      const response = await axios.post('/tic-api/auth/login',
+        {username, password});
+      if (response.status === 200 && response.data.success) {
+        this.setToken(response.data.token);
+        this.user = response.data.user;
+        this.isAuthenticated = true;
+      }
+      return response;
     },
     async logout() {
       try {
@@ -48,7 +49,8 @@ export const useAuthStore = defineStore('auth', {
         if (this.token) {
           axios.defaults.headers.common.Authorization = `Bearer ${this.token}`;
         }
-        const response = await axios.get('/tic-api/check-auth', {cache: 'no-store'});
+        const response = await axios.get('/tic-api/check-auth',
+          {cache: 'no-store'});
         this.isAuthenticated = response.status === 200;
         if (this.isAuthenticated) {
           let payload = await response.data;

@@ -20,7 +20,7 @@
 #
 
 # -- Server or stand-alone executables
-Quart~=0.19
+Quart~=0.20
     #   Reason:             This is the web server framework
     #   Import example:     N/A
 
@@ -40,6 +40,9 @@ alembic~=1.13
 APScheduler~=3.11
     #   Reason:             Adds APScheduler for running scheduled tasks
     #   Import example:     from apscheduler.schedulers.asyncio import AsyncIOScheduler
+watchgod~=0.8
+    #   Reason:             Required for entrypoint-managed hot reload when ENABLE_APP_HOT_RELOAD=true
+    #   Import example:     watchgod --recursive --interval
 
 # -- Support libraries
 aiosqlite>=0.22

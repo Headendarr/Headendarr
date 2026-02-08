@@ -154,8 +154,14 @@ else
     fi
 
     # Run TIC server
-    print_log info "Starting TIC server"
-    python3 "${FLASK_APP:?}"
+    if [ "${ENABLE_APP_HOT_RELOAD}" = "true" ]; then
+        print_log info "Starting TIC server with watchgod hot reload (watching /app/backend)"
+        export ENABLE_APP_HOT_RELOAD=false
+        python3 /app/scripts/watchgod_reload.py python3 "${FLASK_APP:?}"
+    else
+        print_log info "Starting TIC server"
+        python3 "${FLASK_APP:?}"
+    fi
 
     # Terminate TVH process if TIC service ends
     if [ -n "$tvh_pid" ]; then

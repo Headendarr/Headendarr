@@ -108,10 +108,17 @@
                       :key="programme.id"
                       :ref="(el) => setProgrammeRef(programme.id, el)"
                       class="guide__program"
-                      :class="{'guide__program--expanded': expandedProgramId === programme.id}"
+                      :class="programmeClass(programme, channel)"
                       :style="programmeStyle(programme)"
                       @click="toggleProgramme(programme)"
                     >
+                      <div
+                        v-if="getRecordingForProgramme(programme, channel)"
+                        class="guide__program-badge"
+                        :class="recordingBadgeClass(getRecordingForProgramme(programme, channel))"
+                      >
+                        {{ recordingBadgeLabel(getRecordingForProgramme(programme, channel)) }}
+                      </div>
                       <div class="guide__program-title">{{ programme.title }}</div>
                       <div class="guide__program-time">
                         {{ formatTime(programme.start_ts) }} - {{ formatTime(programme.stop_ts) }}
@@ -130,11 +137,20 @@
                             @click.stop="previewChannel(channel)"
                           />
                           <q-btn
+                            v-if="!getRecordingForProgramme(programme, channel)"
                             dense
                             flat
                             icon="fiber_manual_record"
                             label="Record"
                             @click.stop="recordProgramme(channel, programme)"
+                          />
+                          <q-btn
+                            v-if="getRecordingForProgramme(programme, channel)"
+                            dense
+                            flat
+                            icon="cancel"
+                            label="Cancel Recording"
+                            @click.stop="cancelProgrammeRecording(getRecordingForProgramme(programme, channel))"
                           />
                           <q-btn
                             dense
@@ -185,6 +201,7 @@ export default defineComponent({
     const selectedGroup = ref('all');
     const channels = ref([]);
     const programmes = ref([]);
+    const recordings = ref([]);
     const hoveredChannelId = ref(null);
     const expandedProgramId = ref(null);
     const expandedSizes = ref({});
@@ -406,6 +423,15 @@ export default defineComponent({
       }
     };
 
+    const loadRecordings = async () => {
+      try {
+        const response = await axios.get('/tic-api/recordings');
+        recordings.value = response.data.data || [];
+      } catch (error) {
+        console.error('Failed to load recordings:', error);
+      }
+    };
+
     const fetchGuideRange = async (rangeStart, rangeEnd, {prepend = false} = {}) => {
       if (rangeStart < minStartTs) {
         rangeStart = minStartTs;
@@ -494,8 +520,19 @@ export default defineComponent({
           stop_ts: programme.stop_ts,
           epg_programme_id: programme.id,
         });
+        await loadRecordings();
       } catch (error) {
         console.error('Recording failed:', error);
+      }
+    };
+
+    const cancelProgrammeRecording = async (recording) => {
+      if (!recording?.id) return;
+      try {
+        await axios.post(`/tic-api/recordings/${recording.id}/cancel`);
+        await loadRecordings();
+      } catch (error) {
+        console.error('Cancel recording failed:', error);
       }
     };
 
@@ -708,6 +745,20 @@ export default defineComponent({
       return nowTs.value >= visibleStart && nowTs.value <= visibleEnd;
     });
 
+    let pollingActive = true;
+    const pollRecordings = async () => {
+      while (pollingActive) {
+        try {
+          const response = await axios.get('/tic-api/recordings/poll', {
+            params: {wait: 1, timeout: 25},
+          });
+          recordings.value = response.data.data || [];
+        } catch (error) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+    };
+
     onMounted(async () => {
       await nextTick();
       bindHeaderEvents();
@@ -718,8 +769,11 @@ export default defineComponent({
         nowTs.value = Math.floor(Date.now() / 1000);
       }, 60000);
       fetchGuide();
+      await loadRecordings();
+      pollRecordings();
     });
     onBeforeUnmount(() => {
+      pollingActive = false;
       stopHeaderScrollSync();
       if (nowTimerId.value) {
         clearInterval(nowTimerId.value);
@@ -747,6 +801,66 @@ export default defineComponent({
       document.removeEventListener('wheel', onGlobalWheel);
     });
 
+    const recordingsIndex = computed(() => {
+      const map = new Map();
+      (recordings.value || []).forEach((rec) => {
+        const status = String(rec?.status || '').toLowerCase();
+        if (status === 'canceled' || status === 'deleted') {
+          return;
+        }
+        if (rec?.epg_programme_id) {
+          map.set(`epg:${rec.epg_programme_id}`, rec);
+        }
+        if (rec?.channel_id && rec?.start_ts && rec?.stop_ts) {
+          map.set(`slot:${rec.channel_id}:${rec.start_ts}:${rec.stop_ts}`, rec);
+        }
+      });
+      return map;
+    });
+
+    const getRecordingForProgramme = (programme, channel) => {
+      if (!programme) return null;
+      const byEpg = recordingsIndex.value.get(`epg:${programme.id}`);
+      if (byEpg) return byEpg;
+      if (channel?.id && programme.start_ts && programme.stop_ts) {
+        return recordingsIndex.value.get(`slot:${channel.id}:${programme.start_ts}:${programme.stop_ts}`) || null;
+      }
+      return null;
+    };
+
+    const recordingBadgeLabel = (rec) => {
+      if (!rec?.status) return 'Scheduled';
+      const status = String(rec.status).toLowerCase();
+      if (status === 'recording' || status === 'running' || status === 'in_progress') {
+        return 'Recording';
+      }
+      if (status === 'canceled' || status === 'deleted') {
+        return 'Canceled';
+      }
+      return 'Scheduled';
+    };
+
+    const recordingBadgeClass = (rec) => {
+      if (!rec?.status) return 'guide__program-badge--scheduled';
+      const status = String(rec.status).toLowerCase();
+      if (status === 'recording' || status === 'running' || status === 'in_progress') {
+        return 'guide__program-badge--recording';
+      }
+      if (status === 'canceled' || status === 'deleted') {
+        return 'guide__program-badge--canceled';
+      }
+      return 'guide__program-badge--scheduled';
+    };
+
+    const programmeClass = (programme, channel) => {
+      const rec = getRecordingForProgramme(programme, channel);
+      return {
+        'guide__program--expanded': expandedProgramId.value === programme.id,
+        'guide__program--scheduled': rec && recordingBadgeLabel(rec) === 'Scheduled',
+        'guide__program--recording': rec && recordingBadgeLabel(rec) === 'Recording',
+      };
+    };
+
     return {
       loading,
       searchQuery,
@@ -754,6 +868,7 @@ export default defineComponent({
       groupOptions,
       channels,
       programmes,
+      recordings,
       hoveredChannelId,
       expandedProgramId,
       scrollHeader,
@@ -772,6 +887,7 @@ export default defineComponent({
       previewChannel,
       copyStreamUrl,
       recordProgramme,
+      cancelProgrammeRecording,
       recordSeries,
       syncScroll,
       syncHeaderScroll,
@@ -786,6 +902,10 @@ export default defineComponent({
       isLive,
       rowHeight,
       setProgrammeRef,
+      getRecordingForProgramme,
+      recordingBadgeLabel,
+      recordingBadgeClass,
+      programmeClass,
     };
   },
 });
@@ -930,6 +1050,41 @@ export default defineComponent({
   overflow: hidden;
   cursor: pointer;
   border: 1px solid #dbe2ec;
+}
+
+.guide__program--scheduled {
+  border-color: #b9c6ee;
+  background: #e6edfb;
+}
+
+.guide__program--recording {
+  border-color: #f5a3a3;
+  background: #fdecec;
+}
+
+.guide__program-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #5f85f5;
+  color: #fff;
+  letter-spacing: 0.2px;
+}
+
+.guide__program-badge--recording {
+  background: #e74c3c;
+}
+
+.guide__program-badge--scheduled {
+  background: #5f85f5;
+}
+
+.guide__program-badge--canceled {
+  background: #9aa3b2;
 }
 
 .guide__program-title {

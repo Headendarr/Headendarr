@@ -336,9 +336,9 @@ def generate_base64_encoded_url(url_to_encode, extension, stream_key=None, usern
     return url
 
 
-def _rewrite_uri_value(uri_value, source_url, stream_key=None, username=None):
+def _rewrite_uri_value(uri_value, source_url, stream_key=None, username=None, forced_extension=None):
     absolute_url = urljoin(source_url, uri_value)
-    extension = _infer_extension(absolute_url)
+    extension = forced_extension or _infer_extension(absolute_url)
     return generate_base64_encoded_url(absolute_url, extension, stream_key=stream_key, username=username), absolute_url, extension
 
 
@@ -348,11 +348,16 @@ def update_child_urls(playlist_content, source_url, stream_key=None, username=No
     updated_lines = []
     lines = playlist_content.splitlines()
     segment_urls = []
+    state = {
+        "next_is_playlist": False,
+        "next_is_segment": False,
+    }
 
     for line in lines:
         updated_line, new_segment_urls = rewrite_playlist_line(
             line,
             source_url,
+            state,
             stream_key=stream_key,
             username=username,
         )
@@ -369,20 +374,32 @@ def update_child_urls(playlist_content, source_url, stream_key=None, username=No
     return modified_playlist
 
 
-def rewrite_playlist_line(line, source_url, stream_key=None, username=None):
+def rewrite_playlist_line(line, source_url, state, stream_key=None, username=None):
     stripped_line = line.strip()
     if not stripped_line:
         return None, []
 
     segment_urls = []
     if stripped_line.startswith('#'):
+        upper_line = stripped_line.upper()
+        if upper_line.startswith('#EXT-X-STREAM-INF'):
+            state["next_is_playlist"] = True
+        elif upper_line.startswith('#EXTINF'):
+            state["next_is_segment"] = True
+
         def replace_uri(match):
             original_uri = match.group(1)
+            forced_extension = None
+            if '#EXT-X-KEY' in upper_line:
+                forced_extension = 'key'
+            elif '#EXT-X-MEDIA' in upper_line or '#EXT-X-I-FRAME-STREAM-INF' in upper_line:
+                forced_extension = 'm3u8'
             new_uri, absolute_url, extension = _rewrite_uri_value(
                 original_uri,
                 source_url,
                 stream_key=stream_key,
                 username=username,
+                forced_extension=forced_extension,
             )
             if extension == 'ts':
                 segment_urls.append(absolute_url)
@@ -392,7 +409,15 @@ def rewrite_playlist_line(line, source_url, stream_key=None, username=None):
         return updated_line, segment_urls
 
     absolute_url = urljoin(source_url, stripped_line)
-    extension = _infer_extension(absolute_url)
+    if state.get("next_is_playlist"):
+        extension = 'm3u8'
+        state["next_is_playlist"] = False
+        state["next_is_segment"] = False
+    elif state.get("next_is_segment"):
+        extension = 'ts'
+        state["next_is_segment"] = False
+    else:
+        extension = _infer_extension(absolute_url)
     if extension == 'ts':
         segment_urls.append(absolute_url)
     return generate_base64_encoded_url(absolute_url, extension, stream_key=stream_key, username=username), segment_urls
@@ -400,6 +425,10 @@ def rewrite_playlist_line(line, source_url, stream_key=None, username=None):
 
 async def _stream_updated_playlist(resp, response_url, stream_key=None, username=None):
     buffer = ""
+    state = {
+        "next_is_playlist": False,
+        "next_is_segment": False,
+    }
     async for chunk in resp.content.iter_chunked(8192):
         buffer += chunk.decode('utf-8', errors='ignore')
         while '\n' in buffer:
@@ -407,6 +436,7 @@ async def _stream_updated_playlist(resp, response_url, stream_key=None, username
             updated_line, _ = rewrite_playlist_line(
                 line,
                 response_url,
+                state,
                 stream_key=stream_key,
                 username=username,
             )
@@ -416,6 +446,7 @@ async def _stream_updated_playlist(resp, response_url, stream_key=None, username
         updated_line, _ = rewrite_playlist_line(
             buffer,
             response_url,
+            state,
             stream_key=stream_key,
             username=username,
         )

@@ -56,7 +56,7 @@
       <video
         ref="videoEl"
         :class="['floating-player__video', { 'floating-player__video--loading': isLoading }]"
-        :controls="!isLoading"
+        controls
         playsinline
       />
     </div>
@@ -103,6 +103,7 @@ const mpegtsInstances = new Set();
 const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
 const isMobile = ref(window.innerWidth < 600);
+const volumeHandler = ref(null);
 
 function getVideoElement() {
   return videoEl.value || document.querySelector('.floating-player__video');
@@ -158,6 +159,10 @@ function cleanupPlayer() {
   mpegtsInstance.value = null;
   const el = getVideoElement();
   if (el) {
+    if (volumeHandler.value) {
+      el.removeEventListener('volumechange', volumeHandler.value);
+      volumeHandler.value = null;
+    }
     try {
       el.pause();
     } catch (error) {
@@ -197,6 +202,14 @@ async function initPlayer() {
     return;
   }
   videoEl.value = el;
+  el.controls = true;
+  el.volume = typeof videoStore.volume === 'number' ? videoStore.volume : 1;
+  if (!volumeHandler.value) {
+    volumeHandler.value = () => {
+      videoStore.setVolume(el.volume);
+    };
+    el.addEventListener('volumechange', volumeHandler.value);
+  }
   const type = detectStreamType(url, videoStore.streamType);
   isLoading.value = true;
   console.info('[FloatingPlayer] initPlayer', {url, type});
@@ -215,6 +228,7 @@ async function initPlayer() {
           errorMessage.value = 'Playback blocked by browser. Press play to start.';
         }
         isLoading.value = false;
+        snapToAspectRatio();
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
@@ -236,12 +250,14 @@ async function initPlayer() {
       player.load();
       player.play();
       isLoading.value = false;
+      snapToAspectRatio();
       return;
     }
 
     el.src = url;
     await el.play();
     isLoading.value = false;
+    snapToAspectRatio();
   } catch (error) {
     console.error('Failed to initialize player:', error);
     errorMessage.value = 'Unable to start playback.';
@@ -395,8 +411,8 @@ function handleResize(event) {
   const dx = event.clientX - resizeState.value.startX;
   const dy = event.clientY - resizeState.value.startY;
   const {direction, initial, initialPos} = resizeState.value;
-  const minWidth = 240;
-  const minHeight = 160;
+  const minWidth = 320;
+  const minHeight = 260;
   let width = initial.width;
   let height = initial.height;
   let left = initialPos.left;
@@ -416,6 +432,8 @@ function handleResize(event) {
     height = Math.max(minHeight, initial.height - dy);
     top = initialPos.top + dy;
   }
+
+  ({width, height} = adjustSizeToAspect(width, height, direction, minWidth, minHeight));
 
   const right = Math.max(0, initialPos.viewportWidth - left - width);
   const bottom = Math.max(0, initialPos.viewportHeight - top - height);
@@ -430,8 +448,8 @@ function handleResizeTouch(event) {
   const dx = touch.clientX - resizeState.value.startX;
   const dy = touch.clientY - resizeState.value.startY;
   const {direction, initial, initialPos} = resizeState.value;
-  const minWidth = 240;
-  const minHeight = 160;
+  const minWidth = 320;
+  const minHeight = 260;
   let width = initial.width;
   let height = initial.height;
   let left = initialPos.left;
@@ -452,6 +470,8 @@ function handleResizeTouch(event) {
     top = initialPos.top + dy;
   }
 
+  ({width, height} = adjustSizeToAspect(width, height, direction, minWidth, minHeight));
+
   const right = Math.max(0, initialPos.viewportWidth - left - width);
   const bottom = Math.max(0, initialPos.viewportHeight - top - height);
 
@@ -463,12 +483,61 @@ function stopResize() {
   resizeState.value = null;
   window.removeEventListener('mousemove', handleResize);
   window.removeEventListener('mouseup', stopResize);
+  snapToAspectRatio();
 }
 
 function stopResizeTouch() {
   resizeState.value = null;
   window.removeEventListener('touchmove', handleResizeTouch);
   window.removeEventListener('touchend', stopResizeTouch);
+  snapToAspectRatio();
+}
+
+function snapToAspectRatio() {
+  const minWidth = 320;
+  const minHeight = 260;
+  let {width, height} = videoStore.size;
+  if (!width || !height) return;
+  ({width, height} = adjustSizeToAspect(width, height, 'auto', minWidth, minHeight));
+  videoStore.setSize({width, height});
+}
+
+function adjustSizeToAspect(width, height, direction, minWidth, minHeight) {
+  const el = getVideoElement();
+  if (!el || !el.videoWidth || !el.videoHeight) {
+    return {width, height};
+  }
+  const targetRatio = el.videoWidth / el.videoHeight;
+  if (!Number.isFinite(targetRatio) || targetRatio <= 0) {
+    return {width, height};
+  }
+
+  const header = document.querySelector('.floating-player__header');
+  const headerHeight = header ? header.getBoundingClientRect().height : 0;
+  const minBodyHeight = Math.max(1, minHeight - headerHeight);
+  const bodyHeight = Math.max(minBodyHeight, height - headerHeight);
+
+  if (direction.includes('l') || direction.includes('r')) {
+    const newBodyHeight = Math.max(minBodyHeight, Math.round(width / targetRatio));
+    height = Math.max(minHeight, newBodyHeight + headerHeight);
+  } else if (direction.includes('t') || direction.includes('b')) {
+    const newWidth = Math.max(minWidth, Math.round(bodyHeight * targetRatio));
+    width = newWidth;
+  } else {
+    const widthBasedHeight = Math.max(minBodyHeight, Math.round(width / targetRatio));
+    const heightBasedWidth = Math.max(minWidth, Math.round(bodyHeight * targetRatio));
+    const widthDelta = Math.abs(widthBasedHeight - bodyHeight);
+    const heightDelta = Math.abs(heightBasedWidth - width);
+    if (widthDelta <= heightDelta) {
+      height = Math.max(minHeight, widthBasedHeight + headerHeight);
+    } else {
+      width = heightBasedWidth;
+    }
+  }
+
+  width = Math.max(minWidth, width);
+  height = Math.max(minHeight, height);
+  return {width, height};
 }
 
 watch(
@@ -516,11 +585,13 @@ onUnmounted(() => {
   background: #0f1115;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: visible;
   z-index: 10000;
   display: flex;
   flex-direction: column;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+  min-width: 320px;
+  min-height: 260px;
 }
 
 .floating-player__header {
@@ -552,6 +623,8 @@ onUnmounted(() => {
   position: relative;
   flex: 1;
   background: #000;
+  overflow: visible;
+  min-height: 160px;
 }
 
 .floating-player__video {
@@ -559,6 +632,7 @@ onUnmounted(() => {
   height: 100%;
   display: block;
   background: #000;
+  object-fit: contain;
 }
 
 .floating-player__video--loading {

@@ -43,6 +43,8 @@ services:
       - ENABLE_APP_DEBUGGING=true
       # Enables debug logging for DB queries
       - ENABLE_SQLALCHEMY_DEBUGGING=false
+      # Enables Hypercorn auto-reload for the Quart app
+      - ENABLE_APP_HOT_RELOAD=true
 
     # VOLUMES:
     volumes:

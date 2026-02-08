@@ -356,8 +356,21 @@ class Tvheadend:
         return json_data.get("uuid")
 
     async def delete_dvr_entry(self, uuid):
-        url = f"{self.api_url}/{api_dvr_entry_cancel}"
-        await self.__post(url, payload={"uuid": uuid})
+        url = f"{self.api_url}/{api_idnode_delete}"
+        payload = {"uuid": json.dumps([uuid])}
+        try:
+            await self.__post(url, payload=payload)
+            return
+        except Exception:
+            pass
+        try:
+            # Fallback to JSON list payload if form encoding fails for this TVH version.
+            await self.__json(url, payload=[uuid])
+            return
+        except Exception:
+            pass
+        # Final fallback: JSON object payload with uuid list
+        await self.__json(url, payload={"uuid": [uuid]})
 
     async def idnode_delete(self, node_uuid):
         url = f"{self.api_url}/{api_idnode_delete}"
