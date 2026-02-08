@@ -2,6 +2,14 @@
   <q-layout view="hHh LpR lFf">
     <q-header elevated class="bg-primary text-white" height-hint="98">
       <q-toolbar class="bg-primary text-white q-my-md shadow-2">
+        <q-btn
+          flat
+          round
+          dense
+          icon="menu"
+          class="q-ml-sm"
+          @click="toggleLeftDrawer"
+        />
         <q-toolbar-title class="q-mx-lg">
           <q-avatar size="2rem" font-size="82px">
             <img src="~assets/icon.png">
@@ -12,8 +20,16 @@
 
         <q-tabs v-if="aioMode" no-caps align="left">
           <!--TODO: Find a way to prevent this from being destroyed from the DOM when showTvheadendAdmin is False-->
-          <q-btn icon-right="fa-solid fa-window-restore" label="Show Tvheadend Backend"
-                 @click="loadTvheadendAdmin = true; showTvheadendAdmin = true" />
+          <q-btn
+            :icon-right="!compactHeader ? 'fa-solid fa-window-restore' : void 0"
+            :icon="compactHeader ? 'fa-solid fa-window-restore' : void 0"
+            :label="compactHeader ? '' : 'Show Tvheadend Backend'"
+            :flat="compactHeader"
+            :round="compactHeader"
+            dense
+            class="q-mx-sm"
+            @click="loadTvheadendAdmin = true; showTvheadendAdmin = true"
+          />
           <q-dialog
             v-if="aioMode"
             v-model="showTvheadendAdmin"
@@ -49,9 +65,15 @@
           </q-dialog>
           <q-separator dark vertical inset />
 
-          <q-btn-dropdown stretch flat
-                          content-class="connection-details-dropdown"
-                          label="Show Connection Details">
+          <q-btn-dropdown
+            stretch
+            flat
+            :round="compactHeader"
+            :icon="compactHeader ? 'link' : void 0"
+            :label="compactHeader ? '' : 'Show Connection Details'"
+            class="q-mx-md"
+            content-class="connection-details-dropdown"
+          >
 
 
             <q-card class="my-card" flat bordered>
@@ -231,6 +253,7 @@
             dense
             icon="help_outline"
             class="q-ml-sm"
+            :color="uiStore.showHelp ? 'secondary' : 'white'"
             @click="toggleHelp">
             <q-tooltip class="bg-white text-primary">
               {{ uiStore.showHelp ? 'Hide setup help' : 'Show setup help' }}
@@ -242,9 +265,10 @@
 
     <q-drawer
       v-model="leftDrawerOpen"
-      show-if-above
+      :mini="drawerMini"
       elevated
-      side="left" behavior="desktop"
+      side="left"
+      behavior="desktop"
       class="drawer-layout"
     >
       <div class="drawer-content">
@@ -261,9 +285,9 @@
             />
           </q-list>
 
-          <q-separator class="q-my-lg" />
+          <q-separator class="q-my-lg" v-if="!drawerMini" />
 
-          <q-list>
+          <q-list v-if="!drawerMini">
             <q-item-label style="padding-left:10px" header>
               <q-btn
                 flat round dense
@@ -285,6 +309,9 @@
                   color="primary"
                   :class="pendingTasksStatus === 'paused' ? 'rotating-icon' : ''"
                   :name="pendingTasksStatus === 'paused' ? 'motion_photos_on' : task.icon" />
+                <q-tooltip class="bg-white text-primary">
+                  {{ task.name }}
+                </q-tooltip>
               </q-item-section>
 
               <q-item-section>
@@ -294,9 +321,30 @@
           </q-list>
         </div>
 
-        <div class="drawer-footer">
+        <div :class="['drawer-footer', { 'drawer-footer--mini': drawerMini }]">
           <q-separator class="q-my-md" />
-          <q-list>
+          <q-list v-if="drawerMini">
+            <q-item>
+              <q-item-section avatar class="items-center">
+                <q-btn dense round color="primary" icon="account_circle" size="md">
+                  <q-menu>
+                    <q-list style="min-width: 160px;">
+                      <q-item clickable v-close-popup @click="goToUserSettings">
+                        <q-item-section>User Settings</q-item-section>
+                      </q-item>
+                      <q-item clickable v-close-popup @click="logout">
+                        <q-item-section>Logout</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                  <q-tooltip class="bg-white text-primary">
+                    {{ currentUsername }}
+                  </q-tooltip>
+                </q-btn>
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <q-list v-else>
             <q-item>
               <q-item-section>
                 <q-item-label>{{ currentUsername }}</q-item-label>
@@ -412,12 +460,24 @@
 
 .drawer-footer {
   margin-top: auto;
-  padding-bottom: 8px;
+  padding: 8px 0 16px;
+  background: #fff;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+
+.drawer-footer--mini {
+  padding-bottom: 16px;
+}
+
+.drawer-footer--mini .q-item {
+  justify-content: center;
 }
 </style>
 
 <script>
-import {defineComponent, onMounted, ref, computed} from 'vue';
+import {defineComponent, onMounted, ref, computed, watch} from 'vue';
 import EssentialLink from 'components/EssentialLink.vue';
 import FloatingPlayer from 'components/FloatingPlayer.vue';
 import pollForBackgroundTasks from 'src/mixins/backgroundTasksMixin';
@@ -429,12 +489,6 @@ import {useUiStore} from 'stores/ui';
 import {useRouter} from 'vue-router';
 
 const linksList = [
-  {
-    title: 'General',
-    caption: 'General TVH-IPTV-Config settings',
-    icon: 'tune',
-    link: '/general',
-  },
   {
     title: 'TVheadend',
     caption: 'TVheadend Settings',
@@ -480,6 +534,13 @@ const linksList = [
     link: '/users',
     adminOnly: true,
   },
+  {
+    title: 'Settings',
+    caption: 'Application Settings',
+    icon: 'tune',
+    link: '/settings',
+    adminOnly: true,
+  },
 ];
 
 export default defineComponent({
@@ -495,7 +556,8 @@ export default defineComponent({
     const router = useRouter();
     const authStore = useAuthStore();
     const uiStore = useUiStore();
-    const leftDrawerOpen = ref(false);
+    const leftDrawerOpen = ref(true);
+    const drawerMini = ref(false);
     const tasksArePaused = ref(false);
     const {pendingTasks, pendingTasksStatus} = pollForBackgroundTasks();
     const {firstRun, aioMode} = aioStartupTasks();
@@ -544,7 +606,21 @@ export default defineComponent({
       });
     };
 
+    const isCompactDrawer = computed(() => $q.screen.width <= 1024);
+    const compactHeader = computed(() => $q.screen.width <= 1024);
+
+    const applyDrawerMode = () => {
+      if (isCompactDrawer.value) {
+        leftDrawerOpen.value = true;
+        drawerMini.value = true;
+      } else {
+        leftDrawerOpen.value = true;
+        drawerMini.value = false;
+      }
+    };
+
     onMounted(() => {
+      applyDrawerMode();
       // Fetch current settings
       axios({
         method: 'get',
@@ -561,6 +637,10 @@ export default defineComponent({
         enabledPlaylists.value = response.data.data;
       }).catch(() => {
       });
+    });
+
+    watch(isCompactDrawer, () => {
+      applyDrawerMode();
     });
 
     const roles = computed(() => authStore.user?.roles || []);
@@ -604,7 +684,13 @@ export default defineComponent({
       currentUsername,
       currentStreamingKey,
       leftDrawerOpen,
+      drawerMini,
       toggleLeftDrawer() {
+        if (isCompactDrawer.value) {
+          drawerMini.value = !drawerMini.value;
+          leftDrawerOpen.value = true;
+          return;
+        }
         leftDrawerOpen.value = !leftDrawerOpen.value;
       },
       copyUrlToClipboard,
@@ -616,6 +702,7 @@ export default defineComponent({
       goToUserSettings,
       uiStore,
       toggleHelp,
+      compactHeader,
     };
   },
 });

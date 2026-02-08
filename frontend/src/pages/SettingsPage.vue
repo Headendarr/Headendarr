@@ -19,9 +19,11 @@
                   v-else
                   v-model="appUrl"
                   label="TIC Host"
-                  hint="External access host & port. This is needed for other applications to connect to TIC. This will be used in the generated XMLTV EPG, Custom Playlist and HDHomeRun Tuner Emulators. Ensure this is set to something that external services can use to reach TIC."
+                  hint="External host & port for clients to reach TIC."
                 />
               </div>
+
+              <q-separator class="q-my-md" />
 
               <q-toggle
                 v-model="routePlaylistsThroughTvh"
@@ -29,55 +31,56 @@
                 hint="When disabled, playlists and HDHomeRun URLs stream directly through TIC."
               />
 
-              <q-separator class="q-mt-md" />
+              <q-separator class="q-my-lg" />
 
-              <div class="q-mt-md">
-                <div class="row items-center justify-between">
-                  <div class="text-subtitle1 text-primary">User Agents</div>
-                  <q-btn
-                    dense
-                    outline
-                    color="primary"
-                    icon="add"
-                    label="Add User Agent"
-                    @click="addUserAgent"
-                  />
+              <h5 class="text-primary q-mb-none">User Agents</h5>
+
+              <div class="row items-center justify-between q-mt-sm">
+                <div class="text-caption text-grey-7">
+                  Configure User-Agent headers for fetching playlists and EPGs.
                 </div>
-
-                <q-table
-                  class="q-mt-sm"
-                  flat
-                  bordered
-                  hide-bottom
-                  :rows="userAgents"
-                  :columns="userAgentColumns"
-                  row-key="id"
-                  no-data-label="No user agents configured"
-                >
-                  <template v-slot:body-cell-name="props">
-                    <q-td :props="props">
-                      <q-input v-model="props.row.name" dense outlined placeholder="Name" />
-                    </q-td>
-                  </template>
-                  <template v-slot:body-cell-value="props">
-                    <q-td :props="props">
-                      <q-input v-model="props.row.value" dense outlined placeholder="User-Agent string" />
-                    </q-td>
-                  </template>
-                  <template v-slot:body-cell-actions="props">
-                    <q-td :props="props">
-                      <q-btn
-                        dense
-                        flat
-                        round
-                        icon="delete"
-                        color="negative"
-                        @click="removeUserAgent(props.row.id)"
-                      />
-                    </q-td>
-                  </template>
-                </q-table>
+                <q-btn
+                  dense
+                  color="primary"
+                  icon="add"
+                  label="Add User Agent"
+                  @click="addUserAgent"
+                />
               </div>
+
+              <q-table
+                class="q-mt-sm"
+                flat
+                bordered
+                hide-bottom
+                :rows="userAgents"
+                :columns="userAgentColumns"
+                row-key="id"
+                no-data-label="No user agents configured"
+              >
+                <template v-slot:body-cell-name="props">
+                  <q-td :props="props">
+                    <q-input v-model="props.row.name" dense outlined placeholder="Name" />
+                  </q-td>
+                </template>
+                <template v-slot:body-cell-value="props">
+                  <q-td :props="props">
+                    <q-input v-model="props.row.value" dense outlined placeholder="User-Agent string" />
+                  </q-td>
+                </template>
+                <template v-slot:body-cell-actions="props">
+                  <q-td :props="props">
+                    <q-btn
+                      dense
+                      flat
+                      round
+                      icon="delete"
+                      color="negative"
+                      @click="removeUserAgent(props.row.id)"
+                    />
+                  </q-td>
+                </template>
+              </q-table>
 
               <div>
                 <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
@@ -108,6 +111,15 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
+                <q-item>
+                  <q-item-section>
+                    <q-item-label>
+                      TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
+                      other devices can reach.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+
                 </q-list>
               </q-card-section>
             </q-card>
@@ -127,7 +139,7 @@ import {useUiStore} from 'stores/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
-  name: 'GeneralPage',
+  name: 'SettingsPage',
 
   setup() {
     return {

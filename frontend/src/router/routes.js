@@ -5,22 +5,26 @@ const routes = [
     children: [
       {
         path: '',
-        component: () => import('pages/GeneralPage.vue'),
+        component: () => import('pages/SettingsPage.vue'),
         meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
   {
-    name: 'general',
-    path: '/general',
+    name: 'settings',
+    path: '/settings',
     component: () => import('layouts/MainLayout.vue'),
     children: [
       {
         path: '',
-        component: () => import('pages/GeneralPage.vue'),
+        component: () => import('pages/SettingsPage.vue'),
         meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
+  },
+  {
+    path: '/general',
+    redirect: '/settings',
   },
   {
     name: 'tvheadend',

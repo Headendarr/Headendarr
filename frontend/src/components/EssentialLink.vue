@@ -14,6 +14,9 @@
       <q-item-label>{{ title }}</q-item-label>
       <q-item-label caption>{{ caption }}</q-item-label>
     </q-item-section>
+    <q-tooltip class="bg-white text-primary">
+      {{ caption ? `${title} — ${caption}` : title }}
+    </q-tooltip>
   </q-item>
 </template>
 
