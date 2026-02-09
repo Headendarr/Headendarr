@@ -136,6 +136,7 @@ class Config:
         self.config_path = os.path.join(get_home_dir(), '.tvh_iptv_config')
         self.config_file = os.path.join(self.config_path, 'settings.yml')
         self.tvh_sync_user_file = os.path.join(self.config_path, 'tvh_sync_user.json')
+        self.tvh_stream_user_file = os.path.join(self.config_path, 'tvh_stream_user.json')
         # Set default settings
         self.settings = None
         self.tvh_local = is_tvh_process_running_locally_sync()
@@ -166,7 +167,6 @@ class Config:
                     },
                 ],
                 "admin_password":           "admin",
-                "tvh_stream_username":      "tvh-streamer",
                 "enable_stream_buffer":     True,
                 "default_ffmpeg_pipe_args": "-hide_banner -loglevel error "
                                             "-probesize 10M -analyzeduration 0 -fpsprobesize 0 "
@@ -232,6 +232,29 @@ class Config:
             os.makedirs(os.path.dirname(self.tvh_sync_user_file))
         with open(self.tvh_sync_user_file, "w") as f:
             json.dump(data, f, indent=2)
+
+    def ensure_tvh_stream_user(self):
+        if os.path.exists(self.tvh_stream_user_file):
+            return
+        if not os.path.exists(os.path.dirname(self.tvh_stream_user_file)):
+            os.makedirs(os.path.dirname(self.tvh_stream_user_file))
+        stream_user = {
+            "username": f"tic-tvh-{secrets.token_urlsafe(6)}",
+            "stream_key": secrets.token_urlsafe(32),
+        }
+        with open(self.tvh_stream_user_file, "w") as f:
+            json.dump(stream_user, f, indent=2)
+
+    async def get_tvh_stream_user(self):
+        await asyncio.to_thread(self.ensure_tvh_stream_user)
+        try:
+            return await asyncio.to_thread(self._read_tvh_stream_user)
+        except Exception:
+            return {"username": "", "stream_key": ""}
+
+    def _read_tvh_stream_user(self):
+        with open(self.tvh_stream_user_file, "r") as f:
+            return json.load(f)
 
     def save_settings(self):
         if self.settings is None:

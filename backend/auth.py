@@ -5,12 +5,21 @@ import asyncio
 from datetime import datetime
 from functools import wraps
 
-from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket
+from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket, current_app
 from sqlalchemy import select, update, or_
 from sqlalchemy.orm import selectinload
 
 from backend.models import Session, User, UserSession, StreamAuditLog
 from backend.security import hash_session_token
+
+
+class StreamUser:
+    def __init__(self, username, stream_key):
+        self.id = None
+        self.username = username
+        self.streaming_key = stream_key
+        self.is_active = True
+        self.roles = []
 
 
 def unauthorized_response(message="Unauthorized"):
@@ -139,6 +148,9 @@ async def get_user_from_stream_key():
     if user_from_token:
         return user_from_token
     username = request.args.get("username")
+
+    # Extract the required stream key
+    #   This will revert to using the password
     stream_key = _extract_stream_key()
     if not stream_key:
         basic_username, basic_password = _get_basic_auth_credentials()
@@ -148,6 +160,24 @@ async def get_user_from_stream_key():
     if not stream_key:
         return None
 
+    # First attempt to see if the user is the TVH user
+    try:
+        config = current_app.config.get("APP_CONFIG") if has_request_context() else None
+    except Exception:
+        config = None
+    if config:
+        try:
+            tvh_stream_user = await config.get_tvh_stream_user()
+            tvh_username = tvh_stream_user.get("username")
+            tvh_stream_key = tvh_stream_user.get("stream_key")
+            if tvh_stream_key and tvh_stream_key == stream_key:
+                if username is None or username == tvh_username:
+                    return StreamUser(tvh_username, tvh_stream_key)
+        except Exception:
+            pass
+
+    # Finally do a lookup for a user stream key
+    # TODO: Perhaps we should cache this for a short amount of time to reduce DB lookups for HLS proxy streams
     if username:
         async with Session() as session:
             result = await session.execute(

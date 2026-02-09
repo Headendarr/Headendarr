@@ -104,6 +104,7 @@ def create_app():
     app_config = config.Config()
     app_config.runtime_key = int(time.time())
     app_config.ensure_tvh_sync_user()
+    app_config.ensure_tvh_stream_user()
     # Create app
     app = Quart(__name__, instance_relative_config=True)
     app.config["SECRET_KEY"] = config.secret_key

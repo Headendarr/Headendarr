@@ -1,31 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import secrets
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
-from backend.users import create_user, get_user_by_username, rotate_stream_key
-
-DEFAULT_TVH_STREAM_USERNAME = "tvh-streamer"
-
-
-async def ensure_stream_user(username: str, role_names=None):
-    role_names = role_names or ["streamer"]
-    user = await get_user_by_username(username)
-    if user and user.streaming_key:
-        return user, user.streaming_key, False
-    if user:
-        user, stream_key = await rotate_stream_key(user.id)
-        return user, stream_key, False
-    password = secrets.token_urlsafe(18)
-    user, stream_key = await create_user(username, password, role_names=role_names)
-    return user, stream_key, True
 
 
 async def get_tvh_stream_auth(config):
-    settings = config.read_settings()
-    username = (settings.get("settings") or {}).get("tvh_stream_username") or DEFAULT_TVH_STREAM_USERNAME
-    user, stream_key, _created = await ensure_stream_user(username)
-    return username, stream_key
+    stream_user = await config.get_tvh_stream_user()
+    return stream_user.get("username"), stream_user.get("stream_key")
 
 
 def _has_stream_auth(query_items):
