@@ -20,6 +20,7 @@ from backend.models import db, Session, Channel, ChannelTag, Epg, ChannelSource,
     channels_tags_association_table
 from backend.playlists import fetch_playlist_streams
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.utils import normalize_id
 
 logger = logging.getLogger('tic.channels')
 
@@ -137,6 +138,7 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
 
 def read_config_one_channel(channel_id):
     return_item = {}
+    channel_id = normalize_id(channel_id, "channel")
     result = db.session.query(Channel) \
         .options(joinedload(Channel.tags), joinedload(Channel.sources).subqueryload(ChannelSource.playlist)) \
         .filter(Channel.id == channel_id) \
@@ -497,7 +499,7 @@ async def update_channel(config, channel_id, data):
                                 channel_source.playlist_stream_url = playlist_stream['url']
                                 break
                 # Update source priority (higher means higher priority)
-                channel_source.priority = priority
+                channel_source.priority = str(priority)
                 priority -= 1
                 # Append to list of new sources
                 new_sources.append(channel_source)

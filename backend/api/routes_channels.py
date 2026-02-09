@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 from backend.auth import admin_auth_required, streamer_or_admin_required
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups
+from backend.utils import normalize_id
 from backend.models import Session, ChannelSource
 from sqlalchemy import select
 
@@ -131,6 +132,10 @@ async def api_add_new_channel():
 @blueprint.route('/tic-api/channels/settings/<channel_id>', methods=['GET'])
 @admin_auth_required
 async def api_get_channel_config(channel_id):
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid channel id"}), 400
     channel_config = read_config_one_channel(channel_id)
     return jsonify(
         {
@@ -145,6 +150,10 @@ async def api_get_channel_config(channel_id):
 async def api_set_config_channels(channel_id):
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid channel id"}), 400
     await update_channel(config, channel_id, json_data)
     await queue_background_channel_update_tasks(config)
     return jsonify(
@@ -161,7 +170,8 @@ async def api_set_config_multiple_channels():
     config = current_app.config['APP_CONFIG']
     for channel_id in json_data.get('channels', {}):
         channel = json_data['channels'][channel_id]
-        await update_channel(config, channel_id, channel)
+        normalized = normalize_id(channel_id, "channel")
+        await update_channel(config, normalized, channel)
     await queue_background_channel_update_tasks(config)
     return jsonify(
         {
@@ -192,7 +202,8 @@ async def api_delete_multiple_channels():
     current_app.logger.warning(json_data)
     
     for channel_id in json_data.get('channels', {}):
-        await delete_channel(config, channel_id)
+        normalized = normalize_id(channel_id, "channel")
+        await delete_channel(config, normalized)
     
     # Queue background tasks to update TVHeadend
     await queue_background_channel_update_tasks(config)
@@ -206,6 +217,10 @@ async def api_delete_multiple_channels():
 @admin_auth_required
 async def api_delete_config_channels(channel_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        channel_id = normalize_id(channel_id, "channel")
+    except ValueError:
+        return jsonify({"success": False, "message": "Invalid channel id"}), 400
     await delete_channel(config, channel_id)
     return jsonify(
         {

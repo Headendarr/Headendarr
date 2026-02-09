@@ -399,6 +399,10 @@ def fetch_playlist_streams(playlist_id):
 
 
 async def import_playlist_data(config, playlist_id):
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid playlist id: {playlist_id}")
     settings = config.read_settings()
     async with Session() as session:
         async with session.begin():

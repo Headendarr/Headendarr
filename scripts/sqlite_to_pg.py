@@ -2,7 +2,7 @@
 # -*- coding:utf-8 -*-
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from urllib.parse import quote_plus
@@ -73,7 +73,7 @@ def reset_sequences(pg_engine, pg_meta):
 
 
 def rename_sqlite_db(sqlite_path: Path):
-    stamp = datetime.utcnow().strftime("%Y%m%d")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     target = sqlite_path.with_name(f"{sqlite_path.name}.migrated-{stamp}")
     if not target.exists():
         sqlite_path.rename(target)

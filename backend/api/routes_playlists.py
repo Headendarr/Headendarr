@@ -53,6 +53,10 @@ async def api_add_new_playlist():
 @admin_auth_required
 async def api_get_playlist_config(playlist_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid playlist id"}), 400
     playlist_config = await read_config_one_playlist(config, playlist_id)
     return jsonify(
         {
@@ -67,6 +71,10 @@ async def api_get_playlist_config(playlist_id):
 async def api_set_config_playlists(playlist_id):
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid playlist id"}), 400
     await update_playlist(config, playlist_id, json_data)
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
@@ -85,6 +93,10 @@ async def api_set_config_playlists(playlist_id):
 @admin_auth_required
 async def api_delete_playlist(playlist_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid playlist id"}), 400
     net_uuid = await delete_playlist(config, playlist_id)
     if net_uuid:
         task_broker = await TaskQueueBroker.get_instance()
@@ -105,6 +117,10 @@ async def api_delete_playlist(playlist_id):
 @admin_auth_required
 async def api_update_playlist(playlist_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid playlist id"}), 400
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
         'name':     f'Update source - ID: {playlist_id}',

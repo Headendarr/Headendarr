@@ -24,6 +24,7 @@ from sqlalchemy import and_, delete, insert, select
 from backend.channels import read_base46_image_string
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.utils import normalize_id
 
 logger = logging.getLogger('tic.epgs')
 
@@ -59,6 +60,7 @@ async def read_config_all_epgs(output_for_export=False):
 
 
 async def read_config_one_epg(epg_id):
+    epg_id = normalize_id(epg_id, "epg")
     return_item = {}
     async with Session() as session:
         async with session.begin():
@@ -89,6 +91,7 @@ async def add_new_epg(data):
 
 
 async def update_epg(epg_id, data):
+    epg_id = normalize_id(epg_id, "epg")
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Epg).where(Epg.id == epg_id))
@@ -100,6 +103,7 @@ async def update_epg(epg_id, data):
 
 
 async def delete_epg(config, epg_id):
+    epg_id = normalize_id(epg_id, "epg")
     async with Session() as session:
         async with session.begin():
             # Get all channel IDs for the given EPG

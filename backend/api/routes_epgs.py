@@ -35,6 +35,10 @@ async def api_add_new_epg():
 @blueprint.route('/tic-api/epgs/settings/<epg_id>', methods=['GET'])
 @admin_auth_required
 async def api_get_epg_config(epg_id):
+    try:
+        epg_id = int(epg_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg id"}), 400
     epg_config = await read_config_one_epg(epg_id)
     return jsonify(
         {
@@ -48,6 +52,10 @@ async def api_get_epg_config(epg_id):
 @admin_auth_required
 async def api_set_epg_config(epg_id):
     json_data = await request.get_json()
+    try:
+        epg_id = int(epg_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg id"}), 400
     await update_epg(epg_id, json_data)
     # TODO: Trigger an update of the cached EPG config
     return jsonify(
@@ -61,6 +69,10 @@ async def api_set_epg_config(epg_id):
 @admin_auth_required
 async def api_delete_epg(epg_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        epg_id = int(epg_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg id"}), 400
     await delete_epg(config, epg_id)
     # TODO: Trigger an update of the cached EPG config
     return jsonify(
@@ -74,6 +86,10 @@ async def api_delete_epg(epg_id):
 @admin_auth_required
 async def api_update_epg(epg_id):
     config = current_app.config['APP_CONFIG']
+    try:
+        epg_id = int(epg_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg id"}), 400
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
         'name':     f'Update EPG - ID: {epg_id}',
