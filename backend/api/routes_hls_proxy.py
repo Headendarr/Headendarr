@@ -456,30 +456,34 @@ async def _stream_updated_playlist(resp, response_url, stream_key=None, username
 
 async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None):
     async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url) as resp:
-            if resp.status != 200:
-                return None, None, False
+        try:
+            async with session.get(decoded_url) as resp:
+                if resp.status != 200:
+                    return None, None, False
 
-            response_url = str(resp.url)
-            content_type = resp.headers.get('Content-Type') or 'application/vnd.apple.mpegurl'
-            content_length = resp.content_length or 0
+                response_url = str(resp.url)
+                content_type = resp.headers.get('Content-Type') or 'application/vnd.apple.mpegurl'
+                content_length = resp.content_length or 0
 
-            if content_length and content_length > hls_proxy_max_buffer_bytes:
-                return _stream_updated_playlist(
-                    resp,
+                if content_length and content_length > hls_proxy_max_buffer_bytes:
+                    return _stream_updated_playlist(
+                        resp,
+                        response_url,
+                        stream_key=stream_key,
+                        username=username,
+                    ), content_type, True
+
+                playlist_content = await resp.text()
+                updated_playlist = update_child_urls(
+                    playlist_content,
                     response_url,
                     stream_key=stream_key,
-                    username=username,
-                ), content_type, True
-
-            playlist_content = await resp.text()
-            updated_playlist = update_child_urls(
-                playlist_content,
-                response_url,
-                stream_key=stream_key,
-                username=username
-            )
-            return updated_playlist, content_type, False
+                    username=username
+                )
+                return updated_playlist, content_type, False
+        except aiohttp.ClientError as exc:
+            proxy_logger.warning("HLS proxy failed to fetch '%s': %s", decoded_url, exc)
+            return None, None, False
 
 
 @blueprint.route(f'{hls_proxy_prefix.lstrip("/")}/<encoded_url>.m3u8', methods=['GET'])
@@ -498,7 +502,9 @@ async def proxy_m3u8(encoded_url):
     )
     if updated_playlist is None:
         proxy_logger.error("Failed to fetch the original playlist '%s'", decoded_url)
-        return Response("Failed to fetch the original playlist.", status=404)
+        response = Response("Failed to fetch the original playlist.", status=502)
+        response.headers['X-TIC-Proxy-Error'] = 'upstream-unreachable'
+        return response
 
     proxy_logger.info(f"[MISS] Serving m3u8 URL '%s' without cache", decoded_url)
     if is_stream:
