@@ -303,12 +303,12 @@ async def add_new_channel(config, data, commit=True, publish=True):
                 extension = 'ts'
                 if playlist_url.endswith('m3u8'):
                     extension = 'm3u8'
-                encoded_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                encoded_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode('utf-8')
                 playlist_stream['url'] = f'{app_url}/tic-hls-proxy/{encoded_url}.{extension}'
             else:
                 hls_proxy_path = playlist_info.hls_proxy_path
                 playlist_url = playlist_stream['url']
-                encoded_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                encoded_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode('utf-8')
                 hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
                 hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
                 playlist_stream['url'] = hls_proxy_path
@@ -442,13 +442,13 @@ async def update_channel(config, channel_id, data):
                                 extension = 'ts'
                                 if playlist_url.endswith('m3u8'):
                                     extension = 'm3u8'
-                                encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                                encoded_playlist_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode('utf-8')
                                 # noinspection HttpUrlsUsage
                                 playlist_stream['url'] = f'{app_url}/tic-hls-proxy/{encoded_playlist_url}.{extension}'
                             else:
                                 hls_proxy_path = playlist_info.hls_proxy_path
                                 playlist_url = playlist_stream['url']
-                                encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode('utf-8')
+                                encoded_playlist_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode('utf-8')
                                 hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
                                 hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)
                                 playlist_stream['url'] = hls_proxy_path
@@ -480,7 +480,7 @@ async def update_channel(config, channel_id, data):
                                         extension = 'ts'
                                         if playlist_url.endswith('m3u8'):
                                             extension = 'm3u8'
-                                        encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
+                                        encoded_playlist_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode(
                                             'utf-8')
                                         # noinspection HttpUrlsUsage
                                         playlist_stream[
@@ -488,7 +488,7 @@ async def update_channel(config, channel_id, data):
                                     else:
                                         hls_proxy_path = playlist_info.hls_proxy_path
                                         playlist_url = playlist_stream['url']
-                                        encoded_playlist_url = base64.b64encode(playlist_url.encode('utf-8')).decode(
+                                        encoded_playlist_url = base64.urlsafe_b64encode(playlist_url.encode('utf-8')).decode(
                                             'utf-8')
                                         hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
                                         hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_playlist_url)

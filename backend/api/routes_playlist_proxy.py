@@ -35,7 +35,7 @@ device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 def _build_proxy_stream_url(base_url, source_url, stream_key):
     parsed_source = urlparse(source_url)
     is_hls = parsed_source.path.lower().endswith('.m3u8')
-    encoded_url = base64.b64encode(source_url.encode('utf-8')).decode('utf-8')
+    encoded_url = base64.urlsafe_b64encode(source_url.encode('utf-8')).decode('utf-8')
     if is_hls:
         return f'{base_url}/tic-hls-proxy/{encoded_url}.m3u8?stream_key={stream_key}'
     return f'{base_url}/tic-hls-proxy/stream/{encoded_url}?stream_key={stream_key}'

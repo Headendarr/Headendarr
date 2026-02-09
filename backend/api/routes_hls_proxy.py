@@ -325,8 +325,21 @@ def _infer_extension(url_value):
     return 'ts'
 
 
+def _b64_urlsafe_encode(value):
+    return base64.urlsafe_b64encode(value.encode('utf-8')).decode('utf-8')
+
+
+def _b64_urlsafe_decode(value):
+    padded = value + "=" * (-len(value) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded).decode('utf-8')
+    except Exception:
+        # Fallback for older non-urlsafe tokens
+        return base64.b64decode(padded).decode('utf-8')
+
+
 def generate_base64_encoded_url(url_to_encode, extension, stream_key=None, username=None):
-    full_url_encoded = base64.b64encode(url_to_encode.encode('utf-8')).decode('utf-8')
+    full_url_encoded = _b64_urlsafe_encode(url_to_encode)
     base_url = _build_proxy_base_url().rstrip('/')
     url = f'{base_url}/{full_url_encoded}.{extension}'
     if stream_key:
@@ -491,7 +504,7 @@ async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None)
 async def proxy_m3u8(encoded_url):
     await audit_stream_event(request._stream_user, "hls_m3u8", request.path)
     # Decode the Base64 encoded URL
-    decoded_url = base64.b64decode(encoded_url).decode('utf-8')
+    decoded_url = _b64_urlsafe_decode(encoded_url)
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
 
@@ -518,7 +531,7 @@ async def proxy_m3u8_redirect():
     url = request.args.get('url')
     if not url:
         return Response("Missing url parameter.", status=400)
-    encoded = base64.b64encode(url.encode('utf-8')).decode('utf-8')
+    encoded = _b64_urlsafe_encode(url)
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
     target = f'{hls_proxy_prefix.rstrip("/")}/{encoded}.m3u8'
@@ -535,7 +548,7 @@ async def proxy_m3u8_redirect():
 async def proxy_key(encoded_url):
     await audit_stream_event(request._stream_user, "hls_key", request.path)
     # Decode the Base64 encoded URL
-    decoded_url = base64.b64decode(encoded_url).decode('utf-8')
+    decoded_url = _b64_urlsafe_decode(encoded_url)
 
     # Check if the .key file is already cached
     if await cache.exists(decoded_url):
@@ -560,7 +573,7 @@ async def proxy_key(encoded_url):
 async def proxy_ts(encoded_url):
     await audit_stream_event(request._stream_user, "hls_ts", request.path)
     # Decode the Base64 encoded URL
-    decoded_url = base64.b64decode(encoded_url).decode('utf-8')
+    decoded_url = _b64_urlsafe_decode(encoded_url)
 
     # Check if the .ts file is already cached
     if await cache.exists(decoded_url):
@@ -586,7 +599,7 @@ async def proxy_ts(encoded_url):
 async def stream_ts(encoded_url):
     await audit_stream_event(request._stream_user, "hls_stream", request.path)
     # Decode the Base64 encoded URL
-    decoded_url = base64.b64decode(encoded_url).decode('utf-8')
+    decoded_url = _b64_urlsafe_decode(encoded_url)
 
     # Generate a unique identifier (UUID) for the connection
     connection_id = str(uuid.uuid4())  # Use a UUID for the connection ID
