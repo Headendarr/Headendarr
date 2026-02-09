@@ -2,6 +2,8 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 scheduler = AsyncIOScheduler()
@@ -136,12 +138,33 @@ async def update_epgs(app):
 
 
 async def rebuild_custom_epg(app):
-    logger.info("Rebuilding custom EPG")
+    logger.info("Rebuilding custom EPG (subprocess)")
     config = app.config['APP_CONFIG']
     from backend.epgs import update_channel_epg_with_online_data
     await update_channel_epg_with_online_data(config)
-    from backend.epgs import build_custom_epg
-    await build_custom_epg(config)
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "build_custom_epg.py"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(script_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    async def _pipe(stream, level):
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            logger.log(level, "[epg-build] %s", line.decode().rstrip())
+
+    await asyncio.gather(
+        _pipe(proc.stdout, logging.INFO),
+        _pipe(proc.stderr, logging.INFO),
+    )
+    rc = await proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"EPG build subprocess failed with code {rc}")
 
 
 async def update_tvh_epg(app):

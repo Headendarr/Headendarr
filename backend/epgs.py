@@ -349,11 +349,14 @@ async def read_channels_from_all_epgs(config):
 
 
 # --- Cache ---
-async def build_custom_epg(config):
+async def build_custom_epg(config, throttle=True):
     loop = asyncio.get_event_loop()
     settings = config.read_settings()
     logger.info("Generating custom EPG for TVH based on configured channels.")
     start_time = time.time()
+    async def maybe_yield():
+        if throttle:
+            await asyncio.sleep(.1)
     # Create the root <tv> element of the output XMLTV file
     output_root = ET.Element('tv')
     # Set the attributes for the output root element
@@ -425,7 +428,7 @@ async def build_custom_epg(config):
                 'tags':       [tag.name for tag in result.tags],
                 'programmes': programmes
             })
-        await asyncio.sleep(.1)
+        await maybe_yield()
     # Loop over all configured channels
     logger.info("   - Generating XML channel info.")
     for channel_info in configured_channels:
@@ -444,7 +447,7 @@ async def build_custom_epg(config):
         # Add a <active> element to the <channel> element
         active = ET.SubElement(channel, 'active')
         active.text = 'true'
-        await asyncio.sleep(.1)
+        await maybe_yield()
     # Loop through all <programme> elements returned
     logger.info("   - Generating XML channel programme data.")
     for channel_programmes_data in all_channel_programmes_data:
@@ -560,7 +563,7 @@ async def build_custom_epg(config):
                 output_child = ET.SubElement(output_programme, 'category')
                 output_child.text = tag
                 output_child.set('lang', 'en')
-        await asyncio.sleep(.1)
+        await maybe_yield()
     # Create an XML file and write the output root element to it
     logger.info("   - Writing out XMLTV file.")
     output_tree = ET.ElementTree(output_root)
