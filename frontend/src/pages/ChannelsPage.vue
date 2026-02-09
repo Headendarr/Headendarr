@@ -1020,6 +1020,12 @@ export default defineComponent({
       this.applyCategoriesAction = 'Add';
       // Save new channel layout
       this.saveChannels();
+      this.$q.notify({
+        color: 'positive',
+        icon: 'cloud_done',
+        message: 'Bulk category changes saved.',
+        timeout: 2000,
+      });
     },
     triggerRefreshChannelSources: function() {
       // Add all channel sources to their respective refresh_sources list
@@ -1032,6 +1038,12 @@ export default defineComponent({
       }
       // Save new channel layout
       this.saveChannels();
+      this.$q.notify({
+        color: 'positive',
+        icon: 'sync',
+        message: 'Bulk refresh queued for selected channel sources.',
+        timeout: 2000,
+      });
     },
     triggerDeleteChannels: function() {
       // Send changes to backend
@@ -1052,6 +1064,12 @@ export default defineComponent({
       }).then((response) => {
         // Reload from backend
         this.fetchChannels();
+        this.$q.notify({
+          color: 'positive',
+          icon: 'delete',
+          message: 'Selected channels deleted.',
+          timeout: 2000,
+        });
       }).catch(() => {
         // Notify failure
         this.$q.notify({
