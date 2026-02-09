@@ -972,6 +972,13 @@ async def queue_background_channel_update_tasks(config):
         'function': build_custom_epg,
         'args':     [config],
     }, priority=23)
+    # Ensure TVH XMLTV grabber URL stays in sync before triggering a grab
+    from backend.tvheadend.tvh_requests import configure_tvh
+    await task_broker.add_task({
+        'name':     'Resetting TVH XMLTV URL',
+        'function': configure_tvh,
+        'args':     [config],
+    }, priority=30)
     # Trigger an update in TVH to fetch the latest EPG
     from backend.epgs import run_tvh_epg_grabbers
     await task_broker.add_task({
