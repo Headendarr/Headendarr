@@ -21,7 +21,6 @@ def index():
 
 
 @blueprint.route('/tic-web/')
-@admin_auth_required
 async def serve_index():
     response = await send_from_directory(current_app.config['ASSETS_ROOT'], 'index.html')
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
@@ -31,7 +30,6 @@ async def serve_index():
 
 
 @blueprint.route('/tic-web/<path:path>')
-@admin_auth_required
 async def serve_static(path):
     response = await send_from_directory(current_app.config['ASSETS_ROOT'], path)
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
