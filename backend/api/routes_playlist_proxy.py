@@ -11,7 +11,7 @@ from quart import jsonify, current_app, render_template_string, Response
 
 from backend.auth import stream_key_required, audit_stream_event
 from backend.config import is_tvh_process_running_locally
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
@@ -34,6 +34,12 @@ device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 
 def _build_proxy_stream_url(base_url, source_url, stream_key):
     parsed_source = urlparse(source_url)
+    if '/tic-hls-proxy/' in (parsed_source.path or ''):
+        query = parse_qs(parsed_source.query)
+        if 'stream_key' not in query and 'password' not in query:
+            query['stream_key'] = [stream_key]
+            parsed_source = parsed_source._replace(query=urlencode(query, doseq=True))
+        return urlunparse(parsed_source)
     is_hls = parsed_source.path.lower().endswith('.m3u8')
     encoded_url = base64.urlsafe_b64encode(source_url.encode('utf-8')).decode('utf-8')
     if is_hls:
@@ -135,6 +141,7 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
         stream_username=stream_username,
         stream_key=stream_key,
     )
+    request_base_url = request.host_url.rstrip('/')
     lineup_list = []
     from backend.epgs import generate_epg_channel_id
     for channel_details in await _get_channels(playlist_id):
@@ -153,7 +160,7 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
                 if is_manual and not use_hls_proxy:
                     channel_url = source_url
                 else:
-                    base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+                    base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
                     channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
 
         if channel_url:
@@ -177,7 +184,8 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
         stream_username=username,
         stream_key=stream_key,
     )
-    base_url = settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+    request_base_url = request.host_url.rstrip('/')
+    base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
     epg_url = f'{base_url}/xmltv.php'
     if stream_key:
         if username:

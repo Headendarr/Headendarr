@@ -103,8 +103,9 @@ async def _import_xc_playlist_streams(settings, playlist):
         except (TypeError, ValueError):
             tvg_chno = None
 
+        # I'm not sure yet if this is required. I need to test more XC sources to know
         container_ext = (stream.get("container_extension") or "").strip().lstrip(".")
-        suffix = f".{container_ext}" if container_ext else ".ts"
+        suffix = f".{container_ext}" if container_ext else ""
         items.append({
             "playlist_id": playlist.id,
             "name": stream.get("name"),
