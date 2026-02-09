@@ -289,12 +289,22 @@ export default defineComponent({
 
     const filteredChannels = computed(() => {
       const query = searchQuery.value.toLowerCase();
-      return channels.value.filter((channel) => {
+      const filtered = channels.value.filter((channel) => {
         if (query && !channel.name.toLowerCase().includes(query)) return false;
         if (selectedGroup.value !== 'all') {
           return (channel.tags || []).includes(selectedGroup.value);
         }
         return true;
+      });
+      return filtered.sort((a, b) => {
+        const aNum = Number.parseInt(a.number, 10);
+        const bNum = Number.parseInt(b.number, 10);
+        const aHas = Number.isFinite(aNum);
+        const bHas = Number.isFinite(bNum);
+        if (aHas && bHas && aNum !== bNum) return aNum - bNum;
+        if (aHas && !bHas) return -1;
+        if (!aHas && bHas) return 1;
+        return a.name.localeCompare(b.name);
       });
     });
 
