@@ -5,6 +5,16 @@ vars:
 
 
 tasks:
+  all:start:
+    desc: Start backend, frontend, and docs services in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d tic frontend docs
+
+  all:stop:
+    desc: Stop backend, frontend, and docs services in dev AIO stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} stop tic frontend docs
+
   backend:start:
     desc: Start backend (tic) service in dev AIO stack (detached)
     cmds:
