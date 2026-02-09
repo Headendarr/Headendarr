@@ -40,6 +40,11 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} frontend
 
+  frontend:clean:
+    desc: Clear Quasar CLI caches for frontend
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar clean"
+
   docs:start:
     desc: Start docs dev server service in dev AIO stack (detached)
     cmds:
