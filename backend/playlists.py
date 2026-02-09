@@ -478,11 +478,11 @@ def read_filtered_stream_details_from_all_playlists(request_json):
     if search_value:
         playlist_rows = (
             db.session.query(Playlist)
-            .where(Playlist.name.contains(search_value))
+            .where(Playlist.name.ilike(f'%{search_value}%'))
             .all()
         )
         query = query.options(joinedload(PlaylistStreams.playlist)).where(
-            or_(PlaylistStreams.name.contains(search_value),
+            or_(PlaylistStreams.name.ilike(f'%{search_value}%'),
                 PlaylistStreams.playlist_id.in_([p.id for p in playlist_rows])))
     # Record filtered records count
     results['records_filtered'] = query.count()

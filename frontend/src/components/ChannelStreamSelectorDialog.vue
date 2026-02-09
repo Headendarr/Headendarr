@@ -157,6 +157,9 @@
                         outlined
                         v-model="selectedGroup"
                         :options="groupOptions"
+                        use-input
+                        input-debounce="200"
+                        @filter="filterGroupOptions"
                         option-value="value"
                         option-label="label"
                         emit-value
@@ -395,7 +398,8 @@ export default {
     },
     fetchGroups(playlistId) {
       if (!playlistId) {
-        this.groupOptions = [{label: 'All', value: null}];
+        this.groupOptionsAll = [{label: 'All', value: null}];
+        this.groupOptions = this.groupOptionsAll;
         return;
       }
       axios({
@@ -404,7 +408,7 @@ export default {
         data: {
           playlist_id: playlistId,
           start: 0,
-          length: 500,
+          length: 0,
           search_value: '',
           order_by: 'name',
           order_direction: 'asc',
@@ -418,9 +422,23 @@ export default {
             value: group.name,
           });
         }
+        this.groupOptionsAll = options;
         this.groupOptions = options;
       }).catch(() => {
-        this.groupOptions = [{label: 'All', value: null}];
+        this.groupOptionsAll = [{label: 'All', value: null}];
+        this.groupOptions = this.groupOptionsAll;
+      });
+    },
+    filterGroupOptions(val, update) {
+      const needle = (val || '').toLowerCase();
+      update(() => {
+        if (!needle) {
+          this.groupOptions = this.groupOptionsAll;
+          return;
+        }
+        this.groupOptions = this.groupOptionsAll.filter((option) =>
+          (option.label || '').toLowerCase().includes(needle)
+        );
       });
     },
     buildPreviewUrl(streamUrl) {
@@ -513,6 +531,7 @@ export default {
       loading: ref(false),
       playlistOptions: ref([{label: 'All', value: null}]),
       groupOptions: ref([{label: 'All', value: null}]),
+      groupOptionsAll: ref([{label: 'All', value: null}]),
       selectedPlaylistId: ref(null),
       selectedGroup: ref(null),
 
