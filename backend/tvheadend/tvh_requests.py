@@ -7,6 +7,8 @@ import os
 import aiohttp
 import asyncio
 
+from backend.streaming import append_stream_key, get_tvh_stream_auth
+
 logger = logging.getLogger('tic.tvh_requests')
 
 # TVheadend API URLs:
@@ -600,14 +602,14 @@ class Tvheadend:
         password_node["enabled"] = enabled
         await self.idnode_save(password_node)
 
-    async def enable_xmltv_url_epg_grabber(self, tic_base_url):
+    async def enable_xmltv_url_epg_grabber(self, epg_url):
         url = f"{self.api_url}/{api_epggrab_list}"
         response = await self.__get(url, payload={}, rformat='json')
         for grabber in response.get('entries', []):
             if grabber['title'] == "Internal: XMLTV: XMLTV URL grabber":
                 node = {
                     "uuid":     grabber['uuid'],
-                    "args":     f"{tic_base_url}/tic-web/epg.xml",
+                    "args":     epg_url,
                     "enabled":  True,
                     "priority": 1,
                     "dn_chnum": 0,
@@ -829,6 +831,7 @@ async def get_tvh(config):
 
 async def configure_tvh(config):
     settings = config.read_settings()
+    tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
     async with await get_tvh(config) as tvh:
         # Update Base Config
         await tvh.save_tvh_config(tvh_config)
@@ -842,7 +845,8 @@ async def configure_tvh(config):
         await tvh.disable_all_epg_grabbers()
         # Enable XMLTV URL grabber
         tic_base_url = settings['settings']['app_url']
-        await tvh.enable_xmltv_url_epg_grabber(tic_base_url)
+        epg_url = append_stream_key(f"{tic_base_url}/tic-web/epg.xml", tvh_stream_key, tvh_stream_username)
+        await tvh.enable_xmltv_url_epg_grabber(epg_url)
         # Configure the default stream profile
         await tvh.configure_default_stream_profile()
         # Configure the htsp stream profile

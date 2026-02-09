@@ -20,6 +20,7 @@ from backend.models import db, Session, Channel, ChannelTag, Epg, ChannelSource,
     channels_tags_association_table
 from backend.playlists import fetch_playlist_streams
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.streaming import append_stream_key, get_tvh_stream_auth, is_tic_stream_url
 from backend.utils import normalize_id
 
 logger = logging.getLogger('tic.channels')
@@ -802,6 +803,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config):
 
 
 async def publish_channel_muxes(config):
+    tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
     async with await get_tvh(config) as tvh:
         # Fetch results with relationships
         results = db.session.query(Channel) \
@@ -849,9 +851,12 @@ async def publish_channel_muxes(config):
                     logger.debug("    - Updating existing MUX '%s' for '%s'", mux_uuid, channel_obj.name)
 
                 service_name = f"{source_obj.playlist.name} - {source_obj.playlist_stream_name}"
+                stream_url = source_obj.playlist_stream_url
+                if is_tic_stream_url(stream_url):
+                    stream_url = append_stream_key(stream_url, tvh_stream_key, tvh_stream_username)
                 iptv_url = generate_iptv_url(
                     config,
-                    url=source_obj.playlist_stream_url,
+                    url=stream_url,
                     service_name=service_name,
                 )
                 channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"

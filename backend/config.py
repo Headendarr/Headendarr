@@ -166,6 +166,7 @@ class Config:
                     },
                 ],
                 "admin_password":           "admin",
+                "tvh_stream_username":      "tvh-streamer",
                 "enable_stream_buffer":     True,
                 "default_ffmpeg_pipe_args": "-hide_banner -loglevel error "
                                             "-probesize 10M -analyzeduration 0 -fpsprobesize 0 "
