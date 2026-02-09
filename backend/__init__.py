@@ -22,6 +22,12 @@ dictConfig({
         'quart.app': {
             'level': 'ERROR',
         },
+        'apscheduler.executors.default': {
+            'level': 'WARNING',
+        },
+        'apscheduler.scheduler': {
+            'level': 'WARNING',
+        },
     },
     'handlers':   {
         'wsgi': {
