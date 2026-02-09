@@ -103,10 +103,12 @@ async def _import_xc_playlist_streams(settings, playlist):
         except (TypeError, ValueError):
             tvg_chno = None
 
+        container_ext = (stream.get("container_extension") or "").strip().lstrip(".")
+        suffix = f".{container_ext}" if container_ext else ".ts"
         items.append({
             "playlist_id": playlist.id,
             "name": stream.get("name"),
-            "url": f"{host_url}/live/{playlist.xc_username}/{playlist.xc_password}/{stream_id}.ts",
+            "url": f"{host_url}/live/{playlist.xc_username}/{playlist.xc_password}/{stream_id}{suffix}",
             "channel_id": stream.get("epg_channel_id") or stream.get("tvg_id"),
             "group_title": category_map.get(str(category_id)),
             "tvg_chno": tvg_chno,
