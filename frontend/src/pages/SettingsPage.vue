@@ -9,6 +9,18 @@
 
             <q-form @submit="save" class="q-gutter-md">
 
+              <h5 class="text-primary q-mb-none">UI Settings</h5>
+
+              <div class="q-gutter-sm">
+                <q-toggle
+                  v-model="uiSettings.enable_channel_health_highlight"
+                  label="Highlight channels with source issues"
+                  hint="Adds a warning highlight for channels tied to disabled playlists or failed TVH muxes."
+                />
+              </div>
+
+              <q-separator class="q-my-lg" />
+
               <h5 class="text-primary q-mb-none">Connections</h5>
 
               <div class="q-gutter-sm">
@@ -217,6 +229,9 @@ export default defineComponent({
         pre_padding_mins: 2,
         post_padding_mins: 5,
       }),
+      uiSettings: ref({
+        enable_channel_health_highlight: true,
+      }),
 
       // Defaults
       defSet: ref({
@@ -233,6 +248,9 @@ export default defineComponent({
         dvr: {
           pre_padding_mins: 2,
           post_padding_mins: 5,
+        },
+        uiSettings: {
+          enable_channel_health_highlight: true,
         },
       }),
       userAgentColumns: [
@@ -284,6 +302,12 @@ export default defineComponent({
           pre_padding_mins: Number(appSettings.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
           post_padding_mins: Number(appSettings.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
         };
+        this.uiSettings = {
+          enable_channel_health_highlight: Boolean(
+            appSettings.ui_settings?.enable_channel_health_highlight
+            ?? this.defSet.uiSettings.enable_channel_health_highlight
+          ),
+        };
         // Fill in any missing values from defaults
         Object.keys(this.defSet).forEach((key) => {
           if (this[key] === undefined || this[key] === null) {
@@ -295,6 +319,9 @@ export default defineComponent({
         }
         if (!this.dvr) {
           this.dvr = {...this.defSet.dvr};
+        }
+        if (!this.uiSettings) {
+          this.uiSettings = {...this.defSet.uiSettings};
         }
       }).catch(() => {
         this.$q.notify({
@@ -325,6 +352,12 @@ export default defineComponent({
       postData.settings.dvr = {
         pre_padding_mins: Number(this.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
         post_padding_mins: Number(this.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
+      };
+      postData.settings.ui_settings = {
+        enable_channel_health_highlight: Boolean(
+          this.uiSettings?.enable_channel_health_highlight
+          ?? this.defSet.uiSettings.enable_channel_health_highlight
+        ),
       };
       this.$q.loading.show();
       axios({

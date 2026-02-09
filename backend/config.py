@@ -176,6 +176,9 @@ class Config:
                     "pre_padding_mins":  2,
                     "post_padding_mins": 5,
                 },
+                "ui_settings":              {
+                    "enable_channel_health_highlight": True,
+                },
                 "epgs":                     {
                     "enable_tmdb_metadata":                False,
                     "tmdb_api_key":                        "",

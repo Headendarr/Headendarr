@@ -55,7 +55,6 @@ export default function pollForBackgroundTasks() {
 
   function stopTimer() {
     clearTimeout(timerId);
-    dismissMessages('currentTask');
     if (abortController) {
       abortController.abort();
     }

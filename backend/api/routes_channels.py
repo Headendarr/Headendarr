@@ -11,14 +11,106 @@ from backend.auth import admin_auth_required, streamer_or_admin_required
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups
 from backend.utils import normalize_id
+from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, ChannelSource
 from sqlalchemy import select
+
+
+async def _fetch_tvh_mux_map(config):
+    try:
+        async with await get_tvh(config) as tvh:
+            muxes = await tvh.list_all_muxes()
+        return {mux.get("uuid"): mux for mux in muxes if mux.get("uuid")}
+    except Exception as exc:
+        current_app.logger.warning("Failed to fetch TVH mux list: %s", exc)
+        return None
+
+
+def _is_truthy(value):
+    if isinstance(value, str):
+        return value.lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _build_channel_status(channel, mux_map):
+    if not channel.get("enabled"):
+        return {
+            "state": "disabled",
+            "issues": [],
+            "disabled_source_count": 0,
+            "missing_mux_count": 0,
+            "failed_mux_count": 0,
+        }
+
+    sources = channel.get("sources") or []
+    if not sources:
+        return {
+            "state": "warning",
+            "issues": ["no_sources"],
+            "disabled_source_count": 0,
+            "missing_mux_count": 0,
+            "failed_mux_count": 0,
+        }
+
+    disabled_sources = 0
+    missing_muxes = 0
+    failed_muxes = 0
+    has_enabled_source = False
+
+    for source in sources:
+        if source.get("source_type") == "manual":
+            if source.get("stream_url"):
+                has_enabled_source = True
+            continue
+
+        playlist_enabled = source.get("playlist_enabled", True)
+        if not playlist_enabled:
+            disabled_sources += 1
+            continue
+
+        has_enabled_source = True
+        tvh_uuid = source.get("tvh_uuid")
+        if mux_map is None:
+            continue
+        if not tvh_uuid or tvh_uuid not in mux_map:
+            missing_muxes += 1
+            continue
+        mux_entry = mux_map.get(tvh_uuid) or {}
+        if "enabled" in mux_entry and not _is_truthy(mux_entry.get("enabled")):
+            failed_muxes += 1
+        scan_result = mux_entry.get("scan_result")
+        if scan_result == 2:
+            failed_muxes += 1
+
+    issues = []
+    if not has_enabled_source:
+        issues.append("all_sources_disabled")
+    if disabled_sources:
+        issues.append("has_disabled_sources")
+    if missing_muxes:
+        issues.append("missing_tvh_mux")
+    if failed_muxes:
+        issues.append("tvh_mux_failed")
+
+    return {
+        "state": "warning" if issues else "ok",
+        "issues": issues,
+        "disabled_source_count": disabled_sources,
+        "missing_mux_count": missing_muxes,
+        "failed_mux_count": failed_muxes,
+    }
 
 
 @blueprint.route('/tic-api/channels/get', methods=['GET'])
 @admin_auth_required
 async def api_get_channels():
-    channels_config = await read_config_all_channels()
+    include_status = request.args.get('include_status') == 'true'
+    channels_config = await read_config_all_channels(include_status=include_status)
+    if include_status:
+        config = current_app.config['APP_CONFIG']
+        mux_map = await _fetch_tvh_mux_map(config)
+        for channel in channels_config:
+            channel["status"] = _build_channel_status(channel, mux_map)
     return jsonify(
         {
             "success": True,
@@ -41,6 +133,7 @@ async def api_get_channels_basic():
             "guide": channel.get("guide") or {},
         })
     return jsonify({"success": True, "data": basic})
+
 
 def _build_preview_url(app_url, source_url, stream_key, use_hls_proxy=True):
     if not source_url:
@@ -114,6 +207,7 @@ async def api_get_channel_preview(channel_id):
             use_hls_proxy=use_hls_proxy
         )
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
 
 @blueprint.route('/tic-api/channels/new', methods=['POST'])
 @admin_auth_required
@@ -200,14 +294,14 @@ async def api_delete_multiple_channels():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
     current_app.logger.warning(json_data)
-    
+
     for channel_id in json_data.get('channels', {}):
         normalized = normalize_id(channel_id, "channel")
         await delete_channel(config, normalized)
-    
+
     # Queue background tasks to update TVHeadend
     await queue_background_channel_update_tasks(config)
-    
+
     return jsonify({
         "success": True
     })
@@ -238,26 +332,27 @@ async def api_get_channel_logo(channel_id, file_placeholder):
     # Return file blob
     return await send_file(image_io, mimetype=mime_type)
 
+
 @blueprint.route('/tic-api/channels/settings/groups/add', methods=['POST'])
 @admin_auth_required
 async def api_add_channels_from_groups():
     json_data = await request.get_json()
     groups = json_data.get('groups', [])
-    
+
     if not groups:
         return jsonify({
             "success": False,
             "message": "No groups provided"
         }), 400
-    
+
     config = current_app.config['APP_CONFIG']
-    
+
     # This function needs to be implemented in the channels module
     # It should add all channels from the specified groups
     added_count = await add_channels_from_groups(config, groups)
-    
+
     await queue_background_channel_update_tasks(config)
-    
+
     return jsonify({
         "success": True,
         "data": {

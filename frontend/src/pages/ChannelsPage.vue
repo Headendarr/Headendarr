@@ -255,7 +255,7 @@
                       <q-item
                         :key="index"
                         class="q-px-none rounded-borders"
-                        :class="element.enabled ? '' : 'bg-grey-3'">
+                        :class="channelRowClass(element)">
 
                         <!--START DRAGGABLE HANDLE-->
                         <q-item-section avatar class="q-px-sm q-mx-sm handle">
@@ -303,6 +303,15 @@
                             </q-avatar>
 
                             <span class="text-weight-medium text-primary q-ml-sm">{{ element.name }}</span>
+                            <q-badge
+                              v-if="enableChannelHealthHighlight && element.status && element.status.state === 'warning'"
+                              color="orange-6"
+                              class="q-ml-sm"
+                              label="Needs attention">
+                              <q-tooltip class="bg-white text-primary">
+                                {{ formatChannelIssues(element.status) }}
+                              </q-tooltip>
+                            </q-badge>
                           </q-item-label>
                           <q-item-label caption lines="1" class="text-left q-ml-none">
                             <div class="row">
@@ -516,6 +525,7 @@ export default defineComponent({
         draggableSelector: '.q-item',
       },
       listOfChannels: [],
+      enableChannelHealthHighlight: true,
       selectedChannels: [],
 
       channelNumberEditDialogVisible: false,
@@ -741,7 +751,7 @@ export default defineComponent({
       // Fetch current settings
       axios({
         method: 'GET',
-        url: '/tic-api/channels/get',
+        url: `/tic-api/channels/get?include_status=${this.enableChannelHealthHighlight ? 'true' : 'false'}`,
       }).then((response) => {
         // Map and sort channels, preserving selected status
         this.listOfChannels = response.data.data.sort((a, b) => a.number - b.number).map(channel => {
@@ -758,6 +768,47 @@ export default defineComponent({
           actions: [{icon: 'close', color: 'white'}],
         });
       });
+    },
+    fetchUiSettings: function() {
+      axios({
+        method: 'get',
+        url: '/tic-api/get-settings',
+      }).then((response) => {
+        const uiSettings = response.data.data?.ui_settings || {};
+        this.enableChannelHealthHighlight = uiSettings.enable_channel_health_highlight !== false;
+        this.fetchChannels();
+      }).catch(() => {
+        this.enableChannelHealthHighlight = true;
+        this.fetchChannels();
+      });
+    },
+    channelRowClass: function(channel) {
+      if (!this.enableChannelHealthHighlight) {
+        return channel.enabled ? '' : 'bg-grey-3';
+      }
+      if (!channel.enabled) {
+        return 'bg-grey-3';
+      }
+      if (channel.status && channel.status.state === 'warning') {
+        return 'channel-needs-attention';
+      }
+      return '';
+    },
+    formatChannelIssues: function(status) {
+      if (!this.enableChannelHealthHighlight) {
+        return 'Health highlighting is disabled.';
+      }
+      if (!status || !status.issues || !status.issues.length) {
+        return 'All sources look healthy.';
+      }
+      const labels = {
+        no_sources: 'No sources configured',
+        all_sources_disabled: 'All sources are disabled',
+        has_disabled_sources: 'Some sources use disabled playlists',
+        missing_tvh_mux: 'Missing TVH mux',
+        tvh_mux_failed: 'TVH mux disabled or scan failed',
+      };
+      return status.issues.map(issue => labels[issue] || issue).join(', ');
     },
     openChannelSettings: function(channel) {
       let channelId = null;
@@ -1115,7 +1166,7 @@ export default defineComponent({
     },
   },
   created() {
-    this.fetchChannels();
+    this.fetchUiSettings();
   },
 });
 </script>
@@ -1135,5 +1186,10 @@ export default defineComponent({
   max-width: 0%;
   padding: 0;
   overflow: hidden;
+}
+
+.channel-needs-attention {
+  background: #fff6e5;
+  border-left: 4px solid #f2a900;
 }
 </style>

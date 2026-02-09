@@ -57,7 +57,7 @@ class LRUCache:
 _list_cache = LRUCache(max_size=8)
 
 
-async def read_config_all_channels(filter_playlist_ids=None, output_for_export=False):
+async def read_config_all_channels(filter_playlist_ids=None, output_for_export=False, include_status=False):
     if filter_playlist_ids is None:
         filter_playlist_ids = []
 
@@ -90,7 +90,7 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                             'stream_name':   source.playlist_stream_name,
                         })
                         continue
-                    sources.append({
+                    source_payload = {
                         'id':            source.id,
                         'playlist_id':   source.playlist_id,
                         'playlist_name': playlist_name,
@@ -99,7 +99,11 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                         'stream_url':    source.playlist_stream_url,
                         'use_hls_proxy': bool(getattr(source, "use_hls_proxy", False)),
                         'source_type':   source_type,
-                    })
+                    }
+                    if include_status:
+                        source_payload['tvh_uuid'] = source.tvh_uuid
+                        source_payload['playlist_enabled'] = bool(source.playlist.enabled) if source.playlist_id else True
+                    sources.append(source_payload)
                 # Filter out this channel if we have provided a playlist ID filter list and no sources were found
                 if filter_playlist_ids and not sources:
                     continue
@@ -118,7 +122,7 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                         'sources':  sources,
                     })
                     continue
-                return_list.append({
+                channel_payload = {
                     'id':       result.id,
                     'enabled':  result.enabled,
                     'tvh_uuid': result.tvh_uuid,
@@ -132,7 +136,8 @@ async def read_config_all_channels(filter_playlist_ids=None, output_for_export=F
                         'channel_id': result.guide_channel_id,
                     },
                     'sources':  sources,
-                })
+                }
+                return_list.append(channel_payload)
 
     return return_list
 
