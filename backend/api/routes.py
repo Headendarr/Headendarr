@@ -5,7 +5,7 @@ import os
 import aiofiles
 import aiohttp
 
-from quart import request, jsonify, send_from_directory, current_app, Response, websocket
+from quart import request, jsonify, send_from_directory, current_app, Response, websocket, redirect
 
 from backend.api import blueprint
 
