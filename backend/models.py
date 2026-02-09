@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import relationship, sessionmaker, declarative_base
 
@@ -23,7 +23,7 @@ class Epg(Base):
 
     enabled = Column(Boolean, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
-    url = Column(String(500), index=True, unique=False)
+    url = Column(Text, index=True, unique=False)
     user_agent = Column(String(255), nullable=True)
 
     # Backref to all associated linked channels
@@ -40,7 +40,7 @@ class EpgChannels(Base):
 
     channel_id = Column(String(256), index=True, unique=False)
     name = Column(String(500), index=True, unique=False)
-    icon_url = Column(String(500), index=False, unique=False)
+    icon_url = Column(Text, index=False, unique=False)
 
     # Link with an epg
     epg_id = Column(Integer, ForeignKey('epgs.id'), nullable=False)
@@ -63,37 +63,37 @@ class EpgChannelProgrammes(Base):
     __tablename__ = "epg_channel_programmes"
     id = Column(Integer, primary_key=True)
 
-    channel_id = Column(String(256), index=True, unique=False)
-    title = Column(String(500), index=True, unique=False)
-    sub_title = Column(String(500), index=False, unique=False)
-    desc = Column(String(500), index=False, unique=False)
-    series_desc = Column(String(500), index=False, unique=False)
-    country = Column(String(500), index=False, unique=False)
-    icon_url = Column(String(500), index=False, unique=False)
-    start = Column(String(256), index=False, unique=False)
-    stop = Column(String(256), index=False, unique=False)
-    start_timestamp = Column(String(256), index=False, unique=False)
-    stop_timestamp = Column(String(256), index=False, unique=False)
-    categories = Column(String(256), index=True, unique=False)
+    channel_id = Column(Text, index=True, unique=False)
+    title = Column(Text, index=True, unique=False)
+    sub_title = Column(Text, index=False, unique=False)
+    desc = Column(Text, index=False, unique=False)
+    series_desc = Column(Text, index=False, unique=False)
+    country = Column(Text, index=False, unique=False)
+    icon_url = Column(Text, index=False, unique=False)
+    start = Column(Text, index=False, unique=False)
+    stop = Column(Text, index=False, unique=False)
+    start_timestamp = Column(Text, index=False, unique=False)
+    stop_timestamp = Column(Text, index=False, unique=False)
+    categories = Column(Text, index=True, unique=False)
     # Extended optional XMLTV / TVHeadend supported metadata (all nullable / optional)
-    summary = Column(String(1000), index=False, unique=False)
-    keywords = Column(String(1000), index=False, unique=False)          # JSON encoded list of keyword strings
-    credits_json = Column(String(4000), index=False, unique=False)      # JSON: {"actor":[],"director":[],...}
-    video_colour = Column(String(10), index=False, unique=False)
-    video_aspect = Column(String(32), index=False, unique=False)
-    video_quality = Column(String(16), index=False, unique=False)
-    subtitles_type = Column(String(32), index=False, unique=False)
+    summary = Column(Text, index=False, unique=False)
+    keywords = Column(Text, index=False, unique=False)          # JSON encoded list of keyword strings
+    credits_json = Column(Text, index=False, unique=False)      # JSON: {"actor":[],"director":[],...}
+    video_colour = Column(Text, index=False, unique=False)
+    video_aspect = Column(Text, index=False, unique=False)
+    video_quality = Column(Text, index=False, unique=False)
+    subtitles_type = Column(Text, index=False, unique=False)
     audio_described = Column(Boolean, nullable=True)                    # True -> <audio-described />
-    previously_shown_date = Column(String(32), index=False, unique=False)  # YYYY-MM-DD
+    previously_shown_date = Column(Text, index=False, unique=False)  # YYYY-MM-DD
     premiere = Column(Boolean, nullable=True)
     is_new = Column(Boolean, nullable=True)
-    epnum_onscreen = Column(String(64), index=False, unique=False)
-    epnum_xmltv_ns = Column(String(64), index=False, unique=False)
-    epnum_dd_progid = Column(String(64), index=False, unique=False)
-    star_rating = Column(String(16), index=False, unique=False)          # e.g. "3/5"
-    production_year = Column(String(8), index=False, unique=False)       # <date>
-    rating_system = Column(String(32), index=False, unique=False)
-    rating_value = Column(String(64), index=False, unique=False)
+    epnum_onscreen = Column(Text, index=False, unique=False)
+    epnum_xmltv_ns = Column(Text, index=False, unique=False)
+    epnum_dd_progid = Column(Text, index=False, unique=False)
+    star_rating = Column(Text, index=False, unique=False)          # e.g. "3/5"
+    production_year = Column(Text, index=False, unique=False)       # <date>
+    rating_system = Column(Text, index=False, unique=False)
+    rating_value = Column(Text, index=False, unique=False)
 
     # Link with an epg channel
     epg_channel_id = Column(Integer, ForeignKey('epg_channels.id'), nullable=False)
@@ -110,7 +110,7 @@ class Playlist(Base):
     connections = Column(Integer, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(64), index=True, unique=True)
-    url = Column(String(500), index=True, unique=False)
+    url = Column(Text, index=True, unique=False)
     account_type = Column(String(16), nullable=False, unique=False, default="M3U")
     xc_username = Column(String(255), nullable=True, unique=False)
     xc_password = Column(String(255), nullable=True, unique=False)
@@ -132,12 +132,12 @@ class PlaylistStreams(Base):
     id = Column(Integer, primary_key=True)
 
     name = Column(String(500), index=True, unique=False)
-    url = Column(String(500), index=True, unique=False)
-    channel_id = Column(String(500), index=True, unique=False)
+    url = Column(Text, index=True, unique=False)
+    channel_id = Column(Text, index=True, unique=False)
     group_title = Column(String(500), index=True, unique=False)
     tvg_chno = Column(Integer, index=False, unique=False)
     tvg_id = Column(String(500), index=True, unique=False)
-    tvg_logo = Column(String(500), index=False, unique=False)
+    tvg_logo = Column(Text, index=False, unique=False)
     source_type = Column(String(16), index=True, unique=False, default="M3U")
     xc_stream_id = Column(Integer, index=True, unique=False)
     xc_category_id = Column(Integer, index=True, unique=False)
@@ -163,8 +163,8 @@ class Channel(Base):
 
     enabled = Column(Boolean, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
-    logo_url = Column(String(500), index=False, unique=False)
-    logo_base64 = Column(String(500), index=False, unique=False)
+    logo_url = Column(Text, index=False, unique=False)
+    logo_base64 = Column(Text, index=False, unique=False)
     number = Column(Integer, index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 
@@ -203,7 +203,7 @@ class ChannelSource(Base):
     # Link with a playlist
     playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
     playlist_stream_name = Column(String(500), index=True, unique=False)
-    playlist_stream_url = Column(String(500), index=True, unique=False)
+    playlist_stream_url = Column(Text, index=True, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)

@@ -12,7 +12,7 @@ services:
       args:
         VERSION: "UNKNOWN"
         BUILD_DATE: "NOW"
-        BASE_IMAGE: "python:3.12-bookworm"
+        BASE_IMAGE: "python:3.12-trixie"
 
     # NETWORK:
     networks:

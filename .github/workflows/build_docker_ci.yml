@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         base-image:
-          ["python:3.12-bookworm", "ghcr.io/tvheadend/tvheadend:edge-debian"]
+          ["python:3.12-trixie", "ghcr.io/tvheadend/tvheadend:edge-debian"]
 
     steps:
       # ---

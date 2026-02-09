@@ -72,3 +72,9 @@ argon2-cffi>=25.1
 psutil>=7.2
     #   Reason:             Optional process/memory metrics used by HLS proxy cache cleanup task
     #   Import example:     import psutil
+psycopg[binary]
+    #   Reason:             PostgreSQL sync driver (Alembic + legacy sync paths)
+    #   Import example:     import psycopg
+asyncpg
+    #   Reason:             PostgreSQL async driver used by AsyncSession engine
+    #   Import example:     postgresql+asyncpg://

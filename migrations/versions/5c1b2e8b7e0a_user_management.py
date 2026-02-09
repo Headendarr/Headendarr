@@ -30,7 +30,7 @@ def upgrade():
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('username', sa.String(length=64), nullable=False),
         sa.Column('password_hash', sa.String(length=255), nullable=False),
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('1')),
+        sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('true')),
         sa.Column('streaming_key', sa.String(length=255), nullable=True),
         sa.Column('streaming_key_hash', sa.String(length=255), nullable=True),
         sa.Column('streaming_key_created_at', sa.DateTime(), nullable=True),
@@ -56,7 +56,7 @@ def upgrade():
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.Column('last_used_at', sa.DateTime(), nullable=True),
         sa.Column('expires_at', sa.DateTime(), nullable=True),
-        sa.Column('revoked', sa.Boolean(), nullable=False, server_default=sa.text('0')),
+        sa.Column('revoked', sa.Boolean(), nullable=False, server_default=sa.text('false')),
         sa.Column('user_agent', sa.String(length=255), nullable=True),
         sa.Column('ip_address', sa.String(length=64), nullable=True),
     )

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from urllib.parse import quote_plus
 import os
 import subprocess
 import secrets
@@ -294,10 +295,17 @@ config_path = os.path.join(get_home_dir(), '.tvh_iptv_config')
 if not os.path.exists(config_path):
     os.makedirs(config_path)
 
-# Configure SQLite DB
+# Configure Postgres DB
 sqlalchemy_database_path = os.path.join(config_path, 'db.sqlite3')
-sqlalchemy_database_uri = 'sqlite:///' + sqlalchemy_database_path
-sqlalchemy_database_async_uri = 'sqlite+aiosqlite:///' + sqlalchemy_database_path
+postgres_host = os.environ.get('POSTGRES_HOST', '127.0.0.1')
+postgres_port = os.environ.get('POSTGRES_PORT', '5432')
+postgres_db = os.environ.get('POSTGRES_DB', 'tic')
+postgres_user = os.environ.get('POSTGRES_USER', 'tic')
+postgres_password = os.environ.get('POSTGRES_PASSWORD', 'tic')
+postgres_password_escaped = quote_plus(postgres_password)
+
+sqlalchemy_database_uri = f'postgresql+psycopg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}'
+sqlalchemy_database_async_uri = f'postgresql+asyncpg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}'
 sqlalchemy_track_modifications = False
 
 # Configure scheduler

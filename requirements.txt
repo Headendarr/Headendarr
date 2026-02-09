@@ -24,6 +24,8 @@ argon2-cffi==25.1.0
     # via -r requirements.in
 argon2-cffi-bindings==25.1.0
     # via argon2-cffi
+asyncpg==0.31.0
+    # via -r requirements.in
 attrs==25.4.0
     # via
     #   aiohttp
@@ -112,6 +114,10 @@ propcache==0.4.1
     #   yarl
 psutil==7.2.2
     # via -r requirements.in
+psycopg[binary]==3.3.2
+    # via -r requirements.in
+psycopg-binary==3.3.2
+    # via psycopg
 pycparser==3.0
     # via cffi
 pyyaml==6.0.3
@@ -148,6 +154,7 @@ typing-extensions==4.15.0
     #   aiosignal
     #   alembic
     #   beautifulsoup4
+    #   psycopg
     #   referencing
     #   sqlalchemy
 tzlocal==5.3.1

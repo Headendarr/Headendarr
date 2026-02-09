@@ -20,7 +20,7 @@ def upgrade():
     with op.batch_alter_table('channel_sources') as batch_op:
         batch_op.alter_column('playlist_id', existing_type=sa.Integer(), nullable=True)
         batch_op.add_column(
-            sa.Column('use_hls_proxy', sa.Boolean(), nullable=False, server_default=sa.text('0'))
+            sa.Column('use_hls_proxy', sa.Boolean(), nullable=False, server_default=sa.text('false'))
         )
 
 

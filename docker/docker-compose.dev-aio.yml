@@ -57,7 +57,7 @@ services:
 
   # -- FRONTEND DEV SERVER --
   frontend:
-    image: node:22-bookworm
+    image: node:22-trixie
     working_dir: /app/frontend
     command: bash -lc "npm install && npx quasar dev --host 0.0.0.0 --port 8080 --debug"
     network_mode: host
@@ -72,7 +72,7 @@ services:
 
   # -- DOCS DEV SERVER --
   docs:
-    image: node:22-bookworm
+    image: node:22-trixie
     working_dir: /app/docs
     command: bash -lc "npm install && npm start"
     network_mode: host

@@ -25,7 +25,7 @@ def upgrade():
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('channel_id', sa.Integer(), sa.ForeignKey('channels.id'), nullable=False),
         sa.Column('title_match', sa.String(length=500), nullable=True),
-        sa.Column('enabled', sa.Boolean(), nullable=False, server_default=sa.text('1')),
+        sa.Column('enabled', sa.Boolean(), nullable=False, server_default=sa.text('true')),
         sa.Column('lookahead_days', sa.Integer(), nullable=False, server_default='7'),
         sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(), nullable=True),

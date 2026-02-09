@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=python:3.12-bookworm
+ARG BASE_IMAGE=python:3.12-trixie
 FROM ${BASE_IMAGE} AS base_image
 
 #  _____ ____   ___  _   _ _____ _____ _   _ ____    ____ _____  _    ____ _____
@@ -7,7 +7,7 @@ FROM ${BASE_IMAGE} AS base_image
 # |  _| |  _ <| |_| | |\  | | | | |___| |\  | |_| |  ___) || |/ ___ \ |_| | |___
 # |_|   |_| \_\\___/|_| \_| |_| |_____|_| \_|____/  |____/ |_/_/   \_\____|_____|
 #
-FROM node:22-bookworm AS frontend_build_stage
+FROM node:22-trixie AS frontend_build_stage
 
 COPY ./frontend/package.json /build/
 COPY ./frontend/package-lock.json /build/
@@ -104,6 +104,8 @@ RUN set -eux; \
         bash \
         ca-certificates \
         curl \
+        postgresql-17 \
+        postgresql-contrib-17 \
         sqlite3 \
         tini \
         tzdata \
@@ -111,7 +113,7 @@ RUN set -eux; \
         ffmpeg; \
     echo "**** conditional tvheadend dependency libraries (only if tvheadend missing) ****"; \
     if ! command -v tvheadend >/dev/null 2>&1; then \
-        # Pruned list to only widely available Debian bookworm runtime libs; removed: x264, x265, xmltv, pngquant, python3 (already present), libssl3 (already in base), to prevent 'unable to locate package' failures. \
+        # Pruned list to only widely available Debian trixie runtime libs; removed: x264, x265, xmltv, pngquant, python3 (already present), libssl3 (already in base), to prevent 'unable to locate package' failures. \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libavahi-client3 \
             libdbus-1-3 \
@@ -138,7 +140,7 @@ RUN set -eux; \
     echo
 
 # Install gosu
-COPY --from=tianon/gosu:bookworm /gosu /usr/local/bin/
+COPY --from=tianon/gosu:trixie /gosu /usr/local/bin/
 
 # Install project
 COPY --from=backend_build_stage /var/venv-docker /var/venv-docker
@@ -161,6 +163,11 @@ ENV ENABLE_APP_DEBUGGING="false"
 ENV ENABLE_SQLALCHEMY_DEBUGGING="false"
 ENV SKIP_MIGRATIONS="false"
 ENV HLS_PROXY_PREFIX="tic-hls-proxy"
+ENV POSTGRES_DB="tic"
+ENV POSTGRES_USER="tic"
+ENV POSTGRES_PASSWORD="tic"
+ENV POSTGRES_HOST="127.0.0.1"
+ENV POSTGRES_PORT="5432"
 
 # Set working directory
 WORKDIR /app/
