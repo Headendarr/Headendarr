@@ -213,8 +213,6 @@ export default defineComponent({
   data() {
     return {
       listOfPlaylists: ref([]),
-      appUrl: ref(`${window.location.origin}`),
-
       // Application Settings
       enableStreamBuffer: ref(null),
       defaultFfmpegPipeArgs: ref(null),
@@ -241,7 +239,6 @@ export default defineComponent({
         method: 'get',
         url: '/tic-api/get-settings',
       }).then((response) => {
-        this.appUrl = response.data.data.app_url;
         this.enableStreamBuffer = response.data.data.enable_stream_buffer;
         this.defaultFfmpegPipeArgs = response.data.data.default_ffmpeg_pipe_args;
       }).catch(() => {
@@ -344,7 +341,6 @@ export default defineComponent({
       // Save settings
       let postData = {
         settings: {
-          app_url: this.appUrl,
           enable_stream_buffer: this.enableStreamBuffer,
           default_ffmpeg_pipe_args: this.defaultFfmpegPipeArgs,
         },

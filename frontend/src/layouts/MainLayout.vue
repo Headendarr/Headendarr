@@ -105,7 +105,7 @@
                     <q-item-label header>Proxied M3U Playlists</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
                             clickable
-                            @click="copyUrlToClipboard(`${appUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
+                            @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
                             tabindex="0">
                       <q-item-section avatar>
                         <q-avatar
@@ -116,7 +116,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
+                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
                         </q-item-label>
                         <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
                       </q-item-section>
@@ -129,7 +129,7 @@
 
                     <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
-                            clickable @click="copyUrlToClipboard(`${appUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
+                            clickable @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
                             tabindex="0">
                       <q-item-section avatar>
                         <q-avatar size="2rem" font-size="82px">
@@ -138,7 +138,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-green-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ appUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
+                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
                       </q-item-section>
                       <q-item-section side>
                         <q-icon name="content_copy" />
@@ -565,6 +565,7 @@ export default defineComponent({
     const loadTvheadendAdmin = ref(true);
     const showTvheadendAdmin = ref(false);
     const appUrl = ref(window.location.origin);
+    const connectionBaseUrl = computed(() => window.location.origin);
 
     const enabledPlaylists = ref([]);
 
@@ -667,7 +668,7 @@ export default defineComponent({
       await router.push({path: '/user-settings'});
     };
 
-    const epgUrl = computed(() => `${appUrl.value}/xmltv.php?stream_key=${currentStreamingKey.value}`);
+    const epgUrl = computed(() => `${connectionBaseUrl.value}/xmltv.php?stream_key=${currentStreamingKey.value}`);
     const toggleHelp = () => {
       uiStore.toggleHelp();
     };
@@ -679,6 +680,7 @@ export default defineComponent({
       showTvheadendAdmin,
       enabledPlaylists,
       appUrl,
+      connectionBaseUrl,
       epgUrl,
       essentialLinks: filteredLinks,
       currentUsername,
