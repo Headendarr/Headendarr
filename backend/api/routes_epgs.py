@@ -90,9 +90,15 @@ async def api_update_epg(epg_id):
         epg_id = int(epg_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
+    epg_name = None
+    try:
+        epg_config = await read_config_one_epg(epg_id)
+        epg_name = epg_config.get('name') if epg_config else None
+    except Exception:
+        epg_name = None
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
-        'name':     f'Update EPG - ID: {epg_id}',
+        'name':     f'Update EPG - Name: {epg_name or epg_id}',
         'function': import_epg_data,
         'args':     [config, epg_id],
     }, priority=20)

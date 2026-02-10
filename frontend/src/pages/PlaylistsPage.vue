@@ -225,7 +225,9 @@ export default defineComponent({
         method: 'get',
         url: '/tic-api/playlists/get',
       }).then((response) => {
-        this.listOfPlaylists = response.data.data;
+        const playlists = response.data.data || [];
+        playlists.sort((a, b) => (a?.name ?? '').localeCompare(b?.name ?? '', undefined, {numeric: true}));
+        this.listOfPlaylists = playlists;
       }).catch(() => {
         this.$q.notify({
           color: 'negative',

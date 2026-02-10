@@ -276,7 +276,9 @@ export default defineComponent({
         method: 'get',
         url: '/tic-api/epgs/get',
       }).then((response) => {
-        this.listOfEpgs = response.data.data;
+        const epgs = response.data.data || [];
+        epgs.sort((a, b) => (a?.name ?? '').localeCompare(b?.name ?? '', undefined, {numeric: true}));
+        this.listOfEpgs = epgs;
       }).catch(() => {
         this.$q.notify({
           color: 'negative',

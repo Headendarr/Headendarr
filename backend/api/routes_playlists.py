@@ -36,9 +36,15 @@ async def api_add_new_playlist():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
     playlist_id = await add_new_playlist(config, json_data)
+    playlist_name = None
+    try:
+        playlist_config = await read_config_one_playlist(config, playlist_id)
+        playlist_name = playlist_config.get('name') if playlist_config else None
+    except Exception:
+        playlist_name = None
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
-        'name':     f'Publish playlist networks - add {playlist_id}',
+        'name':     f'Publish playlist networks - Name: {playlist_name or playlist_id}',
         'function': publish_playlist_networks,
         'args':     [config],
     }, priority=20)
@@ -76,9 +82,15 @@ async def api_set_config_playlists(playlist_id):
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid playlist id"}), 400
     await update_playlist(config, playlist_id, json_data)
+    playlist_name = None
+    try:
+        playlist_config = await read_config_one_playlist(config, playlist_id)
+        playlist_name = playlist_config.get('name') if playlist_config else None
+    except Exception:
+        playlist_name = None
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
-        'name':     f'Publish playlist networks - update {playlist_id}',
+        'name':     f'Publish playlist networks - Name: {playlist_name or playlist_id}',
         'function': publish_playlist_networks,
         'args':     [config],
     }, priority=20)
@@ -121,14 +133,20 @@ async def api_update_playlist(playlist_id):
         playlist_id = int(playlist_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid playlist id"}), 400
+    playlist_name = None
+    try:
+        playlist_config = await read_config_one_playlist(config, playlist_id)
+        playlist_name = playlist_config.get('name') if playlist_config else None
+    except Exception:
+        playlist_name = None
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
-        'name':     f'Update source - ID: {playlist_id}',
+        'name':     f'Update source - Name: {playlist_name or playlist_id}',
         'function': import_playlist_data,
         'args':     [config, playlist_id],
     }, priority=20)
     await task_broker.add_task({
-        'name':     f'Publish playlist networks - update {playlist_id}',
+        'name':     f'Publish playlist networks - Name: {playlist_name or playlist_id}',
         'function': publish_playlist_networks,
         'args':     [config],
     }, priority=21)
