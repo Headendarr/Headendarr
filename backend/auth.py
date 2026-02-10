@@ -3,13 +3,14 @@
 import base64
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket, current_app
-from sqlalchemy import select, update, or_
+from sqlalchemy import delete, select, update, or_
 from sqlalchemy.orm import selectinload
 
+from backend import config
 from backend.models import Session, User, UserSession, StreamAuditLog
 from backend.security import hash_session_token
 
@@ -298,3 +299,21 @@ async def audit_stream_event(
                 created_at=datetime.utcnow(),
             )
             session.add(log)
+
+
+async def cleanup_stream_audit_logs(retention_days: int | None = None) -> int:
+    settings = config.read_settings()
+    configured_days = settings.get("settings", {}).get("audit_log_retention_days", 7)
+    try:
+        days = int(retention_days if retention_days is not None else configured_days)
+    except (TypeError, ValueError):
+        days = 7
+    if days < 1:
+        days = 1
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    async with Session() as session:
+        result = await session.execute(
+            delete(StreamAuditLog).where(StreamAuditLog.created_at < cutoff)
+        )
+        await session.commit()
+        return int(result.rowcount or 0)

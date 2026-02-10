@@ -52,7 +52,6 @@
                   Configure User-Agent headers for fetching playlists and EPGs.
                 </div>
                 <q-btn
-                  dense
                   color="primary"
                   icon="add"
                   label="Add User Agent"
@@ -112,6 +111,20 @@
                   min="0"
                   label="Post-recording padding (minutes)"
                   hint="Minutes to record after the scheduled end time."
+                />
+              </div>
+
+              <q-separator class="q-my-lg" />
+
+              <h5 class="text-primary q-mb-none">Audit Logging</h5>
+
+              <div class="q-gutter-sm">
+                <q-input
+                  v-model.number="auditLogRetentionDays"
+                  type="number"
+                  min="1"
+                  label="Audit log retention (days)"
+                  hint="How long to keep audit logs in the database."
                 />
               </div>
 
@@ -207,6 +220,13 @@
                       </q-item-label>
                     </q-item-section>
                   </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Audit log retention controls how long stream and API access events are kept in the database.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -243,6 +263,7 @@ export default defineComponent({
       appUrl: ref(null),
       routePlaylistsThroughTvh: ref(false),
       userAgents: ref([]),
+      auditLogRetentionDays: ref(7),
       dvr: ref({
         pre_padding_mins: 2,
         post_padding_mins: 5,
@@ -255,6 +276,7 @@ export default defineComponent({
       defSet: ref({
         appUrl: window.location.origin,
         routePlaylistsThroughTvh: false,
+        auditLogRetentionDays: 7,
         userAgents: [
           {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
           {
@@ -316,6 +338,9 @@ export default defineComponent({
           }
         });
         this.userAgents = this.normalizeUserAgents(appSettings.user_agents ?? this.defSet.userAgents);
+        this.auditLogRetentionDays = Number(
+          appSettings.audit_log_retention_days ?? this.defSet.auditLogRetentionDays,
+        );
         this.dvr = {
           pre_padding_mins: Number(appSettings.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
           post_padding_mins: Number(appSettings.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
@@ -323,7 +348,7 @@ export default defineComponent({
         this.uiSettings = {
           enable_channel_health_highlight: Boolean(
             appSettings.ui_settings?.enable_channel_health_highlight
-            ?? this.defSet.uiSettings.enable_channel_health_highlight
+            ?? this.defSet.uiSettings.enable_channel_health_highlight,
           ),
         };
         // Fill in any missing values from defaults
@@ -334,6 +359,9 @@ export default defineComponent({
         });
         if (!this.userAgents.length) {
           this.userAgents = this.normalizeUserAgents(this.defSet.userAgents);
+        }
+        if (!this.auditLogRetentionDays) {
+          this.auditLogRetentionDays = this.defSet.auditLogRetentionDays;
         }
         if (!this.dvr) {
           this.dvr = {...this.defSet.dvr};
@@ -367,6 +395,9 @@ export default defineComponent({
         name: agent.name,
         value: agent.value,
       }));
+      postData.settings.audit_log_retention_days = Number(
+        this.auditLogRetentionDays ?? this.defSet.auditLogRetentionDays,
+      );
       postData.settings.dvr = {
         pre_padding_mins: Number(this.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
         post_padding_mins: Number(this.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
@@ -374,7 +405,7 @@ export default defineComponent({
       postData.settings.ui_settings = {
         enable_channel_health_highlight: Boolean(
           this.uiSettings?.enable_channel_health_highlight
-          ?? this.defSet.uiSettings.enable_channel_health_highlight
+          ?? this.defSet.uiSettings.enable_channel_health_highlight,
         ),
       };
       this.$q.loading.show();
