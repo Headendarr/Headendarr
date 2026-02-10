@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -14,6 +15,7 @@ from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
+from backend.streaming import build_local_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
 
 logger = logging.getLogger("tic.playlists")
@@ -733,7 +735,13 @@ async def read_stream_details_from_all_playlists():
     return playlist_streams
 
 
-def read_filtered_stream_details_from_all_playlists(request_json):
+def read_filtered_stream_details_from_all_playlists(
+    request_json,
+    *,
+    base_url: str | None = None,
+    instance_id: str | None = None,
+    stream_key: str | None = None,
+):
     results = {
         "streams": [],
         "records_total": 0,
@@ -748,7 +756,7 @@ def read_filtered_stream_details_from_all_playlists(request_json):
     ):
         if account.playlist_id not in primary_accounts:
             primary_accounts[account.playlist_id] = account
-    base_query = db.session.query(PlaylistStreams)
+    base_query = db.session.query(PlaylistStreams).options(joinedload(PlaylistStreams.playlist))
     # Get total records count
     results["records_total"] = base_query.count()
     # Build filters
@@ -820,6 +828,23 @@ def read_filtered_stream_details_from_all_playlists(request_json):
                     account.username,
                     account.password,
                 )
+        playlist_info = result.playlist
+        if playlist_info and playlist_info.use_hls_proxy:
+            if not playlist_info.use_custom_hls_proxy and base_url and instance_id:
+                stream_url = build_local_hls_proxy_url(
+                    base_url,
+                    instance_id,
+                    stream_url,
+                    stream_key=stream_key,
+                )
+            elif playlist_info.hls_proxy_path:
+                encoded_url = base64.urlsafe_b64encode(
+                    stream_url.encode("utf-8")
+                ).decode("utf-8")
+                hls_proxy_path = playlist_info.hls_proxy_path
+                hls_proxy_path = hls_proxy_path.replace("[URL]", stream_url)
+                hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
+                stream_url = hls_proxy_path
         results["streams"].append(
             {
                 "id": result.id,

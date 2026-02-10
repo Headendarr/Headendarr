@@ -162,7 +162,17 @@ async def api_update_playlist(playlist_id):
 @admin_auth_required
 async def api_get_filtered_playlist_streams():
     json_data = await request.get_json()
-    results = read_filtered_stream_details_from_all_playlists(json_data)
+    user = getattr(request, "_current_user", None)
+    stream_key = user.streaming_key if user else None
+    config = current_app.config['APP_CONFIG']
+    instance_id = config.ensure_instance_id()
+    base_url = request.host_url.rstrip("/")
+    results = read_filtered_stream_details_from_all_playlists(
+        json_data,
+        base_url=base_url,
+        instance_id=instance_id,
+        stream_key=stream_key,
+    )
     return jsonify(
         {
             "success": True,
