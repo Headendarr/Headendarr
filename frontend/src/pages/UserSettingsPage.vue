@@ -1,27 +1,27 @@
 <template>
   <q-page padding>
-    <q-card flat>
-      <q-card-section>
-        <div class="text-h6">User Settings</div>
-        <div class="text-caption text-grey-7">{{ user?.username }}</div>
-      </q-card-section>
+    <q-form class="q-gutter-md">
+      <h5 class="text-primary q-mb-none">Account</h5>
 
-      <q-card-section>
+      <div class="q-gutter-sm">
         <q-input v-model="currentPassword" type="password" label="Current Password" />
-        <q-input v-model="newPassword" type="password" label="New Password" class="q-mt-md" />
-        <q-btn color="primary" label="Change Password" class="q-mt-md" @click="changePassword" />
-      </q-card-section>
+        <q-input v-model="newPassword" type="password" label="New Password" />
+        <div class="q-pt-sm">
+          <q-btn color="primary" label="Change Password" @click="changePassword" />
+        </div>
+      </div>
 
-      <q-separator />
+      <q-separator class="q-my-lg" />
 
-      <q-card-section>
-        <div class="text-subtitle2">Streaming Key</div>
-        <div class="text-caption text-grey-7">Used to authorize access to playlist/EPG/HDHomeRun endpoints.</div>
+      <h5 class="text-primary q-mb-none">Streaming Key</h5>
+
+      <div class="q-gutter-sm">
         <q-input
           v-model="streamingKey"
           readonly
-          class="q-mt-sm"
           label="Streaming Key"
+          hint="Used to authorize access to playlist/EPG/HDHomeRun endpoints."
+          class="hint-spaced"
         >
           <template v-slot:append>
             <q-btn
@@ -32,24 +32,60 @@
             />
           </template>
         </q-input>
-        <q-btn color="secondary" label="Rotate Streaming Key" class="q-mt-md" @click="rotateStreamingKey" />
-      </q-card-section>
-    </q-card>
+        <div class="q-pt-sm">
+          <q-btn color="primary" label="Rotate Streaming Key" @click="rotateStreamingKey" />
+        </div>
+      </div>
+
+      <q-separator class="q-my-lg" />
+
+      <h5 class="text-primary q-mb-none">Appearance</h5>
+
+      <div class="q-gutter-sm">
+        <q-select
+          v-model="theme"
+          :options="themeOptions"
+          emit-value
+          map-options
+          label="Theme"
+          hint="Choose your preferred theme."
+          class="hint-spaced"
+          @update:model-value="applyTheme"
+        />
+      </div>
+    </q-form>
   </q-page>
 </template>
+
+<style scoped>
+.hint-spaced {
+  margin-bottom: 6px;
+}
+</style>
 
 <script>
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
+import {useUiStore} from 'stores/ui';
 
 export default {
   name: 'UserSettingsPage',
+  setup() {
+    return {
+      uiStore: useUiStore(),
+    };
+  },
   data() {
     return {
       user: null,
       currentPassword: '',
       newPassword: '',
       streamingKey: '',
+      theme: 'light',
+      themeOptions: [
+        {label: 'Light', value: 'light'},
+        {label: 'Dark', value: 'dark'},
+      ],
     };
   },
   methods: {
@@ -57,6 +93,8 @@ export default {
       const response = await axios.get('/tic-api/users/self');
       this.user = response.data.user;
       this.streamingKey = response.data.user?.streaming_key || '';
+      this.theme = this.uiStore.loadThemeForUser(this.user?.username);
+      this.$q.dark.set(this.theme === 'dark');
     },
     async changePassword() {
       try {
@@ -94,6 +132,12 @@ export default {
       }
       await copyToClipboard(this.streamingKey);
       this.$q.notify({color: 'green', message: 'Streaming key copied to clipboard'});
+    },
+    applyTheme(value) {
+      const normalized = value === 'dark' ? 'dark' : 'light';
+      this.theme = normalized;
+      this.$q.dark.set(normalized === 'dark');
+      this.uiStore.setTheme(normalized, this.user?.username);
     },
   },
   mounted() {

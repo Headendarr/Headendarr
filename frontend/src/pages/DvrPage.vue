@@ -1,281 +1,291 @@
 <template>
-  <q-page padding>
-    <div class="row q-col-gutter-md">
-      <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-        <q-card flat>
-          <q-card-section class="row items-center q-gutter-md">
-            <div class="text-h5">DVR</div>
-            <q-space />
-            <q-btn color="primary" label="Refresh" @click="refreshAll" />
-          </q-card-section>
+  <q-page>
 
-          <q-tabs v-model="tab" class="text-primary">
-            <q-tab name="recordings" label="Recordings" />
-            <q-tab name="rules" label="Recording Rules" />
-          </q-tabs>
+    <div class="q-pa-md">
 
-          <q-separator />
+      <div class="row">
+        <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
 
-          <q-tab-panels v-model="tab" animated>
-            <q-tab-panel name="recordings">
-              <div class="row items-center q-gutter-md q-mb-md">
-                <q-btn
-                  color="primary"
-                  label="Schedule Recording"
-                  @click="showScheduleDialog = true"
-                />
-                <q-select
-                  v-model="statusFilter"
-                  :options="statusOptions"
-                  label="Status Filter"
-                  dense
-                  outlined
-                  clearable
-                  emit-value
-                  map-options
-                  style="min-width: 220px;"
-                />
-                <q-input
-                  v-model="recordingsSearch"
-                  dense
-                  outlined
-                  clearable
-                  debounce="200"
-                  placeholder="Search recordings"
-                  style="min-width: 240px;"
-                />
+          <q-card flat>
+            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+              <div class="row items-center q-gutter-md">
+                <div class="text-h5">DVR</div>
+                <q-space />
+                <q-btn color="primary" label="Refresh" @click="refreshAll" />
               </div>
-              <q-table
-                :rows="filteredRecordings"
-                :columns="recordingColumns"
-                row-key="id"
-                flat
-                dense
-                :pagination="recordingsPagination"
-                @update:pagination="onRecordingsPagination"
-              >
-                <template v-slot:body-cell-actions="props">
-                  <q-td :props="props">
-                    <q-btn
-                      v-if="isRecordingPlayable(props.row)"
-                      dense
-                      flat
-                      icon="play_arrow"
-                      color="primary"
-                      @click="playRecording(props.row)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Play recording</q-tooltip>
-                    </q-btn>
-                    <q-btn
-                      v-if="canCancelRecording(props.row)"
-                      dense
-                      flat
-                      icon="cancel"
-                      color="negative"
-                      @click="cancelRecording(props.row.id)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Cancel recording</q-tooltip>
-                    </q-btn>
-                    <q-btn
-                      dense
-                      flat
-                      icon="delete"
-                      color="negative"
-                      @click="confirmDeleteRecording(props.row)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Delete recording</q-tooltip>
-                    </q-btn>
-                  </q-td>
-                </template>
-              </q-table>
-            </q-tab-panel>
+            </q-card-section>
 
-            <q-tab-panel name="rules">
-              <div class="row items-center q-gutter-md q-mb-md">
-                <q-btn
-                  color="primary"
-                  label="Add Rule"
-                  @click="openRuleDialog()"
-                />
-                <q-input
-                  v-model="rulesSearch"
+            <q-tabs v-model="tab" class="text-primary">
+              <q-tab name="recordings" label="Recordings" />
+              <q-tab name="rules" label="Recording Rules" />
+            </q-tabs>
+
+            <q-separator />
+
+            <q-tab-panels v-model="tab" animated>
+              <q-tab-panel name="recordings">
+                <div class="row items-center q-gutter-md q-mb-md">
+                  <q-btn
+                    color="primary"
+                    label="Schedule Recording"
+                    @click="showScheduleDialog = true"
+                  />
+                  <q-select
+                    v-model="statusFilter"
+                    :options="statusOptions"
+                    label="Status Filter"
+                    dense
+                    outlined
+                    clearable
+                    emit-value
+                    map-options
+                    style="min-width: 220px;"
+                  />
+                  <q-input
+                    v-model="recordingsSearch"
+                    dense
+                    outlined
+                    clearable
+                    debounce="200"
+                    placeholder="Search recordings"
+                    style="min-width: 240px;"
+                  />
+                </div>
+                <q-table
+                  :rows="filteredRecordings"
+                  :columns="recordingColumns"
+                  row-key="id"
+                  flat
                   dense
-                  outlined
-                  clearable
-                  debounce="200"
-                  placeholder="Search rules"
-                  style="min-width: 240px;"
-                />
-              </div>
-              <q-table
-                :rows="filteredRules"
-                :columns="ruleColumns"
-                row-key="id"
-                flat
-                dense
-                :pagination="rulesPagination"
-                @update:pagination="onRulesPagination"
-              >
-                <template v-slot:body-cell-actions="props">
-                  <q-td :props="props">
-                    <q-btn
-                      dense
-                      flat
-                      icon="edit"
-                      color="primary"
-                      @click="openRuleDialog(props.row)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Edit rule</q-tooltip>
-                    </q-btn>
-                    <q-btn
-                      dense
-                      flat
-                      icon="delete"
-                      color="negative"
-                      @click="confirmDeleteRule(props.row)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Delete rule</q-tooltip>
-                    </q-btn>
-                  </q-td>
-                </template>
-              </q-table>
-            </q-tab-panel>
-          </q-tab-panels>
-        </q-card>
-      </div>
-      <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
-        <q-slide-transition>
-          <q-card v-show="uiStore.showHelp" class="note-card q-my-md">
-            <q-card-section>
-              <div class="text-h5 q-mb-none">Setup Steps:</div>
-              <q-list>
+                  :pagination="recordingsPagination"
+                  @update:pagination="onRecordingsPagination"
+                >
+                  <template v-slot:body-cell-actions="props">
+                    <q-td :props="props">
+                      <q-btn
+                        v-if="isRecordingPlayable(props.row)"
+                        dense
+                        flat
+                        icon="play_arrow"
+                        color="primary"
+                        @click="playRecording(props.row)"
+                      >
+                        <q-tooltip class="bg-white text-primary">Play recording</q-tooltip>
+                      </q-btn>
+                      <q-btn
+                        v-if="canCancelRecording(props.row)"
+                        dense
+                        flat
+                        icon="cancel"
+                        color="negative"
+                        @click="cancelRecording(props.row.id)"
+                      >
+                        <q-tooltip class="bg-white text-primary">Cancel recording</q-tooltip>
+                      </q-btn>
+                      <q-btn
+                        dense
+                        flat
+                        icon="delete"
+                        color="negative"
+                        @click="confirmDeleteRecording(props.row)"
+                      >
+                        <q-tooltip class="bg-white text-primary">Delete recording</q-tooltip>
+                      </q-btn>
+                    </q-td>
+                  </template>
+                </q-table>
+              </q-tab-panel>
 
-                <q-separator inset spaced />
-
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Use <b>Schedule Recording</b> to create a one-time recording for a channel and time window.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      2. Use <b>Recording Rules</b> to create recurring rules that automatically schedule future
-                      recordings by title match.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      3. After creating a recording or rule, check the <b>Sync</b> status to confirm it has been
-                      pushed to TVHeadend.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-
-              </q-list>
-            </q-card-section>
-            <q-card-section>
-              <div class="text-h5 q-mb-none">Notes:</div>
-              <q-list>
-
-                <q-separator inset spaced />
-
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      Recordings are queued and synced to TVHeadend in the background. TVHeadend performs the actual
-                      recording. If a sync fails, click <b>Refresh</b> to reload the current status.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-
-              </q-list>
-            </q-card-section>
+              <q-tab-panel name="rules">
+                <div class="row items-center q-gutter-md q-mb-md">
+                  <q-btn
+                    color="primary"
+                    label="Add Rule"
+                    @click="openRuleDialog()"
+                  />
+                  <q-input
+                    v-model="rulesSearch"
+                    dense
+                    outlined
+                    clearable
+                    debounce="200"
+                    placeholder="Search rules"
+                    style="min-width: 240px;"
+                  />
+                </div>
+                <q-table
+                  :rows="filteredRules"
+                  :columns="ruleColumns"
+                  row-key="id"
+                  flat
+                  dense
+                  :pagination="rulesPagination"
+                  @update:pagination="onRulesPagination"
+                >
+                  <template v-slot:body-cell-actions="props">
+                    <q-td :props="props">
+                      <q-btn
+                        dense
+                        flat
+                        icon="edit"
+                        color="primary"
+                        @click="openRuleDialog(props.row)"
+                      >
+                        <q-tooltip class="bg-white text-primary">Edit rule</q-tooltip>
+                      </q-btn>
+                      <q-btn
+                        dense
+                        flat
+                        icon="delete"
+                        color="negative"
+                        @click="confirmDeleteRule(props.row)"
+                      >
+                        <q-tooltip class="bg-white text-primary">Delete rule</q-tooltip>
+                      </q-btn>
+                    </q-td>
+                  </template>
+                </q-table>
+              </q-tab-panel>
+            </q-tab-panels>
           </q-card>
-        </q-slide-transition>
+
+        </div>
+        <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
+          <q-slide-transition>
+            <q-card v-show="uiStore.showHelp" class="note-card q-my-md">
+              <q-card-section>
+                <div class="text-h5 q-mb-none">Setup Steps:</div>
+                <q-list>
+
+                  <q-separator inset spaced />
+
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        1. Use <b>Schedule Recording</b> to create a one-time recording for a channel and time
+                        window.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        2. Use <b>Recording Rules</b> to create recurring rules that automatically schedule future
+                        recordings by title match.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        3. After creating a recording or rule, check the <b>Sync</b> status to confirm it has been
+                        pushed to TVHeadend.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+
+                </q-list>
+              </q-card-section>
+              <q-card-section>
+                <div class="text-h5 q-mb-none">Notes:</div>
+                <q-list>
+
+                  <q-separator inset spaced />
+
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Recordings are queued and synced to TVHeadend in the background. TVHeadend performs the
+                        actual
+                        recording. If a sync fails, click <b>Refresh</b> to reload the current status.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+
+                </q-list>
+              </q-card-section>
+            </q-card>
+          </q-slide-transition>
+        </div>
       </div>
+
+      <q-dialog v-model="showScheduleDialog">
+        <q-card style="width: 520px; max-width: 95vw;">
+          <q-card-section class="bg-primary text-white">
+            <div class="text-h6">Schedule Recording</div>
+          </q-card-section>
+          <q-card-section>
+            <q-select
+              v-model="scheduleForm.channel_id"
+              :options="channelOptions"
+              label="Channel"
+              emit-value
+              map-options
+              outlined
+            />
+            <q-input
+              v-model="scheduleForm.title"
+              label="Title"
+              outlined
+              class="q-mt-md"
+            />
+            <q-input
+              v-model="scheduleForm.start"
+              type="datetime-local"
+              label="Start"
+              outlined
+              class="q-mt-md"
+            />
+            <q-input
+              v-model="scheduleForm.stop"
+              type="datetime-local"
+              label="Stop"
+              outlined
+              class="q-mt-md"
+            />
+          </q-card-section>
+          <q-card-actions align="right">
+            <q-btn flat label="Cancel" v-close-popup />
+            <q-btn color="primary" label="Save" @click="submitSchedule" />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
+
+      <q-dialog v-model="showRuleDialog">
+        <q-card style="width: 520px; max-width: 95vw;">
+          <q-card-section class="bg-primary text-white">
+            <div class="text-h6">{{ isEditingRule ? 'Edit Recording Rule' : 'Create Recording Rule' }}</div>
+          </q-card-section>
+          <q-card-section>
+            <q-select
+              v-model="ruleForm.channel_id"
+              :options="channelOptions"
+              label="Channel"
+              emit-value
+              map-options
+              outlined
+            />
+            <q-input
+              v-model="ruleForm.title_match"
+              label="Title Match"
+              outlined
+              class="q-mt-md"
+            />
+            <q-input
+              v-model.number="ruleForm.lookahead_days"
+              type="number"
+              label="Lookahead Days"
+              outlined
+              class="q-mt-md"
+            />
+          </q-card-section>
+          <q-card-actions align="right">
+            <q-btn flat label="Cancel" v-close-popup />
+            <q-btn color="primary" label="Save" @click="submitRule" />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
     </div>
-
-    <q-dialog v-model="showScheduleDialog">
-      <q-card style="width: 520px; max-width: 95vw;">
-        <q-card-section class="bg-primary text-white">
-          <div class="text-h6">Schedule Recording</div>
-        </q-card-section>
-        <q-card-section>
-          <q-select
-            v-model="scheduleForm.channel_id"
-            :options="channelOptions"
-            label="Channel"
-            emit-value
-            map-options
-            outlined
-          />
-          <q-input
-            v-model="scheduleForm.title"
-            label="Title"
-            outlined
-            class="q-mt-md"
-          />
-          <q-input
-            v-model="scheduleForm.start"
-            type="datetime-local"
-            label="Start"
-            outlined
-            class="q-mt-md"
-          />
-          <q-input
-            v-model="scheduleForm.stop"
-            type="datetime-local"
-            label="Stop"
-            outlined
-            class="q-mt-md"
-          />
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn color="primary" label="Save" @click="submitSchedule" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
-
-    <q-dialog v-model="showRuleDialog">
-      <q-card style="width: 520px; max-width: 95vw;">
-        <q-card-section class="bg-primary text-white">
-          <div class="text-h6">{{ isEditingRule ? 'Edit Recording Rule' : 'Create Recording Rule' }}</div>
-        </q-card-section>
-        <q-card-section>
-          <q-select
-            v-model="ruleForm.channel_id"
-            :options="channelOptions"
-            label="Channel"
-            emit-value
-            map-options
-            outlined
-          />
-          <q-input
-            v-model="ruleForm.title_match"
-            label="Title Match"
-            outlined
-            class="q-mt-md"
-          />
-          <q-input
-            v-model.number="ruleForm.lookahead_days"
-            type="number"
-            label="Lookahead Days"
-            outlined
-            class="q-mt-md"
-          />
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn color="primary" label="Save" @click="submitRule" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
   </q-page>
 </template>
 

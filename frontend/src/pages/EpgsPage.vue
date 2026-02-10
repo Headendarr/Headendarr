@@ -1,14 +1,14 @@
 <template>
-  <q-page padding>
+  <q-page>
 
-    <div class="q-pa-none">
+    <div class="q-pa-md">
 
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row q-gutter-xs q-mt-xs justify-between">
+              <div class="row q-gutter-xs justify-between">
                 <div class="col-auto">
                   <q-btn-group>
                     <q-btn
@@ -31,7 +31,7 @@
                   <q-item
                     v-for="(epg, index) in listOfEpgs"
                     v-bind:key="index"
-                    :class="epg.enabled ? '' : 'bg-grey-3'">
+                    :class="epg.enabled ? '' : 'disabled-item'">
                     <q-item-section avatar>
                       <q-icon name="calendar_month" />
                       <!--                  <q-img src="playlist_play"/>-->
@@ -240,7 +240,6 @@
           </q-slide-transition>
         </div>
       </div>
-
 
     </div>
 

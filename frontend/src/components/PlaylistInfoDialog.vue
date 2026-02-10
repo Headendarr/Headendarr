@@ -375,14 +375,15 @@ export default {
         }));
         if (this.accountType === 'XC' && !this.xcAccounts.length) {
           const legacyUsername = response.data.data.xc_username || '';
-          this.xcAccounts = [{
-            username: legacyUsername,
-            password: '',
-            passwordSet: !!response.data.data.xc_password_set,
-            enabled: true,
-            connection_limit: response.data.data.connections || 1,
-            label: '',
-          }];
+          this.xcAccounts = [
+            {
+              username: legacyUsername,
+              password: '',
+              passwordSet: !!response.data.data.xc_password_set,
+              enabled: true,
+              connection_limit: response.data.data.connections || 1,
+              label: '',
+            }];
         }
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');

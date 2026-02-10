@@ -1,8 +1,8 @@
 <template>
   <q-layout view="hHh LpR lFf">
     <q-page-container>
-      <q-page class="row items-center justify-center">
-        <q-card class="q-pa-lg" style="width: 360px; max-width: 90vw;">
+      <q-page class="login-page row items-center justify-center">
+        <q-card class="login-card q-pa-lg" style="width: 360px; max-width: 90vw;">
           <q-card-section>
             <div class="text-h6">Sign in</div>
             <div class="text-caption text-grey-7">Use your username and password</div>

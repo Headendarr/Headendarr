@@ -1,7 +1,7 @@
 <template>
   <q-layout view="hHh LpR lFf">
     <q-header elevated class="bg-primary text-white" height-hint="98">
-      <q-toolbar class="bg-primary text-white q-my-md shadow-2">
+      <q-toolbar class="bg-primary text-white q-py-md shadow-2">
         <q-btn
           flat
           round
@@ -116,7 +116,8 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/tvh_playlist/{{ playlist.id }}/channels.m3u?stream_key={{ currentStreamingKey }}
+                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/tvh_playlist/{{ playlist.id
+                          }}/channels.m3u?stream_key={{ currentStreamingKey }}
                         </q-item-label>
                         <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
                       </q-item-section>
@@ -129,7 +130,8 @@
 
                     <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
-                            clickable @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
+                            clickable
+                            @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
                             tabindex="0">
                       <q-item-section avatar>
                         <q-avatar size="2rem" font-size="82px">
@@ -138,7 +140,9 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-bold text-green-7">{{ playlist.name }}</q-item-label>
-                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/{{ playlist.id }}</q-item-label>
+                        <q-item-label caption>{{ connectionBaseUrl }}/tic-api/hdhr_device/{{ currentStreamingKey
+                          }}/{{ playlist.id }}
+                        </q-item-label>
                       </q-item-section>
                       <q-item-section side>
                         <q-icon name="content_copy" />
@@ -628,6 +632,8 @@ export default defineComponent({
         url: '/tic-api/get-settings',
       }).then((response) => {
         appUrl.value = response.data.data.app_url;
+        const theme = uiStore.loadThemeForUser(authStore.user?.username);
+        $q.dark.set(theme === 'dark');
       }).catch(() => {
       });
       // Fetch playlists list
@@ -643,6 +649,14 @@ export default defineComponent({
     watch(isCompactDrawer, () => {
       applyDrawerMode();
     });
+
+    watch(
+      () => authStore.user?.username,
+      (username) => {
+        const theme = uiStore.loadThemeForUser(username);
+        $q.dark.set(theme === 'dark');
+      },
+    );
 
     const roles = computed(() => authStore.user?.roles || []);
     const isAdmin = computed(() => roles.value.includes('admin'));

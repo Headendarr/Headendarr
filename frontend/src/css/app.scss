@@ -1,1 +1,291 @@
 // app global css in SCSS form
+
+:root {
+  --channel-attention-bg: #fff6e5;
+  --channel-attention-border: #f2a900;
+  --channel-attention-text: #5c460f;
+}
+
+.body--dark {
+  --q-primary: #21a3cf;
+  --q-secondary: #79d2c0;
+  --q-accent: #f59e7a;
+  --q-positive: #42d392;
+  --q-negative: #ff6b6b;
+  --q-warning: #f5c36a;
+  --q-info: #6aa8ff;
+  --channel-attention-bg: #2b1f10;
+  --channel-attention-border: #d99a1c;
+  --channel-attention-text: #f1d7a3;
+
+  background: #0b0f14;
+  color: #e2e8f0;
+}
+
+.body--dark .q-page {
+  background: #0b0f14;
+  color: #e2e8f0;
+}
+
+.q-card {
+  background: none;
+}
+
+.body--dark .q-card {
+  background: #151b23;
+  /*color: #e2e8f0;*/
+}
+
+.body--dark .q-table__container,
+.body--dark .q-table__middle,
+.body--dark .q-table__card {
+  background: #151b23;
+  color: #e2e8f0;
+}
+
+.body--dark .q-table thead th {
+  color: #cbd5e1;
+}
+
+.body--dark .q-table tbody td {
+  color: #e2e8f0;
+}
+
+.body--dark .q-tab-panel,
+.q-dark .q-tab-panel {
+  background: #151b23;
+  color: #e2e8f0;
+}
+
+.body--dark .q-separator {
+  opacity: 0.35;
+}
+
+.body--dark .text-primary {
+  color: #21a3cf;
+}
+
+.body--dark .text-grey-1 {
+  color: var(--q-grey-12) !important;
+}
+
+.body--dark .text-grey-2 {
+  color: var(--q-grey-11) !important;
+}
+
+.body--dark .text-grey-3 {
+  color: var(--q-grey-10) !important;
+}
+
+.body--dark .text-grey-4 {
+  color: var(--q-grey-9) !important;
+}
+
+.body--dark .text-grey-5 {
+  color: var(--q-grey-8) !important;
+}
+
+.body--dark .text-grey-6 {
+  color: var(--q-grey-7) !important;
+}
+
+.body--dark .text-grey-7 {
+  color: var(--q-grey-6) !important;
+}
+
+.body--dark .text-grey-8 {
+  color: var(--q-grey-5) !important;
+}
+
+.body--dark .text-grey-9 {
+  color: var(--q-grey-4) !important;
+}
+
+.body--dark .text-grey-10 {
+  color: var(--q-grey-3) !important;
+}
+
+.body--dark .text-grey-11 {
+  color: var(--q-grey-2) !important;
+}
+
+.body--dark .text-grey-12 {
+  color: var(--q-grey-1) !important;
+}
+
+.disabled-item {
+  background: #eef2f6;
+  color: #6b7280;
+  border-left: 3px solid #9ca3af;
+  opacity: 0.78;
+}
+
+.body--dark .disabled-item {
+  background: #0f172a;
+  color: #94a3b8;
+  border-left: 3px solid #475569;
+  opacity: 0.72;
+}
+
+.body--dark .q-header,
+.body--dark .q-toolbar {
+  background: #111827 !important;
+  color: #e2e8f0;
+}
+
+.body--dark .q-header .text-white {
+  color: #e2e8f0 !important;
+}
+
+.body--dark .q-header,
+.body--dark .q-header .shadow-2,
+.body--dark .q-drawer {
+  box-shadow: none !important;
+}
+
+.body--dark .q-header--elevated,
+.body--dark .q-drawer--elevated,
+.body--dark .q-layout__shadow:before,
+.body--dark .q-layout__shadow:after {
+  box-shadow: 0 8px 18px rgba(7, 10, 18, 0.65) !important;
+}
+
+.body--dark .q-drawer {
+  background: #0f141c;
+  color: #e2e8f0;
+}
+
+.body--dark .drawer-footer {
+  background: #0f141c;
+}
+
+.body--dark .q-drawer .q-item__label,
+.body--dark .q-drawer .q-item__section--main {
+  color: #e2e8f0;
+}
+
+.body--dark .q-drawer .q-item__section--avatar .q-icon,
+.body--dark .q-drawer .q-icon,
+.body--dark .q-header .q-icon {
+  color: #c7d2e0;
+}
+
+.guide {
+  --guide-border: #e0e0e0;
+  --guide-border-strong: #cfd4dc;
+  --guide-channel-bg: #fafafa;
+  --guide-channel-border: #e0e0e0;
+  --guide-logo-bg: #fff;
+  --guide-logo-border: #e0e0e0;
+  --guide-play-icon: #1976d2;
+  --guide-play-overlay: rgba(25, 118, 210, 0.08);
+  --guide-now-line: #ff5252;
+  --guide-tick: #80848f;
+  --guide-tick-hour: #5d6471;
+  --guide-program-bg: #eef2f7;
+  --guide-program-border: #dbe2ec;
+  --guide-program-text: #1b1f29;
+  --guide-program-time: rgba(27, 31, 41, 0.7);
+  --guide-program-details: rgba(27, 31, 41, 0.8);
+  --guide-program-expanded-bg: #e2e9f5;
+  --guide-program-shadow: 0 8px 18px rgba(27, 31, 41, 0.12);
+  --guide-program-scheduled-bg: #e6edfb;
+  --guide-program-scheduled-border: #b9c6ee;
+  --guide-program-recording-bg: #fdecec;
+  --guide-program-recording-border: #f5a3a3;
+}
+
+.body--dark .guide__header,
+.body--dark .guide__row {
+  border-bottom: 1px solid #1f2a37;
+}
+
+.body--dark .guide {
+  --guide-border: #1f2a37;
+  --guide-border-strong: #334155;
+  --guide-channel-bg: #0f141c;
+  --guide-channel-border: #1f2a37;
+  --guide-logo-bg: #101724;
+  --guide-logo-border: #243044;
+  --guide-play-icon: #6fb3ff;
+  --guide-play-overlay: rgba(111, 179, 255, 0.16);
+  --guide-now-line: #ff6b6b;
+  --guide-tick: #9aa5b1;
+  --guide-tick-hour: #d1d9e6;
+  --guide-program-bg: #1a2230;
+  --guide-program-border: #2b3647;
+  --guide-program-text: #e5edf7;
+  --guide-program-time: rgba(226, 232, 240, 0.7);
+  --guide-program-details: rgba(226, 232, 240, 0.8);
+  --guide-program-expanded-bg: #1f2a3a;
+  --guide-program-shadow: 0 8px 18px rgba(7, 10, 18, 0.65);
+  --guide-program-scheduled-bg: #1f2b3d;
+  --guide-program-scheduled-border: #3b4d6d;
+  --guide-program-recording-bg: #2a1f22;
+  --guide-program-recording-border: #5c2f2f;
+}
+
+.body--dark .guide__channel-col {
+  background: #0f141c;
+  border-right: 1px solid #1f2a37;
+}
+
+.body--dark .guide__channel-logo-wrap {
+  background: #101724;
+  border-color: #243044;
+}
+
+.body--dark .guide__tick {
+  border-left: 1px solid #1f2a37;
+  color: #9aa5b1;
+}
+
+.body--dark .guide__tick--hour {
+  border-left-color: #334155;
+  color: #d1d9e6;
+}
+
+.body--dark .guide__program {
+  background: #1a2230;
+  border-color: #2b3647;
+  color: #e5edf7;
+}
+
+.body--dark .guide__program--scheduled {
+  border-color: #3b4d6d;
+  background: #1f2b3d;
+}
+
+.body--dark .guide__program--recording {
+  border-color: #5c2f2f;
+  background: #2a1f22;
+}
+
+.body--dark .guide__program-title {
+  color: #f1f5fb;
+}
+
+.body--dark .guide__program-time,
+.body--dark .guide__program-details {
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.body--dark .guide__program--expanded {
+  box-shadow: none;
+  background: #1f2a3a;
+}
+
+.login-page {
+  background: linear-gradient(135deg, #1f2733, #2a3646);
+}
+
+.login-card {
+  background: #e7ebf0;
+  color: #1f2933;
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+}
+
+.login-card .text-grey-7 {
+  color: #4b5563;
+}

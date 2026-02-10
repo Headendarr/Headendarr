@@ -1,187 +1,200 @@
 <template>
-  <q-page padding>
-    <q-card flat>
-      <q-card-section class="row items-center q-gutter-md">
-        <div class="text-h5">TV Guide</div>
-        <q-space />
-        <q-input
-          dense
-          outlined
-          v-model="searchQuery"
-          placeholder="Search channels"
-          style="min-width: 220px"
-        />
-        <q-select
-          dense
-          outlined
-          v-model="selectedGroup"
-          :options="groupOptions"
-          option-label="label"
-          option-value="value"
-          emit-value
-          map-options
-          label="Channel group"
-          style="min-width: 220px"
-        />
-        <q-btn color="primary" label="Refresh" @click="fetchGuide" />
-      </q-card-section>
+  <q-page>
 
-      <q-separator />
+    <div class="q-pa-md">
 
-      <q-card-section class="q-pa-none">
-        <div class="guide">
-          <div class="guide__header">
-            <div class="guide__channel-col">Channel</div>
-            <div class="guide__timeline-col">
-              <div
-                class="guide__scroll guide__scroll--draggable"
-                ref="scrollHeader"
-              >
-                <div class="guide__timeline" :style="{width: timelineWidth + 'px'}">
-                  <div
-                    v-for="slot in timeSlots"
-                    :key="slot.left"
-                    class="guide__tick"
-                    :class="{'guide__tick--hour': slot.isHour}"
-                    :style="{left: slot.left + 'px', width: slot.width + 'px'}"
-                  >
-                    {{ slot.label }}
-                  </div>
-                </div>
+      <div class="row">
+        <div class="col-12 help-main help-main--full">
+
+          <q-card flat>
+            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+              <div class="row items-center q-gutter-md">
+                <div class="text-h5">TV Guide</div>
+                <q-space />
+                <q-input
+                  dense
+                  outlined
+                  v-model="searchQuery"
+                  placeholder="Search channels"
+                  style="min-width: 220px"
+                />
+                <q-select
+                  dense
+                  outlined
+                  v-model="selectedGroup"
+                  :options="groupOptions"
+                  option-label="label"
+                  option-value="value"
+                  emit-value
+                  map-options
+                  label="Channel group"
+                  style="min-width: 220px"
+                />
+                <q-btn color="primary" label="Refresh" @click="fetchGuide" />
               </div>
-            </div>
-          </div>
+            </q-card-section>
 
-          <div class="guide__body" ref="guideBody">
-            <div
-              v-for="channel in filteredChannels"
-              :key="channel.id"
-              class="guide__row"
-              :style="{height: rowHeight(channel) + 'px'}"
-            >
-              <div class="guide__channel-col">
-                <div class="guide__channel-row">
-                  <div
-                    class="guide__channel-logo-wrap"
-                    @click.stop="previewChannel(channel)"
-                    @mouseenter="hoveredChannelId = channel.id"
-                    @mouseleave="hoveredChannelId = null"
-                  >
-                    <img
-                      v-if="channel.logo_url"
-                      class="guide__channel-logo"
-                      :src="channel.logo_url"
-                      alt=""
-                    />
-                    <q-icon
-                      v-else
-                      name="play_arrow"
-                      size="20px"
-                      class="guide__channel-play-icon"
-                    />
+            <q-separator />
+
+            <q-card-section class="q-pa-none">
+              <div class="guide">
+                <div class="guide__header">
+                  <div class="guide__channel-col">Channel</div>
+                  <div class="guide__timeline-col">
                     <div
-                      class="guide__channel-logo-overlay"
-                      :class="{'guide__channel-logo-overlay--active': hoveredChannelId === channel.id}"
+                      class="guide__scroll guide__scroll--draggable"
+                      ref="scrollHeader"
                     >
-                      <q-icon name="play_arrow" size="22px" />
-                    </div>
-                  </div>
-                  <div class="guide__channel-meta">
-                    <div class="text-weight-medium">{{ channel.name }}</div>
-                    <div class="text-caption text-grey-7">#{{ channel.number }}</div>
-                  </div>
-                </div>
-              </div>
-              <div class="guide__timeline-col">
-                <div class="guide__scroll" ref="scrollBody" @scroll="syncScroll">
-                  <div
-                    class="guide__timeline"
-                    :style="{width: timelineWidth + 'px', height: rowHeight(channel) + 'px'}"
-                  >
-                    <div
-                      v-if="nowLineVisible"
-                      class="guide__now-line"
-                      :style="{left: nowLineLeft + 'px'}"
-                    />
-                    <div
-                      v-for="programme in programmesByChannel[channel.id]"
-                      :key="programme.id"
-                      :ref="(el) => setProgrammeRef(programme.id, el)"
-                      class="guide__program"
-                      :class="programmeClass(programme, channel)"
-                      :style="programmeStyle(programme)"
-                      @click="toggleProgramme(programme)"
-                    >
-                      <div
-                        v-if="getRecordingForProgramme(programme, channel)"
-                        class="guide__program-badge"
-                        :class="recordingBadgeClass(getRecordingForProgramme(programme, channel))"
-                      >
-                        {{ recordingBadgeLabel(getRecordingForProgramme(programme, channel)) }}
-                      </div>
-                      <div class="guide__program-title">{{ programme.title }}</div>
-                      <div class="guide__program-time">
-                        {{ formatTime(programme.start_ts) }} - {{ formatTime(programme.stop_ts) }}
-                      </div>
-                      <div v-if="expandedProgramId === programme.id" class="guide__program-details">
-                        <div class="guide__program-desc">
-                          {{ programme.desc || 'No description available.' }}
-                        </div>
-                        <div class="guide__program-actions">
-                          <q-btn
-                            dense
-                            flat
-                            icon="play_arrow"
-                            label="Watch now"
-                            v-if="isLive(programme)"
-                            @click.stop="previewChannel(channel)"
-                          />
-                          <q-btn
-                            v-if="!getRecordingForProgramme(programme, channel)"
-                            dense
-                            flat
-                            icon="fiber_manual_record"
-                            label="Record"
-                            @click.stop="recordProgramme(channel, programme)"
-                          />
-                          <q-btn
-                            v-if="getRecordingForProgramme(programme, channel)"
-                            dense
-                            flat
-                            icon="cancel"
-                            label="Cancel Recording"
-                            @click.stop="cancelProgrammeRecording(getRecordingForProgramme(programme, channel))"
-                          />
-                          <q-btn
-                            dense
-                            flat
-                            icon="repeat"
-                            label="Record series"
-                            @click.stop="recordSeries(channel, programme)"
-                          />
-                          <q-btn
-                            dense
-                            flat
-                            icon="link"
-                            label="Copy stream URL"
-                            v-if="isLive(programme)"
-                            @click.stop="copyStreamUrl(channel)"
-                          />
+                      <div class="guide__timeline" :style="{width: timelineWidth + 'px'}">
+                        <div
+                          v-for="slot in timeSlots"
+                          :key="slot.left"
+                          class="guide__tick"
+                          :class="{'guide__tick--hour': slot.isHour}"
+                          :style="{left: slot.left + 'px', width: slot.width + 'px'}"
+                        >
+                          {{ slot.label }}
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div v-if="!loading && filteredChannels.length === 0" class="q-pa-lg text-grey-6">
-              No channels with EPG data found.
-            </div>
-          </div>
+                <div class="guide__body" ref="guideBody">
+                  <div
+                    v-for="channel in filteredChannels"
+                    :key="channel.id"
+                    class="guide__row"
+                    :style="{height: rowHeight(channel) + 'px'}"
+                  >
+                    <div class="guide__channel-col">
+                      <div class="guide__channel-row">
+                        <div
+                          class="guide__channel-logo-wrap"
+                          @click.stop="previewChannel(channel)"
+                          @mouseenter="hoveredChannelId = channel.id"
+                          @mouseleave="hoveredChannelId = null"
+                        >
+                          <img
+                            v-if="channel.logo_url"
+                            class="guide__channel-logo"
+                            :src="channel.logo_url"
+                            alt=""
+                          />
+                          <q-icon
+                            v-else
+                            name="play_arrow"
+                            size="20px"
+                            class="guide__channel-play-icon"
+                          />
+                          <div
+                            class="guide__channel-logo-overlay"
+                            :class="{'guide__channel-logo-overlay--active': hoveredChannelId === channel.id}"
+                          >
+                            <q-icon name="play_arrow" size="22px" />
+                          </div>
+                        </div>
+                        <div class="guide__channel-meta">
+                          <div class="text-weight-medium">{{ channel.name }}</div>
+                          <div class="text-caption text-grey-7">#{{ channel.number }}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="guide__timeline-col">
+                      <div class="guide__scroll" ref="scrollBody" @scroll="syncScroll">
+                        <div
+                          class="guide__timeline"
+                          :style="{width: timelineWidth + 'px', height: rowHeight(channel) + 'px'}"
+                        >
+                          <div
+                            v-if="nowLineVisible"
+                            class="guide__now-line"
+                            :style="{left: nowLineLeft + 'px'}"
+                          />
+                          <div
+                            v-for="programme in programmesByChannel[channel.id]"
+                            :key="programme.id"
+                            :ref="(el) => setProgrammeRef(programme.id, el)"
+                            class="guide__program"
+                            :class="programmeClass(programme, channel)"
+                            :style="programmeStyle(programme)"
+                            @click="toggleProgramme(programme)"
+                          >
+                            <div
+                              v-if="getRecordingForProgramme(programme, channel)"
+                              class="guide__program-badge"
+                              :class="recordingBadgeClass(getRecordingForProgramme(programme, channel))"
+                            >
+                              {{ recordingBadgeLabel(getRecordingForProgramme(programme, channel)) }}
+                            </div>
+                            <div class="guide__program-title">{{ programme.title }}</div>
+                            <div class="guide__program-time">
+                              {{ formatTime(programme.start_ts) }} - {{ formatTime(programme.stop_ts) }}
+                            </div>
+                            <div v-if="expandedProgramId === programme.id" class="guide__program-details">
+                              <div class="guide__program-desc">
+                                {{ programme.desc || 'No description available.' }}
+                              </div>
+                              <div class="guide__program-actions">
+                                <q-btn
+                                  dense
+                                  flat
+                                  icon="play_arrow"
+                                  label="Watch now"
+                                  v-if="isLive(programme)"
+                                  @click.stop="previewChannel(channel)"
+                                />
+                                <q-btn
+                                  v-if="!getRecordingForProgramme(programme, channel)"
+                                  dense
+                                  flat
+                                  icon="fiber_manual_record"
+                                  label="Record"
+                                  @click.stop="recordProgramme(channel, programme)"
+                                />
+                                <q-btn
+                                  v-if="getRecordingForProgramme(programme, channel)"
+                                  dense
+                                  flat
+                                  icon="cancel"
+                                  label="Cancel Recording"
+                                  @click.stop="cancelProgrammeRecording(getRecordingForProgramme(programme, channel))"
+                                />
+                                <q-btn
+                                  dense
+                                  flat
+                                  icon="repeat"
+                                  label="Record series"
+                                  @click.stop="recordSeries(channel, programme)"
+                                />
+                                <q-btn
+                                  dense
+                                  flat
+                                  icon="link"
+                                  label="Copy stream URL"
+                                  v-if="isLive(programme)"
+                                  @click.stop="copyStreamUrl(channel)"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-if="!loading && filteredChannels.length === 0" class="q-pa-lg text-grey-6">
+                    No channels with EPG data found.
+                  </div>
+                </div>
+              </div>
+            </q-card-section>
+          </q-card>
+
         </div>
-      </q-card-section>
-    </q-card>
+      </div>
+    </div>
+
   </q-page>
 </template>
 
@@ -941,13 +954,13 @@ export default defineComponent({
 .guide__row {
   display: grid;
   grid-template-columns: 260px 1fr;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--guide-border);
 }
 
 .guide__channel-col {
   padding: 12px;
-  background: #fafafa;
-  border-right: 1px solid #e0e0e0;
+  background: var(--guide-channel-bg);
+  border-right: 1px solid var(--guide-channel-border);
 }
 
 .guide__channel-row {
@@ -961,8 +974,8 @@ export default defineComponent({
   width: 46px;
   height: 46px;
   border-radius: 8px;
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: var(--guide-logo-bg);
+  border: 1px solid var(--guide-logo-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -982,7 +995,7 @@ export default defineComponent({
 }
 
 .guide__channel-play-icon {
-  color: #1976d2;
+  color: var(--guide-play-icon);
 }
 
 .guide__channel-logo-overlay {
@@ -991,7 +1004,7 @@ export default defineComponent({
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(25, 118, 210, 0.08);
+  background: var(--guide-play-overlay);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -1016,7 +1029,7 @@ export default defineComponent({
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #ff5252;
+  background: var(--guide-now-line);
   z-index: 4;
   pointer-events: none;
 }
@@ -1045,41 +1058,41 @@ export default defineComponent({
   top: 0;
   height: 100%;
   width: 60px;
-  border-left: 1px solid #e5e7eb;
+  border-left: 1px solid var(--guide-border);
   padding: 6px;
   font-size: 0.7rem;
-  color: #80848f;
+  color: var(--guide-tick);
   box-sizing: border-box;
 }
 
 .guide__tick--hour {
-  border-left-color: #cfd4dc;
+  border-left-color: var(--guide-border-strong);
   font-weight: 600;
-  color: #5d6471;
+  color: var(--guide-tick-hour);
 }
 
 .guide__program {
   position: absolute;
   top: 6px;
   height: 58px;
-  background: #eef2f7;
-  color: #1b1f29;
+  background: var(--guide-program-bg);
+  color: var(--guide-program-text);
   border-radius: 8px;
   padding: 6px 8px;
   box-sizing: border-box;
   overflow: hidden;
   cursor: pointer;
-  border: 1px solid #dbe2ec;
+  border: 1px solid var(--guide-program-border);
 }
 
 .guide__program--scheduled {
-  border-color: #b9c6ee;
-  background: #e6edfb;
+  border-color: var(--guide-program-scheduled-border);
+  background: var(--guide-program-scheduled-bg);
 }
 
 .guide__program--recording {
-  border-color: #f5a3a3;
-  background: #fdecec;
+  border-color: var(--guide-program-recording-border);
+  background: var(--guide-program-recording-bg);
 }
 
 .guide__program-badge {
@@ -1115,7 +1128,7 @@ export default defineComponent({
 
 .guide__program-time {
   font-size: 0.7rem;
-  color: rgba(27, 31, 41, 0.7);
+  color: var(--guide-program-time);
 }
 
 .guide__program-actions {
@@ -1127,8 +1140,8 @@ export default defineComponent({
 
 .guide__program--expanded {
   z-index: 5;
-  box-shadow: 0 8px 18px rgba(27, 31, 41, 0.12);
-  background: #e2e9f5;
+  box-shadow: var(--guide-program-shadow);
+  background: var(--guide-program-expanded-bg);
   overflow: visible;
   padding-bottom: 16px;
 }
@@ -1136,7 +1149,7 @@ export default defineComponent({
 .guide__program-details {
   margin-top: 6px;
   font-size: 0.75rem;
-  color: rgba(27, 31, 41, 0.8);
+  color: var(--guide-program-details);
 }
 
 .guide__program-desc {

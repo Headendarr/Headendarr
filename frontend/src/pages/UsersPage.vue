@@ -1,50 +1,65 @@
 <template>
-  <q-page padding>
-    <q-card flat>
-      <q-card-section class="row items-center justify-between">
-        <div class="text-h6">Users</div>
-        <q-btn color="primary" icon="person_add" label="Add User" @click="openCreateDialog" />
-      </q-card-section>
+  <q-page>
 
-      <q-card-section>
-        <q-table
-          :rows="users"
-          :columns="columns"
-          row-key="id"
-          flat
-          :loading="loading"
-        >
-          <template v-slot:body-cell-roles="props">
-            <q-td :props="props">
-              {{ props.row.roles.join(', ') }}
-            </q-td>
-          </template>
+    <div class="q-pa-md">
 
-          <template v-slot:body-cell-streaming_key="props">
-            <q-td :props="props">
-              <div class="row items-center no-wrap">
-                <div class="text-mono ellipsis">{{ props.row.streaming_key || '-' }}</div>
-                <q-btn
-                  v-if="props.row.streaming_key"
-                  dense
-                  flat
-                  icon="content_copy"
-                  class="q-ml-sm"
-                  @click="copyStreamingKey(props.row.streaming_key)"
-                />
+      <div class="row">
+        <div class="col-12 help-main help-main--full">
+
+          <q-card flat>
+            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+              <div class="row items-center q-gutter-md">
+                <div class="text-h5">Users</div>
+                <q-space />
+                <q-btn color="primary" icon="person_add" label="Add User" @click="openCreateDialog" />
               </div>
-            </q-td>
-          </template>
+            </q-card-section>
 
-          <template v-slot:body-cell-actions="props">
-            <q-td :props="props">
-              <q-btn dense flat icon="edit" @click="openEditDialog(props.row)" />
-              <q-btn dense flat icon="password" @click="openResetPassword(props.row)" />
-            </q-td>
-          </template>
-        </q-table>
-      </q-card-section>
-    </q-card>
+            <q-separator />
+
+            <q-card-section>
+              <q-table
+                :rows="users"
+                :columns="columns"
+                row-key="id"
+                flat
+                :loading="loading"
+              >
+                <template v-slot:body-cell-roles="props">
+                  <q-td :props="props">
+                    {{ props.row.roles.join(', ') }}
+                  </q-td>
+                </template>
+
+                <template v-slot:body-cell-streaming_key="props">
+                  <q-td :props="props">
+                    <div class="row items-center no-wrap">
+                      <div class="text-mono ellipsis">{{ props.row.streaming_key || '-' }}</div>
+                      <q-btn
+                        v-if="props.row.streaming_key"
+                        dense
+                        flat
+                        icon="content_copy"
+                        class="q-ml-sm"
+                        @click="copyStreamingKey(props.row.streaming_key)"
+                      />
+                    </div>
+                  </q-td>
+                </template>
+
+                <template v-slot:body-cell-actions="props">
+                  <q-td :props="props">
+                    <q-btn dense flat icon="edit" @click="openEditDialog(props.row)" />
+                    <q-btn dense flat icon="password" @click="openResetPassword(props.row)" />
+                  </q-td>
+                </template>
+              </q-table>
+            </q-card-section>
+          </q-card>
+
+        </div>
+      </div>
+    </div>
 
     <q-dialog v-model="showCreate">
       <q-card style="min-width: 360px;">
@@ -175,14 +190,14 @@ export default {
       }
     },
     openEditDialog(user) {
-        this.editUser = user;
-        this.form = {
-          roles: [...user.roles],
-          is_active: user.is_active,
-          streaming_key: user.streaming_key || '',
-        };
-        this.showEdit = true;
-      },
+      this.editUser = user;
+      this.form = {
+        roles: [...user.roles],
+        is_active: user.is_active,
+        streaming_key: user.streaming_key || '',
+      };
+      this.showEdit = true;
+    },
     async updateUser() {
       try {
         await axios.put(`/tic-api/users/${this.editUser.id}`, {

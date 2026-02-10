@@ -437,7 +437,7 @@ export default {
           return;
         }
         this.groupOptions = this.groupOptionsAll.filter((option) =>
-          (option.label || '').toLowerCase().includes(needle)
+          (option.label || '').toLowerCase().includes(needle),
         );
       });
     },

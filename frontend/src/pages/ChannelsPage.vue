@@ -1189,7 +1189,8 @@ export default defineComponent({
 }
 
 .channel-needs-attention {
-  background: #fff6e5;
-  border-left: 4px solid #f2a900;
+  background: var(--channel-attention-bg);
+  border-left: 4px solid var(--channel-attention-border);
+  color: var(--channel-attention-text);
 }
 </style>

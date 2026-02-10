@@ -1,14 +1,14 @@
 <template>
-  <q-page padding>
+  <q-page>
 
-    <div class="q-pa-none">
+    <div class="q-pa-md">
 
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row q-gutter-xs q-mt-xs justify-between">
+              <div class="row q-gutter-xs justify-between">
                 <div class="col-auto">
                   <q-btn-group>
                     <q-btn
@@ -28,7 +28,7 @@
                   <q-item
                     v-for="(playlist, index) in listOfPlaylists"
                     v-bind:key="index"
-                    :class="playlist.enabled ? '' : 'bg-grey-3'">
+                    :class="playlist.enabled ? '' : 'disabled-item'">
 
                     <q-item-section avatar top>
                       <q-icon name="playlist_play" color="" size="34px" />
@@ -162,29 +162,29 @@
                             common source.
                           </li>
                           <li>
-                        Bypass CORS restrictions.
-                      </li>
-                    </ul>
+                            Bypass CORS restrictions.
+                          </li>
+                        </ul>
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+
+                  <q-separator inset spaced />
+
+                  <q-item-label class="text-primary">
+                    Initial update is manual:
                   </q-item-label>
-                </q-item-section>
-              </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Adding a source does not download it immediately. Use the kebab menu and click <b>Update</b>
+                        to fetch the stream list.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
-              <q-separator inset spaced />
-
-              <q-item-label class="text-primary">
-                Initial update is manual:
-              </q-item-label>
-              <q-item>
-                <q-item-section>
-                  <q-item-label>
-                    Adding a source does not download it immediately. Use the kebab menu and click <b>Update</b>
-                    to fetch the stream list.
-                  </q-item-label>
-                </q-item-section>
-              </q-item>
-
-            </q-list>
-          </q-card-section>
+                </q-list>
+              </q-card-section>
             </q-card>
           </q-slide-transition>
         </div>

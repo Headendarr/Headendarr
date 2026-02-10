@@ -123,7 +123,7 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
                 </q-list>
               </q-card-section>
@@ -131,36 +131,37 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <template v-if="aioMode === false">
+                  <template v-if="aioMode === false">
+                    <q-item-label class="text-primary">
+                      TVheadend Admin Credentials:
+                    </q-item-label>
+                    <q-item>
+                      <q-item-section>
+                        <q-item-label>
+                          TIC uses an internal sync account to apply configuration changes in the background.
+                          Only provide admin credentials here for external TVheadend instances that require
+                          authentication.
+                        </q-item-label>
+                      </q-item-section>
+                    </q-item>
+
+                    <q-separator inset spaced />
+                  </template>
+
                   <q-item-label class="text-primary">
-                    TVheadend Admin Credentials:
+                    Stream Config:
                   </q-item-label>
                   <q-item>
                     <q-item-section>
                       <q-item-label>
-                        TIC uses an internal sync account to apply configuration changes in the background.
-                        Only provide admin credentials here for external TVheadend instances that require authentication.
+                        TVheadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
+                        wraps sources with FFmpeg to normalize them into TS, which makes most stream types compatible.
+                        This is a light overhead and helps TVH scan and tune more reliably.
                       </q-item-label>
                     </q-item-section>
                   </q-item>
-
-                  <q-separator inset spaced />
-                </template>
-
-                <q-item-label class="text-primary">
-                  Stream Config:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      TVheadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
-                      wraps sources with FFmpeg to normalize them into TS, which makes most stream types compatible.
-                      This is a light overhead and helps TVH scan and tune more reliably.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
 
                 </q-list>
               </q-card-section>

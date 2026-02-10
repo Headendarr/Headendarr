@@ -1,7 +1,7 @@
 <template>
-  <q-page padding>
+  <q-page>
 
-    <div class="q-pa-none">
+    <div class="q-pa-md">
 
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
