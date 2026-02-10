@@ -403,13 +403,13 @@ async def cleanup_hls_proxy_state():
 cache = Cache(ttl=120)
 
 
-async def prefetch_segments(segment_urls):
+async def prefetch_segments(segment_urls, headers=None):
     async with aiohttp.ClientSession() as session:
         for url in segment_urls:
             if not await cache.exists(url):
                 proxy_logger.info("[CACHE] Saved URL '%s' to cache", url)
                 try:
-                    async with session.get(url) as resp:
+                    async with session.get(url, headers=headers) as resp:
                         if resp.status == 200:
                             content = await resp.read()
                             await cache.set(
@@ -442,7 +442,22 @@ def _infer_extension(url_value):
         return "m3u8"
     if path.endswith(".key"):
         return "key"
+    if path.endswith(".vtt"):
+        return "vtt"
     return "ts"
+
+
+def _build_upstream_headers():
+    headers = {}
+    try:
+        src = request.headers
+    except Exception:
+        return headers
+    for name in ("User-Agent", "Referer", "Origin", "Accept", "Accept-Language"):
+        value = src.get(name)
+        if value:
+            headers[name] = value
+    return headers
 
 
 def _b64_urlsafe_encode(value):
@@ -485,7 +500,7 @@ def _rewrite_uri_value(
     )
 
 
-def update_child_urls(playlist_content, source_url, stream_key=None, username=None):
+def update_child_urls(playlist_content, source_url, stream_key=None, username=None, headers=None):
     proxy_logger.debug(f"Original Playlist Content:\n{playlist_content}")
 
     updated_lines = []
@@ -510,7 +525,7 @@ def update_child_urls(playlist_content, source_url, stream_key=None, username=No
             segment_urls.extend(new_segment_urls)
 
     if segment_urls:
-        asyncio.create_task(prefetch_segments(segment_urls))
+        asyncio.create_task(prefetch_segments(segment_urls, headers=headers))
 
     modified_playlist = "\n".join(updated_lines)
     proxy_logger.debug(f"Modified Playlist Content:\n{modified_playlist}")
@@ -547,7 +562,7 @@ def rewrite_playlist_line(line, source_url, state, stream_key=None, username=Non
                 username=username,
                 forced_extension=forced_extension,
             )
-            if extension == "ts":
+            if extension in ("ts", "vtt", "key"):
                 segment_urls.append(absolute_url)
             return f'URI="{new_uri}"'
 
@@ -564,7 +579,7 @@ def rewrite_playlist_line(line, source_url, state, stream_key=None, username=Non
         state["next_is_segment"] = False
     else:
         extension = _infer_extension(absolute_url)
-    if extension == "ts":
+    if extension in ("ts", "vtt", "key"):
         segment_urls.append(absolute_url)
     return generate_base64_encoded_url(
         absolute_url, extension, stream_key=stream_key, username=username
@@ -602,10 +617,10 @@ async def _stream_updated_playlist(resp, response_url, stream_key=None, username
             yield updated_line + "\n"
 
 
-async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None):
+async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None, headers=None):
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(decoded_url) as resp:
+            async with session.get(decoded_url, headers=headers) as resp:
                 if resp.status != 200:
                     return None, None, False
 
@@ -633,6 +648,7 @@ async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None)
                     response_url,
                     stream_key=stream_key,
                     username=username,
+                    headers=headers,
                 )
                 return updated_playlist, content_type, False
         except aiohttp.ClientError as exc:
@@ -656,8 +672,12 @@ async def proxy_m3u8(instance_id, encoded_url):
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
 
+    headers = _build_upstream_headers()
     updated_playlist, content_type, is_stream = await fetch_and_update_playlist(
-        decoded_url, stream_key=stream_key, username=username
+        decoded_url,
+        stream_key=stream_key,
+        username=username,
+        headers=headers,
     )
     if updated_playlist is None:
         proxy_logger.error("Failed to fetch the original playlist '%s'", decoded_url)
@@ -718,8 +738,9 @@ async def proxy_key(instance_id, encoded_url):
 
     # If not cached, fetch the file and cache it
     proxy_logger.info(f"[MISS] Serving key URL '%s' without cache", decoded_url)
+    headers = _build_upstream_headers()
     async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url) as resp:
+        async with session.get(decoded_url, headers=headers) as resp:
             if resp.status != 200:
                 proxy_logger.error("Failed to fetch key file '%s'", decoded_url)
                 return Response("Failed to fetch the file.", status=404)
@@ -752,8 +773,9 @@ async def proxy_ts(instance_id, encoded_url):
 
     # If not cached, fetch the file and cache it
     proxy_logger.info(f"[MISS] Serving ts URL '%s' without cache", decoded_url)
+    headers = _build_upstream_headers()
     async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url) as resp:
+        async with session.get(decoded_url, headers=headers) as resp:
             if resp.status != 200:
                 proxy_logger.error("Failed to fetch ts file '%s'", decoded_url)
                 return Response("Failed to fetch the file.", status=404)
@@ -773,6 +795,41 @@ async def proxy_ts(instance_id, encoded_url):
                 decoded_url, content, expiration_time=30
             )  # Cache for 30 seconds
             return Response(content, content_type="video/mp2t")
+
+
+@blueprint.route(
+    f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/<encoded_url>.vtt",
+    methods=["GET", "HEAD"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def proxy_vtt(instance_id, encoded_url):
+    invalid = _validate_instance_id(instance_id)
+    if invalid:
+        return invalid
+    # Decode the Base64 encoded URL
+    decoded_url = _b64_urlsafe_decode(encoded_url)
+    await _mark_stream_activity(decoded_url)
+
+    # Check if the .vtt file is already cached
+    if await cache.exists(decoded_url):
+        proxy_logger.info(f"[HIT] Serving vtt URL from cache: %s", decoded_url)
+        cached_content = await cache.get(decoded_url)
+        return Response(cached_content, content_type="text/vtt")
+
+    # If not cached, fetch the file and cache it
+    proxy_logger.info(f"[MISS] Serving vtt URL '%s' without cache", decoded_url)
+    headers = _build_upstream_headers()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(decoded_url, headers=headers) as resp:
+            if resp.status != 200:
+                proxy_logger.error("Failed to fetch vtt file '%s'", decoded_url)
+                return Response("Failed to fetch the file.", status=404)
+            content = await resp.read()
+            await cache.set(
+                decoded_url, content, expiration_time=30
+            )  # Cache for 30 seconds
+            return Response(content, content_type="text/vtt")
 
 
 @blueprint.route(
