@@ -87,9 +87,9 @@
                   <q-item-section>
                     <q-item-label>Enable Stream Buffer</q-item-label>
                     <q-item-label caption>
-                      Adds a FFmpeg pipe to the TVheadend stream source.
-                      This can improve stability from multiple client connections, but will introduce latency for the
-                      first client that connects.
+                      Wraps the stream with an FFmpeg pipe. TVheadend is most reliable with MPEG-TS input; the buffer
+                      converts other stream types to TS and improves compatibility. Adds minimal overhead but can add
+                      a small startup delay for the first viewer. Recommended for most setups.
                     </q-item-label>
                   </q-item-section>
                 </q-item>
@@ -155,8 +155,9 @@
                 <q-item>
                   <q-item-section>
                     <q-item-label>
-                      The <b>Stream Buffer</b> option is not required in order for multiple clients to view a single
-                      channel as one connection on that playlist through the TVheadend backend.
+                      TVheadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
+                      wraps sources with FFmpeg to normalize them into TS, which makes most stream types compatible.
+                      This is a light overhead and helps TVH scan and tune more reliably.
                     </q-item-label>
                   </q-item-section>
                 </q-item>

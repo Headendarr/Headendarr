@@ -38,7 +38,7 @@ if not hls_proxy_prefix.startswith("/"):
 
 hls_proxy_host_ip = os.environ.get("HLS_PROXY_HOST_IP")
 hls_proxy_port = os.environ.get("HLS_PROXY_PORT")
-hls_proxy_max_buffer_bytes = int(os.environ.get("HLS_PROXY_MAX_BUFFER_BYTES", "262144"))
+hls_proxy_max_buffer_bytes = int(os.environ.get("HLS_PROXY_MAX_BUFFER_BYTES", "1048576"))
 
 
 def _get_instance_id():
@@ -642,7 +642,7 @@ async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None)
 
 @blueprint.route(
     f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/<encoded_url>.m3u8",
-    methods=["GET"],
+    methods=["GET", "HEAD"],
 )
 @stream_key_required
 @skip_stream_connect_audit
@@ -673,7 +673,7 @@ async def proxy_m3u8(instance_id, encoded_url):
 
 @blueprint.route(
     f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/proxy.m3u8",
-    methods=["GET"],
+    methods=["GET", "HEAD"],
 )
 @stream_key_required
 @skip_stream_connect_audit
@@ -698,7 +698,7 @@ async def proxy_m3u8_redirect(instance_id):
 
 @blueprint.route(
     f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/<encoded_url>.key",
-    methods=["GET"],
+    methods=["GET", "HEAD"],
 )
 @stream_key_required
 @skip_stream_connect_audit
@@ -732,7 +732,7 @@ async def proxy_key(instance_id, encoded_url):
 
 @blueprint.route(
     f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/<encoded_url>.ts",
-    methods=["GET"],
+    methods=["GET", "HEAD"],
 )
 @stream_key_required
 @skip_stream_connect_audit

@@ -32,7 +32,14 @@ from backend.models import (
     db,
 )
 from backend.playlists import fetch_playlist_streams
-from backend.streaming import append_stream_key, get_tvh_stream_auth, is_local_hls_proxy_url
+from backend.config import flask_run_port
+from backend.streaming import (
+    LOCAL_PROXY_HOST_PLACEHOLDER,
+    append_stream_key,
+    get_tvh_stream_auth,
+    is_local_hls_proxy_url,
+    normalize_local_proxy_url,
+)
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import normalize_id
 
@@ -360,7 +367,7 @@ async def add_new_channel(config, data, commit=True, publish=True):
         playlist_stream = playlist_streams.get(source_info["stream_name"])
         if playlist_info.use_hls_proxy:
             if not playlist_info.use_custom_hls_proxy:
-                app_url = settings["settings"]["app_url"]
+                app_url = LOCAL_PROXY_HOST_PLACEHOLDER
                 playlist_url = playlist_stream["url"]
                 # Derive extension from URL path (query strings may be present).
                 extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
@@ -545,7 +552,7 @@ async def update_channel(config, channel_id, data):
                         )
                         if playlist_info.use_hls_proxy:
                             if not playlist_info.use_custom_hls_proxy:
-                                app_url = settings["settings"]["app_url"]
+                                app_url = LOCAL_PROXY_HOST_PLACEHOLDER
                                 playlist_url = playlist_stream["url"]
                                 # Derive extension from URL path (query strings may be present).
                                 extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
@@ -610,7 +617,7 @@ async def update_channel(config, channel_id, data):
                                 )
                                 if playlist_info.use_hls_proxy:
                                     if not playlist_info.use_custom_hls_proxy:
-                                        app_url = settings["settings"]["app_url"]
+                                        app_url = LOCAL_PROXY_HOST_PLACEHOLDER
                                         playlist_url = playlist_stream["url"]
                                         # Derive extension from URL path (query strings may be present).
                                         extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
@@ -1014,6 +1021,12 @@ async def publish_bulk_channels_to_tvh_and_m3u(config):
 
 async def publish_channel_muxes(config):
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
+    settings = config.read_settings()
+    conn_settings = await config.tvh_connection_settings()
+    if conn_settings.get("tvh_local"):
+        tic_base_url = f"http://127.0.0.1:{flask_run_port}"
+    else:
+        tic_base_url = settings["settings"].get("app_url") or ""
     async with await get_tvh(config) as tvh:
         # Fetch results with relationships
         results = (
@@ -1087,8 +1100,12 @@ async def publish_channel_muxes(config):
                 stream_url = source_obj.playlist_stream_url
                 instance_id = config.ensure_instance_id()
                 if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
-                    stream_url = append_stream_key(
-                        stream_url, tvh_stream_key, tvh_stream_username
+                    stream_url = normalize_local_proxy_url(
+                        stream_url,
+                        base_url=tic_base_url,
+                        instance_id=instance_id,
+                        stream_key=tvh_stream_key,
+                        username=tvh_stream_username,
                     )
                 iptv_url = generate_iptv_url(
                     config,

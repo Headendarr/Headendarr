@@ -4,6 +4,9 @@ import base64
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
+LOCAL_PROXY_HOST_PLACEHOLDER = "__TIC_HOST__"
+
+
 async def get_tvh_stream_auth(config):
     stream_user = await config.get_tvh_stream_user()
     return stream_user.get("username"), stream_user.get("stream_key")
@@ -55,6 +58,8 @@ def normalize_local_proxy_url(
     new_query = urlencode(query_items)
     base = base_url.rstrip("/")
     path = parsed.path or ""
+    if path.startswith(LOCAL_PROXY_HOST_PLACEHOLDER):
+        path = path[len(LOCAL_PROXY_HOST_PLACEHOLDER):]
     if new_query:
         return f"{base}{path}?{new_query}"
     return f"{base}{path}"

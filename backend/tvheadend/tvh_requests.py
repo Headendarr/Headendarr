@@ -7,7 +7,12 @@ import os
 import aiohttp
 import asyncio
 
-from backend.streaming import append_stream_key, get_tvh_stream_auth
+from backend.config import flask_run_port
+from backend.streaming import (
+    LOCAL_PROXY_HOST_PLACEHOLDER,
+    append_stream_key,
+    get_tvh_stream_auth,
+)
 
 logger = logging.getLogger('tic.tvh_requests')
 
@@ -832,6 +837,11 @@ async def get_tvh(config):
 async def configure_tvh(config):
     settings = config.read_settings()
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
+    conn_settings = await config.tvh_connection_settings()
+    if conn_settings.get("tvh_local"):
+        resolved_base_url = f"http://127.0.0.1:{flask_run_port}"
+    else:
+        resolved_base_url = settings["settings"].get("app_url") or ""
     async with await get_tvh(config) as tvh:
         # Update Base Config
         await tvh.save_tvh_config(tvh_config)
@@ -844,8 +854,13 @@ async def configure_tvh(config):
         # Disable all EPG grabbers
         await tvh.disable_all_epg_grabbers()
         # Enable XMLTV URL grabber
-        tic_base_url = settings['settings']['app_url']
-        epg_url = append_stream_key(f"{tic_base_url}/tic-web/epg.xml", tvh_stream_key, tvh_stream_username)
+        epg_url = append_stream_key(
+            f"{LOCAL_PROXY_HOST_PLACEHOLDER}/tic-web/epg.xml",
+            tvh_stream_key,
+            tvh_stream_username,
+        )
+        if resolved_base_url:
+            epg_url = epg_url.replace(LOCAL_PROXY_HOST_PLACEHOLDER, resolved_base_url)
         await tvh.enable_xmltv_url_epg_grabber(epg_url)
         # Configure the default stream profile
         await tvh.configure_default_stream_profile()
