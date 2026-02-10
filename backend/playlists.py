@@ -276,6 +276,11 @@ async def read_config_all_playlists(config, output_for_export=False):
 
 
 async def read_config_one_playlist(config, playlist_id):
+    try:
+        playlist_id = int(playlist_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid playlist id: {playlist_id}")
+
     return_item = {}
     async with Session() as session:
         async with session.begin():
