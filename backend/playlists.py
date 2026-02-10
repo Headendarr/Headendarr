@@ -15,7 +15,7 @@ from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
-from backend.streaming import build_local_hls_proxy_url
+from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
 
 logger = logging.getLogger("tic.playlists")
@@ -246,6 +246,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "user_agent": result.user_agent,
                             "use_hls_proxy": result.use_hls_proxy,
                             "use_custom_hls_proxy": result.use_custom_hls_proxy,
+                            "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                             "hls_proxy_path": result.hls_proxy_path
                             if result.hls_proxy_path
                             else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -265,6 +266,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "user_agent": result.user_agent,
                         "use_hls_proxy": result.use_hls_proxy,
                         "use_custom_hls_proxy": result.use_custom_hls_proxy,
+                        "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                         "hls_proxy_path": result.hls_proxy_path
                         if result.hls_proxy_path
                         else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -311,6 +313,7 @@ async def read_config_one_playlist(config, playlist_id):
                     "user_agent": result.user_agent,
                     "use_hls_proxy": result.use_hls_proxy,
                     "use_custom_hls_proxy": result.use_custom_hls_proxy,
+                    "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                     "hls_proxy_path": result.hls_proxy_path
                     if result.hls_proxy_path
                     else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -333,6 +336,7 @@ async def add_new_playlist(config, data):
                 user_agent=data.get("user_agent"),
                 use_hls_proxy=data.get("use_hls_proxy", False),
                 use_custom_hls_proxy=data.get("use_custom_hls_proxy", False),
+                chain_custom_hls_proxy=data.get("chain_custom_hls_proxy", False),
                 hls_proxy_path=data.get(
                     "hls_proxy_path",
                     "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -366,6 +370,9 @@ async def update_playlist(config, playlist_id, data):
             playlist.use_hls_proxy = data.get("use_hls_proxy", playlist.use_hls_proxy)
             playlist.use_custom_hls_proxy = data.get(
                 "use_custom_hls_proxy", playlist.use_custom_hls_proxy
+            )
+            playlist.chain_custom_hls_proxy = data.get(
+                "chain_custom_hls_proxy", playlist.chain_custom_hls_proxy
             )
             playlist.hls_proxy_path = data.get(
                 "hls_proxy_path", playlist.hls_proxy_path
@@ -829,22 +836,17 @@ def read_filtered_stream_details_from_all_playlists(
                     account.password,
                 )
         playlist_info = result.playlist
-        if playlist_info and playlist_info.use_hls_proxy:
-            if not playlist_info.use_custom_hls_proxy and base_url and instance_id:
-                stream_url = build_local_hls_proxy_url(
-                    base_url,
-                    instance_id,
-                    stream_url,
-                    stream_key=stream_key,
-                )
-            elif playlist_info.hls_proxy_path:
-                encoded_url = base64.urlsafe_b64encode(
-                    stream_url.encode("utf-8")
-                ).decode("utf-8")
-                hls_proxy_path = playlist_info.hls_proxy_path
-                hls_proxy_path = hls_proxy_path.replace("[URL]", stream_url)
-                hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
-                stream_url = hls_proxy_path
+        if playlist_info:
+            stream_url = build_configured_hls_proxy_url(
+                stream_url,
+                base_url=base_url,
+                instance_id=instance_id,
+                stream_key=stream_key,
+                use_hls_proxy=playlist_info.use_hls_proxy,
+                use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
+                custom_hls_proxy_path=playlist_info.hls_proxy_path,
+                chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
+            )
         results["streams"].append(
             {
                 "id": result.id,

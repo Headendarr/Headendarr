@@ -117,6 +117,7 @@ class Playlist(Base):
     use_hls_proxy = Column(Boolean, nullable=False, unique=False)
     use_custom_hls_proxy = Column(Boolean, nullable=False, unique=False)
     hls_proxy_path = Column(String(256), unique=False)
+    chain_custom_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     user_agent = Column(String(255), nullable=True)
 
     # Backref to all associated linked sources

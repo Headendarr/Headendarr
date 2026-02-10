@@ -45,6 +45,7 @@ from backend.config import flask_run_port
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
     append_stream_key,
+    build_configured_hls_proxy_url,
     get_tvh_stream_auth,
     is_local_hls_proxy_url,
     normalize_local_proxy_url,
@@ -53,6 +54,20 @@ from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import normalize_id
 
 logger = logging.getLogger("tic.channels")
+
+
+def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) -> str:
+    if not playlist_info:
+        return stream_url
+    return build_configured_hls_proxy_url(
+        stream_url,
+        base_url=LOCAL_PROXY_HOST_PLACEHOLDER,
+        instance_id=instance_id,
+        use_hls_proxy=bool(playlist_info.use_hls_proxy),
+        use_custom_hls_proxy=bool(playlist_info.use_custom_hls_proxy),
+        custom_hls_proxy_path=playlist_info.hls_proxy_path,
+        chain_custom_hls_proxy=bool(playlist_info.chain_custom_hls_proxy),
+    )
 
 image_placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAACiUlEQVR4nO2cy46sMAxEzdX8/y/3XUSKUM+I7sLlF6qzYgE4HJwQEsLxer1MfMe/6gJMQrIAJAtAsgAkC0CyACQLQLIAJAtAsgAkC0CyACQLQLIAJAtAsgAkC0CyACQL4Md5/HEclFH84ziud+gwV+C61H2F905yFvTxDNDOQXjz4p6vddTt0M7Db0OoRN/7cmZi6Nm+iphWblbrlnnm90CsMBe+EmpNTsVk3pM/faXd9oRYzH7WLui2lmlqFeBjF8QD/2LKn/Fxd4jfgy/vPcblV+zrTmiluCDIF1/WqgW/269kInyRZZ3bi+f5Ysr63bI+zFf4EE25LyI0WRcP7FpfxOTiyPrYtXmGr7yR0gfUx9Rh5em+CLKg14sqX5SaWDBhMTe/vLLuvbWW+PInV9lU2MT8qpw3HOereJJ1li+XLMowW6YvZ7PVYvp+Sn61kGVDfHWRZRN8NZJl7X31kmW9fbWTZY19dZRlXX01lWUtffWVZf18tZZlzXy5ZEV/iLGjrA1/LOf7WffMWjTJrxmyrIevMbKsgS+vrJxm6xxubdwI6h9QmpRZi8L8IshKTi675YsyTjkvsxYl+TVVllX44sjKr4k77tq4js76JJeWWW19ET9eHlwNN2n1kbxooPBzyLXxVgDuN/HkzGrli756IGQxQvIqlLfQe5tehpA2q0N+RRDVwBf62nRfNHCmxFfo+o7YrkOyr+j1HRktceFKVvKq7AcsM70+M9FX6jO+avU9K25Nhyj/vw4UX2W9R0v/Y4jfV6WsMzn/ovH+D6aJrDQ8z5knDNFAPH9GugmSBSBZAJIFIFkAkgUgWQCSBSBZAJIFIFkAkgUgWQCSBSBZAJIFIFkA/wGlHK2X7Li2TQAAAABJRU5ErkJggg=="
 
@@ -389,27 +404,11 @@ async def add_new_channel(config, data, commit=True, publish=True):
                 stream_url = _render_xc_url(
                     template, account.username, account.password
                 )
-                if playlist_info.use_hls_proxy:
-                    if not playlist_info.use_custom_hls_proxy:
-                        app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                        playlist_url = stream_url
-                        # Derive extension from URL path (query strings may be present).
-                        extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                        encoded_url = base64.urlsafe_b64encode(
-                            playlist_url.encode("utf-8")
-                        ).decode("utf-8")
-                        stream_url = (
-                            f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_url}.{extension}"
-                        )
-                    else:
-                        hls_proxy_path = playlist_info.hls_proxy_path
-                        playlist_url = stream_url
-                        encoded_url = base64.urlsafe_b64encode(
-                            playlist_url.encode("utf-8")
-                        ).decode("utf-8")
-                        hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
-                        hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
-                        stream_url = hls_proxy_path
+                stream_url = _apply_playlist_hls_proxy(
+                    playlist_info,
+                    stream_url,
+                    instance_id,
+                )
                 channel_source = ChannelSource(
                     playlist_id=playlist_info.id,
                     xc_account_id=account.id,
@@ -418,27 +417,11 @@ async def add_new_channel(config, data, commit=True, publish=True):
                 )
                 new_sources.append(channel_source)
         else:
-            if playlist_info.use_hls_proxy:
-                if not playlist_info.use_custom_hls_proxy:
-                    app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                    playlist_url = playlist_stream["url"]
-                    # Derive extension from URL path (query strings may be present).
-                    extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                    encoded_url = base64.urlsafe_b64encode(
-                        playlist_url.encode("utf-8")
-                    ).decode("utf-8")
-                    playlist_stream["url"] = (
-                        f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_url}.{extension}"
-                    )
-                else:
-                    hls_proxy_path = playlist_info.hls_proxy_path
-                    playlist_url = playlist_stream["url"]
-                    encoded_url = base64.urlsafe_b64encode(
-                        playlist_url.encode("utf-8")
-                    ).decode("utf-8")
-                    hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
-                    hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
-                    playlist_stream["url"] = hls_proxy_path
+            playlist_stream["url"] = _apply_playlist_hls_proxy(
+                playlist_info,
+                playlist_stream["url"],
+                instance_id,
+            )
             channel_source = ChannelSource(
                 playlist_id=playlist_info.id,
                 playlist_stream_name=source_info["stream_name"],
@@ -601,30 +584,11 @@ async def update_channel(config, channel_id, data):
                             stream_url = _render_xc_url(
                                 template, account.username, account.password
                             )
-                            if playlist_info.use_hls_proxy:
-                                if not playlist_info.use_custom_hls_proxy:
-                                    app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                                    playlist_url = stream_url
-                                    extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                                    encoded_playlist_url = base64.urlsafe_b64encode(
-                                        playlist_url.encode("utf-8")
-                                    ).decode("utf-8")
-                                    stream_url = (
-                                        f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_playlist_url}.{extension}"
-                                    )
-                                else:
-                                    hls_proxy_path = playlist_info.hls_proxy_path
-                                    playlist_url = stream_url
-                                    encoded_playlist_url = base64.urlsafe_b64encode(
-                                        playlist_url.encode("utf-8")
-                                    ).decode("utf-8")
-                                    hls_proxy_path = hls_proxy_path.replace(
-                                        "[URL]", playlist_url
-                                    )
-                                    hls_proxy_path = hls_proxy_path.replace(
-                                        "[B64_URL]", encoded_playlist_url
-                                    )
-                                    stream_url = hls_proxy_path
+                            stream_url = _apply_playlist_hls_proxy(
+                                playlist_info,
+                                stream_url,
+                                instance_id,
+                            )
                             account_source.playlist_stream_url = stream_url
                             if account_source.id:
                                 new_source_ids.append(account_source.id)
@@ -704,32 +668,11 @@ async def update_channel(config, channel_id, data):
                                 playlist_stream["url"] = _render_xc_url(
                                     template, account.username, account.password
                                 )
-                        if playlist_info.use_hls_proxy:
-                            if not playlist_info.use_custom_hls_proxy:
-                                app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                                playlist_url = playlist_stream["url"]
-                                # Derive extension from URL path (query strings may be present).
-                                extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                                encoded_playlist_url = base64.urlsafe_b64encode(
-                                    playlist_url.encode("utf-8")
-                                ).decode("utf-8")
-                                # noinspection HttpUrlsUsage
-                                playlist_stream["url"] = (
-                                    f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_playlist_url}.{extension}"
-                                )
-                            else:
-                                hls_proxy_path = playlist_info.hls_proxy_path
-                                playlist_url = playlist_stream["url"]
-                                encoded_playlist_url = base64.urlsafe_b64encode(
-                                    playlist_url.encode("utf-8")
-                                ).decode("utf-8")
-                                hls_proxy_path = hls_proxy_path.replace(
-                                    "[URL]", playlist_url
-                                )
-                                hls_proxy_path = hls_proxy_path.replace(
-                                    "[B64_URL]", encoded_playlist_url
-                                )
-                                playlist_stream["url"] = hls_proxy_path
+                        playlist_stream["url"] = _apply_playlist_hls_proxy(
+                            playlist_info,
+                            playlist_stream["url"],
+                            instance_id,
+                        )
                         channel_source = ChannelSource(
                             playlist_id=playlist_info.id,
                             playlist_stream_name=source_info["stream_name"],
@@ -796,32 +739,11 @@ async def update_channel(config, channel_id, data):
                                             account.username,
                                             account.password,
                                         )
-                                if playlist_info.use_hls_proxy:
-                                    if not playlist_info.use_custom_hls_proxy:
-                                        app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                                        playlist_url = playlist_stream["url"]
-                                        # Derive extension from URL path (query strings may be present).
-                                        extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                                        encoded_playlist_url = base64.urlsafe_b64encode(
-                                            playlist_url.encode("utf-8")
-                                        ).decode("utf-8")
-                                        # noinspection HttpUrlsUsage
-                                        playlist_stream["url"] = (
-                                            f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_playlist_url}.{extension}"
-                                        )
-                                    else:
-                                        hls_proxy_path = playlist_info.hls_proxy_path
-                                        playlist_url = playlist_stream["url"]
-                                        encoded_playlist_url = base64.urlsafe_b64encode(
-                                            playlist_url.encode("utf-8")
-                                        ).decode("utf-8")
-                                        hls_proxy_path = hls_proxy_path.replace(
-                                            "[URL]", playlist_url
-                                        )
-                                        hls_proxy_path = hls_proxy_path.replace(
-                                            "[B64_URL]", encoded_playlist_url
-                                        )
-                                        playlist_stream["url"] = hls_proxy_path
+                                playlist_stream["url"] = _apply_playlist_hls_proxy(
+                                    playlist_info,
+                                    playlist_stream["url"],
+                                    instance_id,
+                                )
                                 # Update playlist stream url
                                 logger.info(
                                     "    - Updating channel %s source from '%s' to '%s'",

@@ -83,6 +83,59 @@ def build_local_hls_proxy_url(
     return append_stream_key(url, stream_key=stream_key, username=username)
 
 
+def build_custom_hls_proxy_url(source_url: str, hls_proxy_path: str | None) -> str:
+    if not hls_proxy_path:
+        return source_url
+    encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
+    return (
+        hls_proxy_path
+        .replace("[URL]", source_url)
+        .replace("[B64_URL]", encoded_url)
+    )
+
+
+def build_configured_hls_proxy_url(
+    source_url: str,
+    base_url: str | None,
+    instance_id: str | None,
+    stream_key: str | None = None,
+    username: str | None = None,
+    use_hls_proxy: bool = False,
+    use_custom_hls_proxy: bool = False,
+    custom_hls_proxy_path: str | None = None,
+    chain_custom_hls_proxy: bool = False,
+) -> str:
+    if not use_hls_proxy and not use_custom_hls_proxy:
+        return source_url
+
+    custom_url = None
+    if use_custom_hls_proxy and custom_hls_proxy_path:
+        custom_url = build_custom_hls_proxy_url(source_url, custom_hls_proxy_path)
+
+    if use_hls_proxy and base_url and instance_id:
+        if use_custom_hls_proxy and chain_custom_hls_proxy and custom_url:
+            return build_local_hls_proxy_url(
+                base_url,
+                instance_id,
+                custom_url,
+                stream_key=stream_key,
+                username=username,
+            )
+        if not use_custom_hls_proxy or not custom_url:
+            return build_local_hls_proxy_url(
+                base_url,
+                instance_id,
+                source_url,
+                stream_key=stream_key,
+                username=username,
+            )
+
+    if use_custom_hls_proxy and custom_url:
+        return custom_url
+
+    return source_url
+
+
 def is_tic_stream_url(url: str, instance_id: str | None = None) -> bool:
     if is_local_hls_proxy_url(url, instance_id):
         return True

@@ -234,36 +234,55 @@
                   </q-item-section>
                 </q-item>
               </div>
-              <div
-                v-if="useHlsProxy"
-                class="q-gutter-sm">
-                <q-item tag="label" v-ripple>
-                  <q-item-section avatar>
-                    <q-skeleton
-                      v-if="useCustomHlsProxy === null"
-                      type="QCheckbox" />
-                    <q-checkbox
-                      v-else
-                      v-model="useCustomHlsProxy" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Use a custom HLS Proxy path</q-item-label>
-                    <q-item-label caption>If unselected, the playlist will be prefixed with the inbuilt HLS proxy URL.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-              </div>
-              <div
-                v-if="useHlsProxy && useCustomHlsProxy"
-                class="q-gutter-sm">
-                <q-input
-                  v-model="hlsProxyPath"
-                  label="HLS Proxy Path"
-                  hint="Note: Insert [URL] or [B64_URL] in the URL as a placeholder for the playlist URL. If '[B64 URL]' is used, then the URL will be base64 encoded before inserting"
-                />
+
+              <div v-if="useHlsProxy" class="sub-setting">
+
+                <div class="q-gutter-sm">
+                  <q-item class="q-ml-none" tag="label" v-ripple>
+                    <q-item-section avatar>
+                      <q-skeleton
+                        v-if="useCustomHlsProxy === null"
+                        type="QCheckbox" />
+                      <q-checkbox
+                        v-else
+                        v-model="useCustomHlsProxy" />
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label>Use a custom HLS Proxy path</q-item-label>
+                      <q-item-label caption>If enabled, the playlist uses the custom proxy URL (optionally chained
+                        through TIC below).
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item v-if="useCustomHlsProxy" class="q-ma-none" tag="label">
+                    <q-item-section>
+                      <q-input
+                        v-model="hlsProxyPath"
+                        label="HLS Proxy Path"
+                        hint="Note: Insert [URL] or [B64_URL] in the URL as a placeholder for the playlist URL. If '[B64 URL]' is used, then the URL will be base64 encoded before inserting"
+                      />
+                    </q-item-section>
+                  </q-item>
+                  <q-item v-if="useCustomHlsProxy" class="q-ml-none" tag="label" v-ripple>
+                    <q-item-section avatar>
+                      <q-skeleton
+                        v-if="chainCustomHlsProxy === null"
+                        type="QCheckbox" />
+                      <q-checkbox
+                        v-else
+                        v-model="chainCustomHlsProxy" />
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label>Proxy through both (TIC → custom)</q-item-label>
+                      <q-item-label caption>Useful when clients can only reach TIC’s URL/port. TIC handles the single
+                        entry point, then forwards to the custom proxy (for example, a proxy that routes via VPNs).
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </div>
               </div>
 
-              <div>
+              <div class="q-mt-md">
                 <q-btn label="Save" type="submit" color="primary" />
               </div>
 
@@ -311,6 +330,7 @@ export default {
       userAgentTouched: ref(false),
       useHlsProxy: ref(null),
       useCustomHlsProxy: ref(null),
+      chainCustomHlsProxy: ref(null),
       hlsProxyPath: ref(null),
     };
   },
@@ -390,6 +410,7 @@ export default {
         this.userAgentTouched = false;
         this.useHlsProxy = response.data.data.use_hls_proxy;
         this.useCustomHlsProxy = response.data.data.use_custom_hls_proxy;
+        this.chainCustomHlsProxy = response.data.data.chain_custom_hls_proxy;
         this.hlsProxyPath = response.data.data.hls_proxy_path;
       });
     },
@@ -450,6 +471,7 @@ export default {
         user_agent: this.userAgent,
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
+        chain_custom_hls_proxy: this.chainCustomHlsProxy,
         hls_proxy_path: this.hlsProxyPath,
       };
       if (this.accountType === 'XC') {
@@ -623,6 +645,17 @@ export default {
     },
   },
   watch: {
+    useHlsProxy(newValue) {
+      if (!newValue) {
+        this.useCustomHlsProxy = false;
+        this.chainCustomHlsProxy = false;
+      }
+    },
+    useCustomHlsProxy(newValue) {
+      if (!newValue) {
+        this.chainCustomHlsProxy = false;
+      }
+    },
     uuid(value) {
       if (value.length > 0) {
         this.currentUuid = this.uuid;

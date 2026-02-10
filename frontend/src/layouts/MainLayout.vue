@@ -441,8 +441,7 @@
 
 .sub-setting {
   margin-left: 30px;
-  padding-top: 8px;
-  padding-left: 8px;
+  padding-left: 16px;
   border-left: solid thin var(--q-primary);
 }
 
