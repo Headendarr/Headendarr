@@ -331,10 +331,10 @@ class StreamAuditLog(Base):
 
     user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
-    endpoint = Column(String(255), nullable=True)
+    endpoint = Column(Text, nullable=True)
     ip_address = Column(String(64), nullable=True)
-    user_agent = Column(String(255), nullable=True)
-    details = Column(String(1024), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="stream_audits")

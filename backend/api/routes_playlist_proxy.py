@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-import base64
 import re
 import sqlalchemy.exc
 
@@ -11,7 +10,7 @@ from quart import jsonify, current_app, render_template_string, Response
 
 from backend.auth import stream_key_required, audit_stream_event
 from backend.config import is_tvh_process_running_locally
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 
 device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
@@ -32,19 +31,14 @@ device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
 </root>"""
 
 
-def _build_proxy_stream_url(base_url, source_url, stream_key):
-    parsed_source = urlparse(source_url)
-    if '/tic-hls-proxy/' in (parsed_source.path or ''):
-        query = parse_qs(parsed_source.query)
-        if 'stream_key' not in query and 'password' not in query:
-            query['stream_key'] = [stream_key]
-            parsed_source = parsed_source._replace(query=urlencode(query, doseq=True))
-        return urlunparse(parsed_source)
-    is_hls = parsed_source.path.lower().endswith('.m3u8')
-    encoded_url = base64.urlsafe_b64encode(source_url.encode('utf-8')).decode('utf-8')
-    if is_hls:
-        return f'{base_url}/tic-hls-proxy/{encoded_url}.m3u8?stream_key={stream_key}'
-    return f'{base_url}/tic-hls-proxy/stream/{encoded_url}?stream_key={stream_key}'
+def _build_proxy_stream_url(base_url, source_url, stream_key, instance_id, username=None):
+    return normalize_local_proxy_url(
+        source_url,
+        base_url=base_url,
+        instance_id=instance_id,
+        stream_key=stream_key,
+        username=username,
+    )
 
 
 async def _get_tvh_settings(include_auth=True, stream_profile='pass', stream_username=None, stream_key=None):
@@ -136,6 +130,7 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
     use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    instance_id = config.ensure_instance_id()
     tvh_settings = await _get_tvh_settings(
         include_auth=True,
         stream_username=stream_username,
@@ -148,9 +143,12 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
         channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
-            channel_url = f'{tvh_settings["tvh_http_url"]}/stream/channel/{channel_details["tvh_uuid"]}'
+            base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+            channel_url = f'{base_url}/tic-api/tvh_stream/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
             channel_url = f'{channel_url}{path_args}'
+            if stream_key:
+                channel_url = append_stream_key(channel_url, stream_key=stream_key)
         else:
             source = channel_details['sources'][0] if channel_details.get('sources') else None
             source_url = source.get('stream_url') if source else None
@@ -161,7 +159,22 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
                     channel_url = source_url
                 else:
                     base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
-                    channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+                    if is_manual and use_hls_proxy:
+                        channel_url = build_local_hls_proxy_url(
+                            base_url,
+                            instance_id,
+                            source_url,
+                            stream_key=stream_key,
+                            username=stream_username,
+                        )
+                    else:
+                        channel_url = _build_proxy_stream_url(
+                            base_url,
+                            source_url,
+                            stream_key,
+                            instance_id,
+                            username=stream_username,
+                        )
 
         if channel_url:
             lineup_list.append(
@@ -178,6 +191,7 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
     use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    instance_id = config.ensure_instance_id()
     tvh_settings = await _get_tvh_settings(
         include_auth=include_auth,
         stream_profile=stream_profile,
@@ -207,9 +221,11 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
         playlist.append(line)
         channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
-            channel_url = f'{tvh_settings["tvh_http_url"]}/stream/channel/{channel_details["tvh_uuid"]}'
+            channel_url = f'{base_url}/tic-api/tvh_stream/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
             channel_url = f'{channel_url}{path_args}'
+            if stream_key:
+                channel_url = append_stream_key(channel_url, stream_key=stream_key)
         else:
             source = channel_details['sources'][0] if channel_details.get('sources') else None
             source_url = source.get('stream_url') if source else None
@@ -219,7 +235,22 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
                 if is_manual and not use_hls_proxy:
                     channel_url = source_url
                 else:
-                    channel_url = _build_proxy_stream_url(base_url, source_url, stream_key)
+                    if is_manual and use_hls_proxy:
+                        channel_url = build_local_hls_proxy_url(
+                            base_url,
+                            instance_id,
+                            source_url,
+                            stream_key=stream_key,
+                            username=username,
+                        )
+                    else:
+                        channel_url = _build_proxy_stream_url(
+                            base_url,
+                            source_url,
+                            stream_key,
+                            instance_id,
+                            username=username,
+                        )
 
         if channel_url:
             playlist.append(channel_url)

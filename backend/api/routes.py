@@ -2,7 +2,6 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import os
-import aiofiles
 import aiohttp
 
 from quart import request, jsonify, send_from_directory, current_app, Response, websocket, redirect
@@ -12,6 +11,7 @@ from backend.api import blueprint
 from backend.api.tasks import TaskQueueBroker
 from backend.auth import admin_auth_required, get_user_from_token, stream_key_required, audit_stream_event
 from backend.config import is_tvh_process_running_locally
+from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.tvheadend.tvh_requests import configure_tvh, ensure_tvh_sync_user
 
 
@@ -48,21 +48,68 @@ async def serve_epg_static():
 
 async def _build_playlist_with_epg():
     config = current_app.config['APP_CONFIG']
+    settings = config.read_settings()
+    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    instance_id = config.ensure_instance_id()
     stream_key = request.args.get('stream_key') or request.args.get('password')
     username = request.args.get('username')
-    epg_url = f'{request.url_root.rstrip("/")}/xmltv.php'
+    base_url = request.url_root.rstrip("/") or settings['settings'].get('app_url') or ""
+    epg_url = f'{base_url}/xmltv.php'
     if stream_key:
         if username:
             epg_url = f'{epg_url}?username={username}&password={stream_key}'
         else:
             epg_url = f'{epg_url}?stream_key={stream_key}'
-    m3u_path = os.path.join(config.config_path, 'playlist.m3u8')
-    async with aiofiles.open(m3u_path, mode='r', encoding='utf8', errors='ignore') as f:
-        content = await f.read()
-    lines = content.splitlines()
-    if lines:
-        lines[0] = f'#EXTM3U url-tvg="{epg_url}"'
-    return Response("\n".join(lines), mimetype='application/vnd.apple.mpegurl')
+
+    from backend.channels import read_config_all_channels
+    channels = await read_config_all_channels()
+    playlist = [f'#EXTM3U url-tvg="{epg_url}"']
+
+    for channel in channels:
+        if not channel.get("enabled"):
+            continue
+        channel_uuid = channel.get("tvh_uuid")
+        channel_name = channel.get("name")
+        channel_logo_url = channel.get("logo_url")
+        channel_number = channel.get("number")
+        line = f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" tvg-id="{channel_uuid}" tvg-chno="{channel_number}"'
+        if channel.get("tags"):
+            group_title = channel["tags"][0]
+            line += f' group-title="{group_title}"'
+        line += f",{channel_name}"
+        playlist.append(line)
+
+        channel_url = None
+        if use_tvh_source and channel_uuid:
+            channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}?profile=pass&weight=300"
+            if stream_key:
+                channel_url = append_stream_key(channel_url, stream_key=stream_key)
+        else:
+            source = channel['sources'][0] if channel.get('sources') else None
+            source_url = source.get('stream_url') if source else None
+            if source_url:
+                is_manual = source.get('source_type') == 'manual'
+                use_hls_proxy = bool(source.get('use_hls_proxy', False))
+                if is_manual and use_hls_proxy:
+                    channel_url = build_local_hls_proxy_url(
+                        base_url,
+                        instance_id,
+                        source_url,
+                        stream_key=stream_key,
+                        username=username,
+                    )
+                else:
+                    channel_url = normalize_local_proxy_url(
+                        source_url,
+                        base_url=base_url,
+                        instance_id=instance_id,
+                        stream_key=stream_key,
+                        username=username,
+                    )
+        if channel_url:
+            playlist.append(channel_url)
+
+    return Response("\n".join(playlist), mimetype='application/vnd.apple.mpegurl')
 
 
 @blueprint.route('/tic-web/playlist.m3u8')
@@ -191,6 +238,15 @@ async def tvh_root_proxy():
 async def tvh_any_proxy(subpath: str):
     if subpath == 'ping':
         return await ping()
+    return await _proxy_tvh_http(subpath)
+
+
+@blueprint.route('/tic-api/tvh_stream/<path:subpath>', methods=['GET', 'HEAD', 'OPTIONS'])
+@stream_key_required
+async def tvh_stream_proxy(subpath: str):
+    # Internal stream-only proxy for external clients (stream key auth).
+    if not (subpath.startswith("stream/") or subpath.startswith("dvrfile/")):
+        return jsonify({"success": False, "message": "Not found"}), 404
     return await _proxy_tvh_http(subpath)
 
 

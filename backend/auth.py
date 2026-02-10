@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import base64
 import asyncio
+import time
 from datetime import datetime
 from functools import wraps
 
@@ -20,6 +21,31 @@ class StreamUser:
         self.streaming_key = stream_key
         self.is_active = True
         self.roles = []
+
+
+class _StreamKeyCache:
+    def __init__(self, ttl_seconds=30):
+        self.ttl_seconds = ttl_seconds
+        self._cache = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, stream_key):
+        async with self._lock:
+            entry = self._cache.get(stream_key)
+            if not entry:
+                return None, False
+            user, expires_at = entry
+            if expires_at < time.time():
+                self._cache.pop(stream_key, None)
+                return None, False
+            return user, True
+
+    async def set(self, stream_key, user):
+        async with self._lock:
+            self._cache[stream_key] = (user, time.time() + self.ttl_seconds)
+
+
+_stream_key_cache = _StreamKeyCache(ttl_seconds=30)
 
 
 def unauthorized_response(message="Unauthorized"):
@@ -176,8 +202,15 @@ async def get_user_from_stream_key():
         except Exception:
             pass
 
-    # Finally do a lookup for a user stream key
-    # TODO: Perhaps we should cache this for a short amount of time to reduce DB lookups for HLS proxy streams
+    # Finally do a lookup for a user stream key (cached for a short TTL)
+    cached_user, has_cache = await _stream_key_cache.get(stream_key)
+    if has_cache:
+        if cached_user is None:
+            return None
+        if username and cached_user.username != username:
+            return None
+        return cached_user
+
     if username:
         async with Session() as session:
             result = await session.execute(
@@ -185,13 +218,18 @@ async def get_user_from_stream_key():
             )
             user = result.scalars().first()
             if not user or not user.streaming_key:
+                await _stream_key_cache.set(stream_key, None)
                 return None
             if user.streaming_key != stream_key:
+                await _stream_key_cache.set(stream_key, None)
                 return None
+            await _stream_key_cache.set(stream_key, user)
             return user
 
     from backend.users import get_user_by_stream_key
-    return await get_user_by_stream_key(stream_key)
+    user = await get_user_by_stream_key(stream_key)
+    await _stream_key_cache.set(stream_key, user)
+    return user
 
 
 def stream_key_required(func):
@@ -259,13 +297,17 @@ async def audit_stream_event(
 ):
     async with Session() as session:
         async with session.begin():
-            ip_value = ip_address or getattr(request, "remote_addr", None)
-            user_agent_value = user_agent
-            if user_agent_value is None:
-                try:
-                    user_agent_value = request.headers.get("User-Agent")
-                except Exception:
-                    user_agent_value = None
+            if has_request_context():
+                ip_value = ip_address or getattr(request, "remote_addr", None)
+                user_agent_value = user_agent
+                if user_agent_value is None:
+                    try:
+                        user_agent_value = request.headers.get("User-Agent")
+                    except Exception:
+                        user_agent_value = None
+            else:
+                ip_value = ip_address
+                user_agent_value = user_agent
             log = StreamAuditLog(
                 user_id=user.id if user else None,
                 event_type=event_type,

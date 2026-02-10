@@ -27,7 +27,9 @@ def needs_rehash(password_hash: str) -> bool:
 
 
 def generate_stream_key() -> str:
-    return secrets.token_urlsafe(32)
+    # Short, URL-safe stream key (10 chars) per SOW.
+    # Use token_urlsafe and truncate for deterministic length.
+    return secrets.token_urlsafe(8)[:10]
 
 
 def hash_stream_key(stream_key: str) -> str:

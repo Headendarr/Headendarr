@@ -222,14 +222,14 @@ export default {
         }));
         if (!this.userAgents.length) {
           this.userAgents = [
-            {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+            {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
             {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
             {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
           ];
         }
       }).catch(() => {
         this.userAgents = [
-          {name: 'VLC', value: 'VLC/3.0.21 LibVLC/3.0.21'},
+          {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
           {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
           {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
         ];

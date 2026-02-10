@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import io
-import base64
-
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import urlparse
 
 from backend.auth import admin_auth_required, streamer_or_admin_required
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups
+from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, ChannelSource
@@ -135,35 +134,13 @@ async def api_get_channels_basic():
     return jsonify({"success": True, "data": basic})
 
 
-def _build_preview_url(app_url, source_url, stream_key, use_hls_proxy=True):
-    if not source_url:
-        return None, None
-    if not use_hls_proxy:
-        parsed_direct = urlparse(source_url)
-        if parsed_direct.path.lower().endswith('.m3u8'):
-            return source_url, "hls"
-        if parsed_direct.path.lower().endswith('.ts'):
-            return source_url, "mpegts"
-        return source_url, "auto"
-    if source_url.startswith(app_url) and '/tic-hls-proxy/' in source_url:
-        parsed = urlparse(source_url)
-        query = parse_qs(parsed.query)
-        if 'stream_key' not in query and 'password' not in query:
-            query['stream_key'] = [stream_key]
-            parsed = parsed._replace(query=urlencode(query, doseq=True))
-        url = urlunparse(parsed)
-        if url.endswith('.m3u8'):
-            return url, "hls"
-        if url.endswith('.ts'):
-            return url, "mpegts"
-        return url, "auto"
-
-    parsed_source = urlparse(source_url)
-    is_hls = parsed_source.path.lower().endswith('.m3u8')
-    encoded_url = base64.urlsafe_b64encode(source_url.encode('utf-8')).decode('utf-8')
-    if is_hls:
-        return f'{app_url}/tic-hls-proxy/{encoded_url}.m3u8?stream_key={stream_key}', "hls"
-    return f'{app_url}/tic-hls-proxy/stream/{encoded_url}?stream_key={stream_key}', "mpegts"
+def _infer_stream_type(url):
+    parsed = urlparse(url)
+    if parsed.path.lower().endswith(".m3u8"):
+        return "hls"
+    if parsed.path.lower().endswith(".ts"):
+        return "mpegts"
+    return "auto"
 
 
 @blueprint.route('/tic-api/channels/<int:channel_id>/preview', methods=['GET'])
@@ -187,25 +164,34 @@ async def api_get_channel_preview(channel_id):
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
     use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    instance_id = config.ensure_instance_id()
     request_base_url = request.host_url.rstrip('/')
     app_url = settings['settings'].get('app_url') or ''
     preview_base_url = request_base_url or app_url
     if use_tvh_source and source.tvh_uuid:
-        preview_url = f"{request_base_url}/tic-tvh/stream/channel/{source.tvh_uuid}?profile=pass&weight=300"
+        preview_url = f"{preview_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}?profile=pass&weight=300"
+        preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
         stream_type = "mpegts"
     else:
         if not preview_base_url:
             preview_base_url = app_url
         is_manual = not source.playlist_id
-        use_hls_proxy = True
-        if is_manual:
-            use_hls_proxy = bool(getattr(source, "use_hls_proxy", False))
-        preview_url, stream_type = _build_preview_url(
-            preview_base_url,
-            source.playlist_stream_url,
-            user.streaming_key,
-            use_hls_proxy=use_hls_proxy
-        )
+        use_hls_proxy = bool(getattr(source, "use_hls_proxy", False)) if is_manual else False
+        if is_manual and use_hls_proxy:
+            preview_url = build_local_hls_proxy_url(
+                preview_base_url,
+                instance_id,
+                source.playlist_stream_url,
+                stream_key=user.streaming_key,
+            )
+        else:
+            preview_url = normalize_local_proxy_url(
+                source.playlist_stream_url,
+                base_url=preview_base_url,
+                instance_id=instance_id,
+                stream_key=user.streaming_key,
+            )
+        stream_type = _infer_stream_type(preview_url)
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
 
@@ -295,15 +281,19 @@ async def api_delete_multiple_channels():
     config = current_app.config['APP_CONFIG']
     current_app.logger.warning(json_data)
 
+    missing = []
     for channel_id in json_data.get('channels', {}):
         normalized = normalize_id(channel_id, "channel")
-        await delete_channel(config, normalized)
+        deleted = await delete_channel(config, normalized)
+        if not deleted:
+            missing.append(normalized)
 
     # Queue background tasks to update TVHeadend
     await queue_background_channel_update_tasks(config)
 
     return jsonify({
-        "success": True
+        "success": True,
+        "missing": missing
     })
 
 

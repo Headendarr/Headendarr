@@ -441,34 +441,23 @@ export default {
         );
       });
     },
-    buildPreviewUrl(streamUrl) {
-      if (!streamUrl) return null;
-      const streamKey = this.streamingKey;
-      const encoded = btoa(streamUrl);
-      if (streamUrl.toLowerCase().includes('.m3u8')) {
-        return `${window.location.origin}/tic-hls-proxy/${encoded}.m3u8?stream_key=${streamKey}`;
-      }
-      return `${window.location.origin}/tic-hls-proxy/stream/${encoded}?stream_key=${streamKey}`;
-    },
     previewStream(stream) {
-      const previewUrl = this.buildPreviewUrl(stream.url);
-      if (!previewUrl) {
+      if (!stream?.url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
       }
       this.videoStore.showPlayer({
-        url: previewUrl,
+        url: stream.url,
         title: stream.name,
         type: stream.url && stream.url.toLowerCase().includes('.m3u8') ? 'hls' : 'mpegts',
       });
     },
     async copyStreamUrl(stream) {
-      const previewUrl = this.buildPreviewUrl(stream.url);
-      if (!previewUrl) {
+      if (!stream?.url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
       }
-      await copyToClipboard(previewUrl);
+      await copyToClipboard(stream.url);
       this.$q.notify({color: 'positive', message: 'Stream URL copied'});
     },
     getSelectedString: function() {
@@ -485,9 +474,6 @@ export default {
       const dialogHeight = this.$refs.channelStreamSelectorDialogRef.$el.offsetHeight;
       const tableHeight = (dialogHeight - 150);
       return `height:${tableHeight}px;`;
-    },
-    streamingKey() {
-      return this.authUser?.streaming_key || '';
     },
     authUser() {
       return this.$pinia?.state?.value?.auth?.user || null;

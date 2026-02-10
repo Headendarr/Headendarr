@@ -154,9 +154,12 @@
                   v-else
                   v-model="epgSourceId"
                   :options="epgSourceOptions"
+                  use-input
+                  input-debounce="0"
                   emit-value
                   map-options
                   label="EPG Source"
+                  @filter="filterEpgSource"
                   @input="updateCurrentEpgChannelOptions"
                 />
               </div>
@@ -365,6 +368,7 @@ export default {
       tags: ref(null),
       newTag: ref(''),
       epgSourceOptions: ref(null),
+      epgSourceDefaultOptions: ref(null),
       epgSourceId: ref(null),
       epgChannelAllOptions: ref(null),
       epgChannelDefaultOptions: ref(null),
@@ -396,6 +400,7 @@ export default {
       this.logoUrl = '';
       this.tags = [];
       this.epgSourceOptions = [];
+      this.epgSourceDefaultOptions = [];
       this.epgSourceId = '';
       this.epgSourceName = '';
       this.epgChannelDefaultOptions = [];
@@ -466,6 +471,7 @@ export default {
             },
           );
         }
+        this.epgSourceDefaultOptions = [...this.epgSourceOptions];
       });
       axios({
         method: 'GET',
@@ -600,8 +606,25 @@ export default {
       }
 
       update(() => {
-        const needle = val.toLowerCase();
-        this.epgChannelOptions = this.epgChannelDefaultOptions.filter(v => v.label.toLowerCase().indexOf(needle) > -1);
+        const needle = String(val).toLowerCase();
+        this.epgChannelOptions = this.epgChannelDefaultOptions.filter((v) => {
+          return String(v.label || '').toLowerCase().indexOf(needle) > -1;
+        });
+      });
+    },
+    filterEpgSource(val, update) {
+      if (val === '') {
+        update(() => {
+          this.epgSourceOptions = this.epgSourceDefaultOptions;
+        });
+        return;
+      }
+
+      update(() => {
+        const needle = String(val).toLowerCase();
+        this.epgSourceOptions = this.epgSourceDefaultOptions.filter((v) => {
+          return String(v.label || '').toLowerCase().indexOf(needle) > -1;
+        });
       });
     },
     selectChannelSourceFromList: function() {
