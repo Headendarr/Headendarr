@@ -626,7 +626,14 @@ async def publish_playlist_networks(config):
             net_uuid = result.tvh_uuid
             playlist_name = result.name
             max_streams = result.connections
-            network_name = f"playlist_{result.id}_{result.name}"
+            playlist_slug = (playlist_name or f"playlist_{result.id}").strip()
+            if not playlist_slug:
+                playlist_slug = f"playlist_{result.id}"
+            if playlist_slug.lower().startswith("tic-"):
+                tic_name = playlist_slug
+            else:
+                tic_name = f"tic-{playlist_slug}"
+            network_name = tic_name
             logger.info("Publishing playlist to TVH - %s.", network_name)
             if net_uuid:
                 found = False
@@ -639,13 +646,13 @@ async def publish_playlist_networks(config):
                 # No network exists, create one
                 # Check if network exists with this playlist name
                 net_uuid = await tvh.create_network(
-                    playlist_name, network_name, max_streams, net_priority
+                    tic_name, network_name, max_streams, net_priority
                 )
             # Update network
             net_conf = network_template.copy()
             net_conf["uuid"] = net_uuid
             net_conf["enabled"] = result.enabled
-            net_conf["networkname"] = playlist_name
+            net_conf["networkname"] = tic_name
             net_conf["pnetworkname"] = network_name
             net_conf["max_streams"] = max_streams
             net_conf["priority"] = net_priority

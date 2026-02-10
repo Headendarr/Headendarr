@@ -22,7 +22,7 @@ def append_stream_key(url: str, stream_key: str = None, username: str = None) ->
         return url
     if username:
         query_items.append(("username", username))
-        query_items.append(("password", stream_key))
+        query_items.append(("stream_key", stream_key))
     else:
         query_items.append(("stream_key", stream_key))
     new_query = urlencode(query_items)
@@ -49,7 +49,7 @@ def normalize_local_proxy_url(
     if stream_key and not _has_stream_auth(query_items):
         if username:
             query_items.append(("username", username))
-            query_items.append(("password", stream_key))
+            query_items.append(("stream_key", stream_key))
         else:
             query_items.append(("stream_key", stream_key))
     new_query = urlencode(query_items)

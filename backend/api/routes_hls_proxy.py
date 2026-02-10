@@ -466,7 +466,7 @@ def generate_base64_encoded_url(
     url = f"{base_url}/{full_url_encoded}.{extension}"
     if stream_key:
         if username:
-            return f"{url}?username={username}&password={stream_key}"
+            return f"{url}?username={username}&stream_key={stream_key}"
         return f"{url}?stream_key={stream_key}"
     return url
 
@@ -690,7 +690,7 @@ async def proxy_m3u8_redirect(instance_id):
     target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded}.m3u8"
     if stream_key:
         if username:
-            target = f"{target}?username={username}&password={stream_key}"
+            target = f"{target}?username={username}&stream_key={stream_key}"
         else:
             target = f"{target}?stream_key={stream_key}"
     return redirect(target, code=302)

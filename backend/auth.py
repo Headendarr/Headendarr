@@ -14,7 +14,7 @@ from backend.models import Session, User, UserSession, StreamAuditLog
 from backend.security import hash_session_token
 
 
-class StreamUser:
+class TvhStreamUser:
     def __init__(self, username, stream_key):
         self.id = None
         self.username = username
@@ -173,15 +173,12 @@ async def get_user_from_stream_key():
     user_from_token = await get_user_from_token()
     if user_from_token:
         return user_from_token
-    username = request.args.get("username")
-
     # Extract the required stream key
     #   This will revert to using the password
     stream_key = _extract_stream_key()
     if not stream_key:
         basic_username, basic_password = _get_basic_auth_credentials()
         if basic_password:
-            username = username or basic_username
             stream_key = basic_password
     if not stream_key:
         return None
@@ -197,8 +194,8 @@ async def get_user_from_stream_key():
             tvh_username = tvh_stream_user.get("username")
             tvh_stream_key = tvh_stream_user.get("stream_key")
             if tvh_stream_key and tvh_stream_key == stream_key:
-                if username is None or username == tvh_username:
-                    return StreamUser(tvh_username, tvh_stream_key)
+                # Mock a real user with a TVH stream user class
+                return TvhStreamUser(tvh_username, tvh_stream_key)
         except Exception:
             pass
 
@@ -207,24 +204,7 @@ async def get_user_from_stream_key():
     if has_cache:
         if cached_user is None:
             return None
-        if username and cached_user.username != username:
-            return None
         return cached_user
-
-    if username:
-        async with Session() as session:
-            result = await session.execute(
-                select(User).where(User.username == username).options(selectinload(User.roles))
-            )
-            user = result.scalars().first()
-            if not user or not user.streaming_key:
-                await _stream_key_cache.set(stream_key, None)
-                return None
-            if user.streaming_key != stream_key:
-                await _stream_key_cache.set(stream_key, None)
-                return None
-            await _stream_key_cache.set(stream_key, user)
-            return user
 
     from backend.users import get_user_by_stream_key
     user = await get_user_by_stream_key(stream_key)

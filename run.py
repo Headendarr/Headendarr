@@ -43,6 +43,17 @@ async def every_60_seconds():
         await cleanup_hls_proxy_state()
 
 
+@scheduler.scheduled_job('interval', id='tvh_networks_minutely', seconds=60, misfire_grace_time=30)
+async def every_60_seconds_networks():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task({
+            'name':     'Configuring TVH networks (periodic)',
+            'function': update_tvh_networks,
+            'args':     [app],
+        }, priority=12)
+
+
 @scheduler.scheduled_job('interval', id='do_5_mins', minutes=5, misfire_grace_time=60)
 async def every_5_mins():
     async with app.app_context():

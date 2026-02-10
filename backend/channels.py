@@ -1081,6 +1081,9 @@ async def publish_channel_muxes(config):
                 service_name = (
                     f"{source_obj.playlist.name} - {source_obj.playlist_stream_name}"
                 )
+                mux_name = service_name
+                if not mux_name.lower().startswith("tic-"):
+                    mux_name = f"tic-{mux_name}"
                 stream_url = source_obj.playlist_stream_url
                 instance_id = config.ensure_instance_id()
                 if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
@@ -1099,7 +1102,7 @@ async def publish_channel_muxes(config):
                     "iptv_url": iptv_url,
                     "iptv_icon": channel_obj.logo_url,
                     "iptv_sname": channel_obj.name,
-                    "iptv_muxname": service_name,
+                    "iptv_muxname": mux_name,
                     "channel_number": channel_obj.number,
                     "iptv_epgid": channel_id,
                     "priority": source_obj.priority,
@@ -1136,7 +1139,16 @@ async def publish_channel_muxes(config):
         current_muxes = await tvh.list_all_muxes()
         for existing_mux in current_muxes:
             uuid = existing_mux.get("uuid")
-            if uuid and uuid not in managed_uuids:
+            mux_name = (
+                existing_mux.get("iptv_muxname")
+                or existing_mux.get("name")
+                or ""
+            )
+            if (
+                uuid
+                and uuid not in managed_uuids
+                and mux_name.lower().startswith("tic-")
+            ):
                 try:
                     logger.info("    - Removing mux UUID - %s", uuid)
                     await tvh.delete_mux(uuid)
