@@ -141,7 +141,7 @@
                     <q-item-section>
                       <q-item-label>
                         2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                        When disabled, clients stream directly via TIC.
+                        When enabled, clients connect to TVH for tuning and TVH pulls streams from TIC on their behalf.
                       </q-item-label>
                     </q-item-section>
                   </q-item>
@@ -171,6 +171,24 @@
                       <q-item-label>
                         TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
                         other devices can reach.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not TIC. TVH
+                        becomes the “streaming client” that fetches channels from TIC and can apply its own buffering,
+                        mux handling, and DVR behavior.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
+                        compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach TIC.
+                        When disabled, clients connect directly to TIC for streams.
                       </q-item-label>
                     </q-item-section>
                   </q-item>
