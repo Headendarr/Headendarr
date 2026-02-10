@@ -109,14 +109,15 @@ async def api_delete_playlist(playlist_id):
         playlist_id = int(playlist_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid playlist id"}), 400
-    net_uuid = await delete_playlist(config, playlist_id)
-    if net_uuid:
+    net_uuids = await delete_playlist(config, playlist_id)
+    if net_uuids:
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     f'Delete playlist network - {playlist_id}',
-            'function': delete_playlist_network_in_tvh,
-            'args':     [config, net_uuid],
-        }, priority=20)
+        for net_uuid in net_uuids:
+            await task_broker.add_task({
+                'name':     f'Delete playlist network - {playlist_id}',
+                'function': delete_playlist_network_in_tvh,
+                'args':     [config, net_uuid],
+            }, priority=20)
     await queue_background_channel_update_tasks(config)
     return jsonify(
         {

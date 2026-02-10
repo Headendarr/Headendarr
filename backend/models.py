@@ -122,6 +122,7 @@ class Playlist(Base):
     # Backref to all associated linked sources
     channel_sources = relationship('ChannelSource', backref='playlist', lazy=True, cascade="all, delete-orphan")
     playlist_streams = relationship('PlaylistStreams', backref='playlist', lazy=True, cascade="all, delete-orphan")
+    xc_accounts = relationship('XcAccount', backref='playlist', lazy=True, cascade="all, delete-orphan")
 
     def __repr__(self):
         return '<Playlist {}>'.format(self.id)
@@ -147,6 +148,22 @@ class PlaylistStreams(Base):
 
     def __repr__(self):
         return '<PlaylistStreams {}>'.format(self.id)
+
+
+class XcAccount(Base):
+    __tablename__ = "xc_accounts"
+    id = Column(Integer, primary_key=True)
+
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False)
+    username = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=False)
+    enabled = Column(Boolean, nullable=False, unique=False, default=True)
+    connection_limit = Column(Integer, nullable=False, unique=False, default=1)
+    label = Column(String(255), nullable=True)
+    tvh_uuid = Column(String(64), index=True, unique=True)
+
+    def __repr__(self):
+        return '<XcAccount {}>'.format(self.id)
 
 
 channels_tags_association_table = Table(
@@ -202,11 +219,14 @@ class ChannelSource(Base):
 
     # Link with a playlist
     playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
+    xc_account_id = Column(Integer, ForeignKey('xc_accounts.id'), nullable=True)
     playlist_stream_name = Column(String(500), index=True, unique=False)
     playlist_stream_url = Column(Text, index=True, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
+
+    xc_account = relationship('XcAccount')
 
     def __repr__(self):
         return '<ChannelSource {}>'.format(self.id)

@@ -126,26 +126,70 @@
               <div
                 v-if="accountType === 'XC'"
                 class="q-gutter-sm">
-                <q-input
-                  v-model="xcUsername"
-                  label="Username"
-                  hint="Username for Xtream Codes authentication"
-                />
-              </div>
-              <div
-                v-if="accountType === 'XC'"
-                class="q-gutter-sm">
-                <q-input
-                  v-model="xcPassword"
-                  type="password"
-                  label="Password"
-                  :hint="xcPasswordHint"
+                <div class="text-caption text-grey-7">
+                  Add one or more Xtream Codes accounts for this host. Each account can have its own connection limit.
+                </div>
+                <div
+                  v-for="(account, index) in xcAccounts"
+                  :key="account.localId || account.id || index"
+                  class="q-gutter-sm q-ml-md q-pa-sm bordered rounded-borders">
+                  <q-input
+                    v-model="account.username"
+                    label="Username"
+                    hint="Username for Xtream Codes authentication"
+                  />
+                  <q-input
+                    v-model="account.password"
+                    type="password"
+                    label="Password"
+                    :hint="xcPasswordHint(account)"
+                  />
+                  <q-input
+                    v-model.number="account.connection_limit"
+                    type="number"
+                    label="Connections"
+                    style="max-width: 200px"
+                  />
+                  <q-toggle
+                    v-model="account.enabled"
+                    label="Enabled"
+                  />
+                  <q-input
+                    v-model="account.label"
+                    label="Label (optional)"
+                  />
+                  <div class="row justify-end">
+                    <q-btn
+                      flat
+                      round
+                      color="negative"
+                      icon="delete"
+                      @click="removeXcAccount(index)"
+                    >
+                      <q-tooltip class="bg-white text-primary">Delete account</q-tooltip>
+                    </q-btn>
+                  </div>
+                  <q-separator />
+                </div>
+                <q-btn
+                  color="primary"
+                  label="Add account"
+                  @click="addXcAccount"
                 />
               </div>
               <div class="q-gutter-sm">
                 <q-skeleton
                   v-if="connections === null"
                   type="QInput" />
+                <q-input
+                  v-else-if="accountType === 'XC'"
+                  :model-value="totalXcConnections"
+                  type="number"
+                  label="Connections"
+                  hint="Total connections from enabled XC accounts"
+                  disable
+                  style="max-width: 200px"
+                />
                 <q-input
                   v-else
                   v-model.number="connections"
@@ -260,9 +304,7 @@ export default {
         {label: 'M3U', value: 'M3U'},
         {label: 'Xtream Codes', value: 'XC'},
       ],
-      xcUsername: ref(null),
-      xcPassword: ref(null),
-      xcPasswordSet: ref(false),
+      xcAccounts: ref([]),
       connections: ref(null),
       userAgent: ref(null),
       userAgents: ref([]),
@@ -287,9 +329,7 @@ export default {
         this.name = '';
         this.url = '';
         this.accountType = 'M3U';
-        this.xcUsername = '';
-        this.xcPassword = '';
-        this.xcPasswordSet = false;
+        this.xcAccounts = [];
         this.connections = 1;
         this.userAgent = this.getPreferredUserAgent('VLC');
         this.userAgentTouched = false;
@@ -323,9 +363,27 @@ export default {
         this.url = response.data.data.url;
         const incomingType = response.data.data.account_type || response.data.data.source_type;
         this.accountType = incomingType || 'M3U';
-        this.xcUsername = response.data.data.xc_username || '';
-        this.xcPassword = '';
-        this.xcPasswordSet = !!response.data.data.xc_password_set;
+        const accounts = response.data.data.xc_accounts || [];
+        this.xcAccounts = accounts.map((account) => ({
+          id: account.id,
+          username: account.username || '',
+          password: '',
+          passwordSet: !!account.password_set,
+          enabled: account.enabled !== false,
+          connection_limit: account.connection_limit || 1,
+          label: account.label || '',
+        }));
+        if (this.accountType === 'XC' && !this.xcAccounts.length) {
+          const legacyUsername = response.data.data.xc_username || '';
+          this.xcAccounts = [{
+            username: legacyUsername,
+            password: '',
+            passwordSet: !!response.data.data.xc_password_set,
+            enabled: true,
+            connection_limit: response.data.data.connections || 1,
+            label: '',
+          }];
+        }
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
         this.userAgentTouched = false;
@@ -370,30 +428,37 @@ export default {
       const match = this.userAgents.find((agent) => agent.name === preferredName);
       return (match || this.userAgents[0]).value;
     },
-    save: function() {
+    save: async function() {
       let url = '/tic-api/playlists/new';
       const isNew = !this.playlistId;
       if (this.playlistId) {
         url = `/tic-api/playlists/settings/${this.playlistId}/save`;
+      }
+      if (isNew && this.accountType === 'XC') {
+        const proceed = await this.confirmXcHostUnique();
+        if (!proceed) {
+          return;
+        }
       }
       let data = {
         enabled: this.enabled,
         name: this.name,
         url: this.url,
         account_type: this.accountType,
-        xc_username: this.xcUsername,
-        xc_password: this.xcPassword,
-        connections: this.connections,
+        connections: this.accountType === 'XC' ? this.totalXcConnections : this.connections,
         user_agent: this.userAgent,
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
         hls_proxy_path: this.hlsProxyPath,
       };
+      if (this.accountType === 'XC') {
+        data.xc_accounts = this.buildXcAccountsPayload();
+      }
       axios({
         method: 'POST',
         url: url,
         data: data,
-      }).then((response) => {
+      }).then(() => {
         // Save success, show feedback
         this.$q.notify({
           color: 'positive',
@@ -425,14 +490,78 @@ export default {
       }
       this.save();
     },
+    addXcAccount() {
+      this.xcAccounts.push({
+        localId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        username: '',
+        password: '',
+        passwordSet: false,
+        enabled: true,
+        connection_limit: 1,
+        label: '',
+      });
+    },
+    removeXcAccount(index) {
+      this.xcAccounts.splice(index, 1);
+      if (!this.xcAccounts.length) {
+        this.addXcAccount();
+      }
+    },
+    buildXcAccountsPayload() {
+      return this.xcAccounts.map((account) => ({
+        id: account.id,
+        username: account.username,
+        password: account.password,
+        enabled: account.enabled !== false,
+        connection_limit: account.connection_limit || 1,
+        label: account.label,
+      }));
+    },
     normalizeHost(url) {
       if (!url) return url;
       let trimmed = url.replace(/\s+/g, '').replace(/\/+$/, '');
       const match = trimmed.match(/^(https?:\/\/[^/]+)/i);
       return match ? match[1] : trimmed;
     },
+    async confirmXcHostUnique() {
+      if (!this.url) {
+        return true;
+      }
+      const host = this.normalizeHost(this.url);
+      if (!host) {
+        return true;
+      }
+      try {
+        const response = await axios({
+          method: 'GET',
+          url: '/tic-api/playlists/get',
+        });
+        const playlists = response.data.data || [];
+        const duplicate = playlists.find((playlist) => {
+          if (playlist.account_type !== 'XC') return false;
+          return this.normalizeHost(playlist.url) === host;
+        });
+        if (!duplicate) {
+          return true;
+        }
+        return await new Promise((resolve) => {
+          this.$q.dialog({
+            title: 'Duplicate XC Host',
+            message: 'A playlist with this Xtream Codes host already exists. Add multiple accounts to a single XC playlist instead of creating duplicates. Continue anyway?',
+            cancel: true,
+            persistent: true,
+          }).onOk(() => resolve(true)).onCancel(() => resolve(false));
+        });
+      } catch (err) {
+        return true;
+      }
+    },
+    getPrimaryXcAccount() {
+      return this.xcAccounts.find((account) => account.enabled !== false) || null;
+    },
     promptCreateXcEpgSource() {
-      if (!this.url || !this.xcUsername || !this.xcPassword) {
+      const account = this.getPrimaryXcAccount();
+      if (!this.url || !account || !account.password) {
         return;
       }
       const ok = window.confirm(
@@ -442,8 +571,8 @@ export default {
         return;
       }
       const host = this.normalizeHost(this.url);
-      const epgUrl = `${host}/xmltv.php?username=${encodeURIComponent(this.xcUsername)}&password=${encodeURIComponent(
-        this.xcPassword)}`;
+      const epgUrl = `${host}/xmltv.php?username=${encodeURIComponent(account.username)}&password=${encodeURIComponent(
+        account.password)}`;
       const epgName = `${this.name} (XC)`;
       axios({
         method: 'POST',
@@ -474,16 +603,22 @@ export default {
     onUserAgentChange() {
       this.userAgentTouched = true;
     },
-  },
-  computed: {
-    xcPasswordHint() {
+    xcPasswordHint(account) {
       if (this.accountType !== 'XC') {
         return '';
       }
-      if (this.playlistId && this.xcPasswordSet) {
+      if (this.playlistId && account?.passwordSet) {
         return 'Password for Xtream Codes authentication. Leave blank to keep existing password.';
       }
       return 'Password for Xtream Codes authentication.';
+    },
+  },
+  computed: {
+    totalXcConnections() {
+      return this.xcAccounts.reduce((total, account) => {
+        if (account.enabled === false) return total;
+        return total + (parseInt(account.connection_limit || 0, 10) || 0);
+      }, 0);
     },
   },
   watch: {
@@ -501,6 +636,9 @@ export default {
       }
       if (!this.userAgentTouched) {
         this.userAgent = this.getPreferredUserAgent('TiviMate');
+      }
+      if (!this.xcAccounts.length) {
+        this.addXcAccount();
       }
     },
   },

@@ -27,11 +27,20 @@ from backend.models import (
     PlaylistStreams,
     Recording,
     RecordingRule,
+    XcAccount,
     Session,
     channels_tags_association_table,
     db,
 )
-from backend.playlists import fetch_playlist_streams
+from backend.playlists import (
+    XC_ACCOUNT_TYPE,
+    _build_xc_url_template,
+    _extract_xc_suffix,
+    _get_enabled_xc_accounts_sync,
+    _normalize_xc_host,
+    _render_xc_url,
+    fetch_playlist_streams,
+)
 from backend.config import flask_run_port
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
@@ -129,6 +138,7 @@ async def read_config_all_channels(
                         "stream_url": source.playlist_stream_url,
                         "use_hls_proxy": bool(getattr(source, "use_hls_proxy", False)),
                         "source_type": source_type,
+                        "xc_account_id": source.xc_account_id,
                     }
                     if include_status:
                         source_payload["tvh_uuid"] = source.tvh_uuid
@@ -209,6 +219,7 @@ def read_config_one_channel(channel_id):
                     "stream_url": source.playlist_stream_url,
                     "use_hls_proxy": bool(getattr(source, "use_hls_proxy", False)),
                     "source_type": source_type,
+                    "xc_account_id": source.xc_account_id,
                 }
             )
         return_item = {
@@ -365,33 +376,75 @@ async def add_new_channel(config, data, commit=True, publish=True):
         )
         playlist_streams = fetch_playlist_streams(playlist_info.id)
         playlist_stream = playlist_streams.get(source_info["stream_name"])
-        if playlist_info.use_hls_proxy:
-            if not playlist_info.use_custom_hls_proxy:
-                app_url = LOCAL_PROXY_HOST_PLACEHOLDER
-                playlist_url = playlist_stream["url"]
-                # Derive extension from URL path (query strings may be present).
-                extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
-                encoded_url = base64.urlsafe_b64encode(
-                    playlist_url.encode("utf-8")
-                ).decode("utf-8")
-                playlist_stream["url"] = (
-                    f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_url}.{extension}"
+        if playlist_info.account_type == XC_ACCOUNT_TYPE:
+            accounts = _get_enabled_xc_accounts_sync(playlist_info.id)
+            for account in accounts:
+                template = playlist_stream.get("url")
+                if playlist_stream.get("xc_stream_id"):
+                    template = _build_xc_url_template(
+                        _normalize_xc_host(playlist_info.url),
+                        playlist_stream["xc_stream_id"],
+                        _extract_xc_suffix(playlist_stream.get("url")),
+                    )
+                stream_url = _render_xc_url(
+                    template, account.username, account.password
                 )
-            else:
-                hls_proxy_path = playlist_info.hls_proxy_path
-                playlist_url = playlist_stream["url"]
-                encoded_url = base64.urlsafe_b64encode(
-                    playlist_url.encode("utf-8")
-                ).decode("utf-8")
-                hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
-                hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
-                playlist_stream["url"] = hls_proxy_path
-        channel_source = ChannelSource(
-            playlist_id=playlist_info.id,
-            playlist_stream_name=source_info["stream_name"],
-            playlist_stream_url=playlist_stream["url"],
-        )
-        new_sources.append(channel_source)
+                if playlist_info.use_hls_proxy:
+                    if not playlist_info.use_custom_hls_proxy:
+                        app_url = LOCAL_PROXY_HOST_PLACEHOLDER
+                        playlist_url = stream_url
+                        # Derive extension from URL path (query strings may be present).
+                        extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
+                        encoded_url = base64.urlsafe_b64encode(
+                            playlist_url.encode("utf-8")
+                        ).decode("utf-8")
+                        stream_url = (
+                            f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_url}.{extension}"
+                        )
+                    else:
+                        hls_proxy_path = playlist_info.hls_proxy_path
+                        playlist_url = stream_url
+                        encoded_url = base64.urlsafe_b64encode(
+                            playlist_url.encode("utf-8")
+                        ).decode("utf-8")
+                        hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
+                        hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
+                        stream_url = hls_proxy_path
+                channel_source = ChannelSource(
+                    playlist_id=playlist_info.id,
+                    xc_account_id=account.id,
+                    playlist_stream_name=source_info["stream_name"],
+                    playlist_stream_url=stream_url,
+                )
+                new_sources.append(channel_source)
+        else:
+            if playlist_info.use_hls_proxy:
+                if not playlist_info.use_custom_hls_proxy:
+                    app_url = LOCAL_PROXY_HOST_PLACEHOLDER
+                    playlist_url = playlist_stream["url"]
+                    # Derive extension from URL path (query strings may be present).
+                    extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
+                    encoded_url = base64.urlsafe_b64encode(
+                        playlist_url.encode("utf-8")
+                    ).decode("utf-8")
+                    playlist_stream["url"] = (
+                        f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_url}.{extension}"
+                    )
+                else:
+                    hls_proxy_path = playlist_info.hls_proxy_path
+                    playlist_url = playlist_stream["url"]
+                    encoded_url = base64.urlsafe_b64encode(
+                        playlist_url.encode("utf-8")
+                    ).decode("utf-8")
+                    hls_proxy_path = hls_proxy_path.replace("[URL]", playlist_url)
+                    hls_proxy_path = hls_proxy_path.replace("[B64_URL]", encoded_url)
+                    playlist_stream["url"] = hls_proxy_path
+            channel_source = ChannelSource(
+                playlist_id=playlist_info.id,
+                playlist_stream_name=source_info["stream_name"],
+                playlist_stream_url=playlist_stream["url"],
+            )
+            new_sources.append(channel_source)
     if new_sources:
         channel.sources = new_sources
 
@@ -465,6 +518,7 @@ async def update_channel(config, channel_id, data):
             new_sources = []
             priority = len(data.get("sources", []))
             logger.info("Updating channel sources")
+            seen_xc_streams = set()
             for source_info in data.get("sources", []):
                 source_id = source_info.get("id")
                 is_manual = source_info.get(
@@ -500,6 +554,84 @@ async def update_channel(config, channel_id, data):
                         )
                     )
                     channel_source = query.scalar_one_or_none()
+
+                playlist_info = None
+                playlist_stream = None
+                if not is_manual:
+                    query = await session.execute(
+                        select(Playlist).filter(Playlist.id == source_info["playlist_id"])
+                    )
+                    playlist_info = query.scalar_one()
+                    playlist_streams = fetch_playlist_streams(playlist_info.id)
+                    playlist_stream = playlist_streams.get(source_info["stream_name"])
+                    if playlist_info.account_type == XC_ACCOUNT_TYPE and not source_info.get(
+                        "xc_account_id"
+                    ):
+                        stream_key = (playlist_info.id, source_info["stream_name"])
+                        if stream_key in seen_xc_streams:
+                            continue
+                        seen_xc_streams.add(stream_key)
+                        accounts = _get_enabled_xc_accounts_sync(playlist_info.id)
+                        for account in accounts:
+                            query = await session.execute(
+                                select(ChannelSource).filter(
+                                    and_(
+                                        ChannelSource.channel_id == channel.id,
+                                        ChannelSource.playlist_id == playlist_info.id,
+                                        ChannelSource.playlist_stream_name
+                                        == source_info["stream_name"],
+                                        ChannelSource.xc_account_id == account.id,
+                                    )
+                                )
+                            )
+                            account_source = query.scalar_one_or_none()
+                            if not account_source:
+                                account_source = ChannelSource(
+                                    playlist_id=playlist_info.id,
+                                    xc_account_id=account.id,
+                                    playlist_stream_name=source_info["stream_name"],
+                                )
+                            template = playlist_stream.get("url")
+                            if playlist_stream.get("xc_stream_id"):
+                                template = _build_xc_url_template(
+                                    _normalize_xc_host(playlist_info.url),
+                                    playlist_stream["xc_stream_id"],
+                                    _extract_xc_suffix(playlist_stream.get("url")),
+                                )
+                            stream_url = _render_xc_url(
+                                template, account.username, account.password
+                            )
+                            if playlist_info.use_hls_proxy:
+                                if not playlist_info.use_custom_hls_proxy:
+                                    app_url = LOCAL_PROXY_HOST_PLACEHOLDER
+                                    playlist_url = stream_url
+                                    extension = "m3u8" if urlparse(playlist_url).path.lower().endswith(".m3u8") else "ts"
+                                    encoded_playlist_url = base64.urlsafe_b64encode(
+                                        playlist_url.encode("utf-8")
+                                    ).decode("utf-8")
+                                    stream_url = (
+                                        f"{app_url}/tic-hls-proxy/{instance_id}/{encoded_playlist_url}.{extension}"
+                                    )
+                                else:
+                                    hls_proxy_path = playlist_info.hls_proxy_path
+                                    playlist_url = stream_url
+                                    encoded_playlist_url = base64.urlsafe_b64encode(
+                                        playlist_url.encode("utf-8")
+                                    ).decode("utf-8")
+                                    hls_proxy_path = hls_proxy_path.replace(
+                                        "[URL]", playlist_url
+                                    )
+                                    hls_proxy_path = hls_proxy_path.replace(
+                                        "[B64_URL]", encoded_playlist_url
+                                    )
+                                    stream_url = hls_proxy_path
+                            account_source.playlist_stream_url = stream_url
+                            if account_source.id:
+                                new_source_ids.append(account_source.id)
+                            account_source.priority = str(priority)
+                            priority -= 1
+                            new_sources.append(account_source)
+                        continue
 
                 if is_manual:
                     stream_url = (source_info.get("stream_url") or "").strip()
@@ -539,17 +671,39 @@ async def update_channel(config, channel_id, data):
                             source_info["playlist_id"],
                             source_info["stream_name"],
                         )
-
-                        query = await session.execute(
-                            select(Playlist).filter(
-                                Playlist.id == source_info["playlist_id"]
+                        if not playlist_info:
+                            query = await session.execute(
+                                select(Playlist).filter(
+                                    Playlist.id == source_info["playlist_id"]
+                                )
                             )
-                        )
-                        playlist_info = query.scalar_one()
-                        playlist_streams = fetch_playlist_streams(playlist_info.id)
-                        playlist_stream = playlist_streams.get(
-                            source_info["stream_name"]
-                        )
+                            playlist_info = query.scalar_one()
+                            playlist_streams = fetch_playlist_streams(
+                                playlist_info.id
+                            )
+                            playlist_stream = playlist_streams.get(
+                                source_info["stream_name"]
+                            )
+                        if (
+                            playlist_info.account_type == XC_ACCOUNT_TYPE
+                            and source_info.get("xc_account_id")
+                        ):
+                            account = (
+                                db.session.query(XcAccount)
+                                .filter(XcAccount.id == source_info["xc_account_id"])
+                                .one_or_none()
+                            )
+                            if account:
+                                template = playlist_stream.get("url")
+                                if playlist_stream.get("xc_stream_id"):
+                                    template = _build_xc_url_template(
+                                        _normalize_xc_host(playlist_info.url),
+                                        playlist_stream["xc_stream_id"],
+                                        _extract_xc_suffix(playlist_stream.get("url")),
+                                    )
+                                playlist_stream["url"] = _render_xc_url(
+                                    template, account.username, account.password
+                                )
                         if playlist_info.use_hls_proxy:
                             if not playlist_info.use_custom_hls_proxy:
                                 app_url = LOCAL_PROXY_HOST_PLACEHOLDER
@@ -598,23 +752,50 @@ async def update_channel(config, channel_id, data):
                                 == source_info["stream_name"]
                             ):
                                 logger.info(
-                                    "    - Channel %s source marked for refresh 'Playlist:%s - %s'",
-                                    channel.name,
-                                    source_info["playlist_id"],
-                                    source_info["stream_name"],
-                                )
-                                query = await session.execute(
-                                    select(Playlist).filter(
-                                        Playlist.id == source_info["playlist_id"]
+                            "    - Channel %s source marked for refresh 'Playlist:%s - %s'",
+                            channel.name,
+                            source_info["playlist_id"],
+                            source_info["stream_name"],
+                        )
+                                if not playlist_info:
+                                    query = await session.execute(
+                                        select(Playlist).filter(
+                                            Playlist.id == source_info["playlist_id"]
+                                        )
                                     )
-                                )
-                                playlist_info = query.scalar_one()
-                                playlist_streams = fetch_playlist_streams(
-                                    playlist_info.id
-                                )
-                                playlist_stream = playlist_streams.get(
-                                    source_info["stream_name"]
-                                )
+                                    playlist_info = query.scalar_one()
+                                    playlist_streams = fetch_playlist_streams(
+                                        playlist_info.id
+                                    )
+                                    playlist_stream = playlist_streams.get(
+                                        source_info["stream_name"]
+                                    )
+                                if (
+                                    playlist_info.account_type == XC_ACCOUNT_TYPE
+                                    and source_info.get("xc_account_id")
+                                ):
+                                    account = (
+                                        db.session.query(XcAccount)
+                                        .filter(
+                                            XcAccount.id == source_info["xc_account_id"]
+                                        )
+                                        .one_or_none()
+                                    )
+                                    if account:
+                                        template = playlist_stream.get("url")
+                                        if playlist_stream.get("xc_stream_id"):
+                                            template = _build_xc_url_template(
+                                                _normalize_xc_host(playlist_info.url),
+                                                playlist_stream["xc_stream_id"],
+                                                _extract_xc_suffix(
+                                                    playlist_stream.get("url")
+                                                ),
+                                            )
+                                        playlist_stream["url"] = _render_xc_url(
+                                            template,
+                                            account.username,
+                                            account.password,
+                                        )
                                 if playlist_info.use_hls_proxy:
                                     if not playlist_info.use_custom_hls_proxy:
                                         app_url = LOCAL_PROXY_HOST_PLACEHOLDER
@@ -979,6 +1160,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config):
             .options(
                 joinedload(Channel.tags),
                 joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+                joinedload(Channel.sources).subqueryload(ChannelSource.xc_account),
             )
             .order_by(Channel.id, Channel.number.asc())
             .all()
@@ -1054,6 +1236,31 @@ async def publish_channel_muxes(config):
         async def process_source(channel_obj, source_obj):
             async with sem:
                 net_uuid = source_obj.playlist.tvh_uuid
+                if source_obj.playlist and source_obj.playlist.account_type == XC_ACCOUNT_TYPE:
+                    if source_obj.xc_account_id and source_obj.xc_account:
+                        net_uuid = source_obj.xc_account.tvh_uuid
+                    else:
+                        try:
+                            parsed = urlparse(source_obj.playlist_stream_url or "")
+                            parts = parsed.path.split("/")
+                            if "live" in parts:
+                                idx = parts.index("live")
+                                username = parts[idx + 1] if len(parts) > idx + 1 else None
+                                if username:
+                                    account = (
+                                        db.session.query(XcAccount)
+                                        .filter(
+                                            XcAccount.playlist_id
+                                            == source_obj.playlist_id,
+                                            XcAccount.username == username,
+                                        )
+                                        .one_or_none()
+                                    )
+                                    if account:
+                                        net_uuid = account.tvh_uuid
+                                        source_obj.xc_account_id = account.id
+                        except Exception:
+                            pass
                 if not net_uuid:
                     logger.debug(
                         "Playlist not configured on TVH for channel '%s'",
