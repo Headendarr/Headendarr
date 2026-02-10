@@ -748,17 +748,17 @@ def read_filtered_stream_details_from_all_playlists(request_json):
     ):
         if account.playlist_id not in primary_accounts:
             primary_accounts[account.playlist_id] = account
-    query = db.session.query(PlaylistStreams)
+    base_query = db.session.query(PlaylistStreams)
     # Get total records count
-    results["records_total"] = query.count()
-    # Filter results by playlist/group
+    results["records_total"] = base_query.count()
+    # Build filters
+    filters = []
     playlist_id = request_json.get("playlist_id")
     if playlist_id:
-        query = query.filter(PlaylistStreams.playlist_id == playlist_id)
+        filters.append(PlaylistStreams.playlist_id == playlist_id)
     group_title = request_json.get("group_title")
     if group_title:
-        query = query.filter(PlaylistStreams.group_title == group_title)
-    # Filter results by search value
+        filters.append(PlaylistStreams.group_title == group_title)
     search_value = request_json.get("search_value")
     if search_value:
         playlist_rows = (
@@ -766,14 +766,24 @@ def read_filtered_stream_details_from_all_playlists(request_json):
             .where(Playlist.name.ilike(f"%{search_value}%"))
             .all()
         )
-        query = query.options(joinedload(PlaylistStreams.playlist)).where(
+        filters.append(
             or_(
                 PlaylistStreams.name.ilike(f"%{search_value}%"),
                 PlaylistStreams.playlist_id.in_([p.id for p in playlist_rows]),
             )
         )
-    # Record filtered records count
-    results["records_filtered"] = query.count()
+    query = base_query.filter(*filters)
+    # Record filtered records count (distinct by playlist+URL)
+    filtered_ids_query = (
+        db.session.query(func.min(PlaylistStreams.id).label("id"))
+        .filter(*filters)
+        .group_by(PlaylistStreams.playlist_id, PlaylistStreams.url)
+        .subquery()
+    )
+    results["records_filtered"] = (
+        db.session.query(func.count()).select_from(filtered_ids_query).scalar()
+    )
+
     # Get order by
     order_by_column = request_json.get("order_by")
     if not order_by_column:
@@ -782,13 +792,20 @@ def read_filtered_stream_details_from_all_playlists(request_json):
         order_by = attrgetter(order_by_column)(PlaylistStreams).asc()
     else:
         order_by = attrgetter(order_by_column)(PlaylistStreams).desc()
-    query = query.order_by(order_by)
+
+    # Apply distinct-by-URL selection before pagination
+    query = (
+        db.session.query(PlaylistStreams)
+        .join(filtered_ids_query, PlaylistStreams.id == filtered_ids_query.c.id)
+        .order_by(order_by)
+    )
+
     # Limit query results
     length = request_json.get("length", 0)
     start = request_json.get("start", 0)
     if length:
         query = query.limit(length).offset(start)
-    # Fetch filtered results
+    # Fetch filtered results (already deduped by URL and playlist)
     for result in query.all():
         stream_url = result.url
         if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
@@ -1030,8 +1047,9 @@ async def get_playlist_groups(
                         func.count(PlaylistStreams.id).asc()
                     )
 
-            # Apply pagination
-            groups_query = groups_query.offset(start).limit(length)
+            # Apply pagination (length=0 means no limit)
+            if length:
+                groups_query = groups_query.offset(start).limit(length)
 
             # Execute query
             result = await session.execute(groups_query)

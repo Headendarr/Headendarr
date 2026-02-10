@@ -51,7 +51,7 @@
 
           <div class="col">
             <div class="text-h6 text-blue-10">
-              Select Stream From Playlist
+              Select Stream From Source
             </div>
           </div>
 
@@ -148,7 +148,7 @@
                       option-label="label"
                       emit-value
                       map-options
-                      label="Playlist"
+                      label="Source"
                       style="min-width: 180px"
                     />
                     <div>
@@ -169,7 +169,7 @@
                         :disable="!selectedPlaylistId"
                       />
                       <q-tooltip v-if="!selectedPlaylistId" class="bg-white text-primary">
-                        Select a playlist first
+                        Select a source first
                       </q-tooltip>
                     </div>
                     <q-input outlined dense debounce="300" v-model="filter" placeholder="Search">
@@ -264,7 +264,7 @@ import {copyToClipboard} from 'quasar';
 const columns = [
   {name: 'tvg_logo', required: true, align: 'left', label: 'Logo', field: 'tvg_logo', sortable: false},
   {name: 'name', required: true, align: 'left', label: 'Name', field: 'name', sortable: true},
-  {name: 'playlist_name', required: true, align: 'left', label: 'Playlist', field: 'playlist_name', sortable: false},
+  {name: 'playlist_name', required: true, align: 'left', label: 'Source', field: 'playlist_name', sortable: false},
   {name: 'actions', required: true, align: 'right', label: '', field: 'actions', sortable: false},
 ];
 

@@ -24,7 +24,7 @@
                       class=""
                       color="primary"
                       icon-right="dvr"
-                      label="Import Channels from playlist" />
+                      label="Import Channels from source" />
                   </q-btn-group>
 
                   <q-btn-group v-if="bulkEditMode !== true" class="q-ml-sm">
@@ -398,8 +398,8 @@
                 <q-item>
                   <q-item-section>
                     <q-item-label>
-                      1. Start by clicking the <b>Import Channels from playlist</b> button. With this dialog open,
-                      select one or more streams from your imported playlists, then close the dialog to import them into
+                      1. Start by clicking the <b>Import Channels from source</b> button. With this dialog open,
+                      select one or more streams from your imported sources, then close the dialog to import them into
                       your channel list.
                     </q-item-label>
                   </q-item-section>
@@ -414,7 +414,7 @@
                       button for each added channel.
                       <br>
                       In the Channel Settings dialog that opens you can further configure channel categories and
-                      additional sources from other playlists.
+                      additional sources from other sources.
                     </q-item-label>
                   </q-item-section>
                 </q-item>
@@ -459,7 +459,7 @@
                   <q-item-section>
                     <q-item-label>
                       When you open a channel's settings, you can configure multiple sources for each channel.
-                      Drag the sources in order of preference. If a playlist has reached the connection limits,
+                      Drag the sources in order of preference. If a source has reached the connection limits,
                       the next source will be used automatically.
                     </q-item-label>
                   </q-item-section>
@@ -804,7 +804,7 @@ export default defineComponent({
       const labels = {
         no_sources: 'No sources configured',
         all_sources_disabled: 'All sources are disabled',
-        has_disabled_sources: 'Some sources use disabled playlists',
+        has_disabled_sources: 'Some sources use disabled sources',
         missing_tvh_mux: 'Missing TVH mux',
         tvh_mux_failed: 'TVH mux disabled or scan failed',
       };

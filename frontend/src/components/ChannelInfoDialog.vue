@@ -272,7 +272,7 @@
                             <q-btn size="12px" flat dense round color="primary" icon="refresh"
                                    v-if="element.source_type !== 'manual' && element.playlist_id"
                                    @click="refreshChannelSourceFromPlaylist(index)">
-                              <q-tooltip class="bg-white text-primary">Refresh source from playlist</q-tooltip>
+                              <q-tooltip class="bg-white text-primary">Refresh stream from source</q-tooltip>
                             </q-btn>
                           </div>
                         </q-item-section>
@@ -299,7 +299,7 @@
                     color="primary"
                     icon="add"
                     @click="selectChannelSourceFromList">
-                    <q-tooltip class="bg-white text-primary">Add source from playlist</q-tooltip>
+                    <q-tooltip class="bg-white text-primary">Add stream from source</q-tooltip>
                   </q-btn>
                   <q-btn
                     round
@@ -504,7 +504,7 @@ export default {
         this.$q.notify({
           color: 'negative',
           position: 'top',
-          message: 'Failed to fetch the list of playlists',
+          message: 'Failed to fetch the list of sources',
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });

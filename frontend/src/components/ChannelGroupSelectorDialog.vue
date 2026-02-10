@@ -37,7 +37,7 @@
 
           <div class="col">
             <div class="text-h6 text-blue-10">
-              Select Groups From Playlist
+              Select Groups From Source
             </div>
           </div>
 
@@ -89,7 +89,7 @@
                 selection="multiple"
                 binary-state-sort
                 @request="fetchGroupsList"
-                no-data-label="No groups found in playlist"
+                no-data-label="No groups found in source"
                 no-results-label="The filter didn't uncover any results"
               >
                 <template v-slot:top-left>
@@ -98,7 +98,7 @@
                     outlined
                     v-model="selectedPlaylist"
                     :options="playlistOptions"
-                    label="Playlist"
+                    label="Source"
                     option-label="name"
                     option-value="id"
                     emit-value
@@ -161,7 +161,7 @@ import {ref} from 'vue';
 const columns = [
   {name: 'name', required: true, align: 'left', label: 'Group Name', field: 'name', sortable: true},
   {name: 'channel_count', required: true, align: 'center', label: 'Channels', field: 'channel_count', sortable: true},
-  {name: 'playlist_name', required: true, align: 'left', label: 'Playlist', field: 'playlist_name', sortable: true},
+  {name: 'playlist_name', required: true, align: 'left', label: 'Source', field: 'playlist_name', sortable: true},
 ];
 
 export default {
@@ -226,7 +226,7 @@ export default {
         this.$q.notify({
           color: 'negative',
           position: 'top',
-          message: 'Failed to fetch playlists',
+          message: 'Failed to fetch sources',
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
@@ -312,7 +312,7 @@ export default {
         this.$q.notify({
           color: 'negative',
           position: 'top',
-          message: 'Failed to fetch groups from playlist',
+          message: 'Failed to fetch groups from source',
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
@@ -368,4 +368,3 @@ export default {
   },
 };
 </script>
-
