@@ -136,14 +136,13 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
         stream_username=stream_username,
         stream_key=stream_key,
     )
-    request_base_url = request.host_url.rstrip('/')
+    base_url = request.host_url.rstrip('/')
     lineup_list = []
     from backend.epgs import generate_epg_channel_id
     for channel_details in await _get_channels(playlist_id):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
         channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
-            base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
             channel_url = f'{base_url}/tic-api/tvh_stream/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
             channel_url = f'{channel_url}{path_args}'
@@ -158,7 +157,6 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
                 if is_manual and not use_hls_proxy:
                     channel_url = source_url
                 else:
-                    base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
                     if is_manual and use_hls_proxy:
                         channel_url = build_local_hls_proxy_url(
                             base_url,
@@ -198,8 +196,7 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
         stream_username=username,
         stream_key=stream_key,
     )
-    request_base_url = request.host_url.rstrip('/')
-    base_url = request_base_url or settings['settings'].get('app_url') or tvh_settings["tic_base_url"]
+    base_url = request.host_url.rstrip('/')
     epg_url = f'{base_url}/xmltv.php'
     if stream_key:
         if username:

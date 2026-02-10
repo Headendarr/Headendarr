@@ -44,7 +44,7 @@ async def serve_epg_static():
     await audit_stream_event(request._stream_user, "epg_xml", request.path)
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
-    base_url = request.url_root.rstrip("/") or settings['settings'].get('app_url') or ""
+    base_url = request.url_root.rstrip("/")
     file_path = os.path.join(config.config_path, 'epg.xml')
     with open(file_path, "r", encoding="utf-8") as epg_file:
         payload = epg_file.read()

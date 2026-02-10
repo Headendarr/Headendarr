@@ -166,15 +166,12 @@ async def api_get_channel_preview(channel_id):
     use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
     instance_id = config.ensure_instance_id()
     request_base_url = request.host_url.rstrip('/')
-    app_url = settings['settings'].get('app_url') or ''
-    preview_base_url = request_base_url or app_url
+    preview_base_url = request_base_url
     if use_tvh_source and source.tvh_uuid:
         preview_url = f"{preview_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}?profile=pass&weight=300"
         preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
         stream_type = "mpegts"
     else:
-        if not preview_base_url:
-            preview_base_url = app_url
         is_manual = not source.playlist_id
         use_hls_proxy = bool(getattr(source, "use_hls_proxy", False)) if is_manual else False
         if is_manual and use_hls_proxy:
