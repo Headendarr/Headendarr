@@ -713,6 +713,13 @@ async def update_channel(config, channel_id, data):
                                     playlist_stream = playlist_streams.get(
                                         source_info["stream_name"]
                                     )
+                                if not playlist_stream:
+                                    logger.warning(
+                                        "    - Missing playlist stream '%s' for playlist %s; leaving URL unchanged",
+                                        source_info["stream_name"],
+                                        source_info["playlist_id"],
+                                    )
+                                    continue
                                 if (
                                     playlist_info.account_type == XC_ACCOUNT_TYPE
                                     and source_info.get("xc_account_id")
