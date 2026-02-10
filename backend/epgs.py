@@ -349,6 +349,7 @@ async def read_channels_from_all_epgs(config):
 
 
 # --- Cache ---
+XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
 async def build_custom_epg(config, throttle=True):
     loop = asyncio.get_event_loop()
     settings = config.read_settings()
@@ -374,7 +375,7 @@ async def build_custom_epg(config, throttle=True):
             image_data, mime_type = await read_base46_image_string(result.logo_base64)
             cache_buster = time.time()
             ext = guess_extension(mime_type)
-            logo_url = f"{settings['settings']['app_url']}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
+            logo_url = f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
             # Populate a channels list
             configured_channels.append({
                 'channel_id':   channel_id,

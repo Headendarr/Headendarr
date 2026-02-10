@@ -43,7 +43,15 @@ async def serve_static(path):
 async def serve_epg_static():
     await audit_stream_event(request._stream_user, "epg_xml", request.path)
     config = current_app.config['APP_CONFIG']
-    return await send_from_directory(os.path.join(config.config_path), 'epg.xml')
+    settings = config.read_settings()
+    base_url = request.url_root.rstrip("/") or settings['settings'].get('app_url') or ""
+    file_path = os.path.join(config.config_path, 'epg.xml')
+    with open(file_path, "r", encoding="utf-8") as epg_file:
+        payload = epg_file.read()
+    from backend.epgs import XMLTV_HOST_PLACEHOLDER
+    if base_url and XMLTV_HOST_PLACEHOLDER in payload:
+        payload = payload.replace(XMLTV_HOST_PLACEHOLDER, base_url)
+    return Response(payload, mimetype='application/xml')
 
 
 async def _build_playlist_with_epg():
