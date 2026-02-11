@@ -10,7 +10,12 @@
       @touchstart.prevent="startDragTouch"
     >
       <div class="floating-player__title">
-        {{ videoStore.streamTitle || 'Stream Preview' }}
+        <div class="floating-player__title-text">
+          {{ videoStore.streamTitle || 'Stream Preview' }}
+        </div>
+        <div v-if="streamDetailsText" class="floating-player__meta">
+          {{ streamDetailsText }}
+        </div>
       </div>
       <div class="floating-player__actions">
         <q-btn
@@ -107,8 +112,38 @@ const volumeHandler = ref(null);
 const videoErrorHandler = ref(null);
 const videoPlayingHandler = ref(null);
 const videoWaitingHandler = ref(null);
+const metadataHandler = ref(null);
+const resizeHandler = ref(null);
 const loadTimeout = ref(null);
 const loadingStartedAt = ref(0);
+const streamDetails = ref({
+  resolution: '',
+  videoCodec: '',
+  audioCodec: '',
+  bitrate: null,
+});
+
+const streamDetailsText = computed(() => {
+  const parts = [];
+  if (streamDetails.value.resolution) {
+    parts.push(streamDetails.value.resolution);
+  }
+  const codecLabel = [streamDetails.value.videoCodec, streamDetails.value.audioCodec]
+    .filter(Boolean)
+    .join('/');
+  if (codecLabel) {
+    parts.push(codecLabel);
+  }
+  if (streamDetails.value.bitrate) {
+    const bitrate = streamDetails.value.bitrate;
+    if (bitrate >= 1000000) {
+      parts.push(`${(bitrate / 1000000).toFixed(1)} Mbps`);
+    } else if (bitrate >= 1000) {
+      parts.push(`${Math.round(bitrate / 1000)} Kbps`);
+    }
+  }
+  return parts.join(' · ');
+});
 
 async function safePlay(el) {
   try {
@@ -124,6 +159,72 @@ async function safePlay(el) {
 
 function getVideoElement() {
   return videoEl.value || document.querySelector('.floating-player__video');
+}
+
+function resetStreamDetails() {
+  streamDetails.value = {
+    resolution: '',
+    videoCodec: '',
+    audioCodec: '',
+    bitrate: null,
+  };
+}
+
+function updateResolutionFromEl(el) {
+  if (el?.videoWidth && el?.videoHeight) {
+    streamDetails.value = {
+      ...streamDetails.value,
+      resolution: `${el.videoWidth}x${el.videoHeight}`,
+    };
+  }
+}
+
+function normalizeCodecLabel(codec) {
+  if (!codec) return '';
+  const lowered = codec.toLowerCase();
+  if (lowered.startsWith('avc') || lowered.includes('h264')) return 'H.264';
+  if (lowered.startsWith('hev') || lowered.startsWith('hvc') || lowered.includes('h265')) return 'H.265';
+  if (lowered.startsWith('av01')) return 'AV1';
+  if (lowered.startsWith('vp9')) return 'VP9';
+  if (lowered.startsWith('vp8')) return 'VP8';
+  if (lowered.startsWith('mp4a') || lowered.includes('aac')) return 'AAC';
+  if (lowered.startsWith('ac-3')) return 'AC3';
+  if (lowered.startsWith('ec-3')) return 'EAC3';
+  if (lowered.startsWith('opus')) return 'Opus';
+  if (lowered.startsWith('mp3')) return 'MP3';
+  return codec;
+}
+
+function parseCodecString(codecString) {
+  if (!codecString) return {video: '', audio: ''};
+  const parts = codecString.split(',').map((part) => part.trim()).filter(Boolean);
+  let video = '';
+  let audio = '';
+  for (const part of parts) {
+    const lowered = part.toLowerCase();
+    if (!video && (lowered.startsWith('avc') || lowered.startsWith('hev') || lowered.startsWith('hvc') || lowered.startsWith('av01') || lowered.startsWith('vp'))) {
+      video = normalizeCodecLabel(part);
+    } else if (!audio && (lowered.startsWith('mp4a') || lowered.startsWith('ac-3') || lowered.startsWith('ec-3') || lowered.startsWith('opus') || lowered.startsWith('mp3'))) {
+      audio = normalizeCodecLabel(part);
+    }
+  }
+  return {video, audio};
+}
+
+function applyCodecInfo(videoCodec, audioCodec) {
+  streamDetails.value = {
+    ...streamDetails.value,
+    videoCodec: videoCodec || streamDetails.value.videoCodec,
+    audioCodec: audioCodec || streamDetails.value.audioCodec,
+  };
+}
+
+function applyBitrate(bitrate) {
+  if (!bitrate || Number.isNaN(bitrate)) return;
+  streamDetails.value = {
+    ...streamDetails.value,
+    bitrate,
+  };
 }
 
 const playerStyle = computed(() => {
@@ -194,6 +295,14 @@ function cleanupPlayer() {
       el.removeEventListener('stalled', videoWaitingHandler.value);
       videoWaitingHandler.value = null;
     }
+    if (metadataHandler.value) {
+      el.removeEventListener('loadedmetadata', metadataHandler.value);
+      metadataHandler.value = null;
+    }
+    if (resizeHandler.value) {
+      el.removeEventListener('resize', resizeHandler.value);
+      resizeHandler.value = null;
+    }
     if (loadTimeout.value) {
       clearTimeout(loadTimeout.value);
       loadTimeout.value = null;
@@ -206,6 +315,7 @@ function cleanupPlayer() {
     el.removeAttribute('src');
     el.load();
   }
+  resetStreamDetails();
   console.info('[FloatingPlayer] cleanupPlayer done');
 }
 
@@ -245,6 +355,14 @@ async function initPlayer() {
       videoStore.setVolume(el.volume);
     };
     el.addEventListener('volumechange', volumeHandler.value);
+  }
+  if (!metadataHandler.value) {
+    metadataHandler.value = () => updateResolutionFromEl(el);
+    el.addEventListener('loadedmetadata', metadataHandler.value);
+  }
+  if (!resizeHandler.value) {
+    resizeHandler.value = () => updateResolutionFromEl(el);
+    el.addEventListener('resize', resizeHandler.value);
   }
   if (!videoErrorHandler.value) {
     videoErrorHandler.value = () => {
@@ -308,12 +426,49 @@ async function initPlayer() {
       hls.loadSource(url);
       hls.attachMedia(el);
       hls.on(Hls.Events.MANIFEST_PARSED, async () => {
+        const initialLevel = hls.levels?.[hls.currentLevel] || hls.levels?.[0];
+        if (initialLevel) {
+          const codecString = initialLevel.codecs || initialLevel.codec || initialLevel.attrs?.CODECS;
+          const {video, audio} = parseCodecString(codecString);
+          applyCodecInfo(video, audio);
+          if (initialLevel.width && initialLevel.height) {
+            streamDetails.value = {
+              ...streamDetails.value,
+              resolution: `${initialLevel.width}x${initialLevel.height}`,
+            };
+          } else if (initialLevel.height) {
+            streamDetails.value = {
+              ...streamDetails.value,
+              resolution: `${initialLevel.height}p`,
+            };
+          }
+          applyBitrate(initialLevel.bitrate);
+        }
         const started = await safePlay(el);
         if (!started) {
           errorMessage.value = 'Playback blocked by browser. Press play to start.';
         }
         isLoading.value = !started;
         snapToAspectRatio();
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        const level = hls.levels?.[data.level];
+        if (!level) return;
+        const codecString = level.codecs || level.codec || level.attrs?.CODECS;
+        const {video, audio} = parseCodecString(codecString);
+        applyCodecInfo(video, audio);
+        if (level.width && level.height) {
+          streamDetails.value = {
+            ...streamDetails.value,
+            resolution: `${level.width}x${level.height}`,
+          };
+        } else if (level.height) {
+          streamDetails.value = {
+            ...streamDetails.value,
+            resolution: `${level.height}p`,
+          };
+        }
+        applyBitrate(level.bitrate);
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         console.warn('[FloatingPlayer] HLS error', data);
@@ -352,6 +507,23 @@ async function initPlayer() {
       await safePlay(el);
       isLoading.value = false;
       snapToAspectRatio();
+      player.on?.(mpegts.Events.MEDIA_INFO, (info) => {
+        if (info?.width && info?.height) {
+          streamDetails.value = {
+            ...streamDetails.value,
+            resolution: `${info.width}x${info.height}`,
+          };
+        }
+        if (info?.videoCodec || info?.audioCodec) {
+          applyCodecInfo(
+            normalizeCodecLabel(info.videoCodec),
+            normalizeCodecLabel(info.audioCodec),
+          );
+        }
+        if (typeof info?.bitrate === 'number') {
+          applyBitrate(info.bitrate);
+        }
+      });
       player.on?.(mpegts.Events.ERROR, (err) => {
         console.warn('[FloatingPlayer] MPEGTS error', err);
         errorMessage.value = 'Unable to load stream. Please try again.';
@@ -712,12 +884,27 @@ onUnmounted(() => {
 }
 
 .floating-player__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 8px;
+  min-width: 0;
+}
+
+.floating-player__title-text {
   font-size: 0.85rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 8px;
+}
+
+.floating-player__meta {
+  font-size: 0.72rem;
+  color: rgba(240, 242, 244, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .floating-player__actions {
