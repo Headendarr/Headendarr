@@ -324,7 +324,11 @@ async def tvh_playlist_m3u(playlist_id):
     include_auth = request.args.get('include_auth') != 'false'
     stream_profile = request.args.get('profile', 'pass')
     stream_key = request.args.get('stream_key') or request.args.get('password') or request._stream_key
-    username = request.args.get('username') or (request._stream_user.username if request._stream_user else None)
+    username = None
+    if stream_key and request._stream_user:
+        username = request._stream_user.username
+    else:
+        username = request.args.get('username')
 
     # Get the playlist channels
     file_lines = await _get_playlist_channels(

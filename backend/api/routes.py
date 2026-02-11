@@ -60,7 +60,11 @@ async def _build_playlist_with_epg():
     use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
     instance_id = config.ensure_instance_id()
     stream_key = request.args.get('stream_key') or request.args.get('password')
-    username = request.args.get('username')
+    username = None
+    if stream_key and getattr(request, "_stream_user", None):
+        username = request._stream_user.username
+    else:
+        username = request.args.get('username')
     base_url = request.url_root.rstrip("/") or settings['settings'].get('app_url') or ""
     epg_url = f'{base_url}/xmltv.php'
     if stream_key:
@@ -125,21 +129,6 @@ async def _build_playlist_with_epg():
 async def serve_playlist_static():
     await audit_stream_event(request._stream_user, "playlist_m3u8", request.path)
     return await _build_playlist_with_epg()
-
-
-@blueprint.route('/get.php', methods=['GET'])
-@stream_key_required
-async def xtreamcodes_get():
-    await audit_stream_event(request._stream_user, "xtream_get", request.path)
-    return await _build_playlist_with_epg()
-
-
-@blueprint.route('/xmltv.php', methods=['GET'])
-@stream_key_required
-async def xtreamcodes_xmltv():
-    await audit_stream_event(request._stream_user, "xtream_xmltv", request.path)
-    config = current_app.config['APP_CONFIG']
-    return await send_from_directory(os.path.join(config.config_path), 'epg.xml')
 
 
 @blueprint.route('/tic-api/ping')
