@@ -303,15 +303,6 @@
                             </q-avatar>
 
                             <span class="text-weight-medium text-primary q-ml-sm">{{ element.name }}</span>
-                            <q-badge
-                              v-if="enableChannelHealthHighlight && element.status && element.status.state === 'warning'"
-                              color="orange-6"
-                              class="q-ml-sm"
-                              label="Needs attention">
-                              <q-tooltip class="bg-white text-primary">
-                                {{ formatChannelIssues(element.status) }}
-                              </q-tooltip>
-                            </q-badge>
                           </q-item-label>
                           <q-item-label caption lines="1" class="text-left q-ml-none">
                             <div class="row">
@@ -341,7 +332,22 @@
                           class="q-px-sm q-mx-sm"
                           @click="bulkEditMode ? element.selected = !element.selected : ``">
                           <q-item-label lines="1" class="text-left">
-                            <span class="q-ml-sm">Guide</span>
+                            <div class="row items-center no-wrap">
+                              <span class="q-ml-sm">Guide</span>
+                              <q-space />
+                              <q-chip
+                                v-if="enableChannelHealthHighlight && element.status && element.status.state === 'warning'"
+                                dense
+                                color="orange-6"
+                                text-color="white"
+                                clickable
+                                @click.stop="openChannelIssuesDialog(element)">
+                                Needs attention
+                                <q-tooltip class="bg-white text-primary">
+                                  {{ channelIssueFirstLabel(element.status) }}
+                                </q-tooltip>
+                              </q-chip>
+                            </div>
                           </q-item-label>
                           <q-item-label caption lines="1" class="text-left q-ml-sm">
                             {{ element.guide.epg_name }} - {{ element.guide.channel_id }}
@@ -794,21 +800,32 @@ export default defineComponent({
       }
       return '';
     },
-    formatChannelIssues: function(status) {
-      if (!this.enableChannelHealthHighlight) {
-        return 'Health highlighting is disabled.';
-      }
+    channelIssueLabels: function(status) {
       if (!status || !status.issues || !status.issues.length) {
-        return 'All sources look healthy.';
+        return [];
       }
       const labels = {
-        no_sources: 'No sources configured',
-        all_sources_disabled: 'All sources are disabled',
-        has_disabled_sources: 'Some sources use disabled sources',
-        missing_tvh_mux: 'Missing TVH mux',
-        tvh_mux_failed: 'TVH mux disabled or scan failed',
+        no_sources: 'No sources',
+        all_sources_disabled: 'All sources disabled',
+        missing_tvh_mux: 'Missing mux',
+        tvh_mux_failed: 'TVH mux failed',
       };
-      return status.issues.map(issue => labels[issue] || issue).join(', ');
+      return status.issues.map(issue => labels[issue] || issue);
+    },
+    channelIssueFirstLabel: function(status) {
+      const labels = this.channelIssueLabels(status);
+      return labels.length ? labels[0] : '';
+    },
+    openChannelIssuesDialog: function(channel) {
+      const labels = this.channelIssueLabels(channel?.status);
+      if (!labels.length) {
+        return;
+      }
+      this.$q.dialog({
+        title: 'Needs attention',
+        message: labels.join('<br>'),
+        html: true,
+      });
     },
     openChannelSettings: function(channel) {
       let channelId = null;

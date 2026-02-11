@@ -55,6 +55,11 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar clean"
 
+  frontend:build:
+    desc: Build frontend (Quasar SPA) for backend serving
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar build"
+
   docs:start:
     desc: Start docs dev server service in dev AIO stack (detached)
     cmds:

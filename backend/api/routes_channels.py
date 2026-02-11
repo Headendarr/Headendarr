@@ -84,8 +84,6 @@ def _build_channel_status(channel, mux_map):
     issues = []
     if not has_enabled_source:
         issues.append("all_sources_disabled")
-    if disabled_sources:
-        issues.append("has_disabled_sources")
     if missing_muxes:
         issues.append("missing_tvh_mux")
     if failed_muxes:
