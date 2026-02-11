@@ -157,7 +157,7 @@ class Config:
                     "password": "",
                 },
                 "app_url": None,
-                "route_playlists_through_tvh": False,
+                "route_playlists_through_tvh": True,
                 "audit_log_retention_days": 7,
                 "user_agents": [
                     {

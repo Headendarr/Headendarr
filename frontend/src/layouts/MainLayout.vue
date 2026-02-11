@@ -102,7 +102,27 @@
 
                     <q-separator inset spaced />
 
-                    <q-item-label header>Proxied M3U Playlists</q-item-label>
+                    <q-item-label header>Xtream Codes (Single Playlist)</q-item-label>
+                    <q-item clickable @click="copyUrlToClipboard(xcPlaylistUrl)"
+                            tabindex="0">
+                      <q-item-section avatar>
+                        <q-avatar
+                          icon="movie_filter"
+                          color="secondary"
+                          text-color="white" />
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label class="text-bold text-purple-7">XC Playlist</q-item-label>
+                        <q-item-label caption>{{ xcPlaylistUrl }}</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-icon name="content_copy" />
+                      </q-item-section>
+                    </q-item>
+
+                    <q-separator inset spaced />
+
+                    <q-item-label header>M3U Playlists</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
                             clickable
                             @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
@@ -128,7 +148,7 @@
 
                     <q-separator inset spaced />
 
-                    <q-item-label header>Proxied HDHomeRun Tuner Emulators</q-item-label>
+                    <q-item-label header>HDHomeRun Tuner Emulators</q-item-label>
                     <q-item v-for="playlist in enabledPlaylists" :key="`x.${playlist}`"
                             clickable
                             @click="copyUrlToClipboard(`${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/${playlist.id}`)"
@@ -155,9 +175,28 @@
 
                 <q-card-section>
 
-                  <q-card class="note-card q-my-md">
+                    <q-card class="note-card q-my-md">
+                      <q-card-section>
+                        <div class="text-h6">How to use the XMLTV Guide:</div>
+                        Use the <span class="text-bold text-orange-7">XMLTV Guide</span> URL with clients that
+                        need a guide-only feed or separate XMLTV configuration.
+                      </q-card-section>
+                      <q-card-section>
+                        <div class="text-h6">How to use the XC Playlist (Single Playlist):</div>
+                        Use the <span class="text-bold text-purple-7">XC Playlist</span> with IPTV clients
+                        that support XC logins or cannot set per-playlist connection limits.
+                        <br><br>
+                        If the XC playlist is routed through TVHeadend, TVH enforces connection limits, which prevents
+                        streams from dropping when a channel is already in use.
+                        <br><br>
+                        Use these credentials:
+                        <ul>
+                          <li><b>Username</b>: your TIC username</li>
+                          <li><b>Password</b>: your streaming key</li>
+                        </ul>
+                      </q-card-section>
                     <q-card-section>
-                      <div class="text-h6">How to use the Proxied M3U Playlists:</div>
+                      <div class="text-h6">How to use the M3U Playlists:</div>
                       Filtered M3U playlist URLs are designed for use with Jellyfin/Emby.
                       But they can also be used for any other client that supports M3U playlists.
                       <br>
@@ -165,7 +204,7 @@
                       <br>
                       <ol>
                         <li>
-                          For each of the <span class="text-bold text-blue-7">Proxied M3U Playlists</span>
+                          For each of the <span class="text-bold text-blue-7">M3U Playlists</span>
                           listed:
                           <ol type="a">
                             <li>
@@ -207,7 +246,7 @@
                       </ol>
                     </q-card-section>
                     <q-card-section>
-                      <div class="text-h6">How to use the Proxied HDHomeRun Tuner Emulators:</div>
+                      <div class="text-h6">How to use the HDHomeRun Tuner Emulators:</div>
                       The HDHomeRun Tuner Emulator URLs are designed for use with Jellyfin, Emby and Plex.
                       <br><br>
                       For each of the <span class="text-bold text-green-7">HDHomeRun Tuner Emulators</span>
@@ -681,7 +720,12 @@ export default defineComponent({
       await router.push({path: '/user-settings'});
     };
 
-    const epgUrl = computed(() => `${connectionBaseUrl.value}/xmltv.php?stream_key=${currentStreamingKey.value}`);
+    const epgUrl = computed(() => (
+      `${connectionBaseUrl.value}/xmltv.php?username=${currentUsername.value}&password=${currentStreamingKey.value}`
+    ));
+    const xcPlaylistUrl = computed(() => (
+      `${connectionBaseUrl.value}/get.php?username=${currentUsername.value}&password=${currentStreamingKey.value}`
+    ));
     const toggleHelp = () => {
       uiStore.toggleHelp();
     };
@@ -695,6 +739,7 @@ export default defineComponent({
       appUrl,
       connectionBaseUrl,
       epgUrl,
+      xcPlaylistUrl,
       essentialLinks: filteredLinks,
       currentUsername,
       currentStreamingKey,

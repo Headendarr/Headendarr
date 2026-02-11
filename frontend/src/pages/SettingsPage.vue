@@ -42,6 +42,13 @@
                 label="Route playlists & HDHomeRun through TVHeadend"
                 hint="When disabled, playlists and HDHomeRun URLs stream directly through TIC."
               />
+              <div class="text-caption text-grey-7">
+                When enabled, all playlist and HDHomeRun streams are routed through TVHeadend. This lets TVH enforce
+                connection limits and stream policies in one place. Recommended if you want to use a single main
+                playlist for clients. You may want to disable it to reduce the small amount of latency added by TVH if
+                you are not using the TVH backend. Clients that cannot set per-playlist connection limits should use
+                the XC Playlist URL instead of configuring individual M3U playlists and have this option enabled.
+              </div>
 
               <q-separator class="q-my-lg" />
 
