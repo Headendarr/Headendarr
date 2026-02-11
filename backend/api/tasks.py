@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from backend.utils import is_truthy
 
 scheduler = AsyncIOScheduler()
 
@@ -135,6 +136,34 @@ async def update_epgs(app):
     config = app.config['APP_CONFIG']
     from backend.epgs import import_epg_data_for_all_epgs
     await import_epg_data_for_all_epgs(config)
+
+
+async def scan_tvh_muxes(app):
+    config = app.config['APP_CONFIG']
+    settings = config.read_settings().get("settings", {})
+    if not settings.get("periodic_mux_scan", False):
+        logger.debug("Periodic TVH mux scanning is disabled.")
+        return
+
+    logger.info("Scheduling TVH mux scans")
+    from backend.tvheadend.tvh_requests import get_tvh
+    try:
+        async with await get_tvh(config) as tvh:
+            muxes = await tvh.list_all_muxes()
+            updated = 0
+            for mux in muxes:
+                mux_uuid = mux.get("uuid")
+                if not mux_uuid:
+                    continue
+                if "enabled" in mux and not is_truthy(mux.get("enabled")):
+                    continue
+                scan_state = mux.get("scan_state")
+                pending_state = "PEND" if isinstance(scan_state, str) else 1
+                await tvh.idnode_save({"uuid": mux_uuid, "scan_state": pending_state})
+                updated += 1
+        logger.info("Queued scans for %s TVH muxes", updated)
+    except Exception as exc:
+        logger.exception("Failed to queue TVH mux scans: %s", exc)
 
 
 async def rebuild_custom_epg(app):

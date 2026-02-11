@@ -84,7 +84,7 @@
                 <q-skeleton
                   v-if="enabled === null"
                   type="QCheckbox" />
-                <q-checkbox v-model="enabled" label="Enabled" />
+                <q-toggle v-model="enabled" label="Enabled" />
               </div>
 
               <q-separator class="q-my-lg" />
@@ -251,7 +251,7 @@
                             class="q-mt-sm"
                             label="Stream URL"
                           />
-                          <q-checkbox
+                          <q-toggle
                             v-if="element.source_type === 'manual' || !element.playlist_id"
                             v-model="element.use_hls_proxy"
                             class="q-mt-xs q-ml-sm"

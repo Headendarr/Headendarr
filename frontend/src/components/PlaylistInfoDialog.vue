@@ -84,7 +84,7 @@
                 <q-skeleton
                   v-if="enabled === null"
                   type="QCheckbox" />
-                <q-checkbox v-model="enabled" label="Enabled" />
+                <q-toggle v-model="enabled" label="Enabled" />
               </div>
               <div class="q-gutter-sm">
                 <q-skeleton
@@ -222,7 +222,7 @@
                     <q-skeleton
                       v-if="useHlsProxy === null"
                       type="QCheckbox" />
-                    <q-checkbox
+                    <q-toggle
                       v-else
                       v-model="useHlsProxy" />
                   </q-item-section>
@@ -243,7 +243,7 @@
                       <q-skeleton
                         v-if="useCustomHlsProxy === null"
                         type="QCheckbox" />
-                      <q-checkbox
+                      <q-toggle
                         v-else
                         v-model="useCustomHlsProxy" />
                     </q-item-section>
@@ -268,7 +268,7 @@
                       <q-skeleton
                         v-if="chainCustomHlsProxy === null"
                         type="QCheckbox" />
-                      <q-checkbox
+                      <q-toggle
                         v-else
                         v-model="chainCustomHlsProxy" />
                     </q-item-section>

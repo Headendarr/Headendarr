@@ -111,7 +111,7 @@
                 <div class="q-mt-sm">
                   <q-item tag="label" dense class="q-pl-none q-mr-none">
                     <q-item-section avatar>
-                      <q-checkbox v-model="enableTmdbMetadata" val="createClientUser" />
+                      <q-toggle v-model="enableTmdbMetadata" val="createClientUser" />
                     </q-item-section>
                     <q-item-section>
                       <q-item-label>Fetch missing data from TMDB</q-item-label>
@@ -138,7 +138,7 @@
                 <div class=" q-mt-sm">
                   <q-item tag="label" dense class="q-pl-none q-mr-none">
                     <q-item-section avatar>
-                      <q-checkbox v-model="enableGoogleImageSearchMetadata" val="createClientUser" />
+                      <q-toggle v-model="enableGoogleImageSearchMetadata" val="createClientUser" />
                     </q-item-section>
                     <q-item-section>
                       <q-item-label>Attempt to fetch missing programme images from Google Image Search</q-item-label>

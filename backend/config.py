@@ -158,6 +158,7 @@ class Config:
                 },
                 "app_url": None,
                 "route_playlists_through_tvh": True,
+                "periodic_mux_scan": False,
                 "audit_log_retention_days": 7,
                 "user_agents": [
                     {

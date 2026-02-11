@@ -259,7 +259,7 @@
 
                         <!--START DRAGGABLE HANDLE-->
                         <q-item-section avatar class="q-px-sm q-mx-sm handle">
-                          <q-checkbox
+                          <q-toggle
                             v-if="bulkEditMode === true"
                             v-model="element.selected"
                             @click="toggleSelection(element)" />

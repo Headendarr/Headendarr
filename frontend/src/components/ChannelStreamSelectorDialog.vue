@@ -191,7 +191,7 @@
                 <template v-slot:body="props">
                   <q-tr :props="props">
                     <q-td auto-width>
-                      <q-checkbox v-model="props.selected" color="primary" />
+                      <q-toggle v-model="props.selected" color="primary" />
                     </q-td>
                     <q-td key="name" :props="props" style="max-width: 60px;">
                       <div class="stream-logo-wrap">

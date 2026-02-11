@@ -82,7 +82,7 @@
               <div>
                 <q-item tag="label" dense class="q-pl-none q-mr-none">
                   <q-item-section avatar>
-                    <q-checkbox v-model="enableStreamBuffer" val="enableStreamBuffer" />
+                    <q-toggle v-model="enableStreamBuffer" val="enableStreamBuffer" />
                   </q-item-section>
                   <q-item-section>
                     <q-item-label>Enable Stream Buffer</q-item-label>
@@ -107,6 +107,22 @@
                   label="Default FFmpeg Stream Buffer Options"
                   hint="Note: [URL] and [SERVICE_NAME] will be replaced with the stream source and the service name respectively."
                 />
+              </div>
+
+              <div>
+                <q-item tag="label" dense class="q-pl-none q-mr-none">
+                  <q-item-section avatar>
+                    <q-toggle v-model="periodicMuxScan" />
+                  </q-item-section>
+                  <q-item-section>
+                    <q-item-label>Enable Periodic Stream Health Scans</q-item-label>
+                    <q-item-label caption>
+                      Every 6 hours TIC will mark TVHeadend muxes as pending so TVH scans them. This is useful to ensure
+                      streams are working and ready to start immediately; failed scans will disable the mux and surface
+                      a channel warning.
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
               </div>
 
               <div>
@@ -204,6 +220,7 @@ export default defineComponent({
       hlsProxyPrefix: ref(null),
       enableStreamBuffer: ref(null),
       defaultFfmpegPipeArgs: ref(null),
+      periodicMuxScan: ref(null),
 
       // Defaults
       defSet: ref({
@@ -215,6 +232,7 @@ export default defineComponent({
         hlsProxyPrefix: 'http://' + window.location.host.split(':')[0] + ':9987',
         enableStreamBuffer: true,
         defaultFfmpegPipeArgs: '-hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1',
+        periodicMuxScan: false,
       }),
     };
   },

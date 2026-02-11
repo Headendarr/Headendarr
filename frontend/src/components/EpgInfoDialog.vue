@@ -84,7 +84,7 @@
                 <q-skeleton
                   v-if="enabled === null"
                   type="QCheckbox"/>
-                <q-checkbox v-model="enabled" label="Enabled"/>
+                <q-toggle v-model="enabled" label="Enabled"/>
               </div>
               <div class="q-gutter-sm">
                 <q-skeleton

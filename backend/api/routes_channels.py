@@ -9,7 +9,7 @@ from backend.auth import admin_auth_required, streamer_or_admin_required
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
-from backend.utils import normalize_id
+from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, ChannelSource
 from sqlalchemy import select
@@ -23,12 +23,6 @@ async def _fetch_tvh_mux_map(config):
     except Exception as exc:
         current_app.logger.warning("Failed to fetch TVH mux list: %s", exc)
         return None
-
-
-def _is_truthy(value):
-    if isinstance(value, str):
-        return value.lower() in ("1", "true", "yes", "on")
-    return bool(value)
 
 
 def _build_channel_status(channel, mux_map):
@@ -75,7 +69,7 @@ def _build_channel_status(channel, mux_map):
             missing_muxes += 1
             continue
         mux_entry = mux_map.get(tvh_uuid) or {}
-        if "enabled" in mux_entry and not _is_truthy(mux_entry.get("enabled")):
+        if "enabled" in mux_entry and not is_truthy(mux_entry.get("enabled")):
             failed_muxes += 1
         scan_result = mux_entry.get("scan_result")
         if scan_result == 2:

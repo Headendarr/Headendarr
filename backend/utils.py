@@ -6,3 +6,9 @@ def normalize_id(value, name):
         return int(value)
     except (TypeError, ValueError):
         raise ValueError(f"Invalid {name} id: {value}")
+
+
+def is_truthy(value):
+    if isinstance(value, str):
+        return value.lower() in ("1", "true", "yes", "on")
+    return bool(value)
