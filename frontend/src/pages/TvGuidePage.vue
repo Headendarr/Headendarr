@@ -37,7 +37,7 @@
             <q-separator />
 
             <q-card-section class="q-pa-none">
-              <div class="guide">
+              <div class="guide" :style="{ '--guide-sticky-top': guideStickyTop + 'px' }">
                 <div class="guide__header">
                   <div class="guide__channel-col">Channel</div>
                   <div class="guide__timeline-col">
@@ -220,6 +220,7 @@ export default defineComponent({
     const expandedSizes = ref({});
     const programmeRefs = new Map();
     const guideBody = ref(null);
+    const guideStickyTop = ref(0);
     const now = Math.floor(Date.now() / 1000);
     const nowTs = ref(now);
     const quarterSeconds = 15 * 60;
@@ -792,8 +793,15 @@ export default defineComponent({
       }
     };
 
+    const updateGuideStickyTop = () => {
+      const headerEl = document.querySelector('header.q-header') || document.querySelector('header');
+      guideStickyTop.value = headerEl ? Math.round(headerEl.getBoundingClientRect().height) : 0;
+    };
+
     onMounted(async () => {
       await nextTick();
+      updateGuideStickyTop();
+      window.addEventListener('resize', updateGuideStickyTop);
       bindHeaderEvents();
       startHeaderScrollSync();
       document.addEventListener('scroll', onGlobalScroll, true);
@@ -808,6 +816,7 @@ export default defineComponent({
     onBeforeUnmount(() => {
       pollingActive = false;
       stopHeaderScrollSync();
+      window.removeEventListener('resize', updateGuideStickyTop);
       if (nowTimerId.value) {
         clearInterval(nowTimerId.value);
         nowTimerId.value = null;
@@ -903,6 +912,7 @@ export default defineComponent({
       programmes,
       recordings,
       hoveredChannelId,
+      guideStickyTop,
       expandedProgramId,
       scrollHeader,
       scrollBody,
@@ -955,6 +965,13 @@ export default defineComponent({
   display: grid;
   grid-template-columns: 260px 1fr;
   border-bottom: 1px solid var(--guide-border);
+}
+
+.guide__header {
+  position: sticky;
+  top: var(--guide-sticky-top, 0px);
+  z-index: 7;
+  background: var(--guide-channel-bg);
 }
 
 .guide__channel-col {
