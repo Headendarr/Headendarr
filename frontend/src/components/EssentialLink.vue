@@ -2,6 +2,8 @@
   <q-item
     clickable
     :to="link"
+    :active="isActive"
+    active-class="drawer-active"
   >
     <q-item-section
       v-if="icon"
@@ -22,7 +24,8 @@
 </template>
 
 <script>
-import {defineComponent} from 'vue';
+import {defineComponent, computed} from 'vue';
+import {useRoute} from 'vue-router';
 
 export default defineComponent({
   name: 'EssentialLink',
@@ -47,6 +50,18 @@ export default defineComponent({
       default: '',
     },
   },
+  setup(props) {
+    const route = useRoute();
+    const isActive = computed(() => {
+      if (!props.link || props.link === '#') {
+        return false;
+      }
+      return route.path === props.link || route.path.startsWith(`${props.link}/`);
+    });
+    return {
+      isActive,
+    };
+  },
   computed: {
     isTvhIcon() {
       return this.icon === 'img:icons/tvh-icon.svg';
@@ -56,6 +71,16 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.drawer-active {
+  background: rgba(25, 118, 210, 0.12);
+  border-left: 3px solid var(--q-primary);
+}
+
+.drawer-active .q-item__label,
+.drawer-active .q-item__label--caption {
+  color: var(--q-primary);
+}
+
 .tvh-icon {
   width: 24px;
   height: 24px;

@@ -185,6 +185,7 @@ class Config:
                 },
                 "ui_settings": {
                     "enable_channel_health_highlight": True,
+                    "start_page": "/channels",
                 },
                 "epgs": {
                     "enable_tmdb_metadata": False,

@@ -17,6 +17,15 @@
                   label="Highlight channels with source issues"
                   hint="Adds a warning highlight for channels tied to disabled playlists or failed TVH muxes."
                 />
+                <q-select
+                  v-model="uiSettings.start_page"
+                  :options="startPageOptions"
+                  label="Start page after login"
+                  emit-value
+                  map-options
+                  hint="Choose the page users land on after signing in."
+                  class="q-mb-sm"
+                />
               </div>
 
               <q-separator class="q-my-lg" />
@@ -279,6 +288,7 @@ export default defineComponent({
       }),
       uiSettings: ref({
         enable_channel_health_highlight: true,
+        start_page: '/channels',
       }),
 
       // Defaults
@@ -300,8 +310,16 @@ export default defineComponent({
         },
         uiSettings: {
           enable_channel_health_highlight: true,
+          start_page: '/channels',
         },
       }),
+      startPageOptions: [
+        {label: 'Sources', value: '/playlists'},
+        {label: 'EPGs', value: '/epgs'},
+        {label: 'Channels', value: '/channels'},
+        {label: 'TV Guide', value: '/guide'},
+        {label: 'DVR', value: '/dvr'},
+      ],
       userAgentColumns: [
         {name: 'name', label: 'Name', field: 'name', align: 'left'},
         {name: 'value', label: 'User-Agent', field: 'value', align: 'left'},
@@ -359,6 +377,7 @@ export default defineComponent({
             appSettings.ui_settings?.enable_channel_health_highlight
             ?? this.defSet.uiSettings.enable_channel_health_highlight,
           ),
+          start_page: appSettings.ui_settings?.start_page ?? this.defSet.uiSettings.start_page,
         };
         // Fill in any missing values from defaults
         Object.keys(this.defSet).forEach((key) => {
@@ -378,6 +397,7 @@ export default defineComponent({
         if (!this.uiSettings) {
           this.uiSettings = {...this.defSet.uiSettings};
         }
+        localStorage.setItem('tic_ui_start_page', this.uiSettings.start_page);
         this.prevAdminPassword = this.adminPassword;
       }).catch(() => {
         this.$q.notify({
@@ -417,6 +437,7 @@ export default defineComponent({
           this.uiSettings?.enable_channel_health_highlight
           ?? this.defSet.uiSettings.enable_channel_health_highlight,
         ),
+        start_page: this.uiSettings?.start_page ?? this.defSet.uiSettings.start_page,
       };
       this.$q.loading.show();
       axios({
@@ -436,6 +457,7 @@ export default defineComponent({
           // Reload page to properly trigger the auth refresh
           this.$router.push({name: 'login'});
         }
+        localStorage.setItem('tic_ui_start_page', this.uiSettings.start_page);
         this.fetchSettings();
       }).catch(() => {
         this.$q.loading.hide();

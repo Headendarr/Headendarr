@@ -5,7 +5,7 @@ const routes = [
     children: [
       {
         path: '',
-        component: () => import('pages/SettingsPage.vue'),
+        component: () => import('pages/ChannelsPage.vue'),
         meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],

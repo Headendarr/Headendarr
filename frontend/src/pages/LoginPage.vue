@@ -29,6 +29,7 @@ import {ref} from 'vue';
 import {useRouter} from 'vue-router';
 import {useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
+import axios from 'axios';
 
 export default {
   setup() {
@@ -38,11 +39,29 @@ export default {
     const username = ref('');
     const password = ref('');
     const loading = ref(false);
+    const defaultStartPage = '/channels';
+    const startPageKey = 'tic_ui_start_page';
+
+    const resolveStartPage = async () => {
+      try {
+        const response = await axios.get('/tic-api/get-settings');
+        const startPage = response.data?.data?.ui_settings?.start_page;
+        if (startPage) {
+          localStorage.setItem(startPageKey, startPage);
+          return startPage;
+        }
+      } catch (error) {
+        // Ignore and fall back to last-known value or default.
+      }
+      return localStorage.getItem(startPageKey) || defaultStartPage;
+    };
 
     if (authStore.token) {
       authStore.checkAuthentication().then(() => {
         if (authStore.isAuthenticated) {
-          router.push({path: '/'});
+          resolveStartPage().then((startPage) => {
+            router.push({path: startPage});
+          });
         }
       });
     }
@@ -52,7 +71,8 @@ export default {
       try {
         const response = await authStore.login(username.value, password.value);
         if (response.status === 200 && response.data.success) {
-          await router.push({path: '/'});
+          const startPage = await resolveStartPage();
+          await router.push({path: startPage});
         }
       } catch (error) {
         $q.notify({

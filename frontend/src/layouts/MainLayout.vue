@@ -532,12 +532,6 @@ import {useRouter} from 'vue-router';
 
 const linksList = [
   {
-    title: 'TVheadend',
-    caption: 'TVheadend Settings',
-    icon: 'img:icons/tvh-icon.svg',
-    link: '/tvheadend',
-  },
-  {
     title: 'Sources',
     caption: 'Configure Stream Sources',
     icon: 'playlist_play',
@@ -575,6 +569,12 @@ const linksList = [
     icon: 'manage_accounts',
     link: '/users',
     adminOnly: true,
+  },
+  {
+    title: 'TVheadend',
+    caption: 'TVheadend Settings',
+    icon: 'img:icons/tvh-icon.svg',
+    link: '/tvheadend',
   },
   {
     title: 'Settings',
