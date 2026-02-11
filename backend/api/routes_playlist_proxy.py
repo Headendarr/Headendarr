@@ -211,10 +211,14 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
         channel_name = channel_details['name']
         channel_logo_url = channel_details['logo_url']
         channel_uuid = channel_details['tvh_uuid']
-        line = f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" tvg-id="{channel_uuid}" tvg-chno="{channel_id}"'
+        line = (
+            f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" '
+            f'tvg-id="{channel_uuid}" tvg-chno="{channel_id}"'
+        )
         if channel_details['tags']:
             group_title = channel_details['tags'][0]
             line += f' group-title="{group_title}"'
+        line += f' , {channel_name}'
         playlist.append(line)
         channel_url = None
         if use_tvh_source and channel_details.get('tvh_uuid'):
@@ -333,6 +337,6 @@ async def tvh_playlist_m3u(playlist_id):
     # Join the lines to form the m3u content
     m3u_content = "\n".join(file_lines)
     # Create a response object with appropriate headers
-    response = Response(m3u_content, mimetype='application/vnd.apple.mpegurl')
+    response = Response(m3u_content, mimetype='text/plain')
     response.headers['Content-Disposition'] = f'attachment; filename="{playlist_id}_channels.m3u"'
     return response
