@@ -263,6 +263,8 @@ export default defineComponent({
       appUrl: ref(null),
       routePlaylistsThroughTvh: ref(false),
       userAgents: ref([]),
+      adminPassword: ref(''),
+      prevAdminPassword: ref(''),
       auditLogRetentionDays: ref(7),
       dvr: ref({
         pre_padding_mins: 2,
@@ -369,6 +371,7 @@ export default defineComponent({
         if (!this.uiSettings) {
           this.uiSettings = {...this.defSet.uiSettings};
         }
+        this.prevAdminPassword = this.adminPassword;
       }).catch(() => {
         this.$q.notify({
           color: 'negative',
