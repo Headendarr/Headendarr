@@ -20,7 +20,7 @@
           v-model="streamingKey"
           readonly
           label="Streaming Key"
-          hint="Used to authorize playlist/EPG/HDHomeRun endpoints. For TVHeadend clients, this is your TVH client password (not your TIC login password)."
+          hint="Used to authorize playlist/EPG/HDHomeRun/XC endpoints. For TVHeadend clients, use this as your TVHeadend client password (not your TIC login password)."
           class="hint-spaced"
         >
           <template v-slot:append>
