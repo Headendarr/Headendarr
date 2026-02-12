@@ -999,6 +999,40 @@ async def probe_playlist_stream(playlist_stream_id):
     return probe_data
 
 
+def resolve_playlist_stream_url(
+    playlist_stream: PlaylistStreams,
+    base_url: str,
+    instance_id: str,
+    stream_key: str | None = None,
+) -> str:
+    stream_url = playlist_stream.url
+    if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
+        account = _get_primary_xc_account_sync(playlist_stream.playlist_id)
+        if account:
+            stream_url = _render_xc_url(
+                _build_xc_url_template(
+                    _normalize_xc_host(playlist_stream.playlist.url),
+                    playlist_stream.xc_stream_id,
+                    _extract_xc_suffix(playlist_stream.url),
+                ),
+                account.username,
+                account.password,
+            )
+    playlist_info = playlist_stream.playlist
+    if playlist_info:
+        stream_url = build_configured_hls_proxy_url(
+            stream_url,
+            base_url=base_url,
+            instance_id=instance_id,
+            stream_key=stream_key,
+            use_hls_proxy=playlist_info.use_hls_proxy,
+            use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
+            custom_hls_proxy_path=playlist_info.hls_proxy_path,
+            chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
+        )
+    return stream_url
+
+
 async def get_playlist_groups(
     config,
     playlist_id,

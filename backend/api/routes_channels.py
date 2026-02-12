@@ -224,7 +224,40 @@ def _infer_stream_type(url):
         return "hls"
     if parsed.path.lower().endswith(".ts"):
         return "mpegts"
+    if "/tic-hls-proxy/" in parsed.path and "/stream/" in parsed.path:
+        return "mpegts"
     return "auto"
+
+def _build_preview_url_for_source(source, user, settings, config, request_base_url):
+    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    instance_id = config.ensure_instance_id()
+    if use_tvh_source and source.tvh_uuid:
+        preview_url = (
+            f"{request_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}"
+            "?profile=pass&weight=300"
+        )
+        preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
+        stream_type = "mpegts"
+        return preview_url, stream_type
+
+    is_manual = not source.playlist_id
+    use_hls_proxy = bool(getattr(source, "use_hls_proxy", False)) if is_manual else False
+    if is_manual and use_hls_proxy:
+        preview_url = build_local_hls_proxy_url(
+            request_base_url,
+            instance_id,
+            source.playlist_stream_url,
+            stream_key=user.streaming_key,
+        )
+    else:
+        preview_url = normalize_local_proxy_url(
+            source.playlist_stream_url,
+            base_url=request_base_url,
+            instance_id=instance_id,
+            stream_key=user.streaming_key,
+        )
+    stream_type = _infer_stream_type(preview_url)
+    return preview_url, stream_type
 
 
 @blueprint.route('/tic-api/channels/<int:channel_id>/preview', methods=['GET'])
@@ -247,32 +280,47 @@ async def api_get_channel_preview(channel_id):
 
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
-    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
-    instance_id = config.ensure_instance_id()
     request_base_url = request.host_url.rstrip('/')
-    preview_base_url = request_base_url
-    if use_tvh_source and source.tvh_uuid:
-        preview_url = f"{preview_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}?profile=pass&weight=300"
-        preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
-        stream_type = "mpegts"
-    else:
-        is_manual = not source.playlist_id
-        use_hls_proxy = bool(getattr(source, "use_hls_proxy", False)) if is_manual else False
-        if is_manual and use_hls_proxy:
-            preview_url = build_local_hls_proxy_url(
-                preview_base_url,
-                instance_id,
-                source.playlist_stream_url,
-                stream_key=user.streaming_key,
+    preview_url, stream_type = _build_preview_url_for_source(
+        source=source,
+        user=user,
+        settings=settings,
+        config=config,
+        request_base_url=request_base_url,
+    )
+    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
+
+@blueprint.route('/tic-api/channels/<int:channel_id>/sources/<int:source_id>/preview', methods=['GET'])
+@streamer_or_admin_required
+async def api_get_channel_source_preview(channel_id, source_id):
+    user = getattr(request, "_current_user", None)
+    if not user or not user.streaming_key:
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource)
+            .where(
+                ChannelSource.id == source_id,
+                ChannelSource.channel_id == channel_id,
             )
-        else:
-            preview_url = normalize_local_proxy_url(
-                source.playlist_stream_url,
-                base_url=preview_base_url,
-                instance_id=instance_id,
-                stream_key=user.streaming_key,
-            )
-        stream_type = _infer_stream_type(preview_url)
+        )
+        source = result.scalars().first()
+
+    if not source or not source.playlist_stream_url:
+        return jsonify({"success": False, "message": "Channel source not found"}), 404
+
+    config = current_app.config['APP_CONFIG']
+    settings = config.read_settings()
+    request_base_url = request.host_url.rstrip('/')
+    preview_url, stream_type = _build_preview_url_for_source(
+        source=source,
+        user=user,
+        settings=settings,
+        config=config,
+        request_base_url=request_base_url,
+    )
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
 

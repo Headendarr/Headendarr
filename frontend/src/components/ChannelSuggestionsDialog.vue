@@ -59,13 +59,13 @@
                   <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
                   <q-menu anchor="bottom right" self="top right">
                     <q-list dense>
-                      <q-item clickable v-close-popup @click="previewChannelStream(suggestion)">
+                      <q-item clickable v-close-popup @click="previewChannelStream(suggestion, {usePlaylistStream: true})">
                         <q-item-section avatar>
                           <q-icon name="play_arrow" color="primary" />
                         </q-item-section>
                         <q-item-section>Preview stream</q-item-section>
                       </q-item>
-                      <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion)">
+                      <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
                         <q-item-section avatar>
                           <q-icon name="link" color="primary" />
                         </q-item-section>
@@ -90,11 +90,11 @@
               </div>
               <div v-else class="text-grey-8 q-gutter-xs">
                 <q-btn size="12px" flat dense round color="primary" icon="play_arrow"
-                       @click.stop="previewChannelStream(suggestion)">
+                       @click.stop="previewChannelStream(suggestion, {usePlaylistStream: true})">
                   <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
                 </q-btn>
                 <q-btn size="12px" flat dense round color="primary" icon="link"
-                       @click.stop="copyChannelStreamUrl(suggestion)">
+                       @click.stop="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
                   <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
                 </q-btn>
                 <q-btn size="12px" flat dense round color="primary" icon="add"
@@ -187,7 +187,26 @@ export default {
       }
       return streamUrl;
     },
-    previewChannelStream(stream) {
+    async previewChannelStream(stream, options = {}) {
+      if (options.usePlaylistStream && stream?.stream_id) {
+        try {
+          const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
+          if (response.data.success) {
+            this.videoStore.showPlayer({
+              url: response.data.preview_url,
+              title: stream?.stream_name || 'Stream',
+              type: response.data.stream_type || 'auto',
+            });
+            return;
+          }
+          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to load preview'});
+          return;
+        } catch (error) {
+          console.error('Preview stream error:', error);
+          this.$q.notify({color: 'negative', message: 'Failed to load preview'});
+          return;
+        }
+      }
       const url = this.normalizeStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
@@ -199,7 +218,23 @@ export default {
         type: url.toLowerCase().includes('.m3u8') ? 'hls' : 'mpegts',
       });
     },
-    async copyChannelStreamUrl(stream) {
+    async copyChannelStreamUrl(stream, options = {}) {
+      if (options.usePlaylistStream && stream?.stream_id) {
+        try {
+          const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
+          if (response.data.success) {
+            await copyToClipboard(response.data.preview_url);
+            this.$q.notify({color: 'positive', message: 'Stream URL copied'});
+            return;
+          }
+          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to copy stream URL'});
+          return;
+        } catch (error) {
+          console.error('Copy stream URL error:', error);
+          this.$q.notify({color: 'negative', message: 'Failed to copy stream URL'});
+          return;
+        }
+      }
       const url = this.normalizeStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});

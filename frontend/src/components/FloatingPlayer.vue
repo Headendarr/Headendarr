@@ -327,6 +327,9 @@ function detectStreamType(url, forcedType) {
   const lowered = url.toLowerCase();
   if (lowered.includes('.m3u8')) return 'hls';
   if (lowered.includes('.ts')) return 'mpegts';
+  if (lowered.includes('/tic-hls-proxy/') && lowered.includes('/stream/')) {
+    return 'mpegts';
+  }
   return 'native';
 }
 
