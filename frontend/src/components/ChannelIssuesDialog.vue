@@ -31,6 +31,14 @@
             <div class="text-body2 text-grey-8 q-mt-xs">
               {{ issue.description }}
             </div>
+            <div v-if="issue.streams && issue.streams.length" class="q-mt-sm">
+              <div class="text-caption text-grey-7">Affected stream(s)</div>
+              <div class="text-body2">
+                <div v-for="stream in issue.streams" :key="stream.label">
+                  {{ stream.label }}
+                </div>
+              </div>
+            </div>
             <div v-if="issue.actions && issue.actions.length" class="q-gutter-sm q-mt-sm">
               <q-btn
                 v-for="action in issue.actions"
@@ -107,11 +115,22 @@ export default {
           description:
             'TVHeadend tried to scan or tune a stream (mux) and failed. The stream might be offline, geo-blocked, or the source credentials could be invalid.',
           actions: [actions.openSettings, actions.syncTVHeadend],
+          streams: this.failedStreams,
         },
       };
       return (this.issues || []).map(
         (issue) => ({key: issue, ...(definitions[issue] || {title: issue, description: ''})})).
         filter((issue) => issue.title);
+    },
+    failedStreams() {
+      const raw = this.channel?.status?.failed_streams || [];
+      const labels = raw
+        .map((entry) => {
+          const name = entry?.stream_name || 'Unknown stream';
+          const playlist = entry?.playlist_name;
+          return playlist ? `${name} (${playlist})` : name;
+        });
+      return [...new Set(labels)].map(label => ({label}));
     },
   },
   methods: {
@@ -131,7 +150,7 @@ export default {
     },
     openChannelSettings() {
       this.didEmitOk = true;
-      this.$emit('open-settings', {channelId: this.channel?.id});
+      this.$emit('ok', {openSettings: true, channelId: this.channel?.id});
       this.hide();
     },
     syncTVHeadend() {

@@ -50,6 +50,8 @@ def _build_channel_status(channel, mux_map, suggestion_count=0):
     disabled_sources = 0
     missing_muxes = 0
     failed_muxes = 0
+    missing_streams = []
+    failed_streams = []
     has_enabled_source = False
 
     for source in sources:
@@ -69,13 +71,31 @@ def _build_channel_status(channel, mux_map, suggestion_count=0):
             continue
         if not tvh_uuid or tvh_uuid not in mux_map:
             missing_muxes += 1
+            missing_streams.append(
+                {
+                    "stream_name": source.get("stream_name"),
+                    "playlist_name": source.get("playlist_name"),
+                }
+            )
             continue
         mux_entry = mux_map.get(tvh_uuid) or {}
         if "enabled" in mux_entry and not is_truthy(mux_entry.get("enabled")):
             failed_muxes += 1
+            failed_streams.append(
+                {
+                    "stream_name": source.get("stream_name"),
+                    "playlist_name": source.get("playlist_name"),
+                }
+            )
         scan_result = mux_entry.get("scan_result")
         if scan_result == 2:
             failed_muxes += 1
+            failed_streams.append(
+                {
+                    "stream_name": source.get("stream_name"),
+                    "playlist_name": source.get("playlist_name"),
+                }
+            )
 
     issues = []
     if not has_enabled_source:
@@ -90,6 +110,8 @@ def _build_channel_status(channel, mux_map, suggestion_count=0):
         "disabled_source_count": disabled_sources,
         "missing_mux_count": missing_muxes,
         "failed_mux_count": failed_muxes,
+        "missing_streams": missing_streams,
+        "failed_streams": failed_streams,
         "suggestion_count": suggestion_count,
     }
 
