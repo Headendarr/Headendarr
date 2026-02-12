@@ -206,10 +206,17 @@
                       <q-item
                         :key="index"
                         class="q-px-none rounded-borders"
+                        :class="{'q-py-xs': $q.screen.lt.sm}"
                         active-class="">
 
                         <!--START DRAGGABLE HANDLE-->
-                        <q-item-section avatar class="q-px-sm q-mx-sm handle">
+                        <q-item-section
+                          avatar
+                          class="handle"
+                          :class="{
+                            'q-px-xs q-mx-xs': $q.screen.lt.sm,
+                            'q-px-sm q-mx-sm': !$q.screen.lt.sm
+                          }">
                           <q-avatar rounded>
                             <q-icon name="drag_handle" class="" style="max-width: 30px;">
                               <q-tooltip class="bg-white text-primary">Drag to move and set priority</q-tooltip>
@@ -221,7 +228,13 @@
                         <q-separator inset vertical class="gt-xs" />
 
                         <!--START CHANNEL NUMBER-->
-                        <q-item-section side class="q-px-sm q-mx-sm" style="max-width: 60px;">
+                        <q-item-section
+                          side
+                          :class="{
+                            'q-px-xs q-mx-xs': $q.screen.lt.sm,
+                            'q-px-sm q-mx-sm': !$q.screen.lt.sm
+                          }"
+                          style="max-width: 60px;">
                           <q-item-label lines="1" class="text-left">
                             <span class="text-weight-medium">{{ index + 1 }}</span>
                             <q-tooltip
@@ -235,7 +248,12 @@
                         <q-separator inset vertical class="gt-xs" />
 
                         <!--START NAME / DESCRIPTION-->
-                        <q-item-section top class="q-mx-md">
+                        <q-item-section
+                          top
+                          :class="{
+                            'q-mx-xs': $q.screen.lt.sm,
+                            'q-mx-md': !$q.screen.lt.sm
+                          }">
                           <q-item-label lines="1" class="text-left">
                             <span class="text-weight-medium q-ml-sm">{{ element.stream_name }}</span>
                           </q-item-label>
@@ -267,17 +285,59 @@
 
                         <q-separator inset vertical class="gt-xs" />
 
-                        <q-item-section side class="q-mr-none">
-                          <div class="text-grey-8 q-gutter-xs">
+                        <q-item-section side class="q-mr-md">
+                          <div v-if="$q.screen.lt.sm" class="text-grey-8">
+                            <q-btn size="12px" flat dense round color="primary" icon="more_vert">
+                              <q-tooltip class="bg-white text-primary">Stream actions</q-tooltip>
+                              <q-menu anchor="bottom right" self="top right">
+                                <q-list dense>
+                                  <q-item clickable v-close-popup @click="previewChannelStream(element)">
+                                    <q-item-section avatar>
+                                      <q-icon name="play_arrow" color="primary" />
+                                    </q-item-section>
+                                    <q-item-section>Preview stream</q-item-section>
+                                  </q-item>
+                                  <q-item clickable v-close-popup @click="copyChannelStreamUrl(element)">
+                                    <q-item-section avatar>
+                                      <q-icon name="link" color="primary" />
+                                    </q-item-section>
+                                    <q-item-section>Copy stream URL</q-item-section>
+                                  </q-item>
+                                  <q-item
+                                    v-if="element.source_type !== 'manual' && element.playlist_id"
+                                    clickable
+                                    v-close-popup
+                                    @click="refreshChannelSourceFromPlaylist(index)">
+                                    <q-item-section avatar>
+                                      <q-icon name="refresh" color="primary" />
+                                    </q-item-section>
+                                    <q-item-section>Refresh stream</q-item-section>
+                                  </q-item>
+                                  <q-separator />
+                                  <q-item clickable v-close-popup @click="removeChannelSourceFromList(index)">
+                                    <q-item-section avatar>
+                                      <q-icon name="delete" color="negative" />
+                                    </q-item-section>
+                                    <q-item-section>Remove stream</q-item-section>
+                                  </q-item>
+                                </q-list>
+                              </q-menu>
+                            </q-btn>
+                          </div>
+                          <div v-else class="text-grey-8 q-gutter-xs">
+                            <q-btn size="12px" flat dense round color="primary" icon="play_arrow"
+                                   @click.stop="previewChannelStream(element)">
+                              <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
+                            </q-btn>
+                            <q-btn size="12px" flat dense round color="primary" icon="link"
+                                   @click.stop="copyChannelStreamUrl(element)">
+                              <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
+                            </q-btn>
                             <q-btn size="12px" flat dense round color="primary" icon="refresh"
                                    v-if="element.source_type !== 'manual' && element.playlist_id"
                                    @click="refreshChannelSourceFromPlaylist(index)">
                               <q-tooltip class="bg-white text-primary">Refresh stream</q-tooltip>
                             </q-btn>
-                          </div>
-                        </q-item-section>
-                        <q-item-section side class="q-ml-none q-mr-md">
-                          <div class="text-grey-8 q-gutter-xs">
                             <q-btn size="12px" flat dense round color="negative" icon="delete"
                                    @click="removeChannelSourceFromList(index)">
                               <q-tooltip class="bg-white text-primary">Remove this stream</q-tooltip>
@@ -329,7 +389,49 @@
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
-                        <div class="q-gutter-xs">
+                        <div v-if="$q.screen.lt.sm" class="text-grey-8">
+                          <q-btn size="12px" flat dense round color="primary" icon="more_vert">
+                            <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
+                            <q-menu anchor="bottom right" self="top right">
+                              <q-list dense>
+                                <q-item clickable v-close-popup @click="previewChannelStream(suggestion)">
+                                  <q-item-section avatar>
+                                    <q-icon name="play_arrow" color="primary" />
+                                  </q-item-section>
+                                  <q-item-section>Preview stream</q-item-section>
+                                </q-item>
+                                <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion)">
+                                  <q-item-section avatar>
+                                    <q-icon name="link" color="primary" />
+                                  </q-item-section>
+                                  <q-item-section>Copy stream URL</q-item-section>
+                                </q-item>
+                                <q-item clickable v-close-popup @click="addSuggestedStream(suggestion)">
+                                  <q-item-section avatar>
+                                    <q-icon name="add" color="primary" />
+                                  </q-item-section>
+                                  <q-item-section>Add to channel</q-item-section>
+                                </q-item>
+                                <q-separator />
+                                <q-item clickable v-close-popup @click="dismissSuggestedStream(suggestion)">
+                                  <q-item-section avatar>
+                                    <q-icon name="close" color="grey-7" />
+                                  </q-item-section>
+                                  <q-item-section>Dismiss suggestion</q-item-section>
+                                </q-item>
+                              </q-list>
+                            </q-menu>
+                          </q-btn>
+                        </div>
+                        <div v-else class="text-grey-8 q-gutter-xs">
+                          <q-btn size="12px" flat dense round color="primary" icon="play_arrow"
+                                 @click.stop="previewChannelStream(suggestion)">
+                            <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
+                          </q-btn>
+                          <q-btn size="12px" flat dense round color="primary" icon="link"
+                                 @click.stop="copyChannelStreamUrl(suggestion)">
+                            <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
+                          </q-btn>
                           <q-btn size="12px" flat dense round color="primary" icon="add"
                                  @click="addSuggestedStream(suggestion)">
                             <q-tooltip class="bg-white text-primary">Add to channel</q-tooltip>
@@ -373,6 +475,8 @@ tab          - The tab to display first ['info', 'settings']
 import axios from 'axios';
 import {ref} from 'vue';
 import draggable from 'vuedraggable';
+import {copyToClipboard} from 'quasar';
+import {useVideoStore} from 'stores/video';
 import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.vue';
 
 export default {
@@ -563,6 +667,36 @@ export default {
         cancel: true,
         persistent: true,
       }).onOk(() => dismiss());
+    },
+    normalizeStreamUrl(streamUrl) {
+      if (!streamUrl) {
+        return streamUrl;
+      }
+      if (streamUrl.includes('__TIC_HOST__')) {
+        return streamUrl.replace('__TIC_HOST__', window.location.origin);
+      }
+      return streamUrl;
+    },
+    previewChannelStream(stream) {
+      const url = this.normalizeStreamUrl(stream?.stream_url);
+      if (!url) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      this.videoStore.showPlayer({
+        url,
+        title: stream?.stream_name || this.name || 'Stream',
+        type: url.toLowerCase().includes('.m3u8') ? 'hls' : 'mpegts',
+      });
+    },
+    async copyChannelStreamUrl(stream) {
+      const url = this.normalizeStreamUrl(stream?.stream_url);
+      if (!url) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      await copyToClipboard(url);
+      this.$q.notify({color: 'positive', message: 'Stream URL copied'});
     },
     fetchEpgData: function() {
       // Fetch from server
@@ -851,6 +985,10 @@ export default {
         this.updateCurrentEpgChannelOptions();
       }
     },
+  },
+  setup() {
+    const videoStore = useVideoStore();
+    return {videoStore};
   },
 };
 </script>
