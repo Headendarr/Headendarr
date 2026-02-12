@@ -50,7 +50,7 @@
 
           <div class="col">
             <div class="text-h6 text-blue-10">
-              Playlist Settings
+              EPG Settings
             </div>
           </div>
 
