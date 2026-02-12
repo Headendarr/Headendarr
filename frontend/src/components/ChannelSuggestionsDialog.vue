@@ -50,7 +50,49 @@
               </q-item-label>
             </q-item-section>
             <q-item-section side>
-              <div class="q-gutter-xs">
+              <div v-if="$q.screen.lt.sm" class="text-grey-8">
+                <q-btn size="12px" flat dense round color="primary" icon="more_vert">
+                  <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
+                  <q-menu anchor="bottom right" self="top right">
+                    <q-list dense>
+                      <q-item clickable v-close-popup @click="previewChannelStream(suggestion)">
+                        <q-item-section avatar>
+                          <q-icon name="play_arrow" color="primary" />
+                        </q-item-section>
+                        <q-item-section>Preview stream</q-item-section>
+                      </q-item>
+                      <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion)">
+                        <q-item-section avatar>
+                          <q-icon name="link" color="primary" />
+                        </q-item-section>
+                        <q-item-section>Copy stream URL</q-item-section>
+                      </q-item>
+                      <q-item clickable v-close-popup @click="addSuggestedStream(suggestion)">
+                        <q-item-section avatar>
+                          <q-icon name="add" color="primary" />
+                        </q-item-section>
+                        <q-item-section>Add to channel</q-item-section>
+                      </q-item>
+                      <q-separator />
+                      <q-item clickable v-close-popup @click="dismissSuggestedStream(suggestion)">
+                        <q-item-section avatar>
+                          <q-icon name="close" color="grey-7" />
+                        </q-item-section>
+                        <q-item-section>Dismiss suggestion</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-btn>
+              </div>
+              <div v-else class="text-grey-8 q-gutter-xs">
+                <q-btn size="12px" flat dense round color="primary" icon="play_arrow"
+                       @click.stop="previewChannelStream(suggestion)">
+                  <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
+                </q-btn>
+                <q-btn size="12px" flat dense round color="primary" icon="link"
+                       @click.stop="copyChannelStreamUrl(suggestion)">
+                  <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
+                </q-btn>
                 <q-btn size="12px" flat dense round color="primary" icon="add"
                        @click="addSuggestedStream(suggestion)">
                   <q-tooltip class="bg-white text-primary">Add to channel</q-tooltip>
@@ -71,6 +113,8 @@
 <script>
 import {ref} from 'vue';
 import axios from 'axios';
+import {copyToClipboard} from 'quasar';
+import {useVideoStore} from 'stores/video';
 
 export default {
   name: 'ChannelSuggestionsDialog',
@@ -129,6 +173,36 @@ export default {
       this.didEmitOk = true;
       this.$emit('ok', {openSettings: true, channelId: this.channelId});
       this.hide();
+    },
+    normalizeStreamUrl(streamUrl) {
+      if (!streamUrl) {
+        return streamUrl;
+      }
+      if (streamUrl.includes('__TIC_HOST__')) {
+        return streamUrl.replace('__TIC_HOST__', window.location.origin);
+      }
+      return streamUrl;
+    },
+    previewChannelStream(stream) {
+      const url = this.normalizeStreamUrl(stream?.stream_url);
+      if (!url) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      this.videoStore.showPlayer({
+        url,
+        title: stream?.stream_name || 'Stream',
+        type: url.toLowerCase().includes('.m3u8') ? 'hls' : 'mpegts',
+      });
+    },
+    async copyChannelStreamUrl(stream) {
+      const url = this.normalizeStreamUrl(stream?.stream_url);
+      if (!url) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      await copyToClipboard(url);
+      this.$q.notify({color: 'positive', message: 'Stream URL copied'});
     },
     addSuggestedStream(suggestion) {
       if (!this.channelConfig) return;
@@ -210,6 +284,10 @@ export default {
         persistent: true,
       }).onOk(() => dismiss());
     },
+  },
+  setup() {
+    const videoStore = useVideoStore();
+    return {videoStore};
   },
 };
 </script>
