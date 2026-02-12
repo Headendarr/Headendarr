@@ -291,13 +291,15 @@
                               <q-tooltip class="bg-white text-primary">Stream actions</q-tooltip>
                               <q-menu anchor="bottom right" self="top right">
                                 <q-list dense>
-                                    <q-item clickable v-close-popup @click="previewChannelStream(element, {useChannelSource: true})">
+                                  <q-item clickable v-close-popup
+                                          @click="previewChannelStream(element, {useChannelSource: true})">
                                     <q-item-section avatar>
                                       <q-icon name="play_arrow" color="primary" />
                                     </q-item-section>
                                     <q-item-section>Preview stream</q-item-section>
                                   </q-item>
-                                  <q-item clickable v-close-popup @click="copyChannelStreamUrl(element, {useChannelSource: true})">
+                                  <q-item clickable v-close-popup
+                                          @click="copyChannelStreamUrl(element, {useChannelSource: true})">
                                     <q-item-section avatar>
                                       <q-icon name="link" color="primary" />
                                     </q-item-section>
@@ -398,13 +400,15 @@
                             <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
                             <q-menu anchor="bottom right" self="top right">
                               <q-list dense>
-                                <q-item clickable v-close-popup @click="previewChannelStream(suggestion, {usePlaylistStream: true})">
+                                <q-item clickable v-close-popup
+                                        @click="previewChannelStream(suggestion, {usePlaylistStream: true})">
                                   <q-item-section avatar>
                                     <q-icon name="play_arrow" color="primary" />
                                   </q-item-section>
                                   <q-item-section>Preview stream</q-item-section>
                                 </q-item>
-                                <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
+                                <q-item clickable v-close-popup
+                                        @click="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
                                   <q-item-section avatar>
                                     <q-icon name="link" color="primary" />
                                   </q-item-section>

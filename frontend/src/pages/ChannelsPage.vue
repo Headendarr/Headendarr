@@ -829,6 +829,7 @@ export default defineComponent({
         all_sources_disabled: 'All streams disabled',
         missing_tvh_mux: 'Missing stream in TVHeadend',
         tvh_mux_failed: 'TVHeadend stream failed',
+        channel_logo_unavailable: 'Channel logo unavailable',
       };
       return status.issues.map(issue => labels[issue] || issue);
     },

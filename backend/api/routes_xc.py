@@ -7,7 +7,7 @@ from quart import request, jsonify, Response, current_app, redirect, send_from_d
 
 from backend.api import blueprint
 from backend.auth import audit_stream_event
-from backend.channels import read_config_all_channels
+from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
 from backend.playlists import read_config_all_playlists
 from backend.streaming import (
     append_stream_key,
@@ -58,7 +58,18 @@ def _build_base_url() -> str:
 
 async def _get_enabled_channels() -> List[Dict[str, Any]]:
     channels = await read_config_all_channels()
-    return [c for c in channels if c.get("enabled")]
+    base_url = _build_base_url()
+    enabled = []
+    for channel in channels:
+        if not channel.get("enabled"):
+            continue
+        channel["logo_url"] = build_channel_logo_proxy_url(
+            channel.get("id"),
+            base_url,
+            channel.get("logo_url") or "",
+        )
+        enabled.append(channel)
+    return enabled
 
 
 async def _get_channel_map() -> Dict[str, Dict[str, Any]]:

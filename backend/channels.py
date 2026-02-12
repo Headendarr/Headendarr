@@ -113,6 +113,10 @@ def _logo_source_state_path(config):
     return os.path.join(config.config_path, "cache", "channel_logo_sources.json")
 
 
+def _logo_health_state_path(config):
+    return os.path.join(config.config_path, "cache", "channel_logo_health.json")
+
+
 def _read_json_file(path, default):
     try:
         if not os.path.exists(path):
@@ -127,6 +131,15 @@ def _write_json_file(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def read_logo_health_map(config):
+    payload = _read_json_file(_logo_health_state_path(config), {})
+    if isinstance(payload, dict):
+        channels = payload.get("channels", {})
+        if isinstance(channels, dict):
+            return channels
+    return {}
 
 
 def _build_channel_sync_signature(channels, tic_base_url):
@@ -164,6 +177,16 @@ def _build_channel_sync_signature(channels, tic_base_url):
         for row in source_rows:
             digest.update(("src:" + "|".join(row)).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _logo_cache_token(source_logo_url: str) -> str:
+    return hashlib.sha1((source_logo_url or "").encode("utf-8")).hexdigest()[:12]
+
+
+def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
+    base = (base_url or "").rstrip("/")
+    token = _logo_cache_token(source_logo_url)
+    return f"{base}/tic-api/channels/{channel_id}/logo/{token}.png"
 
 
 async def read_config_all_channels(
@@ -351,14 +374,32 @@ async def download_image_to_base64(image_source, timeout=10):
 
 
 async def parse_image_as_base64(image_source):
+    base64_string_with_header, _, _ = await parse_image_as_base64_with_status(image_source)
+    return base64_string_with_header
+
+
+async def parse_image_as_base64_with_status(image_source):
     try:
+        if not image_source:
+            mime_type = "image/png"
+            image_base64_string = image_placeholder_base64
+            return f"data:{mime_type};base64,{image_base64_string}", "empty", None
         if image_source.startswith("data:image/"):
             mime_type = image_source.split(";")[0].split(":")[1]
             image_base64_string = image_source.split("base64,")[1]
+            status = "ok"
+            error = None
         elif image_source.startswith("http://") or image_source.startswith("https://"):
             image_base64_string, mime_type = await download_image_to_base64(
                 image_source, timeout=3
             )
+            # download_image_to_base64 falls back to placeholder on failure; detect that.
+            if image_base64_string == image_placeholder_base64:
+                status = "error"
+                error = f"Failed to fetch logo from URL: {image_source}"
+            else:
+                status = "ok"
+                error = None
         else:
             # Handle other cases or raise an error
             raise ValueError("Unsupported image source format")
@@ -367,10 +408,12 @@ async def parse_image_as_base64(image_source):
         # Return the placeholder image
         mime_type = "image/png"
         image_base64_string = image_placeholder_base64
+        status = "error"
+        error = str(e)
 
     # Prepend the MIME type and base64 header and return
     base64_string_with_header = f"data:{mime_type};base64,{image_base64_string}"
-    return base64_string_with_header
+    return base64_string_with_header, status, error
 
 
 async def read_base46_image_string(base64_string):
@@ -389,9 +432,13 @@ async def read_channel_logo(channel_id):
     channel = db.session.query(Channel).where(Channel.id == channel_id).one()
     base64_string = channel.logo_base64
     if not base64_string:
-        # Revert to using the logo url
-        base64_string, mime_type = await download_image_to_base64(channel.logo_url)
+        # Never force clients to fetch internet logos at request time.
+        # If cache is missing, return placeholder and let background sync refresh cache.
+        base64_string = f"data:image/png;base64,{image_placeholder_base64}"
     image_base64_string, mime_type = await read_base46_image_string(base64_string)
+    if image_base64_string is None:
+        image_base64_string = base64.b64decode(image_placeholder_base64)
+        mime_type = "image/png"
     return image_base64_string, mime_type
 
 
@@ -402,6 +449,7 @@ async def add_new_channel(config, data, commit=True, publish=True):
     """
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
+    app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
     channel = Channel(
         enabled=data.get("enabled"),
         name=data.get("name"),
@@ -497,11 +545,22 @@ async def add_new_channel(config, data, commit=True, publish=True):
         channel.sources = new_sources
 
     db.session.add(channel)
+    if publish:
+        db.session.flush()
 
     if publish:
         try:
             async with await get_tvh(config) as tvh:
-                channel_uuid = await publish_channel_to_tvh(tvh, channel)
+                logo_proxy_url = build_channel_logo_proxy_url(
+                    channel.id if channel.id else "new",
+                    app_url,
+                    channel.logo_url or "",
+                )
+                channel_uuid = await publish_channel_to_tvh(
+                    tvh,
+                    channel,
+                    icon_url=logo_proxy_url,
+                )
                 channel.tvh_uuid = channel_uuid
         except Exception as e:
             logger.error(
@@ -1102,9 +1161,10 @@ async def delete_channel(config, channel_id):
             return True
 
 
-async def build_m3u_lines_for_channel(tic_base_url, channel_uuid, channel):
+async def build_m3u_lines_for_channel(tic_base_url, channel_uuid, channel, logo_url=None):
     playlist = []
-    line = f'#EXTINF:-1 tvg-name="{channel.name}" tvg-logo="{channel.logo_url}" tvg-id="{channel_uuid}" tvg-chno="{channel.number}"'
+    tvg_logo = logo_url if logo_url is not None else channel.logo_url
+    line = f'#EXTINF:-1 tvg-name="{channel.name}" tvg-logo="{tvg_logo}" tvg-id="{channel_uuid}" tvg-chno="{channel.number}"'
     if channel.tags:
         line += f' group-title="{channel.tags[0]}"'
     line += f",{channel.name}"
@@ -1118,6 +1178,7 @@ async def build_m3u_lines_for_channel(tic_base_url, channel_uuid, channel):
 async def publish_channel_to_tvh(
     tvh,
     channel,
+    icon_url=None,
     existing_channels_by_uuid=None,
     existing_channels_by_name=None,
     existing_tag_details=None,
@@ -1162,7 +1223,7 @@ async def publish_channel_to_tvh(
             logger.info("   - Creating new channel in TVH")
             _count("create_channel")
             channel_uuid = await tvh.create_channel(
-                channel.name, channel.number, channel.logo_url
+                channel.name, channel.number, (icon_url if icon_url is not None else channel.logo_url)
             )
             if channel_uuid:
                 existing_channels_by_uuid[channel_uuid] = {"uuid": channel_uuid, "name": channel.name}
@@ -1174,7 +1235,7 @@ async def publish_channel_to_tvh(
         "uuid": channel_uuid,
         "name": channel.name,
         "number": channel.number,
-        "icon": channel.logo_url,
+        "icon": icon_url if icon_url is not None else channel.logo_url,
     }
     # Check for existing channel tags
     # Create channel tags in TVH if missing
@@ -1205,6 +1266,8 @@ async def batch_publish_new_channels_to_tvh(config, channels):
     """
     if not channels:
         return
+    settings = config.read_settings()
+    app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
     async with await get_tvh(config) as tvh:
         logger.info("Batch publishing %d new channels to TVH", len(channels))
         existing_channels = await tvh.list_all_channels()
@@ -1246,8 +1309,13 @@ async def batch_publish_new_channels_to_tvh(config, channels):
             existing_uuid = existing_by_name.get(ch.name)
             if not existing_uuid:
                 try:
+                    logo_proxy_url = build_channel_logo_proxy_url(
+                        ch.id,
+                        app_url,
+                        ch.logo_url or "",
+                    )
                     existing_uuid = await tvh.create_channel(
-                        ch.name, ch.number, ch.logo_url
+                        ch.name, ch.number, logo_proxy_url
                     )
                     existing_by_name[ch.name] = existing_uuid
                 except Exception as e:
@@ -1265,7 +1333,11 @@ async def batch_publish_new_channels_to_tvh(config, channels):
                 "uuid": existing_uuid,
                 "name": ch.name,
                 "number": ch.number,
-                "icon": ch.logo_url,
+                "icon": build_channel_logo_proxy_url(
+                    ch.id,
+                    app_url,
+                    ch.logo_url or "",
+                ),
                 "tags": tag_uuids,
             }
             try:
@@ -1290,6 +1362,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
     tic_base_url = settings["settings"]["app_url"]
     sync_state_path = _channel_sync_state_path(config)
     logo_source_state_path = _logo_source_state_path(config)
+    logo_health_state_path = _logo_health_state_path(config)
 
     t0 = time.perf_counter()
     managed_uuids = []
@@ -1323,6 +1396,11 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
         logo_source_state = logo_source_state_payload.get("sources", {})
     else:
         logo_source_state = {}
+    logo_health_state_payload = _read_json_file(logo_health_state_path, {})
+    if isinstance(logo_health_state_payload, dict):
+        logo_health_state = logo_health_state_payload.get("channels", {})
+    else:
+        logo_health_state = {}
     t0 = time.perf_counter()
     async with await get_tvh(config) as tvh:
         # Prefetch TVH channels/tags once for this run.
@@ -1352,24 +1430,56 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
         pending_commit = False
         t_publish = time.perf_counter()
         for result in results:
+            logo_proxy_url = build_channel_logo_proxy_url(
+                result.id,
+                tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
+                result.logo_url or "",
+            )
             channel_uuid = await publish_channel_to_tvh(
                 tvh,
                 result,
+                icon_url=logo_proxy_url,
                 existing_channels_by_uuid=existing_channels_by_uuid,
                 existing_channels_by_name=existing_channels_by_name,
                 existing_tag_details=existing_tag_details,
                 api_calls=api_calls,
             )
             playlist += await build_m3u_lines_for_channel(
-                tic_base_url, channel_uuid, result
+                tic_base_url, channel_uuid, result, logo_url=logo_proxy_url
             )
             result.tvh_uuid = channel_uuid
             logo_url = result.logo_url or ""
             last_logo_url = logo_source_state.get(str(result.id))
+            logo_status = logo_health_state.get(str(result.id), {})
             if (not result.logo_base64) or (last_logo_url != logo_url):
-                result.logo_base64 = await parse_image_as_base64(result.logo_url)
+                parsed_base64, parse_status, parse_error = await parse_image_as_base64_with_status(result.logo_url)
+                result.logo_base64 = parsed_base64
                 logo_source_state[str(result.id)] = logo_url
+                logo_status = {
+                    "status": parse_status,
+                    "error": parse_error,
+                    "source_logo_url": logo_url,
+                    "updated_at": int(time.time()),
+                }
+                logo_health_state[str(result.id)] = logo_status
                 logo_refresh_count += 1
+            elif str(result.id) not in logo_health_state:
+                # Backfill status for rows that already had cached logos before health tracking existed.
+                cached_is_placeholder = (
+                    isinstance(result.logo_base64, str)
+                    and result.logo_base64.endswith(image_placeholder_base64)
+                )
+                inferred_error = None
+                inferred_status = "ok"
+                if logo_url and (not result.logo_base64 or cached_is_placeholder):
+                    inferred_status = "error"
+                    inferred_error = "Logo cache contains placeholder due to previous fetch failure"
+                logo_health_state[str(result.id)] = {
+                    "status": inferred_status,
+                    "error": inferred_error,
+                    "source_logo_url": logo_url,
+                    "updated_at": int(time.time()),
+                }
             managed_uuids.append(channel_uuid)
             pending_commit = True
         phase_seconds["channel_publish_loop"] = time.perf_counter() - t_publish
@@ -1414,6 +1524,13 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
         logo_source_state_path,
         {
             "sources": logo_source_state,
+            "updated_at": int(time.time()),
+        },
+    )
+    _write_json_file(
+        logo_health_state_path,
+        {
+            "channels": logo_health_state,
             "updated_at": int(time.time()),
         },
     )
@@ -1563,7 +1680,11 @@ async def publish_channel_muxes(config):
                     "enabled": 1,
                     "uuid": mux_uuid,
                     "iptv_url": iptv_url,
-                    "iptv_icon": channel_obj.logo_url,
+                    "iptv_icon": build_channel_logo_proxy_url(
+                        channel_obj.id,
+                        tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
+                        channel_obj.logo_url or "",
+                    ),
                     "iptv_sname": channel_obj.name,
                     "iptv_muxname": mux_name,
                     "channel_number": channel_obj.number,

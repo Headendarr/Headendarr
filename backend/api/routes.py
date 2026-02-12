@@ -13,6 +13,7 @@ from backend.auth import admin_auth_required, get_user_from_token, stream_key_re
 from backend.config import is_tvh_process_running_locally
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.tvheadend.tvh_requests import configure_tvh, ensure_tvh_sync_user
+from backend.channels import build_channel_logo_proxy_url
 
 
 @blueprint.route('/')
@@ -82,7 +83,11 @@ async def _build_playlist_with_epg():
             continue
         channel_uuid = channel.get("tvh_uuid")
         channel_name = channel.get("name")
-        channel_logo_url = channel.get("logo_url")
+        channel_logo_url = build_channel_logo_proxy_url(
+            channel.get("id"),
+            base_url,
+            channel.get("logo_url") or "",
+        )
         channel_number = channel.get("number")
         line = f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" tvg-id="{channel_uuid}" tvg-chno="{channel_number}"'
         if channel.get("tags"):
@@ -136,9 +141,12 @@ async def ping():
     # Frontend AIO mixin expects uppercase 'PONG' substring in plain response
     return 'PONG', 200, {'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store'}
 
-# Convenience alias: some clients are probing /tic-tvh/ping (tvheadend http_root); return same pong
+
 @blueprint.route('/tic-tvh/ping')
 async def ping_tvh_alias():
+    """
+    This is just a convenience alias. Some clients are probing /tic-tvh/ping (tvheadend http_root); return same pong
+    """
     return await ping()
 
 
@@ -337,8 +345,8 @@ async def api_get_background_tasks():
     async def snapshot(task_broker):
         return {
             "task_queue_status": await task_broker.get_status(),
-            "current_task":      await task_broker.get_currently_running_task(),
-            "pending_tasks":     await task_broker.get_pending_tasks(),
+            "current_task": await task_broker.get_currently_running_task(),
+            "pending_tasks": await task_broker.get_pending_tasks(),
         }
 
     task_broker = await TaskQueueBroker.get_instance()
