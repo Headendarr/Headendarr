@@ -314,6 +314,7 @@ export default {
           'playlist_name': selected['playlist_name'],
           'channel_id': selected['channel_id'],
           'stream_name': selected['name'],
+          'stream_url': selected['url'],
         });
       }
       if (returnItems.length > 0) {
@@ -468,7 +469,7 @@ export default {
         `${this.selected.length} record${this.selected.length > 1 ? 's' : ''} selected of ${this.rows.length}`;
     },
     genRowIndex: function(row) {
-      return `${row.playlist_id}-${row.name}`;
+      return `${row.playlist_id}-${row.url || row.name}`;
     },
   },
   computed: {

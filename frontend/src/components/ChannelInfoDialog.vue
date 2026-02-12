@@ -508,15 +508,21 @@ export default {
       if (!suggestion) {
         return;
       }
-      const exists = (this.listOfChannelSources || []).some((source) => (
-        source.playlist_id === suggestion.playlist_id &&
-        source.stream_name === suggestion.stream_name
-      ));
+      const exists = (this.listOfChannelSources || []).some((source) => {
+        if (source.playlist_id !== suggestion.playlist_id) {
+          return false;
+        }
+        if (suggestion.stream_url && source.stream_url) {
+          return source.stream_url === suggestion.stream_url;
+        }
+        return source.stream_name === suggestion.stream_name;
+      });
       if (exists) {
         this.$q.notify({color: 'warning', message: 'Stream already added'});
         return;
       }
       this.listOfChannelSources.push({
+        stream_id: suggestion.stream_id,
         playlist_id: suggestion.playlist_id,
         playlist_name: suggestion.playlist_name || 'Playlist',
         priority: 0,
@@ -743,8 +749,13 @@ export default {
           for (const i in payload.selectedStreams) {
             // Check if this sources is already added...
             const foundItem = enabledStreams.find((item) => {
-              return (item.playlist_id === payload.selectedStreams[i].playlist_id && item.stream_name ===
-                payload.selectedStreams[i].stream_name);
+              if (item.playlist_id !== payload.selectedStreams[i].playlist_id) {
+                return false;
+              }
+              if (payload.selectedStreams[i].stream_url && item.stream_url) {
+                return item.stream_url === payload.selectedStreams[i].stream_url;
+              }
+              return item.stream_name === payload.selectedStreams[i].stream_name;
             });
             if (foundItem) {
               // Value already exists
@@ -756,9 +767,11 @@ export default {
             });
             enabledStreams.push({
               source_type: 'playlist',
+              stream_id: payload.selectedStreams[i].id,
               playlist_id: payload.selectedStreams[i].playlist_id,
               playlist_name: playlistDetails.name,
               stream_name: payload.selectedStreams[i].stream_name,
+              stream_url: payload.selectedStreams[i].stream_url,
               use_hls_proxy: false,
             });
           }

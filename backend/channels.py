@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 import aiofiles
 import aiohttp
 import requests
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.ffmpeg import generate_iptv_url
@@ -463,7 +464,14 @@ async def update_channel(config, channel_id, data):
             channel.enabled = data.get("enabled")
             channel.name = data.get("name")
             channel.logo_url = data.get("logo_url")
-            channel.number = data.get("number")
+            number_value = data.get("number")
+            if number_value in ("", None):
+                channel.number = None
+            else:
+                try:
+                    channel.number = int(number_value)
+                except (TypeError, ValueError):
+                    channel.number = None
 
             # Category Tags
             # -- Remove existing tags
@@ -503,6 +511,52 @@ async def update_channel(config, channel_id, data):
             priority = len(data.get("sources", []))
             logger.info("Updating channel sources")
             seen_xc_streams = set()
+            playlist_stream_cache = {}
+
+            def _playlist_stream_from_model(row):
+                return {
+                    "name": row.name,
+                    "url": row.url,
+                    "channel_id": row.channel_id,
+                    "group_title": row.group_title,
+                    "tvg_chno": row.tvg_chno,
+                    "tvg_id": row.tvg_id,
+                    "tvg_logo": row.tvg_logo,
+                    "source_type": row.source_type,
+                    "xc_stream_id": row.xc_stream_id,
+                }
+
+            def _get_playlist_stream(playlist_info, source_info):
+                stream_id = source_info.get("stream_id")
+                stream_url = source_info.get("stream_url")
+                stream_name = source_info.get("stream_name")
+                if stream_id:
+                    row = (
+                        db.session.query(PlaylistStreams)
+                        .filter(
+                            PlaylistStreams.playlist_id == playlist_info.id,
+                            PlaylistStreams.id == stream_id,
+                        )
+                        .one_or_none()
+                    )
+                    if row:
+                        return _playlist_stream_from_model(row)
+                if stream_url:
+                    row = (
+                        db.session.query(PlaylistStreams)
+                        .filter(
+                            PlaylistStreams.playlist_id == playlist_info.id,
+                            PlaylistStreams.url == stream_url,
+                        )
+                        .one_or_none()
+                    )
+                    if row:
+                        return _playlist_stream_from_model(row)
+                if playlist_info.id not in playlist_stream_cache:
+                    playlist_stream_cache[playlist_info.id] = fetch_playlist_streams(
+                        playlist_info.id
+                    )
+                return playlist_stream_cache[playlist_info.id].get(stream_name)
             for source_info in data.get("sources", []):
                 source_id = source_info.get("id")
                 is_manual = source_info.get(
@@ -515,12 +569,15 @@ async def update_channel(config, channel_id, data):
                     )
                     channel_source = query.scalar_one_or_none()
                 if not channel_source and not is_manual:
+                    stream_url = source_info.get("stream_url")
                     query = await session.execute(
                         select(ChannelSource).filter(
                             and_(
                                 ChannelSource.channel_id == channel.id,
                                 ChannelSource.playlist_id == source_info["playlist_id"],
-                                ChannelSource.playlist_stream_name
+                                ChannelSource.playlist_stream_url == stream_url
+                                if stream_url
+                                else ChannelSource.playlist_stream_name
                                 == source_info["stream_name"],
                             )
                         )
@@ -546,35 +603,21 @@ async def update_channel(config, channel_id, data):
                         select(Playlist).filter(Playlist.id == source_info["playlist_id"])
                     )
                     playlist_info = query.scalar_one()
-                    playlist_streams = fetch_playlist_streams(playlist_info.id)
-                    playlist_stream = playlist_streams.get(source_info["stream_name"])
+                    playlist_stream = _get_playlist_stream(playlist_info, source_info)
                     if playlist_info.account_type == XC_ACCOUNT_TYPE and not source_info.get(
                         "xc_account_id"
                     ):
-                        stream_key = (playlist_info.id, source_info["stream_name"])
+                        stream_key = (
+                            playlist_info.id,
+                            source_info.get("stream_id")
+                            or source_info.get("stream_url")
+                            or source_info["stream_name"],
+                        )
                         if stream_key in seen_xc_streams:
                             continue
                         seen_xc_streams.add(stream_key)
                         accounts = _get_enabled_xc_accounts_sync(playlist_info.id)
                         for account in accounts:
-                            query = await session.execute(
-                                select(ChannelSource).filter(
-                                    and_(
-                                        ChannelSource.channel_id == channel.id,
-                                        ChannelSource.playlist_id == playlist_info.id,
-                                        ChannelSource.playlist_stream_name
-                                        == source_info["stream_name"],
-                                        ChannelSource.xc_account_id == account.id,
-                                    )
-                                )
-                            )
-                            account_source = query.scalar_one_or_none()
-                            if not account_source:
-                                account_source = ChannelSource(
-                                    playlist_id=playlist_info.id,
-                                    xc_account_id=account.id,
-                                    playlist_stream_name=source_info["stream_name"],
-                                )
                             template = playlist_stream.get("url")
                             if playlist_stream.get("xc_stream_id"):
                                 template = _build_xc_url_template(
@@ -590,6 +633,23 @@ async def update_channel(config, channel_id, data):
                                 stream_url,
                                 instance_id,
                             )
+                            query = await session.execute(
+                                select(ChannelSource).filter(
+                                    and_(
+                                        ChannelSource.channel_id == channel.id,
+                                        ChannelSource.playlist_id == playlist_info.id,
+                                        ChannelSource.playlist_stream_url == stream_url,
+                                        ChannelSource.xc_account_id == account.id,
+                                    )
+                                )
+                            )
+                            account_source = query.scalar_one_or_none()
+                            if not account_source:
+                                account_source = ChannelSource(
+                                    playlist_id=playlist_info.id,
+                                    xc_account_id=account.id,
+                                )
+                            account_source.playlist_stream_name = source_info["stream_name"]
                             account_source.playlist_stream_url = stream_url
                             if account_source.id:
                                 new_source_ids.append(account_source.id)
@@ -643,11 +703,8 @@ async def update_channel(config, channel_id, data):
                                 )
                             )
                             playlist_info = query.scalar_one()
-                            playlist_streams = fetch_playlist_streams(
-                                playlist_info.id
-                            )
-                            playlist_stream = playlist_streams.get(
-                                source_info["stream_name"]
+                            playlist_stream = _get_playlist_stream(
+                                playlist_info, source_info
                             )
                         if (
                             playlist_info.account_type == XC_ACCOUNT_TYPE
@@ -708,11 +765,8 @@ async def update_channel(config, channel_id, data):
                                         )
                                     )
                                     playlist_info = query.scalar_one()
-                                    playlist_streams = fetch_playlist_streams(
-                                        playlist_info.id
-                                    )
-                                    playlist_stream = playlist_streams.get(
-                                        source_info["stream_name"]
+                                    playlist_stream = _get_playlist_stream(
+                                        playlist_info, source_info
                                     )
                                 if not playlist_stream:
                                     logger.warning(
@@ -784,29 +838,44 @@ async def update_channel(config, channel_id, data):
                 channel.sources = new_sources
 
             # Remove any suggestions that reference streams already added to this channel
-            stream_pairs = set()
+            stream_name_pairs = set()
+            stream_url_pairs = set()
             for source_info in data.get("sources", []):
                 playlist_id = source_info.get("playlist_id")
                 stream_name = source_info.get("stream_name")
-                if playlist_id and stream_name:
-                    stream_pairs.add((int(playlist_id), stream_name))
-            if stream_pairs:
-                playlist_ids = {pair[0] for pair in stream_pairs}
-                stream_names = {pair[1] for pair in stream_pairs}
+                stream_url = source_info.get("stream_url")
+                if playlist_id and stream_url:
+                    stream_url_pairs.add((int(playlist_id), stream_url))
+                elif playlist_id and stream_name:
+                    stream_name_pairs.add((int(playlist_id), stream_name))
+            if stream_url_pairs or stream_name_pairs:
+                playlist_ids = {pair[0] for pair in stream_url_pairs | stream_name_pairs}
+                stream_names = {pair[1] for pair in stream_name_pairs}
+                stream_urls = {pair[1] for pair in stream_url_pairs}
+                match_clauses = []
+                if stream_names:
+                    match_clauses.append(PlaylistStreams.name.in_(stream_names))
+                if stream_urls:
+                    match_clauses.append(PlaylistStreams.url.in_(stream_urls))
                 result = await session.execute(
                     select(
                         PlaylistStreams.id,
                         PlaylistStreams.playlist_id,
                         PlaylistStreams.name,
+                        PlaylistStreams.url,
                     ).where(
                         PlaylistStreams.playlist_id.in_(playlist_ids),
-                        PlaylistStreams.name.in_(stream_names),
+                        or_(*match_clauses),
                     )
                 )
                 stream_ids = [
                     row.id
                     for row in result
-                    if (row.playlist_id, row.name) in stream_pairs
+                    if (
+                        (row.url and (row.playlist_id, row.url) in stream_url_pairs) or
+                        (not row.url and (row.playlist_id, row.name) in stream_name_pairs) or
+                        (row.playlist_id, row.name) in stream_name_pairs
+                    )
                 ]
                 if stream_ids:
                     await session.execute(
@@ -1264,6 +1333,11 @@ async def publish_channel_muxes(config):
                     f"{source_obj.playlist.name} - {source_obj.playlist_stream_name}"
                 )
                 mux_name = service_name
+                if source_obj.playlist_stream_url:
+                    url_hash = hashlib.sha1(
+                        source_obj.playlist_stream_url.encode("utf-8")
+                    ).hexdigest()[:8]
+                    mux_name = f"{mux_name} [{url_hash}]"
                 if not mux_name.lower().startswith("tic-"):
                     mux_name = f"tic-{mux_name}"
                 stream_url = source_obj.playlist_stream_url

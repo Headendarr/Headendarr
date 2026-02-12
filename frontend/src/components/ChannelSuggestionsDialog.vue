@@ -133,15 +133,21 @@ export default {
     addSuggestedStream(suggestion) {
       if (!this.channelConfig) return;
       const sources = this.channelConfig.sources || [];
-      const exists = sources.some((source) => (
-        source.playlist_id === suggestion.playlist_id &&
-        source.stream_name === suggestion.stream_name
-      ));
+      const exists = sources.some((source) => {
+        if (source.playlist_id !== suggestion.playlist_id) {
+          return false;
+        }
+        if (suggestion.stream_url && source.stream_url) {
+          return source.stream_url === suggestion.stream_url;
+        }
+        return source.stream_name === suggestion.stream_name;
+      });
       if (exists) {
         this.$q.notify({color: 'warning', message: 'Stream already added'});
         return;
       }
       sources.push({
+        stream_id: suggestion.stream_id,
         playlist_id: suggestion.playlist_id,
         playlist_name: suggestion.playlist_name || 'Playlist',
         priority: 0,

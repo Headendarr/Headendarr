@@ -146,16 +146,21 @@ def update_channel_suggestions_for_playlist(playlist_id, *, score_threshold=0.70
             channel_regions |= _extract_region_tokens(tag.name)
 
         existing_tokens_list = []
-        existing_source_pairs = set()
+        existing_source_name_pairs = set()
+        existing_source_url_pairs = set()
         for source in channel.sources or []:
-            if source.playlist_id and source.playlist_stream_name:
-                existing_source_pairs.add((source.playlist_id, source.playlist_stream_name))
+            if source.playlist_id and source.playlist_stream_url:
+                existing_source_url_pairs.add((source.playlist_id, source.playlist_stream_url))
+            elif source.playlist_id and source.playlist_stream_name:
+                existing_source_name_pairs.add((source.playlist_id, source.playlist_stream_name))
             if source.playlist_stream_name:
                 existing_tokens_list.append(_tokenize(source.playlist_stream_name))
 
         scored = []
         for stream in streams:
-            if (stream.playlist_id, stream.name) in existing_source_pairs:
+            if stream.url and (stream.playlist_id, stream.url) in existing_source_url_pairs:
+                continue
+            if not stream.url and (stream.playlist_id, stream.name) in existing_source_name_pairs:
                 continue
             if not _regions_match(channel_regions, stream_regions_map.get(stream.id, set())):
                 continue
