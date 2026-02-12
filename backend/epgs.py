@@ -35,8 +35,49 @@ def generate_epg_channel_id(number, name):
     return str(number)
 
 
-async def read_config_all_epgs(output_for_export=False):
+def _epg_health_state_path(config):
+    return os.path.join(config.config_path, "cache", "epg_health.json")
+
+
+def _read_epg_health_map(config):
+    try:
+        path = _epg_health_state_path(config)
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and isinstance(payload.get("epgs"), dict):
+            return payload["epgs"]
+    except Exception:
+        pass
+    return {}
+
+
+def _write_epg_health_map(config, epg_map):
+    path = _epg_health_state_path(config)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"epgs": epg_map}, f, indent=2, sort_keys=True)
+
+
+def _set_epg_health(config, epg_id, payload):
+    epg_map = _read_epg_health_map(config)
+    epg_key = str(epg_id)
+    current = epg_map.get(epg_key, {})
+    current.update(payload)
+    epg_map[epg_key] = current
+    _write_epg_health_map(config, epg_map)
+
+
+def _clear_epg_health(config, epg_id):
+    epg_map = _read_epg_health_map(config)
+    epg_map.pop(str(epg_id), None)
+    _write_epg_health_map(config, epg_map)
+
+
+async def read_config_all_epgs(output_for_export=False, config=None):
     return_list = []
+    epg_health_map = _read_epg_health_map(config) if config else {}
     async with Session() as session:
         async with session.begin():
             query = await session.execute(select(Epg))
@@ -56,13 +97,15 @@ async def read_config_all_epgs(output_for_export=False):
                     'name':    result.name,
                     'url':     result.url,
                     'user_agent': result.user_agent,
+                    'health': epg_health_map.get(str(result.id), {}),
                 })
     return return_list
 
 
-async def read_config_one_epg(epg_id):
+async def read_config_one_epg(epg_id, config=None):
     epg_id = normalize_id(epg_id, "epg")
     return_item = {}
+    epg_health_map = _read_epg_health_map(config) if config else {}
     async with Session() as session:
         async with session.begin():
             query = await session.execute(select(Epg).where(Epg.id == epg_id))
@@ -74,6 +117,7 @@ async def read_config_one_epg(epg_id):
                     'name':    results.name,
                     'url':     results.url,
                     'user_agent': results.user_agent,
+                    'health': epg_health_map.get(str(results.id), {}),
                 }
     return return_item
 
@@ -128,6 +172,7 @@ async def delete_epg(config, epg_id):
     for f in cache_files:
         if os.path.isfile(f):
             os.remove(f)
+    _clear_epg_health(config, epg_id)
 
 
 def _resolve_user_agent(settings, user_agent):
@@ -342,29 +387,57 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
 
 
 async def import_epg_data(config, epg_id):
-    epg = await read_config_one_epg(epg_id)
+    epg = await read_config_one_epg(epg_id, config=config)
     settings = config.read_settings()
     # Download a new local copy of the EPG
     logger.info("Downloading updated XMLTV file for EPG #%s from url - '%s'", epg_id, epg['url'])
-    start_time = time.time()
-    xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
-    await download_xmltv_epg(settings, epg['url'], xmltv_file, epg.get('user_agent'))
-    execution_time = time.time() - start_time
-    logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
-    # Read and save EPG data to DB (offloaded to worker thread)
-    logger.info("Importing updated data for EPG #%s", epg_id)
-    start_time = time.perf_counter()
-    stats = await run_sync(_import_epg_xml_sync)(epg_id, xmltv_file)
-    execution_time = time.perf_counter() - start_time
-    logger.info(
-        "EPG #%s import stats channels=%s programmes=%s skipped=%s phases=%s",
-        epg_id,
-        stats["channels"],
-        stats["programmes"],
-        stats["programmes_skipped"],
-        {k: round(v, 2) for k, v in stats["phase_seconds"].items()},
-    )
-    logger.info("Updated data for EPG #%s was imported in '%s' seconds", epg_id, int(execution_time))
+    attempt_ts = int(time.time())
+    try:
+        start_time = time.time()
+        xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
+        await download_xmltv_epg(settings, epg['url'], xmltv_file, epg.get('user_agent'))
+        execution_time = time.time() - start_time
+        logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
+        # Read and save EPG data to DB (offloaded to worker thread)
+        logger.info("Importing updated data for EPG #%s", epg_id)
+        start_time = time.perf_counter()
+        stats = await run_sync(_import_epg_xml_sync)(epg_id, xmltv_file)
+        execution_time = time.perf_counter() - start_time
+        logger.info(
+            "EPG #%s import stats channels=%s programmes=%s skipped=%s phases=%s",
+            epg_id,
+            stats["channels"],
+            stats["programmes"],
+            stats["programmes_skipped"],
+            {k: round(v, 2) for k, v in stats["phase_seconds"].items()},
+        )
+        logger.info("Updated data for EPG #%s was imported in '%s' seconds", epg_id, int(execution_time))
+        _set_epg_health(
+            config,
+            epg_id,
+            {
+                "status": "ok",
+                "error": None,
+                "http_status": None,
+                "last_attempt_at": attempt_ts,
+                "last_success_at": int(time.time()),
+                "source_url": epg.get("url"),
+            },
+        )
+    except Exception as exc:
+        _set_epg_health(
+            config,
+            epg_id,
+            {
+                "status": "error",
+                "error": str(exc),
+                "http_status": getattr(exc, "status", None),
+                "last_attempt_at": attempt_ts,
+                "last_failure_at": int(time.time()),
+                "source_url": epg.get("url"),
+            },
+        )
+        raise
 
 
 async def import_epg_data_for_all_epgs(config):
@@ -387,6 +460,8 @@ async def read_channels_from_all_epgs(config):
 
 # --- Cache ---
 XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
+
+
 async def build_custom_epg_subprocess(config):
     project_root = Path(__file__).resolve().parents[1]
     proc = await asyncio.create_subprocess_exec(
@@ -592,14 +667,17 @@ async def build_custom_epg(config, throttle=False):
                 except Exception:
                     pass
             # Video
-            if any(epg_channel_programme.get(k) for k in ['video_colour','video_aspect','video_quality']):
+            if any(epg_channel_programme.get(k) for k in ['video_colour', 'video_aspect', 'video_quality']):
                 video_el = ET.SubElement(output_programme, 'video')
                 if epg_channel_programme.get('video_colour'):
-                    c = ET.SubElement(video_el, 'colour'); c.text = epg_channel_programme['video_colour']
+                    c = ET.SubElement(video_el, 'colour')
+                    c.text = epg_channel_programme['video_colour']
                 if epg_channel_programme.get('video_aspect'):
-                    a = ET.SubElement(video_el, 'aspect'); a.text = epg_channel_programme['video_aspect']
+                    a = ET.SubElement(video_el, 'aspect')
+                    a.text = epg_channel_programme['video_aspect']
                 if epg_channel_programme.get('video_quality'):
-                    q = ET.SubElement(video_el, 'quality'); q.text = epg_channel_programme['video_quality']
+                    q = ET.SubElement(video_el, 'quality')
+                    q.text = epg_channel_programme['video_quality']
             # Subtitles
             if epg_channel_programme.get('subtitles_type'):
                 subs = ET.SubElement(output_programme, 'subtitles')
@@ -618,24 +696,33 @@ async def build_custom_epg(config, throttle=False):
                 ET.SubElement(output_programme, 'new')
             # Episode numbers
             if epg_channel_programme.get('epnum_onscreen'):
-                e1 = ET.SubElement(output_programme, 'episode-num'); e1.set('system', 'onscreen'); e1.text = epg_channel_programme['epnum_onscreen']
+                e1 = ET.SubElement(output_programme, 'episode-num')
+                e1.set('system', 'onscreen')
+                e1.text = epg_channel_programme['epnum_onscreen']
             if epg_channel_programme.get('epnum_xmltv_ns'):
-                e2 = ET.SubElement(output_programme, 'episode-num'); e2.set('system', 'xmltv_ns'); e2.text = epg_channel_programme['epnum_xmltv_ns']
+                e2 = ET.SubElement(output_programme, 'episode-num')
+                e2.set('system', 'xmltv_ns')
+                e2.text = epg_channel_programme['epnum_xmltv_ns']
             if epg_channel_programme.get('epnum_dd_progid'):
-                e3 = ET.SubElement(output_programme, 'episode-num'); e3.set('system', 'dd_progid'); e3.text = epg_channel_programme['epnum_dd_progid']
+                e3 = ET.SubElement(output_programme, 'episode-num')
+                e3.set('system', 'dd_progid')
+                e3.text = epg_channel_programme['epnum_dd_progid']
             # Star rating
             if epg_channel_programme.get('star_rating'):
                 sr = ET.SubElement(output_programme, 'star-rating')
-                val = ET.SubElement(sr, 'value'); val.text = epg_channel_programme['star_rating']
+                val = ET.SubElement(sr, 'value')
+                val.text = epg_channel_programme['star_rating']
             # Production year
             if epg_channel_programme.get('production_year'):
-                d = ET.SubElement(output_programme, 'date'); d.text = epg_channel_programme['production_year']
+                d = ET.SubElement(output_programme, 'date')
+                d.text = epg_channel_programme['production_year']
             # Rating system
             if epg_channel_programme.get('rating_value'):
                 rating_el = ET.SubElement(output_programme, 'rating')
                 if epg_channel_programme.get('rating_system'):
                     rating_el.set('system', epg_channel_programme['rating_system'])
-                rv = ET.SubElement(rating_el, 'value'); rv.text = epg_channel_programme['rating_value']
+                rv = ET.SubElement(rating_el, 'value')
+                rv.text = epg_channel_programme['rating_value']
             # Loop through all categories for this programme and add them as "category" child elements
             if epg_channel_programme['categories']:
                 for category in epg_channel_programme['categories']:

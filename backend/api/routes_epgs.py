@@ -11,7 +11,8 @@ from quart import request, jsonify, current_app
 @blueprint.route('/tic-api/epgs/get', methods=['GET'])
 @admin_auth_required
 async def api_get_epgs_list():
-    all_epg_configs = await read_config_all_epgs()
+    config = current_app.config['APP_CONFIG']
+    all_epg_configs = await read_config_all_epgs(config=config)
     return jsonify(
         {
             "success": True,
@@ -39,7 +40,8 @@ async def api_get_epg_config(epg_id):
         epg_id = int(epg_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
-    epg_config = await read_config_one_epg(epg_id)
+    config = current_app.config['APP_CONFIG']
+    epg_config = await read_config_one_epg(epg_id, config=config)
     return jsonify(
         {
             "success": True,
@@ -92,7 +94,7 @@ async def api_update_epg(epg_id):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
     epg_name = None
     try:
-        epg_config = await read_config_one_epg(epg_id)
+        epg_config = await read_config_one_epg(epg_id, config=config)
         epg_name = epg_config.get('name') if epg_config else None
     except Exception:
         epg_name = None

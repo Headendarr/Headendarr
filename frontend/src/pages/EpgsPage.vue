@@ -33,14 +33,27 @@
                     v-bind:key="index"
                     :class="epg.enabled ? '' : 'disabled-item'">
                     <q-item-section avatar>
-                      <q-icon name="calendar_month" />
+                      <q-icon :name="epgHasIssue(epg) ? 'warning' : 'calendar_month'" :color="epgHasIssue(epg) ? 'warning' : ''" />
                       <!--                  <q-img src="playlist_play"/>-->
                     </q-item-section>
 
                     <q-item-section top>
-                      <q-item-label>{{ epg.name }}</q-item-label>
+                      <q-item-label class="row items-center no-wrap q-gutter-sm">
+                        <span>{{ epg.name }}</span>
+                        <q-chip
+                          v-if="epgHasIssue(epg)"
+                          dense
+                          color="orange-6"
+                          text-color="white">
+                          <q-icon name="warning" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
+                          <span v-if="$q.screen.gt.lg">Needs attention</span>
+                        </q-chip>
+                      </q-item-label>
                       <q-item-label caption lines="3">
                         <span v-html="epg.description"></span>
+                      </q-item-label>
+                      <q-item-label v-if="epgHasIssue(epg)" caption class="text-warning">
+                        Last update failed{{ epgErrorTime(epg) ? ` (${epgErrorTime(epg)})` : '' }}: {{ epgErrorMessage(epg) }}
                       </q-item-label>
                     </q-item-section>
 
@@ -269,6 +282,24 @@ export default defineComponent({
     };
   },
   methods: {
+    epgHasIssue(epg) {
+      return epg?.health?.status === 'error';
+    },
+    epgErrorMessage(epg) {
+      const error = epg?.health?.error || 'Unknown download/import error';
+      return error.length > 180 ? `${error.substring(0, 177)}...` : error;
+    },
+    epgErrorTime(epg) {
+      const ts = epg?.health?.last_failure_at;
+      if (!ts) {
+        return '';
+      }
+      try {
+        return new Date(ts * 1000).toLocaleString();
+      } catch {
+        return '';
+      }
+    },
     fetchSettings: function() {
       // Fetch current settings
       axios({
