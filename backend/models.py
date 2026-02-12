@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text, Float, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import relationship, sessionmaker, declarative_base
+from sqlalchemy.orm import relationship, sessionmaker, declarative_base, backref
 
 from backend import config
 
@@ -231,6 +231,33 @@ class ChannelSource(Base):
 
     def __repr__(self):
         return '<ChannelSource {}>'.format(self.id)
+
+
+class ChannelSuggestion(Base):
+    __tablename__ = "channel_suggestions"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "playlist_id", "stream_id", name="uq_channel_suggestion_stream"),
+    )
+    id = Column(Integer, primary_key=True)
+
+    channel_id = Column(Integer, ForeignKey('channels.id', ondelete="CASCADE"), nullable=False, index=True)
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False, index=True)
+    stream_id = Column(Integer, nullable=False, index=True)
+    stream_name = Column(String(500), index=True, unique=False)
+    stream_url = Column(Text, index=False, unique=False)
+    group_title = Column(String(500), index=True, unique=False)
+    playlist_name = Column(String(500), index=True, unique=False)
+    source_type = Column(String(16), index=True, unique=False, default="M3U")
+    score = Column(Float, nullable=False, default=0)
+    dismissed = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    channel = relationship('Channel', backref=backref('suggestions', cascade="all, delete-orphan"))
+    playlist = relationship('Playlist')
+
+    def __repr__(self):
+        return '<ChannelSuggestion {}>'.format(self.id)
 
 
 class RecordingRule(Base):

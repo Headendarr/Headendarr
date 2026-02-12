@@ -186,7 +186,7 @@
               <q-separator class="q-my-lg" />
 
               <!--START SOURCES CONFIG-->
-              <h5 class="q-mb-none">Channel Sources:</h5>
+              <h5 class="q-mb-none">Channel Streams:</h5>
               <div class="q-gutter-sm">
                 <q-list
                   bordered
@@ -272,7 +272,7 @@
                             <q-btn size="12px" flat dense round color="primary" icon="refresh"
                                    v-if="element.source_type !== 'manual' && element.playlist_id"
                                    @click="refreshChannelSourceFromPlaylist(index)">
-                              <q-tooltip class="bg-white text-primary">Refresh stream from source</q-tooltip>
+                              <q-tooltip class="bg-white text-primary">Refresh stream</q-tooltip>
                             </q-btn>
                           </div>
                         </q-item-section>
@@ -280,7 +280,7 @@
                           <div class="text-grey-8 q-gutter-xs">
                             <q-btn size="12px" flat dense round color="negative" icon="delete"
                                    @click="removeChannelSourceFromList(index)">
-                              <q-tooltip class="bg-white text-primary">Remove this source</q-tooltip>
+                              <q-tooltip class="bg-white text-primary">Remove this stream</q-tooltip>
                             </q-btn>
                           </div>
                         </q-item-section>
@@ -299,7 +299,7 @@
                     color="primary"
                     icon="add"
                     @click="selectChannelSourceFromList">
-                    <q-tooltip class="bg-white text-primary">Add stream from source</q-tooltip>
+                    <q-tooltip class="bg-white text-primary">Add stream</q-tooltip>
                   </q-btn>
                   <q-btn
                     round
@@ -312,6 +312,38 @@
                 </q-bar>
               </div>
               <!--END SOURCES CONFIG-->
+
+              <q-separator v-if="suggestedStreams && suggestedStreams.length" class="q-my-lg" />
+
+              <div v-if="suggestedStreams && suggestedStreams.length">
+                <h5 class="q-mb-none">Suggested Streams:</h5>
+                <div class="q-mt-sm">
+                  <q-list bordered separator class="rounded-borders">
+                    <q-item v-for="suggestion in suggestedStreams" :key="suggestion.id">
+                      <q-item-section>
+                        <q-item-label lines="1">
+                          <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
+                        </q-item-label>
+                        <q-item-label caption lines="1">
+                          {{ suggestion.group_title || 'Unknown group' }} • {{ suggestion.playlist_name }}
+                        </q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <div class="q-gutter-xs">
+                          <q-btn size="12px" flat dense round color="primary" icon="add"
+                                 @click="addSuggestedStream(suggestion)">
+                            <q-tooltip class="bg-white text-primary">Add to channel</q-tooltip>
+                          </q-btn>
+                          <q-btn size="12px" flat dense round color="grey-7" icon="close"
+                                 @click="dismissSuggestedStream(suggestion)">
+                            <q-tooltip class="bg-white text-primary">Dismiss suggestion</q-tooltip>
+                          </q-btn>
+                        </div>
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
+                </div>
+              </div>
 
               <div>
                 <q-btn label="Save" type="submit" color="primary" />
@@ -377,6 +409,7 @@ export default {
 
       listOfChannelSources: ref(null),
       refreshHint: ref(''),
+      suggestedStreams: ref([]),
 
       channelSourceOptions: ref(null),
       channelSourceOptionsFiltered: ref(null),
@@ -415,6 +448,7 @@ export default {
       this.channelSourceOptions = [];
       this.channelSourceOptionsFiltered = [];
       this.channelSources = [];
+      this.suggestedStreams = [];
     },
 
     // following method is REQUIRED
@@ -451,8 +485,67 @@ export default {
           use_hls_proxy: !!source.use_hls_proxy,
         })).sort((a, b) => b.priority - a.priority);
         this.listOfChannelSourcesToRefresh = [];
+        this.fetchSuggestions();
         // Enable saving the form
         this.canSave = true;
+      });
+    },
+    fetchSuggestions: function() {
+      if (!this.channelId) {
+        this.suggestedStreams = [];
+        return;
+      }
+      axios({
+        method: 'GET',
+        url: `/tic-api/channels/${this.channelId}/stream-suggestions`,
+      }).then((response) => {
+        this.suggestedStreams = response.data.data || [];
+      }).catch(() => {
+        this.suggestedStreams = [];
+      });
+    },
+    addSuggestedStream: function(suggestion) {
+      if (!suggestion) {
+        return;
+      }
+      const exists = (this.listOfChannelSources || []).some((source) => (
+        source.playlist_id === suggestion.playlist_id &&
+        source.stream_name === suggestion.stream_name
+      ));
+      if (exists) {
+        this.$q.notify({color: 'warning', message: 'Stream already added'});
+        return;
+      }
+      this.listOfChannelSources.push({
+        playlist_id: suggestion.playlist_id,
+        playlist_name: suggestion.playlist_name || 'Playlist',
+        priority: 0,
+        stream_name: suggestion.stream_name,
+        stream_url: suggestion.stream_url,
+        use_hls_proxy: false,
+        source_type: 'playlist',
+        xc_account_id: null,
+      });
+      this.dismissSuggestedStream(suggestion);
+    },
+    dismissSuggestedStream: function(suggestion) {
+      if (!suggestion) {
+        return;
+      }
+      this.$q.dialog({
+        title: 'Dismiss Stream Suggestion?',
+        message: 'This will permanently hide this suggestion for this channel. This cannot be undone.',
+        cancel: true,
+        persistent: true,
+      }).onOk(() => {
+        axios({
+          method: 'POST',
+          url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
+        }).then(() => {
+          this.suggestedStreams = this.suggestedStreams.filter(item => item.id !== suggestion.id);
+        }).catch(() => {
+          this.$q.notify({color: 'negative', message: 'Failed to dismiss suggestion'});
+        });
       });
     },
     fetchEpgData: function() {

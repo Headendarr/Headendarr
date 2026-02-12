@@ -24,7 +24,7 @@
                       class=""
                       color="primary"
                       icon-right="dvr"
-                      label="Import Channels from source" />
+                      label="Import Channels from stream source" />
                   </q-btn-group>
 
                   <q-btn-group v-if="bulkEditMode !== true" class="q-ml-sm">
@@ -43,18 +43,18 @@
                         :disabled="!anyChannelsSelectedInBulkEdit"
                         color="primary"
                         label="Edit Categories" />
-                        
+
                       <q-btn
                         @click="selectAllChannels()"
                         color="primary"
                         :label="allChannelsSelected ? 'Deselect All' : 'Select All'" />
-                        
+
                       <q-btn-dropdown
                         color="primary"
                         label="Select by Category">
                         <q-list>
                           <q-item
-                            v-for="category in availableCategories" 
+                            v-for="category in availableCategories"
                             :key="category"
                             clickable
                             @click="selectChannelsByCategory(category)">
@@ -62,13 +62,13 @@
                           </q-item>
                         </q-list>
                       </q-btn-dropdown>
-                      
+
                       <q-btn
                         @click="triggerRefreshChannelSources()"
                         :disabled="!anyChannelsSelectedInBulkEdit"
                         color="primary"
-                        label="Refresh Channel Sources" />
-                        
+                        label="Refresh Channel Streams" />
+
                       <q-btn
                         @click="triggerDeleteChannels()"
                         :disabled="!anyChannelsSelectedInBulkEdit"
@@ -307,7 +307,7 @@
                           <q-item-label caption lines="1" class="text-left q-ml-none">
                             <div class="row">
                               <div class="col-sm-3">
-                                Sources:
+                                Stream sources:
                               </div>
                               <div class="col-sm-9">
                                 {{ Object.keys(element.sources).map(key => element.sources[key].playlist_name) }}
@@ -335,18 +335,34 @@
                             <div class="row items-center no-wrap">
                               <span class="q-ml-sm">Guide</span>
                               <q-space />
-                              <q-chip
-                                v-if="enableChannelHealthHighlight && element.status && element.status.state === 'warning'"
-                                dense
-                                color="orange-6"
-                                text-color="white"
-                                clickable
-                                @click.stop="openChannelIssuesDialog(element)">
-                                Needs attention
-                                <q-tooltip class="bg-white text-primary">
-                                  {{ channelIssueFirstLabel(element.status) }}
-                                </q-tooltip>
-                              </q-chip>
+                              <div class="column items-end q-gutter-xs">
+                                <q-chip
+                                  v-if="enableChannelHealthHighlight && element.status && element.status.state === 'warning'"
+                                  dense
+                                  color="orange-6"
+                                  text-color="white"
+                                  clickable
+                                  @click.stop="openChannelIssuesDialog(element)">
+                                  <q-icon name="warning" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
+                                  <span v-if="$q.screen.gt.lg">Needs attention</span>
+                                  <q-tooltip class="bg-white text-primary">
+                                    {{ channelIssueFirstLabel(element.status) }}
+                                  </q-tooltip>
+                                </q-chip>
+                                <q-chip
+                                  v-if="enableChannelHealthHighlight && element.status && element.status.suggestion_count > 0"
+                                  dense
+                                  color="green-6"
+                                  text-color="white"
+                                  clickable
+                                  @click.stop="openChannelSuggestionsDialog(element)">
+                                  <q-icon name="tips_and_updates" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
+                                  <span v-if="$q.screen.gt.lg">Stream suggestions</span>
+                                  <q-tooltip class="bg-white text-primary">
+                                    Potential matching streams are available for this channel.
+                                  </q-tooltip>
+                                </q-chip>
+                              </div>
                             </div>
                           </q-item-label>
                           <q-item-label caption lines="1" class="text-left q-ml-sm">
@@ -399,56 +415,58 @@
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      1. Start by clicking the <b>Import Channels from source</b> button. With this dialog open,
-                      select one or more streams from your imported sources, then close the dialog to import them into
-                      your channel list.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      2. Click on the <b>Configure</b>
-                      (
-                      <q-icon name="tune" />
-                      )
-                      button for each added channel.
-                      <br>
-                      In the Channel Settings dialog that opens you can further configure channel categories and
-                      additional sources from other sources.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      3. Click and hold the drag
-                      (
-                      <q-icon name="format_line_spacing" />
-                      )
-                      icon to quickly change the order of your channel list.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      4. Click a channel's number to open the channel number editor.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      5. Click the <b>Bulk Edit</b> button above the channel list to modify multiple channels at once.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        1. Start by clicking the <b>Import Channels from stream source</b> button. With this dialog
+                        open,
+                        select one or more streams from your imported stream sources, then close the dialog to import
+                        them into
+                        your channel list.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        2. Click on the <b>Configure</b>
+                        (
+                        <q-icon name="tune" />
+                        )
+                        button for each added channel.
+                        <br>
+                        In the Channel Settings dialog that opens you can further configure channel categories and
+                        additional streams from other sources.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        3. Click and hold the drag
+                        (
+                        <q-icon name="format_line_spacing" />
+                        )
+                        icon to quickly change the order of your channel list.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        4. Click a channel's number to open the channel number editor.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        5. Click the <b>Bulk Edit</b> button above the channel list to modify multiple channels at once.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -456,20 +474,20 @@
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
-                <q-separator inset spaced />
+                  <q-separator inset spaced />
 
-                <q-item-label class="text-primary">
-                  Channel Settings - Sources:
-                </q-item-label>
-                <q-item>
-                  <q-item-section>
-                    <q-item-label>
-                      When you open a channel's settings, you can configure multiple sources for each channel.
-                      Drag the sources in order of preference. If a source has reached the connection limits,
-                      the next source will be used automatically.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
+                  <q-item-label class="text-primary">
+                    Channel Settings - Streams:
+                  </q-item-label>
+                  <q-item>
+                    <q-item-section>
+                      <q-item-label>
+                        When you open a channel's settings, you can configure multiple streams for each channel.
+                        Drag the streams in order of preference. If a stream has reached the connection limits,
+                        the next stream will be used automatically.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
 
                 </q-list>
               </q-card-section>
@@ -505,6 +523,8 @@ import {useVideoStore} from 'stores/video';
 import ChannelInfoDialog from 'components/ChannelInfoDialog.vue';
 import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.vue';
 import ChannelGroupSelectorDialog from 'components/ChannelGroupSelectorDialog.vue';
+import ChannelSuggestionsDialog from 'components/ChannelSuggestionsDialog.vue';
+import ChannelIssuesDialog from 'components/ChannelIssuesDialog.vue';
 import {copyToClipboard} from 'quasar';
 
 export default defineComponent({
@@ -557,15 +577,15 @@ export default defineComponent({
       };
     },
     allChannelsSelected() {
-      return this.listOfChannels.length > 0 && 
-            this.listOfChannels.every(channel => channel.selected);
+      return this.listOfChannels.length > 0 &&
+        this.listOfChannels.every(channel => channel.selected);
     },
     anyChannelsSelectedInBulkEdit() {
       // Check if any channels are selected
       return this.listOfChannels.some(channel => channel.selected);
     },
     availableCategories() {
-    // Extract all unique categories from channels
+      // Extract all unique categories from channels
       const allCategories = new Set();
       this.listOfChannels.forEach(channel => {
         if (channel.tags && Array.isArray(channel.tags)) {
@@ -588,11 +608,11 @@ export default defineComponent({
     },
     selectAllChannels() {
       const shouldSelect = !this.allChannelsSelected;
-      
+
       // Toggle selection on all channels
       this.listOfChannels.forEach(channel => {
         channel.selected = shouldSelect;
-        
+
         if (shouldSelect) {
           if (!this.selectedChannels.includes(channel.id)) {
             this.selectedChannels.push(channel.id);
@@ -601,20 +621,20 @@ export default defineComponent({
           this.selectedChannels = this.selectedChannels.filter(id => id !== channel.id);
         }
       });
-      
+
       // Show notification
       this.$q.notify({
         color: 'positive',
-        message: shouldSelect 
-          ? `Selected all ${this.listOfChannels.length} channels` 
+        message: shouldSelect
+          ? `Selected all ${this.listOfChannels.length} channels`
           : 'Deselected all channels',
         icon: shouldSelect ? 'select_all' : 'deselect',
-        timeout: 2000
+        timeout: 2000,
       });
     },
     selectChannelsByCategory(category) {
       let count = 0;
-      
+
       // Loop through channels and select those with the specified category
       this.listOfChannels.forEach(channel => {
         if (channel.tags && channel.tags.includes(category)) {
@@ -625,13 +645,13 @@ export default defineComponent({
           count++;
         }
       });
-      
+
       // Show notification
       this.$q.notify({
         color: 'positive',
         message: `Selected ${count} channels in category "${category}"`,
         icon: 'category',
-        timeout: 2000
+        timeout: 2000,
       });
     },
     async previewChannel(channel) {
@@ -805,10 +825,10 @@ export default defineComponent({
         return [];
       }
       const labels = {
-        no_sources: 'No sources',
-        all_sources_disabled: 'All sources disabled',
-        missing_tvh_mux: 'Missing mux',
-        tvh_mux_failed: 'TVH mux failed',
+        no_sources: 'No streams',
+        all_sources_disabled: 'All streams disabled',
+        missing_tvh_mux: 'Missing stream in TVHeadend',
+        tvh_mux_failed: 'TVHeadend stream failed',
       };
       return status.issues.map(issue => labels[issue] || issue);
     },
@@ -817,14 +837,27 @@ export default defineComponent({
       return labels.length ? labels[0] : '';
     },
     openChannelIssuesDialog: function(channel) {
-      const labels = this.channelIssueLabels(channel?.status);
-      if (!labels.length) {
+      if (!channel?.status?.issues?.length) {
         return;
       }
       this.$q.dialog({
-        title: 'Needs attention',
-        message: labels.join('<br>'),
-        html: true,
+        component: ChannelIssuesDialog,
+        componentProps: {
+          channel,
+          issues: channel.status.issues,
+        },
+      }).onOk((payload) => {
+        if (payload?.openSettings) {
+          this.openChannelSettings(channel);
+          return;
+        }
+        if (payload?.refresh) {
+          this.fetchChannels();
+        }
+      }).onDismiss(() => {
+        this.fetchChannels();
+      }).onCancel(() => {
+        this.fetchChannels();
       });
     },
     openChannelSettings: function(channel) {
@@ -845,6 +878,27 @@ export default defineComponent({
       }).onOk((payload) => {
         this.fetchChannels();
       }).onDismiss(() => {
+      });
+    },
+    openChannelSuggestionsDialog: function(channel) {
+      if (!channel) {
+        return;
+      }
+      this.$q.dialog({
+        component: ChannelSuggestionsDialog,
+        componentProps: {
+          channelId: channel.id,
+        },
+      }).onOk((payload) => {
+        if (payload?.openSettings) {
+          this.openChannelSettings(channel);
+          return;
+        }
+        if (payload?.refresh) {
+          this.fetchChannels();
+        }
+      }).onDismiss(() => {
+        this.fetchChannels();
       });
     },
     openChannelsImport: function() {
@@ -997,29 +1051,29 @@ export default defineComponent({
       }).onOk((payload) => {
         if (typeof payload.selectedGroups !== 'undefined' && payload.selectedGroups.length > 0) {
           // Debug what's being received from the dialog
-          console.log("Selected groups payload:", payload.selectedGroups);
-          
+          console.log('Selected groups payload:', payload.selectedGroups);
+
           // Add selected groups to list
           this.$q.loading.show();
-          
+
           // Send changes to backend
           let data = {
             groups: [],
           };
-          
+
           for (const i in payload.selectedGroups) {
             const group = payload.selectedGroups[i];
-            console.log("Processing group:", group); // Debug each group
-            
+            console.log('Processing group:', group); // Debug each group
+
             data.groups.push({
               playlist_id: group.playlist_id,
               playlist_name: group.playlist_name,
               group_name: group.group_name,
             });
           }
-          
-          console.log("Data being sent to backend:", data); // Debug the final payload
-          
+
+          console.log('Data being sent to backend:', data); // Debug the final payload
+
           axios({
             method: 'POST',
             url: '/tic-api/channels/settings/groups/add',
@@ -1028,7 +1082,7 @@ export default defineComponent({
             // Reload from backend
             this.fetchChannels();
             this.$q.loading.hide();
-            
+
             this.$q.notify({
               color: 'positive',
               icon: 'cloud_done',
@@ -1037,8 +1091,8 @@ export default defineComponent({
             });
           }).catch((error) => {
             // Log detailed error information
-            console.error("Error response:", error.response ? error.response.data : error);
-            
+            console.error('Error response:', error.response ? error.response.data : error);
+
             // Notify failure
             this.$q.notify({
               color: 'negative',
@@ -1096,7 +1150,7 @@ export default defineComponent({
       });
     },
     triggerRefreshChannelSources: function() {
-      // Add all channel sources to their respective refresh_sources list
+      // Add all channel streams to their respective refresh_sources list
       for (let i = 0; i < this.listOfChannels.length; i++) {
         const item = this.listOfChannels[i];
         // Check if the channel is selected
@@ -1109,7 +1163,7 @@ export default defineComponent({
       this.$q.notify({
         color: 'positive',
         icon: 'sync',
-        message: 'Bulk refresh queued for selected channel sources.',
+        message: 'Bulk refresh queued for selected channels.',
         timeout: 2000,
       });
     },

@@ -20,6 +20,7 @@ from backend.ffmpeg import generate_iptv_url
 from backend.models import (
     Channel,
     ChannelSource,
+    ChannelSuggestion,
     ChannelTag,
     Epg,
     EpgChannels,
@@ -781,6 +782,38 @@ async def update_channel(config, channel_id, data):
             if new_sources:
                 channel.sources.clear()
                 channel.sources = new_sources
+
+            # Remove any suggestions that reference streams already added to this channel
+            stream_pairs = set()
+            for source_info in data.get("sources", []):
+                playlist_id = source_info.get("playlist_id")
+                stream_name = source_info.get("stream_name")
+                if playlist_id and stream_name:
+                    stream_pairs.add((int(playlist_id), stream_name))
+            if stream_pairs:
+                playlist_ids = {pair[0] for pair in stream_pairs}
+                stream_names = {pair[1] for pair in stream_pairs}
+                result = await session.execute(
+                    select(
+                        PlaylistStreams.id,
+                        PlaylistStreams.playlist_id,
+                        PlaylistStreams.name,
+                    ).where(
+                        PlaylistStreams.playlist_id.in_(playlist_ids),
+                        PlaylistStreams.name.in_(stream_names),
+                    )
+                )
+                stream_ids = [
+                    row.id
+                    for row in result
+                    if (row.playlist_id, row.name) in stream_pairs
+                ]
+                if stream_ids:
+                    await session.execute(
+                        delete(ChannelSuggestion)
+                        .where(ChannelSuggestion.channel_id == channel.id)
+                        .where(ChannelSuggestion.stream_id.in_(stream_ids))
+                    )
 
             # Commit
             await session.commit()

@@ -665,7 +665,10 @@ async def import_playlist_data(config, playlist_id):
         logger.info(
             "Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url
         )
-        await _import_xc_playlist_streams(settings, playlist)
+        ok = await _import_xc_playlist_streams(settings, playlist)
+        if ok:
+            from backend.channel_suggestions import update_channel_suggestions_for_playlist
+            update_channel_suggestions_for_playlist(playlist_id)
         return
 
     # Download playlist data and save to YAML cache file
@@ -695,6 +698,8 @@ async def import_playlist_data(config, playlist_id):
         playlist_id,
         int(execution_time),
     )
+    from backend.channel_suggestions import update_channel_suggestions_for_playlist
+    update_channel_suggestions_for_playlist(playlist_id)
     # Publish changes to TVH
     await publish_playlist_networks(config)
 

@@ -169,7 +169,7 @@
                         :disable="!selectedPlaylistId"
                       />
                       <q-tooltip v-if="!selectedPlaylistId" class="bg-white text-primary">
-                        Select a source first
+                        Select a stream source first
                       </q-tooltip>
                     </div>
                     <q-input outlined dense debounce="300" v-model="filter" placeholder="Search">
@@ -316,7 +316,9 @@ export default {
           'stream_name': selected['name'],
         });
       }
-      this.$emit('ok', {selectedStreams: returnItems});
+      if (returnItems.length > 0) {
+        this.$emit('ok', {selectedStreams: returnItems});
+      }
       this.$emit('hide');
     },
     fetchStreamsList: function(props) {

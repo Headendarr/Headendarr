@@ -11,8 +11,8 @@ from backend.channels import read_config_all_channels, add_new_channel, read_con
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.models import Session, ChannelSource
-from sqlalchemy import select
+from backend.models import Session, ChannelSource, ChannelSuggestion, db
+from sqlalchemy import select, func
 
 
 async def _fetch_tvh_mux_map(config):
@@ -25,7 +25,7 @@ async def _fetch_tvh_mux_map(config):
         return None
 
 
-def _build_channel_status(channel, mux_map):
+def _build_channel_status(channel, mux_map, suggestion_count=0):
     if not channel.get("enabled"):
         return {
             "state": "disabled",
@@ -33,6 +33,7 @@ def _build_channel_status(channel, mux_map):
             "disabled_source_count": 0,
             "missing_mux_count": 0,
             "failed_mux_count": 0,
+            "suggestion_count": suggestion_count,
         }
 
     sources = channel.get("sources") or []
@@ -43,6 +44,7 @@ def _build_channel_status(channel, mux_map):
             "disabled_source_count": 0,
             "missing_mux_count": 0,
             "failed_mux_count": 0,
+            "suggestion_count": suggestion_count,
         }
 
     disabled_sources = 0
@@ -82,14 +84,27 @@ def _build_channel_status(channel, mux_map):
         issues.append("missing_tvh_mux")
     if failed_muxes:
         issues.append("tvh_mux_failed")
-
     return {
         "state": "warning" if issues else "ok",
         "issues": issues,
         "disabled_source_count": disabled_sources,
         "missing_mux_count": missing_muxes,
         "failed_mux_count": failed_muxes,
+        "suggestion_count": suggestion_count,
     }
+
+
+def _fetch_channel_suggestion_counts():
+    rows = (
+        db.session.query(
+            ChannelSuggestion.channel_id,
+            func.count(ChannelSuggestion.id),
+        )
+        .filter(ChannelSuggestion.dismissed.is_(False))
+        .group_by(ChannelSuggestion.channel_id)
+        .all()
+    )
+    return {row[0]: row[1] for row in rows}
 
 
 @blueprint.route('/tic-api/channels/get', methods=['GET'])
@@ -100,14 +115,69 @@ async def api_get_channels():
     if include_status:
         config = current_app.config['APP_CONFIG']
         mux_map = await _fetch_tvh_mux_map(config)
+        suggestion_counts = _fetch_channel_suggestion_counts()
         for channel in channels_config:
-            channel["status"] = _build_channel_status(channel, mux_map)
+            suggestion_count = suggestion_counts.get(channel.get("id"), 0)
+            channel["status"] = _build_channel_status(channel, mux_map, suggestion_count)
     return jsonify(
         {
             "success": True,
             "data":    channels_config
         }
     )
+
+
+@blueprint.route('/tic-api/channels/<channel_id>/stream-suggestions', methods=['GET'])
+@admin_auth_required
+async def api_get_channel_stream_suggestions(channel_id):
+    channel_id = normalize_id(channel_id, "channel")
+    suggestions = (
+        db.session.query(ChannelSuggestion)
+        .filter(
+            ChannelSuggestion.channel_id == channel_id,
+            ChannelSuggestion.dismissed.is_(False),
+        )
+        .order_by(ChannelSuggestion.score.desc())
+        .all()
+    )
+    return jsonify({
+        "success": True,
+        "data": [
+            {
+                "id": suggestion.id,
+                "channel_id": suggestion.channel_id,
+                "playlist_id": suggestion.playlist_id,
+                "stream_id": suggestion.stream_id,
+                "stream_name": suggestion.stream_name,
+                "stream_url": suggestion.stream_url,
+                "group_title": suggestion.group_title,
+                "playlist_name": suggestion.playlist_name,
+                "source_type": suggestion.source_type,
+                "score": suggestion.score,
+            }
+            for suggestion in suggestions
+        ],
+    })
+
+
+@blueprint.route('/tic-api/channels/<channel_id>/stream-suggestions/<suggestion_id>/dismiss', methods=['POST'])
+@admin_auth_required
+async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
+    channel_id = normalize_id(channel_id, "channel")
+    suggestion_id = normalize_id(suggestion_id, "suggestion")
+    suggestion = (
+        db.session.query(ChannelSuggestion)
+        .filter(
+            ChannelSuggestion.id == suggestion_id,
+            ChannelSuggestion.channel_id == channel_id,
+        )
+        .one_or_none()
+    )
+    if not suggestion:
+        return jsonify({"success": False, "message": "Suggestion not found"}), 404
+    suggestion.dismissed = True
+    db.session.commit()
+    return jsonify({"success": True})
 
 
 @blueprint.route('/tic-api/channels/basic', methods=['GET'])
@@ -247,6 +317,14 @@ async def api_set_config_multiple_channels():
             "success": True
         }
     )
+
+
+@blueprint.route('/tic-api/channels/sync', methods=['POST'])
+@admin_auth_required
+async def api_sync_channels():
+    config = current_app.config['APP_CONFIG']
+    await queue_background_channel_update_tasks(config)
+    return jsonify({"success": True})
 
 
 @blueprint.route('/tic-api/channels/settings/multiple/add', methods=['POST'])

@@ -89,7 +89,7 @@
                 selection="multiple"
                 binary-state-sort
                 @request="fetchGroupsList"
-                no-data-label="No groups found in source"
+                no-data-label="No groups found for source"
                 no-results-label="The filter didn't uncover any results"
               >
                 <template v-slot:top-left>
@@ -312,7 +312,7 @@ export default {
         this.$q.notify({
           color: 'negative',
           position: 'top',
-          message: 'Failed to fetch groups from source',
+          message: 'Failed to fetch groups for source',
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
