@@ -378,8 +378,7 @@
               <q-item-section avatar>
                 <q-icon
                   color="primary"
-                  :class="pendingTasksStatus === 'paused' ? 'rotating-icon' : ''"
-                  :name="pendingTasksStatus === 'paused' ? 'motion_photos_on' : task.icon" />
+                  :name="pendingTasksStatus === 'paused' && task.taskState === 'queued' ? 'pause_circle' : task.icon" />
                 <q-tooltip class="bg-white text-primary">
                   {{ task.name }}
                 </q-tooltip>
@@ -453,19 +452,6 @@
 .connection-details-dropdown {
   max-height: calc(100vh - 100px);
   overflow-y: auto;
-}
-
-.rotating-icon {
-  animation: spin 2s linear infinite;
-}
-
-@keyframes spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
 }
 
 .hidden {

@@ -30,12 +30,14 @@ export default function pollForBackgroundTasks() {
           tasks.push({
             icon: 'pending',
             name: payload.data['current_task'],
+            taskState: 'running',
           });
         }
         for (let i in payload.data['pending_tasks']) {
           tasks.push({
             icon: 'radio_button_unchecked',
             name: payload.data['pending_tasks'][i],
+            taskState: 'queued',
           });
         }
         pendingTasks.value = tasks;
