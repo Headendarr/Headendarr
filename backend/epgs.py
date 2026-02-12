@@ -5,23 +5,23 @@ import json
 import logging
 import os
 import shutil
-import threading
+from collections import defaultdict
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from mimetypes import guess_extension
+from pathlib import Path
 from urllib.parse import quote
 
 import aiofiles
 import aiohttp
 import asyncio
+import sys
 import time
 import xml.etree.ElementTree as ET
-from types import NoneType
 
 from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
-from sqlalchemy import and_, delete, insert, select
+from sqlalchemy import and_, delete, insert, select, text
 from backend.channels import read_base46_image_string
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
 from backend.tvheadend.tvh_requests import get_tvh
@@ -130,21 +130,6 @@ async def delete_epg(config, epg_id):
             os.remove(f)
 
 
-async def clear_epg_channel_data(epg_id):
-    async with Session() as session:
-        async with session.begin():
-            # Get all channel IDs for the given EPG
-            # noinspection DuplicatedCode
-            result = await session.execute(select(EpgChannels.id).where(EpgChannels.epg_id == epg_id))
-            channel_ids = [row[0] for row in result.fetchall()]
-            if channel_ids:
-                # Delete all EpgChannelProgrammes where epg_channel_id is in the list of channel IDs
-                await session.execute(
-                    delete(EpgChannelProgrammes).where(EpgChannelProgrammes.epg_channel_id.in_(channel_ids)))
-                # Delete all EpgChannels where id is in the list of channel IDs
-                await session.execute(delete(EpgChannels).where(EpgChannels.id.in_(channel_ids)))
-
-
 def _resolve_user_agent(settings, user_agent):
     if user_agent:
         return user_agent
@@ -190,136 +175,170 @@ async def try_unzip(output: str) -> None:
         logger.info("Downloaded file is gzipped. Unzipping")
 
 
-async def store_epg_channels(config, epg_id):
-    xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
-    if not os.path.exists(xmltv_file):
-        logger.info("No such file '%s'", xmltv_file)
-        return False
-    # Read and parse XML file contents asynchronously
-    async with aiofiles.open(xmltv_file, mode='r', encoding="utf8", errors='ignore') as f:
-        contents = await f.read()
-    input_file = ET.ElementTree(ET.fromstring(contents))
-    async with Session() as session:
-        async with session.begin():
-            # Delete all existing EPG channels
-            stmt = delete(EpgChannels).where(EpgChannels.epg_id == epg_id)
-            await session.execute(stmt)
-            # Add an updated list of channels from the XML file to the DB
-            logger.info("Updating channels list for EPG #%s from path - '%s'", epg_id, xmltv_file)
-            items = []
-            channel_id_list = []
-            for channel in input_file.iterfind('.//channel'):
-                channel_id = channel.get('id')
-                display_name = channel.find('display-name').text
-                icon = ''
-                icon_elem = channel.find('icon')
-                if icon_elem is not None:
-                    icon = icon_elem.attrib.get('src', '')
-                logger.debug("Channel ID: '%s', Display Name: '%s', Icon: %s", channel_id, display_name, icon)
-                items.append({
-                    'epg_id':     epg_id,
-                    'channel_id': channel_id,
-                    'name':       display_name,
-                    'icon_url':   icon,
-                })
-                channel_id_list.append(channel_id)
-            # Perform bulk insert
-            await session.execute(insert(EpgChannels), items)
-            # Commit all updates to channels
-            await session.commit()
-            logger.info("Successfully imported %s channels from path - '%s'", len(channel_id_list), xmltv_file)
-        # Return list of channels
-        return channel_id_list
+def _derive_timestamp(raw_value):
+    if not raw_value:
+        return None
+    try:
+        return str(int(datetime.strptime(raw_value, "%Y%m%d%H%M%S %z").timestamp()))
+    except Exception:
+        return None
 
 
-async def store_epg_programmes(config, epg_id, channel_id_list):
-    xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
-    if not os.path.exists(xmltv_file):
-        # TODO: Add error logging here
-        logger.info("No such file '%s'", xmltv_file)
-        return False
-
-    def parse_and_save_programmes():
-        # Open file
-        input_file = ET.parse(xmltv_file)
-
-        # For each channel, create a list of programmes
-        logger.info("Fetching list of channels from EPG #%s from database", epg_id)
-        channel_ids = {}
-        for channel_id in channel_id_list:
-            epg_channel = db.session.query(EpgChannels) \
-                .filter(and_(EpgChannels.channel_id == channel_id,
-                             EpgChannels.epg_id == epg_id
-                             )) \
-                .first()
-            channel_ids[channel_id] = epg_channel.id
-        # Add an updated list of programmes from the XML file to the DB
-        logger.info("Updating new programmes list for EPG #%s from path - '%s'", epg_id, xmltv_file)
-        items = []
-        for programme in input_file.iterfind(".//programme"):
-            if len(items) > 1000:
-                db.session.bulk_save_objects(items, update_changed_only=False)
-                items = []
-            channel_id = programme.attrib.get('channel', None)
-            if channel_id in channel_ids:
-                epg_channel_id = channel_ids.get(channel_id)
-                # Parse attributes first
-                start = programme.attrib.get('start', None)
-                stop = programme.attrib.get('stop', None)
-                start_timestamp = programme.attrib.get('start_timestamp', None)
-                stop_timestamp = programme.attrib.get('stop_timestamp', None)
-                # Some XMLTV sources omit start_timestamp/stop_timestamp. Derive from start/stop.
-                if start and not start_timestamp:
-                    try:
-                        start_timestamp = str(int(datetime.strptime(start, "%Y%m%d%H%M%S %z").timestamp()))
-                    except Exception:
-                        start_timestamp = None
-                if stop and not stop_timestamp:
-                    try:
-                        stop_timestamp = str(int(datetime.strptime(stop, "%Y%m%d%H%M%S %z").timestamp()))
-                    except Exception:
-                        stop_timestamp = None
-                # Parse sub-elements
-                title = programme.findtext("title", default=None)
-                sub_title = programme.findtext("sub-title", default=None)
-                desc = programme.findtext("desc", default=None)
-                series_desc = programme.findtext("series-desc", default=None)
-                country = programme.findtext("country", default=None)
-                # Import icon
-                icon = programme.find("icon")
-                icon_url = icon.attrib.get('src', None) if icon is not None else None
-                # Import categories
-                categories = []
-                for category in programme.findall("category"):
-                    categories.append(category.text)
-                # TODO: Import rating
-                # TODO: Import star rating
-                # Create new line entry for the programmes table
-                items.append(
-                    EpgChannelProgrammes(
-                        epg_channel_id=epg_channel_id,
-                        channel_id=channel_id,
-                        title=title,
-                        sub_title=sub_title,
-                        desc=desc,
-                        series_desc=series_desc,
-                        icon_url=icon_url,
-                        country=country,
-                        start=start,
-                        stop=stop,
-                        start_timestamp=start_timestamp,
-                        stop_timestamp=stop_timestamp,
-                        categories=json.dumps(categories)
-                    )
-                )
-        logger.info("Saving new programmes list for EPG #%s from path - '%s'", epg_id, xmltv_file)
-        # Save remaining
-        db.session.bulk_save_objects(items, update_changed_only=False)
-        # Commit all updates to channel programmes
+def _clear_epg_channel_data_sync(epg_id):
+    try:
+        db.session.execute(
+            text(
+                """
+                DELETE FROM epg_channel_programmes AS p
+                USING epg_channels AS c
+                WHERE p.epg_channel_id = c.id
+                  AND c.epg_id = :epg_id
+                """
+            ),
+            {"epg_id": epg_id},
+        )
+        db.session.execute(delete(EpgChannels).where(EpgChannels.epg_id == epg_id))
         db.session.commit()
-        logger.info("Successfully imported %s programmes from path - '%s'", len(items), xmltv_file)
+    except Exception:
+        # Fallback for non-Postgres engines used in local tooling/tests.
+        db.session.rollback()
+        channel_ids_subquery = select(EpgChannels.id).where(EpgChannels.epg_id == epg_id)
+        db.session.execute(
+            delete(EpgChannelProgrammes).where(
+                EpgChannelProgrammes.epg_channel_id.in_(channel_ids_subquery)
+            )
+        )
+        db.session.execute(delete(EpgChannels).where(EpgChannels.epg_id == epg_id))
+        db.session.commit()
 
-    await run_sync(parse_and_save_programmes)()
+
+def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
+    phase_seconds = {}
+    channel_count = 0
+    programme_count = 0
+    skipped_programmes = 0
+
+    if not os.path.exists(xmltv_file):
+        raise FileNotFoundError(f"No such file '{xmltv_file}'")
+
+    logger.info("Importing channels for EPG #%s from path - '%s'", epg_id, xmltv_file)
+    t0 = time.perf_counter()
+    _clear_epg_channel_data_sync(epg_id)
+    phase_seconds["clear_existing"] = time.perf_counter() - t0
+
+    t_parse = time.perf_counter()
+    channel_rows = []
+    programme_rows = []
+    channel_map = None
+
+    def flush_channels():
+        nonlocal channel_rows, channel_map
+        if channel_rows:
+            db.session.execute(insert(EpgChannels), channel_rows)
+            db.session.commit()
+            channel_rows = []
+        channel_map = dict(
+            db.session.query(EpgChannels.channel_id, EpgChannels.id)
+            .filter(EpgChannels.epg_id == epg_id)
+            .all()
+        )
+
+    def flush_programmes():
+        nonlocal programme_rows
+        if programme_rows:
+            db.session.execute(insert(EpgChannelProgrammes), programme_rows)
+            db.session.commit()
+            programme_rows = []
+
+    t_map = 0.0
+    t_prog = 0.0
+    programme_rows = []
+    for _, elem in ET.iterparse(xmltv_file, events=("end",)):
+        if elem.tag == "channel":
+            channel_id = elem.get("id")
+            if channel_id:
+                icon_node = elem.find("icon")
+                channel_rows.append(
+                    {
+                        "epg_id": epg_id,
+                        "channel_id": channel_id,
+                        "name": (elem.findtext("display-name", default="") or "").strip(),
+                        "icon_url": (
+                            icon_node.attrib.get("src", "") if icon_node is not None else ""
+                        ),
+                    }
+                )
+                channel_count += 1
+                if channel_map is not None:
+                    map_start = time.perf_counter()
+                    flush_channels()
+                    t_map += time.perf_counter() - map_start
+            elem.clear()
+            continue
+
+        if elem.tag != "programme":
+            continue
+
+        if channel_map is None:
+            map_start = time.perf_counter()
+            flush_channels()
+            t_map += time.perf_counter() - map_start
+
+        external_channel_id = elem.attrib.get("channel")
+        epg_channel_id = channel_map.get(external_channel_id)
+        if not epg_channel_id:
+            skipped_programmes += 1
+            elem.clear()
+            continue
+
+        start = elem.attrib.get("start")
+        stop = elem.attrib.get("stop")
+        start_timestamp = elem.attrib.get("start_timestamp") or _derive_timestamp(start)
+        stop_timestamp = elem.attrib.get("stop_timestamp") or _derive_timestamp(stop)
+        icon = elem.find("icon")
+        programme_rows.append(
+            {
+                "epg_channel_id": epg_channel_id,
+                "channel_id": external_channel_id,
+                "title": elem.findtext("title", default=None),
+                "sub_title": elem.findtext("sub-title", default=None),
+                "desc": elem.findtext("desc", default=None),
+                "series_desc": elem.findtext("series-desc", default=None),
+                "icon_url": icon.attrib.get("src", None) if icon is not None else None,
+                "country": elem.findtext("country", default=None),
+                "start": start,
+                "stop": stop,
+                "start_timestamp": start_timestamp,
+                "stop_timestamp": stop_timestamp,
+                "categories": json.dumps([cat.text for cat in elem.findall("category") if cat.text]),
+            }
+        )
+        programme_count += 1
+        if len(programme_rows) >= programme_batch_size:
+            prog_start = time.perf_counter()
+            flush_programmes()
+            t_prog += time.perf_counter() - prog_start
+        elem.clear()
+
+    if channel_map is None:
+        map_start = time.perf_counter()
+        flush_channels()
+        t_map += time.perf_counter() - map_start
+    if programme_rows:
+        prog_start = time.perf_counter()
+        flush_programmes()
+        t_prog += time.perf_counter() - prog_start
+
+    phase_seconds["parse_xml_stream"] = time.perf_counter() - t_parse
+    phase_seconds["load_channel_map"] = t_map
+    phase_seconds["insert_programmes"] = t_prog
+
+    return {
+        "channels": channel_count,
+        "programmes": programme_count,
+        "programmes_skipped": skipped_programmes,
+        "phase_seconds": phase_seconds,
+    }
 
 
 async def import_epg_data(config, epg_id):
@@ -332,13 +351,19 @@ async def import_epg_data(config, epg_id):
     await download_xmltv_epg(settings, epg['url'], xmltv_file, epg.get('user_agent'))
     execution_time = time.time() - start_time
     logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
-    # Read and save EPG data to DB
+    # Read and save EPG data to DB (offloaded to worker thread)
     logger.info("Importing updated data for EPG #%s", epg_id)
-    start_time = time.time()
-    await clear_epg_channel_data(epg_id)
-    channel_id_list = await store_epg_channels(config, epg_id)
-    await store_epg_programmes(config, epg_id, channel_id_list)
-    execution_time = time.time() - start_time
+    start_time = time.perf_counter()
+    stats = await run_sync(_import_epg_xml_sync)(epg_id, xmltv_file)
+    execution_time = time.perf_counter() - start_time
+    logger.info(
+        "EPG #%s import stats channels=%s programmes=%s skipped=%s phases=%s",
+        epg_id,
+        stats["channels"],
+        stats["programmes"],
+        stats["programmes_skipped"],
+        {k: round(v, 2) for k, v in stats["phase_seconds"].items()},
+    )
     logger.info("Updated data for EPG #%s was imported in '%s' seconds", epg_id, int(execution_time))
 
 
@@ -362,109 +387,155 @@ async def read_channels_from_all_epgs(config):
 
 # --- Cache ---
 XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
-async def build_custom_epg(config, throttle=True):
-    loop = asyncio.get_event_loop()
-    settings = config.read_settings()
+async def build_custom_epg_subprocess(config):
+    project_root = Path(__file__).resolve().parents[1]
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "backend.scripts.build_custom_epg",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(project_root),
+    )
+
+    async def _pipe(stream, level):
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            logger.log(level, "[epg-build] %s", line.decode().rstrip())
+
+    await asyncio.gather(
+        _pipe(proc.stdout, logging.INFO),
+        _pipe(proc.stderr, logging.INFO),
+    )
+    rc = await proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"EPG build subprocess failed with code {rc}")
+
+
+async def build_custom_epg(config, throttle=False):
+    loop = asyncio.get_running_loop()
     logger.info("Generating custom EPG for TVH based on configured channels.")
-    start_time = time.time()
+    total_start = time.perf_counter()
+    phase_seconds = {}
+
     async def maybe_yield():
         if throttle:
-            await asyncio.sleep(.1)
-    # Create the root <tv> element of the output XMLTV file
-    output_root = ET.Element('tv')
-    # Set the attributes for the output root element
-    output_root.set('generator-info-name', 'TVH-IPTV-Config')
-    output_root.set('source-info-name', 'TVH-IPTV-Config - v0.1')
-    # Read programmes from cached source EPG
+            await asyncio.sleep(0.001)
+
+    output_root = ET.Element("tv")
+    output_root.set("generator-info-name", "TVH-IPTV-Config")
+    output_root.set("source-info-name", "TVH-IPTV-Config - v0.1")
+
+    t0 = time.perf_counter()
     configured_channels = []
-    all_channel_programmes_data = []
-    # for key in settings.get('channels', {}):
-    logger.info("   - Building a programme data for each channel.")
-    for result in db.session.query(Channel).order_by(Channel.number.asc()).all():
-        if result.enabled:
-            channel_id = generate_epg_channel_id(result.number, result.name)
-            # Read cached image
-            image_data, mime_type = await read_base46_image_string(result.logo_base64)
-            cache_buster = time.time()
-            ext = guess_extension(mime_type)
-            logo_url = f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
-            # Populate a channels list
-            configured_channels.append({
-                'channel_id':   channel_id,
-                'display_name': result.name,
-                'logo_url':     logo_url,
-            })
-            db_programmes_query = db.session.query(EpgChannelProgrammes) \
-                .options(joinedload(EpgChannelProgrammes.channel)) \
-                .filter(and_(EpgChannelProgrammes.channel.has(epg_id=result.guide_id),
-                             EpgChannelProgrammes.channel.has(channel_id=result.guide_channel_id)
-                             )) \
-                .order_by(EpgChannelProgrammes.channel_id.asc(), EpgChannelProgrammes.start.asc())
-            # logger.debug(db_programmes_query)
-            db_programmes = db_programmes_query.all()
-            programmes = []
-            logger.info("       - Building programme list for %s - %s.", channel_id, result.name)
-            for programme in db_programmes:
-                programmes.append({
-                    'start':                 programme.start,
-                    'stop':                  programme.stop,
-                    'start_timestamp':       programme.start_timestamp,
-                    'stop_timestamp':        programme.stop_timestamp,
-                    'title':                 programme.title,
-                    'sub-title':             programme.sub_title,
-                    'desc':                  programme.desc,
-                    'series-desc':           programme.series_desc,
-                    'country':               programme.country,
-                    'icon_url':              programme.icon_url,
-                    'categories':            json.loads(programme.categories),
-                    'summary':               programme.summary,
-                    'keywords':              programme.keywords,  # JSON encoded list
-                    'credits_json':          programme.credits_json,
-                    'video_colour':          programme.video_colour,
-                    'video_aspect':          programme.video_aspect,
-                    'video_quality':         programme.video_quality,
-                    'subtitles_type':        programme.subtitles_type,
-                    'audio_described':       programme.audio_described,
-                    'previously_shown_date': programme.previously_shown_date,
-                    'premiere':              programme.premiere,
-                    'is_new':                programme.is_new,
-                    'epnum_onscreen':        programme.epnum_onscreen,
-                    'epnum_xmltv_ns':        programme.epnum_xmltv_ns,
-                    'epnum_dd_progid':       programme.epnum_dd_progid,
-                    'star_rating':           programme.star_rating,
-                    'production_year':       programme.production_year,
-                    'rating_system':         programme.rating_system,
-                    'rating_value':          programme.rating_value,
-                })
-            all_channel_programmes_data.append({
-                'channel':    channel_id,
-                'tags':       [tag.name for tag in result.tags],
-                'programmes': programmes
-            })
+    source_key_to_output_channels = defaultdict(list)
+    logger.info("   - Loading configured channels and guide mappings.")
+    for result in (
+        db.session.query(Channel)
+        .options(joinedload(Channel.tags))
+        .order_by(Channel.number.asc())
+        .all()
+    ):
+        if not result.enabled:
+            continue
+        channel_id = generate_epg_channel_id(result.number, result.name)
+        _, mime_type = await read_base46_image_string(result.logo_base64)
+        cache_buster = int(time.time())
+        ext = guess_extension(mime_type or "image/png") or ".png"
+        logo_url = (
+            f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
+        )
+        configured_channels.append(
+            {
+                "channel_id": channel_id,
+                "display_name": result.name,
+                "logo_url": logo_url,
+                "tags": [tag.name for tag in result.tags],
+                "source_key": (result.guide_id, result.guide_channel_id),
+            }
+        )
+        if result.guide_id and result.guide_channel_id:
+            source_key_to_output_channels[(result.guide_id, result.guide_channel_id)].append(channel_id)
         await maybe_yield()
-    # Loop over all configured channels
+    phase_seconds["load_configured_channels"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    programmes_by_output_channel = defaultdict(list)
+    if source_key_to_output_channels:
+        guide_ids = {key[0] for key in source_key_to_output_channels}
+        guide_channel_ids = {key[1] for key in source_key_to_output_channels}
+        logger.info("   - Loading programme rows for mapped guide channels.")
+        rows = (
+            db.session.query(EpgChannelProgrammes, EpgChannels.epg_id, EpgChannels.channel_id)
+            .join(EpgChannels, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+            .filter(
+                EpgChannels.epg_id.in_(guide_ids),
+                EpgChannels.channel_id.in_(guide_channel_ids),
+            )
+            .order_by(EpgChannels.epg_id.asc(), EpgChannels.channel_id.asc(), EpgChannelProgrammes.start.asc())
+            .all()
+        )
+        for programme, guide_id, guide_channel_id in rows:
+            output_channels = source_key_to_output_channels.get((guide_id, guide_channel_id))
+            if not output_channels:
+                continue
+            programme_data = {
+                "start": programme.start,
+                "stop": programme.stop,
+                "start_timestamp": programme.start_timestamp,
+                "stop_timestamp": programme.stop_timestamp,
+                "title": programme.title,
+                "sub-title": programme.sub_title,
+                "desc": programme.desc,
+                "series-desc": programme.series_desc,
+                "country": programme.country,
+                "icon_url": programme.icon_url,
+                "categories": json.loads(programme.categories or "[]"),
+                "summary": programme.summary,
+                "keywords": programme.keywords,
+                "credits_json": programme.credits_json,
+                "video_colour": programme.video_colour,
+                "video_aspect": programme.video_aspect,
+                "video_quality": programme.video_quality,
+                "subtitles_type": programme.subtitles_type,
+                "audio_described": programme.audio_described,
+                "previously_shown_date": programme.previously_shown_date,
+                "premiere": programme.premiere,
+                "is_new": programme.is_new,
+                "epnum_onscreen": programme.epnum_onscreen,
+                "epnum_xmltv_ns": programme.epnum_xmltv_ns,
+                "epnum_dd_progid": programme.epnum_dd_progid,
+                "star_rating": programme.star_rating,
+                "production_year": programme.production_year,
+                "rating_system": programme.rating_system,
+                "rating_value": programme.rating_value,
+            }
+            for output_channel_id in output_channels:
+                programmes_by_output_channel[output_channel_id].append(programme_data)
+    phase_seconds["load_programmes"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     logger.info("   - Generating XML channel info.")
     for channel_info in configured_channels:
-        # Create a <channel> element for a TV channel
-        channel = ET.SubElement(output_root, 'channel')
-        channel.set('id', str(channel_info['channel_id']))
-        # Add a <display-name> element to the <channel> element
-        display_name = ET.SubElement(channel, 'display-name')
-        display_name.text = channel_info['display_name'].strip()
-        # Add a <icon> element to the <channel> element
-        icon = ET.SubElement(channel, 'icon')
-        icon.set('src', channel_info['logo_url'])
-        # Add a <live> element to the <channel> element
-        live = ET.SubElement(channel, 'live')
-        live.text = 'true'
-        # Add a <active> element to the <channel> element
-        active = ET.SubElement(channel, 'active')
-        active.text = 'true'
+        channel = ET.SubElement(output_root, "channel")
+        channel.set("id", str(channel_info["channel_id"]))
+        display_name = ET.SubElement(channel, "display-name")
+        display_name.text = channel_info["display_name"].strip()
+        icon = ET.SubElement(channel, "icon")
+        icon.set("src", channel_info["logo_url"])
+        live = ET.SubElement(channel, "live")
+        live.text = "true"
+        active = ET.SubElement(channel, "active")
+        active.text = "true"
         await maybe_yield()
-    # Loop through all <programme> elements returned
+
     logger.info("   - Generating XML channel programme data.")
-    for channel_programmes_data in all_channel_programmes_data:
-        for epg_channel_programme in channel_programmes_data.get('programmes', []):
+    for channel_info in configured_channels:
+        channel_id = channel_info["channel_id"]
+        channel_tags = channel_info["tags"]
+        for epg_channel_programme in programmes_by_output_channel.get(channel_id, []):
             # Create a <programme> element for the output file and copy the attributes from the input programme
             output_programme = ET.SubElement(output_root, 'programme')
             # Build programmes from DB data (manually create attributes etc.
@@ -477,7 +548,7 @@ async def build_custom_epg(config, throttle=True):
             if epg_channel_programme['stop_timestamp']:
                 output_programme.set('stop_timestamp', epg_channel_programme['stop_timestamp'])
             # Set the "channel" ident here
-            output_programme.set('channel', str(channel_programmes_data.get('channel')))
+            output_programme.set('channel', str(channel_id))
             # Loop through all child elements of the input programme and copy them to the output programme
             for child in ['title', 'sub-title', 'desc', 'series-desc', 'country']:
                 # Copy all other child elements to the output programme if they exist
@@ -572,19 +643,27 @@ async def build_custom_epg(config, throttle=True):
                     output_child.text = category
                     output_child.set('lang', 'en')
             # Loop through all tags for this channel and add them as "category" child elements
-            for tag in channel_programmes_data.get('tags', []):
+            for tag in channel_tags:
                 output_child = ET.SubElement(output_programme, 'category')
                 output_child.text = tag
                 output_child.set('lang', 'en')
         await maybe_yield()
-    # Create an XML file and write the output root element to it
+    phase_seconds["generate_xml_tree"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     logger.info("   - Writing out XMLTV file.")
     output_tree = ET.ElementTree(output_root)
-    ET.indent(output_tree, space="\t", level=0)
     custom_epg_file = os.path.join(config.config_path, "epg.xml")
-    await loop.run_in_executor(None, output_tree.write, custom_epg_file, 'UTF-8', True)
-    execution_time = time.time() - start_time
-    logger.info("The custom XMLTV EPG file for TVH was generated in '%s' seconds", int(execution_time))
+    await loop.run_in_executor(
+        None, lambda: output_tree.write(custom_epg_file, encoding="UTF-8", xml_declaration=True)
+    )
+    phase_seconds["write_xml_file"] = time.perf_counter() - t0
+    execution_time = time.perf_counter() - total_start
+    logger.info(
+        "The custom XMLTV EPG file for TVH was generated in '%s' seconds (phases=%s)",
+        int(execution_time),
+        {k: round(v, 2) for k, v in phase_seconds.items()},
+    )
 
 
 # --- Online Metadata ---

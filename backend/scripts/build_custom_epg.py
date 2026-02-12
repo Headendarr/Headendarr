@@ -7,16 +7,16 @@ from backend import create_app
 from backend.epgs import build_custom_epg
 
 
-def main():
-    # TODO: Possible ways to speedup:
-    # - Replace per-channel programme queries with a single joined query
-    # - Stream XML directly to disk instead of building a large in-memory tree
-    # - Add/verify DB indexes for programme lookup by channel_id + start
+async def _run():
     app = create_app()
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
+    async with app.app_context():
+        await build_custom_epg(config, throttle=False)
+
+
+def main():
     try:
-        with app.app_context():
-            asyncio.run(build_custom_epg(config, throttle=False))
+        asyncio.run(_run())
     except Exception as exc:
         print(f"[epg-build] Failed: {exc}", file=sys.stderr)
         raise

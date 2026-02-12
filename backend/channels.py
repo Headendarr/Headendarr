@@ -1497,12 +1497,12 @@ async def queue_background_channel_update_tasks(config):
             priority=21,
         )
     # Generate 'epg.xml' file in .tvh_iptv_config directory
-    from backend.epgs import build_custom_epg
+    from backend.epgs import build_custom_epg_subprocess
 
     await task_broker.add_task(
         {
             "name": "Recreating static XMLTV file",
-            "function": build_custom_epg,
+            "function": build_custom_epg_subprocess,
             "args": [config],
         },
         priority=23,

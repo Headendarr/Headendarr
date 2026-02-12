@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text, Float, UniqueConstraint
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text, Float, UniqueConstraint, Index
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import relationship, sessionmaker, declarative_base, backref
 
@@ -36,6 +36,9 @@ class Epg(Base):
 
 class EpgChannels(Base):
     __tablename__ = "epg_channels"
+    __table_args__ = (
+        Index("ix_epg_channels_epg_id_channel_id", "epg_id", "channel_id"),
+    )
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(String(256), index=True, unique=False)
@@ -43,7 +46,7 @@ class EpgChannels(Base):
     icon_url = Column(Text, index=False, unique=False)
 
     # Link with an epg
-    epg_id = Column(Integer, ForeignKey('epgs.id'), nullable=False)
+    epg_id = Column(Integer, ForeignKey('epgs.id'), nullable=False, index=True)
 
     # Backref to all associated linked channels
     epg_channel_programmes = relationship('EpgChannelProgrammes', backref='channel', lazy=True,
@@ -61,6 +64,9 @@ class EpgChannelProgrammes(Base):
         </programme>
     """
     __tablename__ = "epg_channel_programmes"
+    __table_args__ = (
+        Index("ix_epg_channel_programmes_epg_channel_id_start", "epg_channel_id", "start"),
+    )
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(Text, index=True, unique=False)
@@ -96,7 +102,7 @@ class EpgChannelProgrammes(Base):
     rating_value = Column(Text, index=False, unique=False)
 
     # Link with an epg channel
-    epg_channel_id = Column(Integer, ForeignKey('epg_channels.id'), nullable=False)
+    epg_channel_id = Column(Integer, ForeignKey('epg_channels.id'), nullable=False, index=True)
 
     def __repr__(self):
         return '<EpgChannelProgrammes {}>'.format(self.id)
