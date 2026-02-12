@@ -4,6 +4,7 @@ import gzip
 import json
 import logging
 import os
+import shutil
 import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -168,14 +169,25 @@ async def download_xmltv_epg(settings, url, output, user_agent=None):
 
 
 async def try_unzip(output: str) -> None:
-    loop = asyncio.get_event_loop()
-    try:
-        with gzip.open(output, 'rb') as f:
-            out = f.readlines()
+    def _maybe_unzip(path: str) -> bool:
+        temp_path = f"{path}.tmp_unzip"
+        try:
+            with gzip.open(path, "rb") as src, open(temp_path, "wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+            os.replace(temp_path, path)
+            return True
+        except Exception:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+            return False
+
+    loop = asyncio.get_running_loop()
+    did_unzip = await loop.run_in_executor(None, _maybe_unzip, output)
+    if did_unzip:
         logger.info("Downloaded file is gzipped. Unzipping")
-        await loop.run_in_executor(None, lambda: open(output, 'wb').writelines(out))
-    except:
-        pass
 
 
 async def store_epg_channels(config, epg_id):
