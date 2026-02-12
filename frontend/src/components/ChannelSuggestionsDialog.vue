@@ -46,7 +46,11 @@
                 <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
               </q-item-label>
               <q-item-label caption lines="1">
-                {{ suggestion.group_title || 'Unknown group' }} • {{ suggestion.playlist_name }}
+                <span class="text-weight-medium text-primary">Group:</span>
+                {{ suggestion.group_title || 'Unknown group' }}
+                <span class="q-mx-xs">•</span>
+                <span class="text-weight-medium text-primary">Source:</span>
+                {{ suggestion.playlist_name }}
               </q-item-label>
             </q-item-section>
             <q-item-section side>

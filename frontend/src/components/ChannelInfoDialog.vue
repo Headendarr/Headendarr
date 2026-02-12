@@ -375,17 +375,21 @@
 
               <q-separator v-if="suggestedStreams && suggestedStreams.length" class="q-my-lg" />
 
-              <div v-if="suggestedStreams && suggestedStreams.length">
+              <template v-if="suggestedStreams && suggestedStreams.length">
                 <h5 class="q-mb-none">Suggested Streams:</h5>
-                <div class="q-mt-sm">
-                  <q-list bordered separator class="rounded-borders">
+                <div class="q-gutter-sm">
+                  <q-list bordered separator class="rounded-borders q-pl-none">
                     <q-item v-for="suggestion in suggestedStreams" :key="suggestion.id">
                       <q-item-section>
                         <q-item-label lines="1">
                           <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
                         </q-item-label>
                         <q-item-label caption lines="1">
-                          {{ suggestion.group_title || 'Unknown group' }} • {{ suggestion.playlist_name }}
+                          <span class="text-weight-medium text-primary">Group:</span>
+                          {{ suggestion.group_title || 'Unknown group' }}
+                          <span class="q-mx-xs">•</span>
+                          <span class="text-weight-medium text-primary">Source:</span>
+                          {{ suggestion.playlist_name }}
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
@@ -445,7 +449,7 @@
                     </q-item>
                   </q-list>
                 </div>
-              </div>
+              </template>
 
               <div>
                 <q-btn label="Save" type="submit" color="primary" />
