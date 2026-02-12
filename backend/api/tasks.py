@@ -189,7 +189,7 @@ async def update_tvh_channels(app):
     logger.info("Updating channels in TVH")
     config = app.config['APP_CONFIG']
     from backend.channels import publish_bulk_channels_to_tvh_and_m3u
-    await publish_bulk_channels_to_tvh_and_m3u(config)
+    await publish_bulk_channels_to_tvh_and_m3u(config, False, "periodic")
 
 
 async def update_tvh_muxes(app):

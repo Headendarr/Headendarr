@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import os
 import re
@@ -71,6 +72,7 @@ def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) 
         chain_custom_hls_proxy=bool(playlist_info.chain_custom_hls_proxy),
     )
 
+
 image_placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAACiUlEQVR4nO2cy46sMAxEzdX8/y/3XUSKUM+I7sLlF6qzYgE4HJwQEsLxer1MfMe/6gJMQrIAJAtAsgAkC0CyACQLQLIAJAtAsgAkC0CyACQLQLIAJAtAsgAkC0CyACQL4Md5/HEclFH84ziud+gwV+C61H2F905yFvTxDNDOQXjz4p6vddTt0M7Db0OoRN/7cmZi6Nm+iphWblbrlnnm90CsMBe+EmpNTsVk3pM/faXd9oRYzH7WLui2lmlqFeBjF8QD/2LKn/Fxd4jfgy/vPcblV+zrTmiluCDIF1/WqgW/269kInyRZZ3bi+f5Ysr63bI+zFf4EE25LyI0WRcP7FpfxOTiyPrYtXmGr7yR0gfUx9Rh5em+CLKg14sqX5SaWDBhMTe/vLLuvbWW+PInV9lU2MT8qpw3HOereJJ1li+XLMowW6YvZ7PVYvp+Sn61kGVDfHWRZRN8NZJl7X31kmW9fbWTZY19dZRlXX01lWUtffWVZf18tZZlzXy5ZEV/iLGjrA1/LOf7WffMWjTJrxmyrIevMbKsgS+vrJxm6xxubdwI6h9QmpRZi8L8IshKTi675YsyTjkvsxYl+TVVllX44sjKr4k77tq4js76JJeWWW19ET9eHlwNN2n1kbxooPBzyLXxVgDuN/HkzGrli756IGQxQvIqlLfQe5tehpA2q0N+RRDVwBf62nRfNHCmxFfo+o7YrkOyr+j1HRktceFKVvKq7AcsM70+M9FX6jO+avU9K25Nhyj/vw4UX2W9R0v/Y4jfV6WsMzn/ovH+D6aJrDQ8z5knDNFAPH9GugmSBSBZAJIFIFkAkgUgWQCSBSBZAJIFIFkAkgUgWQCSBSBZAJIFIFkA/wGlHK2X7Li2TQAAAABJRU5ErkJggg=="
 
 
@@ -101,6 +103,67 @@ class LRUCache:
 
 
 _list_cache = LRUCache(max_size=8)
+
+
+def _channel_sync_state_path(config):
+    return os.path.join(config.config_path, "cache", "channel_sync_state.json")
+
+
+def _logo_source_state_path(config):
+    return os.path.join(config.config_path, "cache", "channel_logo_sources.json")
+
+
+def _read_json_file(path, default):
+    try:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _write_json_file(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _build_channel_sync_signature(channels, tic_base_url):
+    digest = hashlib.sha1()
+    digest.update(f"tic_base_url={tic_base_url or ''}".encode("utf-8"))
+    for channel in channels:
+        digest.update(
+            "|".join(
+                [
+                    str(channel.id),
+                    str(bool(channel.enabled)),
+                    str(channel.name or ""),
+                    str(channel.number or ""),
+                    str(channel.logo_url or ""),
+                    str(channel.tvh_uuid or ""),
+                    str(channel.guide_id or ""),
+                    str(channel.guide_channel_id or ""),
+                ]
+            ).encode("utf-8")
+        )
+        tag_names = sorted((tag.name or "") for tag in (channel.tags or []))
+        digest.update(("tags:" + ",".join(tag_names)).encode("utf-8"))
+        source_rows = sorted(
+            (
+                str(source.playlist_id or ""),
+                str(source.xc_account_id or ""),
+                str(source.priority or ""),
+                str(source.playlist_stream_name or ""),
+                str(source.playlist_stream_url or ""),
+                str(bool(getattr(source, "use_hls_proxy", False))),
+                str(source.tvh_uuid or ""),
+            )
+            for source in (channel.sources or [])
+        )
+        for row in source_rows:
+            digest.update(("src:" + "|".join(row)).encode("utf-8"))
+    return digest.hexdigest()
 
 
 async def read_config_all_channels(
@@ -753,11 +816,11 @@ async def update_channel(config, channel_id, data):
                                 == source_info["stream_name"]
                             ):
                                 logger.info(
-                            "    - Channel %s source marked for refresh 'Playlist:%s - %s'",
-                            channel.name,
-                            source_info["playlist_id"],
-                            source_info["stream_name"],
-                        )
+                                    "    - Channel %s source marked for refresh 'Playlist:%s - %s'",
+                                    channel.name,
+                                    source_info["playlist_id"],
+                                    source_info["stream_name"],
+                                )
                                 if not playlist_info:
                                     query = await session.execute(
                                         select(Playlist).filter(
@@ -1052,24 +1115,58 @@ async def build_m3u_lines_for_channel(tic_base_url, channel_uuid, channel):
     return playlist
 
 
-async def publish_channel_to_tvh(tvh, channel):
+async def publish_channel_to_tvh(
+    tvh,
+    channel,
+    existing_channels_by_uuid=None,
+    existing_channels_by_name=None,
+    existing_tag_details=None,
+    api_calls=None,
+):
     logger.info("Publishing channel to TVH - %s.", channel.name)
+    if api_calls is None:
+        api_calls = {}
+
+    def _count(name):
+        api_calls[name] = api_calls.get(name, 0) + 1
+
+    # Fallback path for single-channel publish callers.
+    if existing_channels_by_uuid is None or existing_channels_by_name is None:
+        _count("list_all_channels")
+        existing_channels = await tvh.list_all_channels()
+        existing_channels_by_uuid = {
+            c.get("uuid"): c for c in existing_channels if c.get("uuid")
+        }
+        existing_channels_by_name = {
+            c.get("name"): c for c in existing_channels if c.get("name")
+        }
+    if existing_tag_details is None:
+        _count("list_all_managed_channel_tags")
+        existing_tag_details = {
+            tag.get("name"): tag.get("uuid")
+            for tag in await tvh.list_all_managed_channel_tags()
+            if tag.get("name") and tag.get("uuid")
+        }
+
     # Check if channel exists with a matching UUID and create it if not
     channel_uuid = channel.tvh_uuid
-    existing_channels = await tvh.list_all_channels()
     if channel_uuid:
-        found = False
-        for tvh_channel in existing_channels:
-            if tvh_channel.get("uuid") == channel_uuid:
-                found = True
-        if not found:
+        if channel_uuid not in existing_channels_by_uuid:
             channel_uuid = None
     if not channel_uuid:
-        # No channel exists, create one
-        logger.info("   - Creating new channel in TVH")
-        channel_uuid = await tvh.create_channel(
-            channel.name, channel.number, channel.logo_url
-        )
+        by_name = existing_channels_by_name.get(channel.name)
+        if by_name and by_name.get("uuid"):
+            channel_uuid = by_name.get("uuid")
+        else:
+            # No channel exists, create one
+            logger.info("   - Creating new channel in TVH")
+            _count("create_channel")
+            channel_uuid = await tvh.create_channel(
+                channel.name, channel.number, channel.logo_url
+            )
+            if channel_uuid:
+                existing_channels_by_uuid[channel_uuid] = {"uuid": channel_uuid, "name": channel.name}
+                existing_channels_by_name[channel.name] = {"uuid": channel_uuid, "name": channel.name}
     else:
         logger.info("   - Found existing channel in TVH")
     channel_conf = {
@@ -1080,10 +1177,6 @@ async def publish_channel_to_tvh(tvh, channel):
         "icon": channel.logo_url,
     }
     # Check for existing channel tags
-    existing_tag_details = {}
-    logger.info("   - Fetching details of channel tags in TVH")
-    for tvh_channel_tag in await tvh.list_all_managed_channel_tags():
-        existing_tag_details[tvh_channel_tag.get("name")] = tvh_channel_tag.get("uuid")
     # Create channel tags in TVH if missing
     channel_tag_uuids = []
     for tag in channel.tags:
@@ -1091,11 +1184,15 @@ async def publish_channel_to_tvh(tvh, channel):
         if not tag_uuid:
             # Create channel tag
             logger.info("Creating new channel tag '%s'", tag.name)
+            _count("create_channel_tag")
             tag_uuid = await tvh.create_channel_tag(tag.name)
+            if tag_uuid:
+                existing_tag_details[tag.name] = tag_uuid
         channel_tag_uuids.append(tag_uuid)
     # Apply channel tag UUIDs to chanel conf in TVH
     channel_conf["tags"] = channel_tag_uuids
     # Save channel info in TVH
+    _count("idnode_save")
     await tvh.idnode_save(channel_conf)
     return channel_uuid
 
@@ -1180,56 +1277,162 @@ async def batch_publish_new_channels_to_tvh(config, channels):
         logger.info("Batch publish completed")
 
 
-async def publish_bulk_channels_to_tvh_and_m3u(config):
+async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unknown"):
+    total_start = time.perf_counter()
+    phase_seconds = {}
+    api_calls = {}
+    logo_refresh_count = 0
+
+    def _count(name):
+        api_calls[name] = api_calls.get(name, 0) + 1
+
     settings = config.read_settings()
     tic_base_url = settings["settings"]["app_url"]
-    async with await get_tvh(config) as tvh:
-        # Loop over configured channels
-        managed_uuids = []
-        results = (
-            db.session.query(Channel)
-            .options(
-                joinedload(Channel.tags),
-                joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
-                joinedload(Channel.sources).subqueryload(ChannelSource.xc_account),
-            )
-            .order_by(Channel.id, Channel.number.asc())
-            .all()
+    sync_state_path = _channel_sync_state_path(config)
+    logo_source_state_path = _logo_source_state_path(config)
+
+    t0 = time.perf_counter()
+    managed_uuids = []
+    results = (
+        db.session.query(Channel)
+        .options(
+            joinedload(Channel.tags),
+            joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+            joinedload(Channel.sources).subqueryload(ChannelSource.xc_account),
         )
-        # Fetch existing channels
-        logger.info("Publishing all channels to TVH and M3U")
+        .order_by(Channel.id, Channel.number.asc())
+        .all()
+    )
+    phase_seconds["load_channels"] = time.perf_counter() - t0
+
+    current_signature = _build_channel_sync_signature(results, tic_base_url)
+    previous_state = _read_json_file(sync_state_path, {})
+    previous_signature = previous_state.get("signature")
+    custom_playlist_file = os.path.join(config.config_path, "playlist.m3u8")
+    playlist_exists = os.path.exists(custom_playlist_file)
+    if not force and playlist_exists and previous_signature == current_signature:
+        logger.info(
+            "Skipping TVH channel sync (trigger=%s): no channel changes detected (%.2fs)",
+            trigger,
+            time.perf_counter() - total_start,
+        )
+        return
+
+    logo_source_state_payload = _read_json_file(logo_source_state_path, {})
+    if isinstance(logo_source_state_payload, dict):
+        logo_source_state = logo_source_state_payload.get("sources", {})
+    else:
+        logo_source_state = {}
+    t0 = time.perf_counter()
+    async with await get_tvh(config) as tvh:
+        # Prefetch TVH channels/tags once for this run.
+        _count("list_all_channels")
+        existing_channels = await tvh.list_all_channels()
+        existing_channels_by_uuid = {
+            c.get("uuid"): c for c in existing_channels if c.get("uuid")
+        }
+        existing_channels_by_name = {
+            c.get("name"): c for c in existing_channels if c.get("name")
+        }
+        _count("list_all_managed_channel_tags")
+        existing_tag_details = {
+            tag.get("name"): tag.get("uuid")
+            for tag in await tvh.list_all_managed_channel_tags()
+            if tag.get("name") and tag.get("uuid")
+        }
+        phase_seconds["tvh_prefetch"] = time.perf_counter() - t0
+
+        # Loop over configured channels
+        logger.info(
+            "Publishing all channels to TVH and M3U (trigger=%s, force=%s)",
+            trigger,
+            force,
+        )
         playlist = [f'#EXTM3U url-tvg="{tic_base_url}/tic-web/epg.xml"']
         pending_commit = False
+        t_publish = time.perf_counter()
         for result in results:
-            channel_uuid = await publish_channel_to_tvh(tvh, result)
+            channel_uuid = await publish_channel_to_tvh(
+                tvh,
+                result,
+                existing_channels_by_uuid=existing_channels_by_uuid,
+                existing_channels_by_name=existing_channels_by_name,
+                existing_tag_details=existing_tag_details,
+                api_calls=api_calls,
+            )
             playlist += await build_m3u_lines_for_channel(
                 tic_base_url, channel_uuid, result
             )
             result.tvh_uuid = channel_uuid
-            result.logo_base64 = await parse_image_as_base64(result.logo_url)
+            logo_url = result.logo_url or ""
+            last_logo_url = logo_source_state.get(str(result.id))
+            if (not result.logo_base64) or (last_logo_url != logo_url):
+                result.logo_base64 = await parse_image_as_base64(result.logo_url)
+                logo_source_state[str(result.id)] = logo_url
+                logo_refresh_count += 1
             managed_uuids.append(channel_uuid)
             pending_commit = True
+        phase_seconds["channel_publish_loop"] = time.perf_counter() - t_publish
+
+        t_commit = time.perf_counter()
         if pending_commit:
             try:
                 db.session.commit()
             except Exception:
                 db.session.rollback()
                 raise
+        phase_seconds["db_commit"] = time.perf_counter() - t_commit
 
         # Write playlist file
-        custom_playlist_file = os.path.join(config.config_path, "playlist.m3u8")
+        t_playlist = time.perf_counter()
         async with aiofiles.open(custom_playlist_file, "w", encoding="utf-8") as f:
             for item in playlist:
                 await f.write(f"{item}\n")
+        phase_seconds["write_playlist"] = time.perf_counter() - t_playlist
 
         #  Remove any channels that are not managed.
+        t_cleanup = time.perf_counter()
         logger.info("Running cleanup task on current TVH channels")
-        for existing_channel in await tvh.list_all_channels():
-            if existing_channel.get("uuid") not in managed_uuids:
+        managed_uuid_set = set(managed_uuids)
+        for existing_uuid in list(existing_channels_by_uuid.keys()):
+            if existing_uuid not in managed_uuid_set:
                 logger.info(
-                    "    - Removing channel UUID - %s", existing_channel.get("uuid")
+                    "    - Removing channel UUID - %s", existing_uuid
                 )
-                await tvh.delete_channel(existing_channel.get("uuid"))
+                _count("delete_channel")
+                await tvh.delete_channel(existing_uuid)
+        phase_seconds["cleanup"] = time.perf_counter() - t_cleanup
+
+    _write_json_file(
+        sync_state_path,
+        {
+            "signature": current_signature,
+            "updated_at": int(time.time()),
+        },
+    )
+    _write_json_file(
+        logo_source_state_path,
+        {
+            "sources": logo_source_state,
+            "updated_at": int(time.time()),
+        },
+    )
+
+    execution_time = time.perf_counter() - total_start
+    logger.info(
+        "Configuring TVH channels finished in %.2fs (trigger=%s force=%s channels=%s logos_refreshed=%s phases=%s api_calls=%s)",
+        execution_time,
+        trigger,
+        force,
+        len(results),
+        logo_refresh_count,
+        {k: round(v, 2) for k, v in phase_seconds.items()},
+        api_calls,
+    )
+    logger.info(
+        "Configuring TVH channels took '%s' seconds",
+        int(execution_time),
+    )
 
 
 async def publish_channel_muxes(config):
@@ -1450,7 +1653,7 @@ async def queue_background_channel_update_tasks(config):
         {
             "name": "Configuring TVH channels",
             "function": publish_bulk_channels_to_tvh_and_m3u,
-            "args": [config],
+            "args": [config, True, "manual"],
         },
         priority=11,
     )
