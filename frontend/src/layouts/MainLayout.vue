@@ -182,11 +182,39 @@
                         need a guide-only feed or separate XMLTV configuration.
                       </q-card-section>
                       <q-card-section>
+                        <div class="text-h6">How to use TVHeadend clients:</div>
+                        Connect TVHeadend-capable clients directly to TVHeadend when you want TVHeadend to handle
+                        tuning and stream limits.
+                        <br><br>
+                        Use the TVHeadend client URL on port <b>9981</b> (HTTP) or <b>9982</b> (HTSP) and ensure those
+                        ports are reachable from your client devices.
+                        <br><br>
+                        Use these credentials:
+                        <ul>
+                          <li><b>Username</b>: your TIC username</li>
+                          <li><b>Password</b>: your streaming key</li>
+                        </ul>
+                      </q-card-section>
+                      <q-card-section>
+                        <div class="text-h6">How to use XC clients:</div>
+                        Use IPTV clients that support Xtream Codes logins with the <span class="text-bold text-purple-7">XC Playlist</span>
+                        URL. This is recommended for clients that cannot set per-playlist connection limits.
+                        <br><br>
+                        If the XC playlist is routed through TVHeadend, it enforces connection limits, which prevents
+                        streams from dropping when a channel is already in use.
+                        <br><br>
+                        Use these credentials:
+                        <ul>
+                          <li><b>Username</b>: your TIC username</li>
+                          <li><b>Password</b>: your streaming key</li>
+                        </ul>
+                      </q-card-section>
+                      <q-card-section>
                         <div class="text-h6">How to use the XC Playlist (Single Playlist):</div>
                         Use the <span class="text-bold text-purple-7">XC Playlist</span> with IPTV clients
                         that support XC logins or cannot set per-playlist connection limits.
                         <br><br>
-                        If the XC playlist is routed through TVHeadend, TVH enforces connection limits, which prevents
+                        If the XC playlist is routed through TVHeadend, it enforces connection limits, which prevents
                         streams from dropping when a channel is already in use.
                         <br><br>
                         Use these credentials:
