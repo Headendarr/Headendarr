@@ -174,7 +174,7 @@ run_migrations() {
 migrate_sqlite_to_postgres() {
     if [ -f "/config/.tvh_iptv_config/db.sqlite3" ]; then
         print_log info "Running SQLite -> Postgres migration"
-        python3 /app/scripts/sqlite_to_pg.py
+        python3 /app/migrations/sqlite_to_pg.py
     else
         print_log info "SQLite DB not found; skipping migration"
     fi
@@ -251,7 +251,7 @@ start_tic() {
     if [ "${ENABLE_APP_HOT_RELOAD}" = "true" ]; then
         print_log info "Starting TIC server with watchgod hot reload (watching /app/backend)"
         export ENABLE_APP_HOT_RELOAD=false
-        python3 /app/scripts/watchgod_reload.py python3 "${FLASK_APP:?}" &
+        python3 /app/backend/scripts/watchgod_reload.py python3 "${FLASK_APP:?}" &
     else
         print_log info "Starting TIC server"
         python3 "${FLASK_APP:?}" &

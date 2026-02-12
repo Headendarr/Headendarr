@@ -147,7 +147,6 @@ COPY --from=backend_build_stage /var/venv-docker /var/venv-docker
 COPY --from=frontend_build_stage /build/dist/spa /app/frontend/dist/spa
 COPY docker/overlay /
 COPY backend /app/backend
-COPY scripts /app/scripts
 COPY migrations /app/migrations
 COPY alembic.ini /app/alembic.ini
 COPY run.py /app/run.py

@@ -172,7 +172,7 @@ async def rebuild_custom_epg(app):
     from backend.epgs import update_channel_epg_with_online_data
     await update_channel_epg_with_online_data(config)
 
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "build_custom_epg.py"
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "build_custom_epg.py"
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         str(script_path),
