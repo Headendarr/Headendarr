@@ -167,7 +167,8 @@ export default {
         data: payload,
       }).then(() => {
         this.channelConfig.sources = sources;
-        return this.dismissSuggestedStream(suggestion, {silent: true});
+        this.suggestions = this.suggestions.filter(item => item.id !== suggestion.id);
+        return this.dismissSuggestedStream(suggestion, {silent: true, skipLocalRemove: true});
       }).then(() => {
         this.$q.notify({color: 'positive', message: 'Stream added'});
       }).catch(() => {
@@ -180,7 +181,9 @@ export default {
         method: 'POST',
         url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
       }).then(() => {
-        this.suggestions = this.suggestions.filter(item => item.id !== suggestion.id);
+        if (!options.skipLocalRemove) {
+          this.suggestions = this.suggestions.filter(item => item.id !== suggestion.id);
+        }
         if (!options.silent) {
           this.$q.notify({color: 'positive', message: 'Suggestion dismissed'});
         }

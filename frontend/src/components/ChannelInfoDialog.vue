@@ -526,27 +526,37 @@ export default {
         source_type: 'playlist',
         xc_account_id: null,
       });
-      this.dismissSuggestedStream(suggestion);
+      this.suggestedStreams = this.suggestedStreams.filter(item => item.id !== suggestion.id);
+      this.dismissSuggestedStream(suggestion, {silent: true, skipLocalRemove: true});
     },
-    dismissSuggestedStream: function(suggestion) {
+    dismissSuggestedStream: function(suggestion, options = {}) {
       if (!suggestion) {
         return;
       }
+      const dismiss = () => axios({
+        method: 'POST',
+        url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
+      }).then(() => {
+        if (!options.skipLocalRemove) {
+          this.suggestedStreams = this.suggestedStreams.filter(item => item.id !== suggestion.id);
+        }
+      }).catch(() => {
+        if (!options.silent) {
+          this.$q.notify({color: 'negative', message: 'Failed to dismiss suggestion'});
+        }
+      });
+
+      if (options.silent) {
+        dismiss();
+        return;
+      }
+
       this.$q.dialog({
         title: 'Dismiss Stream Suggestion?',
         message: 'This will permanently hide this suggestion for this channel. This cannot be undone.',
         cancel: true,
         persistent: true,
-      }).onOk(() => {
-        axios({
-          method: 'POST',
-          url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
-        }).then(() => {
-          this.suggestedStreams = this.suggestedStreams.filter(item => item.id !== suggestion.id);
-        }).catch(() => {
-          this.$q.notify({color: 'negative', message: 'Failed to dismiss suggestion'});
-        });
-      });
+      }).onOk(() => dismiss());
     },
     fetchEpgData: function() {
       // Fetch from server
