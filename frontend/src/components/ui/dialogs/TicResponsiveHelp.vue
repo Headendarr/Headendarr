@@ -27,7 +27,7 @@
             </div>
           </div>
           <q-space />
-          <q-btn flat dense round icon="close" size="sm" @click="$emit('update:modelValue', false)" />
+          <q-btn flat dense round icon="close" size="sm" @click="closeHelp" />
         </div>
       </q-card-section>
       <q-separator />
@@ -46,6 +46,7 @@
 <script setup>
 import {computed, onBeforeUnmount, ref, watch} from 'vue';
 import {useQuasar} from 'quasar';
+import {useUiStore} from 'stores/ui';
 
 const props = defineProps({
   modelValue: {
@@ -54,9 +55,10 @@ const props = defineProps({
   },
 });
 
-defineEmits(['update:modelValue']);
+const emit = defineEmits(['update:modelValue']);
 
 const $q = useQuasar();
+const uiStore = useUiStore();
 const position = ref({left: 0, top: 0});
 const dragState = ref(null);
 const resizeState = ref(null);
@@ -227,6 +229,12 @@ function stopDrag() {
   window.removeEventListener('mouseup', stopDrag);
   window.removeEventListener('touchmove', onDragTouchMove);
   window.removeEventListener('touchend', stopDrag);
+}
+
+function closeHelp() {
+  // Persist hide state the same way as header toggle.
+  uiStore.setShowHelp(false);
+  emit('update:modelValue', false);
 }
 
 watch(
