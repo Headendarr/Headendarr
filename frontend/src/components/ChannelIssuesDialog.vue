@@ -1,114 +1,92 @@
 <template>
-  <q-dialog ref="channelIssuesDialogRef" @hide="onDialogHide">
-    <q-card style="min-width: 520px; max-width: 760px;">
-      <q-card-section class="bg-card-head">
-        <div class="row items-center no-wrap">
-          <div class="col">
-            <div class="text-h6 text-blue-10">Needs Attention</div>
-            <div class="text-caption text-grey-7">
-              Review the issues below and follow the suggested steps to resolve them.
+  <TicDialogPopup v-model="isOpen" title="Needs Attention" width="760px" max-width="96vw" @hide="onDialogHide">
+    <template #default>
+      <div class="text-caption text-grey-7 q-mb-md">
+        Review the issues below and follow the suggested steps to resolve them.
+      </div>
+      <div class="q-gutter-md">
+        <template v-for="(issue, index) in issueList" :key="issue.key">
+          <div class="issue-block">
+            <div class="text-subtitle2 text-weight-medium issue-title">
+              <q-icon name="warning" class="issue-title__icon" />
+              {{ issue.title }}
             </div>
-          </div>
-          <div class="col-auto">
-            <q-btn dense round flat icon="close" v-close-popup />
-          </div>
-        </div>
-      </q-card-section>
+            <div class="text-body2 text-grey-8 q-mt-xs">
+              {{ issue.description }}
+            </div>
+            <div v-if="issue.key === 'channel_logo_unavailable' && logoIssueError" class="q-mt-sm">
+              <div class="text-caption text-grey-7">Last error</div>
+              <div class="issue-log-line">{{ logoIssueError }}</div>
+            </div>
 
-      <q-separator />
-
-      <q-card-section>
-        <div class="q-gutter-md">
-          <template v-for="(issue, index) in issueList" :key="issue.key">
-            <div class="issue-block">
-              <div class="text-subtitle2 text-weight-medium issue-title">
-                <q-icon name="warning" class="issue-title__icon" />
-                {{ issue.title }}
-              </div>
-              <div class="text-body2 text-grey-8 q-mt-xs">
-                {{ issue.description }}
-              </div>
-              <div
-                v-if="issue.key === 'channel_logo_unavailable' && logoIssueError"
-                class="q-mt-sm"
-              >
-                <div class="text-caption text-grey-7">Last error</div>
-                <div class="issue-log-line">{{ logoIssueError }}</div>
-              </div>
-
-              <div v-if="hasIssueDetails(issue)" class="issue-actions q-mt-md">
-                <div v-if="issue.streams && issue.streams.length">
-                  <div class="text-caption text-grey-7">Affected stream(s)</div>
-                  <div class="text-body2">
-                    <div v-for="stream in issue.streams" :key="stream.label">
-                      {{ stream.label }}
-                    </div>
+            <div v-if="hasIssueDetails(issue)" class="issue-actions q-mt-md">
+              <div v-if="issue.streams && issue.streams.length">
+                <div class="text-caption text-grey-7">Affected stream(s)</div>
+                <div class="text-body2">
+                  <div v-for="stream in issue.streams" :key="stream.label">
+                    {{ stream.label }}
                   </div>
                 </div>
+              </div>
 
-                <div
-                  v-if="issue.key === 'channel_logo_unavailable'"
-                  class="q-mt-md"
-                >
-                  <div class="text-caption text-grey-7 q-mb-xs">Suggested logos</div>
-                  <div v-if="loadingLogoSuggestions" class="text-caption text-grey-7">Loading suggestions...</div>
-                  <div v-else-if="!logoSuggestions.length" class="text-caption text-grey-7">
-                    No suggested logos found from linked streams/EPG.
-                  </div>
-                  <q-list
-                    v-else
-                    bordered
-                    separator
-                    class="rounded-borders"
-                  >
-                    <q-item v-for="suggestion in logoSuggestions" :key="suggestion.url">
-                      <q-item-section avatar>
-                        <div class="logo-preview">
-                          <q-img :src="suggestion.url" class="logo-preview__img" fit="contain" />
-                        </div>
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label>{{ suggestion.label || suggestion.source }}</q-item-label>
-                        <q-item-label caption lines="1">{{ suggestion.url }}</q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <q-btn
-                          dense
-                          color="primary"
-                          label="Apply"
-                          :loading="applyingLogoUrl === suggestion.url"
-                          :disable="applyingLogoUrl !== null"
-                          @click="applySpecificSuggestedLogo(suggestion)"
-                        />
-                      </q-item-section>
-                    </q-item>
-                  </q-list>
+              <div v-if="issue.key === 'channel_logo_unavailable'" class="q-mt-md">
+                <div class="text-caption text-grey-7 q-mb-xs">Suggested logos</div>
+                <div v-if="loadingLogoSuggestions" class="text-caption text-grey-7">Loading suggestions...</div>
+                <div v-else-if="!logoSuggestions.length" class="text-caption text-grey-7">
+                  No suggested logos found from linked streams/EPG.
                 </div>
+                <q-list v-else bordered separator class="rounded-borders">
+                  <q-item v-for="suggestion in logoSuggestions" :key="suggestion.url">
+                    <q-item-section avatar>
+                      <div class="logo-preview">
+                        <q-img :src="suggestion.url" class="logo-preview__img" fit="contain" />
+                      </div>
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label>{{ suggestion.label || suggestion.source }}</q-item-label>
+                      <q-item-label caption lines="1">{{ suggestion.url }}</q-item-label>
+                    </q-item-section>
+                    <q-item-section side>
+                      <q-btn
+                        dense
+                        color="primary"
+                        label="Apply"
+                        :loading="applyingLogoUrl === suggestion.url"
+                        :disable="applyingLogoUrl !== null"
+                        @click="applySpecificSuggestedLogo(suggestion)"
+                      />
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </div>
 
-                <div v-if="issue.actions && issue.actions.length" class="q-gutter-sm q-mt-sm">
-                  <q-btn
-                    v-for="action in issue.actions"
-                    :key="action.label"
-                    :label="action.label"
-                    color="primary"
-                    @click="action.handler"
-                  />
-                </div>
+              <div v-if="issue.actions && issue.actions.length" class="q-gutter-sm q-mt-sm">
+                <q-btn
+                  v-for="action in issue.actions"
+                  :key="action.label"
+                  :label="action.label"
+                  color="primary"
+                  @click="action.handler"
+                />
               </div>
             </div>
-            <q-separator v-if="index < issueList.length - 1" class="q-mt-md" />
-          </template>
-        </div>
-      </q-card-section>
-    </q-card>
-  </q-dialog>
+          </div>
+          <q-separator v-if="index < issueList.length - 1" class="q-mt-md" />
+        </template>
+      </div>
+    </template>
+  </TicDialogPopup>
 </template>
 
 <script>
 import axios from 'axios';
+import {TicDialogPopup} from 'components/ui';
 
 export default {
   name: 'ChannelIssuesDialog',
+  components: {
+    TicDialogPopup,
+  },
   // Needs attention issue layout rule:
   // 1) title + description
   // 2) nested issue details area (left border + indent) containing:
@@ -128,6 +106,7 @@ export default {
   emits: ['ok', 'hide', 'open-settings'],
   data() {
     return {
+      isOpen: false,
       didEmitOk: false,
       syncing: false,
       loadingLogoSuggestions: false,
@@ -150,8 +129,7 @@ export default {
       const definitions = {
         no_sources: {
           title: 'No streams',
-          description:
-            'This channel has no streams linked. Add a stream to enable playback.',
+          description: 'This channel has no streams linked. Add a stream to enable playback.',
           actions: [actions.openSettings],
         },
         all_sources_disabled: {
@@ -175,14 +153,12 @@ export default {
         },
         channel_logo_unavailable: {
           title: 'Channel logo unavailable',
-          description:
-          this.logoIssueDescription,
+          description: this.logoIssueDescription,
           actions: [actions.openSettings],
         },
       };
       const issues = this.normalizedIssues;
-      return issues.map(
-        (issue) => ({key: issue, ...(definitions[issue] || {title: issue, description: ''})})).
+      return issues.map((issue) => ({key: issue, ...(definitions[issue] || {title: issue, description: ''})})).
         filter((issue) => issue.title);
     },
     normalizedIssues() {
@@ -198,7 +174,7 @@ export default {
         const playlist = entry?.playlist_name;
         return playlist ? `${name} (${playlist})` : name;
       });
-      return [...new Set(labels)].map(label => ({label}));
+      return [...new Set(labels)].map((label) => ({label}));
     },
     logoIssueDescription() {
       return 'TIC could not fetch/cache this channel logo. Update the logo URL to a working image, or clear the logo field to remove this warning.';
@@ -218,10 +194,10 @@ export default {
     show() {
       this.didEmitOk = false;
       this.loadLogoSuggestionsIfNeeded();
-      this.$refs.channelIssuesDialogRef.show();
+      this.isOpen = true;
     },
     hide() {
-      this.$refs.channelIssuesDialogRef.hide();
+      this.isOpen = false;
     },
     onDialogHide() {
       if (!this.didEmitOk) {
@@ -322,7 +298,7 @@ export default {
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.03);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.4;
   color: #444;

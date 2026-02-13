@@ -1,117 +1,122 @@
 <template>
-  <q-dialog ref="channelSuggestionsDialogRef" @hide="onDialogHide">
-    <q-card style="min-width: 520px; max-width: 720px;">
-      <q-card-section class="bg-card-head">
-        <div class="row items-center no-wrap">
-          <div class="col">
-            <div class="text-h6 text-blue-10">Stream Suggestions</div>
-            <div class="text-caption text-grey-7">
-              Potential matches were found for this channel. Review and add them below, or open the channel to edit
-              streams manually.
+  <TicDialogPopup v-model="isOpen" title="Stream Suggestions" width="720px" max-width="96vw" @hide="onDialogHide">
+    <template #default>
+      <div class="text-caption text-grey-7 q-mb-md">
+        Potential matches were found for this channel. Review and add them below, or open the channel to edit streams
+        manually.
+      </div>
+
+      <div class="q-gutter-sm q-mb-md">
+        <q-btn color="primary" outline label="Open Channel Settings" @click="openChannelSettings" />
+      </div>
+
+      <q-separator class="q-mb-md" />
+
+      <div v-if="loading" class="row items-center q-gutter-sm">
+        <q-spinner size="24px" color="primary" />
+        <div>Loading suggestions...</div>
+      </div>
+      <div v-else-if="!suggestions.length" class="text-grey-7">No suggestions available for this channel.</div>
+      <q-list v-else bordered separator class="rounded-borders">
+        <q-item v-for="suggestion in suggestions" :key="suggestion.id">
+          <q-item-section>
+            <q-item-label lines="1">
+              <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
+            </q-item-label>
+            <q-item-label caption lines="1">
+              <span class="text-weight-medium text-primary">Group:</span>
+              {{ suggestion.group_title || 'Unknown group' }}
+              <span class="q-mx-xs">•</span>
+              <span class="text-weight-medium text-primary">Source:</span>
+              {{ suggestion.playlist_name }}
+            </q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <div v-if="$q.screen.lt.sm" class="text-grey-8">
+              <q-btn size="12px" flat dense round color="primary" icon="more_vert">
+                <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
+                <q-menu anchor="bottom right" self="top right">
+                  <q-list dense>
+                    <q-item
+                      clickable
+                      v-close-popup
+                      @click="previewChannelStream(suggestion, {usePlaylistStream: true})"
+                    >
+                      <q-item-section avatar>
+                        <q-icon name="play_arrow" color="primary" />
+                      </q-item-section>
+                      <q-item-section>Preview stream</q-item-section>
+                    </q-item>
+                    <q-item
+                      clickable
+                      v-close-popup
+                      @click="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})"
+                    >
+                      <q-item-section avatar>
+                        <q-icon name="link" color="primary" />
+                      </q-item-section>
+                      <q-item-section>Copy stream URL</q-item-section>
+                    </q-item>
+                    <q-item clickable v-close-popup @click="addSuggestedStream(suggestion)">
+                      <q-item-section avatar>
+                        <q-icon name="add" color="primary" />
+                      </q-item-section>
+                      <q-item-section>Add to channel</q-item-section>
+                    </q-item>
+                    <q-separator />
+                    <q-item clickable v-close-popup @click="dismissSuggestedStream(suggestion)">
+                      <q-item-section avatar>
+                        <q-icon name="close" color="grey-7" />
+                      </q-item-section>
+                      <q-item-section>Dismiss suggestion</q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-menu>
+              </q-btn>
             </div>
-          </div>
-          <div class="col-auto">
-            <q-btn dense round flat icon="close" v-close-popup />
-          </div>
-        </div>
-      </q-card-section>
-
-      <q-separator />
-
-      <q-card-section>
-        <div class="q-gutter-sm">
-          <q-btn
-            color="primary"
-            outline
-            label="Open Channel Settings"
-            @click="openChannelSettings"
-          />
-        </div>
-      </q-card-section>
-
-      <q-separator />
-
-      <q-card-section>
-        <div v-if="loading" class="row items-center q-gutter-sm">
-          <q-spinner size="24px" color="primary" />
-          <div>Loading suggestions...</div>
-        </div>
-        <div v-else-if="!suggestions.length" class="text-grey-7">
-          No suggestions available for this channel.
-        </div>
-        <q-list v-else bordered separator class="rounded-borders">
-          <q-item v-for="suggestion in suggestions" :key="suggestion.id">
-            <q-item-section>
-              <q-item-label lines="1">
-                <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
-              </q-item-label>
-              <q-item-label caption lines="1">
-                <span class="text-weight-medium text-primary">Group:</span>
-                {{ suggestion.group_title || 'Unknown group' }}
-                <span class="q-mx-xs">•</span>
-                <span class="text-weight-medium text-primary">Source:</span>
-                {{ suggestion.playlist_name }}
-              </q-item-label>
-            </q-item-section>
-            <q-item-section side>
-              <div v-if="$q.screen.lt.sm" class="text-grey-8">
-                <q-btn size="12px" flat dense round color="primary" icon="more_vert">
-                  <q-tooltip class="bg-white text-primary">Suggestion actions</q-tooltip>
-                  <q-menu anchor="bottom right" self="top right">
-                    <q-list dense>
-                      <q-item clickable v-close-popup @click="previewChannelStream(suggestion, {usePlaylistStream: true})">
-                        <q-item-section avatar>
-                          <q-icon name="play_arrow" color="primary" />
-                        </q-item-section>
-                        <q-item-section>Preview stream</q-item-section>
-                      </q-item>
-                      <q-item clickable v-close-popup @click="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
-                        <q-item-section avatar>
-                          <q-icon name="link" color="primary" />
-                        </q-item-section>
-                        <q-item-section>Copy stream URL</q-item-section>
-                      </q-item>
-                      <q-item clickable v-close-popup @click="addSuggestedStream(suggestion)">
-                        <q-item-section avatar>
-                          <q-icon name="add" color="primary" />
-                        </q-item-section>
-                        <q-item-section>Add to channel</q-item-section>
-                      </q-item>
-                      <q-separator />
-                      <q-item clickable v-close-popup @click="dismissSuggestedStream(suggestion)">
-                        <q-item-section avatar>
-                          <q-icon name="close" color="grey-7" />
-                        </q-item-section>
-                        <q-item-section>Dismiss suggestion</q-item-section>
-                      </q-item>
-                    </q-list>
-                  </q-menu>
-                </q-btn>
-              </div>
-              <div v-else class="text-grey-8 q-gutter-xs">
-                <q-btn size="12px" flat dense round color="primary" icon="play_arrow"
-                       @click.stop="previewChannelStream(suggestion, {usePlaylistStream: true})">
-                  <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
-                </q-btn>
-                <q-btn size="12px" flat dense round color="primary" icon="link"
-                       @click.stop="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})">
-                  <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
-                </q-btn>
-                <q-btn size="12px" flat dense round color="primary" icon="add"
-                       @click="addSuggestedStream(suggestion)">
-                  <q-tooltip class="bg-white text-primary">Add to channel</q-tooltip>
-                </q-btn>
-                <q-btn size="12px" flat dense round color="grey-7" icon="close"
-                       @click="dismissSuggestedStream(suggestion)">
-                  <q-tooltip class="bg-white text-primary">Dismiss suggestion</q-tooltip>
-                </q-btn>
-              </div>
-            </q-item-section>
-          </q-item>
-        </q-list>
-      </q-card-section>
-    </q-card>
-  </q-dialog>
+            <div v-else class="text-grey-8 q-gutter-xs">
+              <q-btn
+                size="12px"
+                flat
+                dense
+                round
+                color="primary"
+                icon="play_arrow"
+                @click.stop="previewChannelStream(suggestion, {usePlaylistStream: true})"
+              >
+                <q-tooltip class="bg-white text-primary">Preview stream</q-tooltip>
+              </q-btn>
+              <q-btn
+                size="12px"
+                flat
+                dense
+                round
+                color="primary"
+                icon="link"
+                @click.stop="copyChannelStreamUrl(suggestion, {usePlaylistStream: true})"
+              >
+                <q-tooltip class="bg-white text-primary">Copy stream URL</q-tooltip>
+              </q-btn>
+              <q-btn size="12px" flat dense round color="primary" icon="add" @click="addSuggestedStream(suggestion)">
+                <q-tooltip class="bg-white text-primary">Add to channel</q-tooltip>
+              </q-btn>
+              <q-btn
+                size="12px"
+                flat
+                dense
+                round
+                color="grey-7"
+                icon="close"
+                @click="dismissSuggestedStream(suggestion)"
+              >
+                <q-tooltip class="bg-white text-primary">Dismiss suggestion</q-tooltip>
+              </q-btn>
+            </div>
+          </q-item-section>
+        </q-item>
+      </q-list>
+    </template>
+  </TicDialogPopup>
 </template>
 
 <script>
@@ -119,9 +124,13 @@ import {ref} from 'vue';
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
+import {TicDialogPopup} from 'components/ui';
 
 export default {
   name: 'ChannelSuggestionsDialog',
+  components: {
+    TicDialogPopup,
+  },
   props: {
     channelId: {
       type: Number,
@@ -131,6 +140,7 @@ export default {
   emits: ['ok', 'hide'],
   data() {
     return {
+      isOpen: false,
       loading: ref(false),
       channelConfig: ref(null),
       suggestions: ref([]),
@@ -140,11 +150,11 @@ export default {
   methods: {
     show() {
       this.didEmitOk = false;
-      this.$refs.channelSuggestionsDialogRef.show();
+      this.isOpen = true;
       this.fetchData();
     },
     hide() {
-      this.$refs.channelSuggestionsDialogRef.hide();
+      this.isOpen = false;
     },
     onDialogHide() {
       if (!this.didEmitOk) {
@@ -286,7 +296,7 @@ export default {
         data: payload,
       }).then(() => {
         this.channelConfig.sources = sources;
-        this.suggestions = this.suggestions.filter(item => item.id !== suggestion.id);
+        this.suggestions = this.suggestions.filter((item) => item.id !== suggestion.id);
         return this.dismissSuggestedStream(suggestion, {silent: true, skipLocalRemove: true});
       }).then(() => {
         this.$q.notify({color: 'positive', message: 'Stream added'});
@@ -296,21 +306,22 @@ export default {
     },
     dismissSuggestedStream(suggestion, options = {}) {
       if (!suggestion) return Promise.resolve();
-      const dismiss = () => axios({
-        method: 'POST',
-        url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
-      }).then(() => {
-        if (!options.skipLocalRemove) {
-          this.suggestions = this.suggestions.filter(item => item.id !== suggestion.id);
-        }
-        if (!options.silent) {
-          this.$q.notify({color: 'positive', message: 'Suggestion dismissed'});
-        }
-      }).catch(() => {
-        if (!options.silent) {
-          this.$q.notify({color: 'negative', message: 'Failed to dismiss suggestion'});
-        }
-      });
+      const dismiss = () =>
+        axios({
+          method: 'POST',
+          url: `/tic-api/channels/${this.channelId}/stream-suggestions/${suggestion.id}/dismiss`,
+        }).then(() => {
+          if (!options.skipLocalRemove) {
+            this.suggestions = this.suggestions.filter((item) => item.id !== suggestion.id);
+          }
+          if (!options.silent) {
+            this.$q.notify({color: 'positive', message: 'Suggestion dismissed'});
+          }
+        }).catch(() => {
+          if (!options.silent) {
+            this.$q.notify({color: 'negative', message: 'Failed to dismiss suggestion'});
+          }
+        });
 
       if (options.silent) {
         return dismiss();

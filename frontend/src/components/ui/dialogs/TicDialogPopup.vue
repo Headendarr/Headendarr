@@ -9,7 +9,8 @@
     :transition-hide="isMobile ? 'jump-down' : 'scale'"
     @update:model-value="$emit('update:modelValue', $event)"
     @show="$emit('show')"
-    @hide="$emit('hide')">
+    @hide="$emit('hide')"
+  >
     <q-card :style="cardStyle" :class="['dialog-popup-card', {'dialog-card-mobile': isMobile}]">
       <q-card-section class="dialog-sticky-header bg-card-head" :class="{'dialog-header-mobile': isMobile}">
         <div class="row items-center no-wrap">
@@ -20,13 +21,7 @@
           </div>
           <div class="col-auto row items-center q-gutter-xs no-wrap">
             <slot name="header-actions" />
-            <q-btn
-              flat
-              dense
-              round
-              color="grey-7"
-              icon="close"
-              @click="onCloseClick">
+            <q-btn flat dense round color="grey-7" icon="close" @click="onCloseClick">
               <q-tooltip>{{ closeTooltip }}</q-tooltip>
             </q-btn>
           </div>
@@ -39,13 +34,14 @@
         <slot />
       </q-card-section>
 
-      <q-separator v-if="$slots.actions" />
+      <q-separator v-if="showActions && $slots.actions" />
 
       <q-card-actions
-        v-if="$slots.actions"
+        v-if="showActions && $slots.actions"
         align="right"
         class="q-pa-md"
-        :class="{'dialog-actions-mobile': isMobile}">
+        :class="{'dialog-actions-mobile': isMobile}"
+      >
         <slot name="actions" />
       </q-card-actions>
     </q-card>
@@ -80,6 +76,10 @@ const props = defineProps({
   mobileFullscreen: {
     type: Boolean,
     default: false,
+  },
+  showActions: {
+    type: Boolean,
+    default: true,
   },
   closeTooltip: {
     type: String,
