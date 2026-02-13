@@ -8,7 +8,7 @@
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-col-gutter-sm justify-between">
+              <div class="row items-center q-col-gutter-sm justify-between tv-guide-toolbar">
                 <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
                   <div class="text-h5">TV Guide</div>
                 </div>
@@ -1479,6 +1479,10 @@ export default defineComponent({
 
 :deep(.tv-guide-filter-select .q-field--outlined .q-field__control) {
   min-height: 40px;
+}
+
+:deep(.tv-guide-toolbar .tv-guide-filter-select .tic-select-input-field) {
+  padding-bottom: 0 !important;
 }
 
 @media (max-width: 1023px) {
