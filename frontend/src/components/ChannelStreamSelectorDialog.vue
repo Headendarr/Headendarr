@@ -83,7 +83,7 @@
 
                 <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
                   <TicButton
-                    :label="sortButtonLabel"
+                    :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
                     icon="sort"
                     color="secondary"
                     :class="$q.screen.lt.sm ? 'full-width' : ''"
@@ -108,17 +108,10 @@
       </div>
 
       <q-slide-transition>
-        <div
-          v-show="(allPageSelected || selectAllMatching) && actionsExpanded"
-          class="selector-selection-banner"
-        >
+        <div v-show="(allPageSelected || selectAllMatching) && actionsExpanded" class="selector-selection-banner">
           <div class="selector-selection-banner__content">
-            <template v-if="showSelectAllMatchingPrompt">
-              {{ selectedCount }} streams selected on this page.
-            </template>
-            <template v-else-if="selectAllMatching">
-              All {{ selectedCount }} matching streams selected.
-            </template>
+            <template v-if="showSelectAllMatchingPrompt"> {{ selectedCount }} streams selected on this page.</template>
+            <template v-else-if="selectAllMatching"> All {{ selectedCount }} matching streams selected.</template>
           </div>
           <div class="selector-selection-banner__actions">
             <TicButton
@@ -128,13 +121,7 @@
               dense
               @click="selectAllMatchingResults"
             />
-            <TicButton
-              v-else
-              label="Clear selection"
-              color="secondary"
-              dense
-              @click="clearSelection"
-            />
+            <TicButton v-else label="Clear selection" color="secondary" dense @click="clearSelection" />
           </div>
         </div>
       </q-slide-transition>
@@ -153,11 +140,7 @@
           @load="loadMore"
         >
           <q-list v-if="rows.length" separator bordered class="rounded-borders selector-stream-list">
-            <q-item
-              v-for="row in rows"
-              :key="row.row_key"
-              class="selector-stream-item"
-            >
+            <q-item v-for="row in rows" :key="row.row_key" class="selector-stream-item">
               <q-item-section avatar>
                 <q-checkbox
                   color="primary"
@@ -168,18 +151,8 @@
 
               <q-item-section avatar>
                 <div class="stream-logo-wrap">
-                  <img
-                    v-if="row.tvg_logo"
-                    :src="row.tvg_logo"
-                    alt="logo"
-                    class="stream-logo-img"
-                  />
-                  <q-icon
-                    v-else
-                    name="play_arrow"
-                    size="18px"
-                    color="grey-6"
-                  />
+                  <img v-if="row.tvg_logo" :src="row.tvg_logo" alt="logo" class="stream-logo-img" />
+                  <q-icon v-else name="play_arrow" size="18px" color="grey-6" />
                 </div>
               </q-item-section>
 
@@ -229,12 +202,7 @@
       </div>
     </div>
 
-    <TicDialogPopup
-      v-model="filterDialogOpen"
-      title="Filter Streams"
-      width="560px"
-      max-width="95vw"
-    >
+    <TicDialogPopup v-model="filterDialogOpen" title="Filter Streams" width="560px" max-width="95vw">
       <div class="tic-form-layout">
         <TicSelectInput
           v-model="filterDraft.playlistId"
@@ -268,12 +236,7 @@
       </template>
     </TicDialogPopup>
 
-    <TicDialogPopup
-      v-model="sortDialogOpen"
-      title="Sort Streams"
-      width="560px"
-      max-width="95vw"
-    >
+    <TicDialogPopup v-model="sortDialogOpen" title="Sort Streams" width="560px" max-width="95vw">
       <div class="tic-form-layout">
         <TicSelectInput
           v-model="sortDraft.sortBy"

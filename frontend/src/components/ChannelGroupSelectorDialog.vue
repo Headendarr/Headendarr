@@ -53,7 +53,7 @@
 
                 <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
                   <TicButton
-                    :label="sortButtonLabel"
+                    :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
                     icon="sort"
                     color="secondary"
                     :class="$q.screen.lt.sm ? 'full-width' : ''"
@@ -78,17 +78,10 @@
       </div>
 
       <q-slide-transition>
-        <div
-          v-show="(allPageSelected || selectAllMatching) && actionsExpanded"
-          class="selector-selection-banner"
-        >
+        <div v-show="(allPageSelected || selectAllMatching) && actionsExpanded" class="selector-selection-banner">
           <div class="selector-selection-banner__content">
-            <template v-if="showSelectAllMatchingPrompt">
-              {{ selectedCount }} groups selected on this page.
-            </template>
-            <template v-else-if="selectAllMatching">
-              All {{ selectedCount }} matching groups selected.
-            </template>
+            <template v-if="showSelectAllMatchingPrompt"> {{ selectedCount }} groups selected on this page.</template>
+            <template v-else-if="selectAllMatching"> All {{ selectedCount }} matching groups selected.</template>
           </div>
           <div class="selector-selection-banner__actions">
             <TicButton
@@ -98,22 +91,12 @@
               dense
               @click="selectAllMatchingResults"
             />
-            <TicButton
-              v-else
-              label="Clear selection"
-              color="secondary"
-              dense
-              @click="clearSelection"
-            />
+            <TicButton v-else label="Clear selection" color="secondary" dense @click="clearSelection" />
           </div>
         </div>
       </q-slide-transition>
 
-      <div
-        id="channel-group-selector-scroll"
-        class="selector-scroll"
-        @scroll.passive="handleScroll"
-      >
+      <div id="channel-group-selector-scroll" class="selector-scroll" @scroll.passive="handleScroll">
         <q-infinite-scroll
           :disable="allLoaded || loadingMore"
           :offset="160"
@@ -121,11 +104,7 @@
           @load="loadMore"
         >
           <q-list v-if="rows.length" separator bordered class="rounded-borders selector-group-list">
-            <q-item
-              v-for="row in rows"
-              :key="row.row_key"
-              class="selector-group-item"
-            >
+            <q-item v-for="row in rows" :key="row.row_key" class="selector-group-item">
               <q-item-section avatar>
                 <q-checkbox
                   color="primary"
@@ -163,12 +142,7 @@
       </div>
     </div>
 
-    <TicDialogPopup
-      v-model="sortDialogOpen"
-      title="Sort Groups"
-      width="560px"
-      max-width="95vw"
-    >
+    <TicDialogPopup v-model="sortDialogOpen" title="Sort Groups" width="560px" max-width="95vw">
       <div class="tic-form-layout">
         <TicSelectInput
           v-model="sortDraft.sortBy"

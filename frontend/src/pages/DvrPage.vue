@@ -1,17 +1,28 @@
 <template>
   <q-page>
-
     <div class="q-pa-md">
-
       <div class="row">
-        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-
+        <div
+          :class="
+            uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'
+          "
+        >
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-gutter-md">
-                <div class="text-h5">DVR</div>
-                <q-space />
-                <q-btn color="primary" label="Refresh" @click="refreshAll" />
+              <div class="row items-center q-col-gutter-sm justify-between">
+                <div class="col-auto">
+                  <div class="text-h5">DVR</div>
+                </div>
+                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <TicButton
+                    label="Refresh"
+                    icon="refresh"
+                    color="primary"
+                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    :loading="refreshing"
+                    @click="refreshAll"
+                  />
+                </div>
               </div>
             </q-card-section>
 
@@ -24,548 +35,972 @@
 
             <q-tab-panels v-model="tab" animated>
               <q-tab-panel name="recordings">
-                <div class="row items-center q-gutter-md q-mb-md">
-                  <q-btn
-                    color="primary"
-                    label="Schedule Recording"
-                    @click="showScheduleDialog = true"
-                  />
-                  <q-select
-                    v-model="statusFilter"
-                    :options="statusOptions"
-                    label="Status Filter"
-                    dense
-                    outlined
-                    clearable
-                    emit-value
-                    map-options
-                    style="min-width: 220px;"
-                  />
-                  <q-input
-                    v-model="recordingsSearch"
-                    dense
-                    outlined
-                    clearable
-                    debounce="200"
-                    placeholder="Search recordings"
-                    style="min-width: 240px;"
-                  />
-                </div>
-                <q-table
-                  :rows="filteredRecordings"
-                  :columns="recordingColumns"
-                  row-key="id"
-                  flat
-                  dense
-                  :pagination="recordingsPagination"
-                  @update:pagination="onRecordingsPagination"
-                >
-                  <template v-slot:body-cell-actions="props">
-                    <q-td :props="props">
-                      <q-btn
-                        v-if="isRecordingPlayable(props.row)"
-                        dense
-                        flat
-                        icon="play_arrow"
-                        color="primary"
-                        @click="playRecording(props.row)"
-                      >
-                        <q-tooltip class="bg-white text-primary">Play recording</q-tooltip>
-                      </q-btn>
-                      <q-btn
-                        v-if="canCancelRecording(props.row)"
-                        dense
-                        flat
-                        icon="cancel"
-                        color="negative"
-                        @click="cancelRecording(props.row.id)"
-                      >
-                        <q-tooltip class="bg-white text-primary">Cancel recording</q-tooltip>
-                      </q-btn>
-                      <q-btn
-                        dense
-                        flat
-                        icon="delete"
-                        color="negative"
-                        @click="confirmDeleteRecording(props.row)"
-                      >
-                        <q-tooltip class="bg-white text-primary">Delete recording</q-tooltip>
-                      </q-btn>
-                    </q-td>
+                <div class="row q-col-gutter-sm items-center q-mb-sm">
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                    <TicButton
+                      label="Schedule Recording"
+                      icon="add"
+                      color="primary"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="showScheduleDialog = true"
+                    />
+                  </div>
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
+                    <TicSearchInput
+                      v-model="recordingsSearch"
+                      label="Search recordings"
+                      placeholder="Title, channel, status..."
+                    />
+                  </div>
+
+                  <template v-if="!$q.screen.lt.md">
+                    <div class="col-12 col-sm-6 col-md-3">
+                      <TicSelectInput
+                        v-model="statusFilter"
+                        label="Status"
+                        :options="statusOptions"
+                        option-label="label"
+                        option-value="value"
+                        :emit-value="true"
+                        :map-options="true"
+                        :clearable="false"
+                        :dense="true"
+                        :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                      />
+                    </div>
                   </template>
-                </q-table>
+                  <template v-else>
+                    <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                      <TicButton
+                        label="Filters"
+                        icon="filter_list"
+                        color="secondary"
+                        :class="$q.screen.lt.sm ? 'full-width' : ''"
+                        @click="recordingsFilterDialogOpen = true"
+                      />
+                    </div>
+                  </template>
+
+                  <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                    <TicButton
+                      :label="$q.screen.lt.sm ? 'Sort' : recordingsSortLabel"
+                      icon="sort"
+                      color="secondary"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="recordingsSortDialogOpen = true"
+                    />
+                  </div>
+                </div>
+
+                <q-list bordered separator class="rounded-borders dvr-list">
+                  <q-item v-for="recording in visibleRecordings" :key="recording.id" class="dvr-list-item">
+                    <q-item-section top>
+                      <q-item-label class="text-weight-medium">
+                        {{ recording.title || 'Untitled Recording' }}
+                      </q-item-label>
+                      <q-item-label caption>
+                        {{ recording.channel_name || 'Unknown channel' }}
+                      </q-item-label>
+
+                      <div class="dvr-meta-grid">
+                        <div class="dvr-meta-field">
+                          <span class="text-caption text-grey-7">Start</span>
+                          <span>{{ formatTs(recording.start_ts) }}</span>
+                        </div>
+                        <div class="dvr-meta-field">
+                          <span class="text-caption text-grey-7">Stop</span>
+                          <span>{{ formatTs(recording.stop_ts) }}</span>
+                        </div>
+                        <div class="dvr-meta-field">
+                          <span class="text-caption text-grey-7">Status</span>
+                          <q-chip dense color="primary" text-color="white">
+                            {{ recording.status || '-' }}
+                          </q-chip>
+                        </div>
+                        <div class="dvr-meta-field">
+                          <span class="text-caption text-grey-7">TVH Sync</span>
+                          <q-chip
+                            dense
+                            :color="recording.sync_status === 'error' ? 'negative' : 'grey-7'"
+                            text-color="white"
+                          >
+                            {{ recording.sync_status || '-' }}
+                          </q-chip>
+                        </div>
+                      </div>
+                    </q-item-section>
+
+                    <q-item-section side top>
+                      <TicListActions
+                        :actions="recordingActions(recording)"
+                        @action="(action) => handleRecordingAction(action, recording)"
+                      />
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item v-if="!loadingRecordings && !visibleRecordings.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7"> No recordings found.</q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+
+                <q-infinite-scroll
+                  v-if="!loadingRecordings && hasMoreRecordings"
+                  ref="recordingsInfiniteRef"
+                  :offset="80"
+                  scroll-target="body"
+                  @load="onRecordingsLoad"
+                >
+                  <template #loading>
+                    <div class="row flex-center q-my-md">
+                      <q-spinner-dots size="30px" color="primary" />
+                    </div>
+                  </template>
+                </q-infinite-scroll>
+
+                <q-inner-loading :showing="loadingRecordings">
+                  <q-spinner-dots size="42px" color="primary" />
+                </q-inner-loading>
               </q-tab-panel>
 
               <q-tab-panel name="rules">
-                <div class="row items-center q-gutter-md q-mb-md">
-                  <q-btn
-                    color="primary"
-                    label="Add Rule"
-                    @click="openRuleDialog()"
-                  />
-                  <q-input
-                    v-model="rulesSearch"
-                    dense
-                    outlined
-                    clearable
-                    debounce="200"
-                    placeholder="Search rules"
-                    style="min-width: 240px;"
-                  />
+                <div class="row q-col-gutter-sm items-center q-mb-sm">
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                    <TicButton
+                      label="Add Rule"
+                      icon="add"
+                      color="primary"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="openRuleDialog()"
+                    />
+                  </div>
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
+                    <TicSearchInput
+                      v-model="rulesSearch"
+                      label="Search rules"
+                      placeholder="Title match or channel..."
+                    />
+                  </div>
+
+                  <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                    <TicButton
+                      :label="$q.screen.lt.sm ? 'Sort' : rulesSortLabel"
+                      icon="sort"
+                      color="secondary"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="rulesSortDialogOpen = true"
+                    />
+                  </div>
                 </div>
-                <q-table
-                  :rows="filteredRules"
-                  :columns="ruleColumns"
-                  row-key="id"
-                  flat
-                  dense
-                  :pagination="rulesPagination"
-                  @update:pagination="onRulesPagination"
+
+                <q-list bordered separator class="rounded-borders dvr-list">
+                  <q-item v-for="rule in visibleRules" :key="rule.id" class="dvr-list-item">
+                    <q-item-section top>
+                      <q-item-label class="text-weight-medium">
+                        {{ rule.title_match || 'Untitled Rule' }}
+                      </q-item-label>
+                      <q-item-label caption>
+                        {{ rule.channel_name || 'All channels' }}
+                      </q-item-label>
+
+                      <div class="dvr-meta-grid">
+                        <div class="dvr-meta-field">
+                          <span class="text-caption text-grey-7">Lookahead</span>
+                          <span>{{ rule.lookahead_days || 7 }} days</span>
+                        </div>
+                      </div>
+                    </q-item-section>
+
+                    <q-item-section side top>
+                      <TicListActions
+                        :actions="ruleActions(rule)"
+                        @action="(action) => handleRuleAction(action, rule)"
+                      />
+                    </q-item-section>
+                  </q-item>
+
+                  <q-item v-if="!loadingRules && !visibleRules.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7"> No recording rules found.</q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+
+                <q-infinite-scroll
+                  v-if="!loadingRules && hasMoreRules"
+                  ref="rulesInfiniteRef"
+                  :offset="80"
+                  scroll-target="body"
+                  @load="onRulesLoad"
                 >
-                  <template v-slot:body-cell-actions="props">
-                    <q-td :props="props">
-                      <q-btn
-                        dense
-                        flat
-                        icon="edit"
-                        color="primary"
-                        @click="openRuleDialog(props.row)"
-                      >
-                        <q-tooltip class="bg-white text-primary">Edit rule</q-tooltip>
-                      </q-btn>
-                      <q-btn
-                        dense
-                        flat
-                        icon="delete"
-                        color="negative"
-                        @click="confirmDeleteRule(props.row)"
-                      >
-                        <q-tooltip class="bg-white text-primary">Delete rule</q-tooltip>
-                      </q-btn>
-                    </q-td>
+                  <template #loading>
+                    <div class="row flex-center q-my-md">
+                      <q-spinner-dots size="30px" color="primary" />
+                    </div>
                   </template>
-                </q-table>
+                </q-infinite-scroll>
+
+                <q-inner-loading :showing="loadingRules">
+                  <q-spinner-dots size="42px" color="primary" />
+                </q-inner-loading>
               </q-tab-panel>
             </q-tab-panels>
           </q-card>
-
         </div>
+
         <TicResponsiveHelp v-model="uiStore.showHelp">
           <q-card-section>
-                <div class="text-h5 q-mb-none">Setup Steps:</div>
-                <q-list>
-
-                  <q-separator inset spaced />
-
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        1. Use <b>Schedule Recording</b> to create a one-time recording for a channel and time
-                        window.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        2. Use <b>Recording Rules</b> to create recurring rules that automatically schedule future
-                        recordings by title match.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        3. After creating a recording or rule, check the <b>Sync</b> status to confirm it has been
-                        pushed to TVHeadend.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-
-            </q-list>
-          </q-card-section>
-          <q-card-section>
-                <div class="text-h5 q-mb-none">Notes:</div>
-                <q-list>
-
-                  <q-separator inset spaced />
-
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        Recordings are queued and synced to TVHeadend in the background. TVHeadend performs the
-                        actual
-                        recording. If a sync fails, click <b>Refresh</b> to reload the current status.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-
+            <div class="text-h5 q-mb-none">Setup Steps:</div>
+            <q-list>
+              <q-separator inset spaced />
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    1. Use <b>Schedule Recording</b> to create one-time recordings with channel and time range.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label> 2. Use <b>Recording Rules</b> for recurring scheduling by title match.</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label> 3. Use status and sync details to verify TIC and TVHeadend are aligned.</q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
         </TicResponsiveHelp>
       </div>
-
-      <q-dialog v-model="showScheduleDialog">
-        <q-card style="width: 520px; max-width: 95vw;">
-          <q-card-section class="bg-primary text-white">
-            <div class="text-h6">Schedule Recording</div>
-          </q-card-section>
-          <q-card-section>
-            <q-select
-              v-model="scheduleForm.channel_id"
-              :options="channelOptions"
-              label="Channel"
-              emit-value
-              map-options
-              outlined
-            />
-            <q-input
-              v-model="scheduleForm.title"
-              label="Title"
-              outlined
-              class="q-mt-md"
-            />
-            <q-input
-              v-model="scheduleForm.start"
-              type="datetime-local"
-              label="Start"
-              outlined
-              class="q-mt-md"
-            />
-            <q-input
-              v-model="scheduleForm.stop"
-              type="datetime-local"
-              label="Stop"
-              outlined
-              class="q-mt-md"
-            />
-          </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" v-close-popup />
-            <q-btn color="primary" label="Save" @click="submitSchedule" />
-          </q-card-actions>
-        </q-card>
-      </q-dialog>
-
-      <q-dialog v-model="showRuleDialog">
-        <q-card style="width: 520px; max-width: 95vw;">
-          <q-card-section class="bg-primary text-white">
-            <div class="text-h6">{{ isEditingRule ? 'Edit Recording Rule' : 'Create Recording Rule' }}</div>
-          </q-card-section>
-          <q-card-section>
-            <q-select
-              v-model="ruleForm.channel_id"
-              :options="channelOptions"
-              label="Channel"
-              emit-value
-              map-options
-              outlined
-            />
-            <q-input
-              v-model="ruleForm.title_match"
-              label="Title Match"
-              outlined
-              class="q-mt-md"
-            />
-            <q-input
-              v-model.number="ruleForm.lookahead_days"
-              type="number"
-              label="Lookahead Days"
-              outlined
-              class="q-mt-md"
-            />
-          </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" v-close-popup />
-            <q-btn color="primary" label="Save" @click="submitRule" />
-          </q-card-actions>
-        </q-card>
-      </q-dialog>
     </div>
+
+    <TicDialogWindow
+      v-model="showScheduleDialog"
+      title="Schedule Recording"
+      width="620px"
+      :actions="scheduleDialogActions"
+      @action="onScheduleDialogAction"
+    >
+      <div class="q-pa-md">
+        <q-form class="tic-form-layout">
+          <TicSelectInput
+            v-model="scheduleForm.channel_id"
+            label="Channel"
+            description="Select the channel to record."
+            :options="channelOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+          />
+          <TicTextInput
+            v-model="scheduleForm.title"
+            label="Title"
+            description="Recording title shown in TIC and TVHeadend."
+          />
+          <TicTextInput
+            v-model="scheduleForm.start"
+            type="datetime-local"
+            label="Start"
+            description="Local start date and time."
+          />
+          <TicTextInput
+            v-model="scheduleForm.stop"
+            type="datetime-local"
+            label="Stop"
+            description="Local stop date and time."
+          />
+        </q-form>
+      </div>
+    </TicDialogWindow>
+
+    <TicDialogWindow
+      v-model="showRuleDialog"
+      :title="isEditingRule ? 'Edit Recording Rule' : 'Create Recording Rule'"
+      width="620px"
+      :actions="ruleDialogActions"
+      @action="onRuleDialogAction"
+    >
+      <div class="q-pa-md">
+        <q-form class="tic-form-layout">
+          <TicSelectInput
+            v-model="ruleForm.channel_id"
+            label="Channel"
+            description="Select a channel for this rule."
+            :options="channelOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+          />
+          <TicTextInput
+            v-model="ruleForm.title_match"
+            label="Title Match"
+            description="Only programmes with matching titles are scheduled."
+          />
+          <TicNumberInput
+            v-model="ruleForm.lookahead_days"
+            label="Lookahead Days"
+            description="How many days ahead TIC should schedule recordings."
+            :min="1"
+            :max="30"
+          />
+        </q-form>
+      </div>
+    </TicDialogWindow>
+
+    <TicDialogPopup v-model="recordingsFilterDialogOpen" title="Filter Recordings" width="560px" max-width="95vw">
+      <div class="tic-form-layout">
+        <TicSelectInput
+          v-model="filterDraft.status"
+          label="Status"
+          description="Filter recordings by status."
+          :options="statusOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+      </div>
+      <template #actions>
+        <TicButton label="Clear" variant="flat" color="grey-7" @click="clearRecordingFilterDraft" />
+        <TicButton label="Apply" icon="check" color="positive" @click="applyRecordingFilterDraft" />
+      </template>
+    </TicDialogPopup>
+
+    <TicDialogPopup v-model="recordingsSortDialogOpen" title="Sort Recordings" width="560px" max-width="95vw">
+      <div class="tic-form-layout">
+        <TicSelectInput
+          v-model="recordingsSortDraft.sortBy"
+          label="Sort By"
+          :options="recordingSortOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+        <TicSelectInput
+          v-model="recordingsSortDraft.sortDirection"
+          label="Direction"
+          :options="sortDirectionOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+      </div>
+      <template #actions>
+        <TicButton label="Clear" variant="flat" color="grey-7" @click="clearRecordingSortDraft" />
+        <TicButton label="Apply" icon="check" color="positive" @click="applyRecordingSortDraft" />
+      </template>
+    </TicDialogPopup>
+
+    <TicDialogPopup v-model="rulesSortDialogOpen" title="Sort Rules" width="560px" max-width="95vw">
+      <div class="tic-form-layout">
+        <TicSelectInput
+          v-model="rulesSortDraft.sortBy"
+          label="Sort By"
+          :options="ruleSortOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+        <TicSelectInput
+          v-model="rulesSortDraft.sortDirection"
+          label="Direction"
+          :options="sortDirectionOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+      </div>
+      <template #actions>
+        <TicButton label="Clear" variant="flat" color="grey-7" @click="clearRuleSortDraft" />
+        <TicButton label="Apply" icon="check" color="positive" @click="applyRuleSortDraft" />
+      </template>
+    </TicDialogPopup>
   </q-page>
 </template>
 
 <script>
-import {defineComponent, ref, onMounted, onBeforeUnmount, computed} from 'vue';
+import {defineComponent} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
 import {useVideoStore} from 'stores/video';
-import {useQuasar} from 'quasar';
-import {TicResponsiveHelp} from 'components/ui';
+import {
+  TicButton,
+  TicConfirmDialog,
+  TicDialogPopup,
+  TicDialogWindow,
+  TicListActions,
+  TicNumberInput,
+  TicResponsiveHelp,
+  TicSearchInput,
+  TicSelectInput,
+  TicTextInput,
+} from 'components/ui';
+
+const DVR_PAGE_SIZE = 50;
 
 export default defineComponent({
   name: 'DvrPage',
   components: {
+    TicButton,
+    TicDialogPopup,
+    TicDialogWindow,
+    TicListActions,
+    TicNumberInput,
     TicResponsiveHelp,
+    TicSearchInput,
+    TicSelectInput,
+    TicTextInput,
   },
   setup() {
-    const videoStore = useVideoStore();
-    const $q = useQuasar();
-    const tab = ref('recordings');
-    const recordings = ref([]);
-    const rules = ref([]);
-    const channels = ref([]);
-    const showScheduleDialog = ref(false);
-    const showRuleDialog = ref(false);
-    const isEditingRule = ref(false);
-    const activeRuleId = ref(null);
-    const recordingsPagination = ref({rowsPerPage: 25});
-    const rulesPagination = ref({rowsPerPage: 25});
-    const statusFilter = ref(null);
-    const recordingsSearch = ref('');
-    const rulesSearch = ref('');
-    const scheduleForm = ref({
-      channel_id: null,
-      title: '',
-      start: '',
-      stop: '',
-    });
-    const ruleForm = ref({
-      channel_id: null,
-      title_match: '',
-      lookahead_days: 7,
-    });
+    return {
+      uiStore: useUiStore(),
+      videoStore: useVideoStore(),
+    };
+  },
+  data() {
+    return {
+      tab: 'recordings',
+      refreshing: false,
+      loadingRecordings: false,
+      loadingRules: false,
+      recordings: [],
+      rules: [],
+      channels: [],
+      showScheduleDialog: false,
+      showRuleDialog: false,
+      isEditingRule: false,
+      activeRuleId: null,
 
-    const recordingColumns = [
-      {name: 'channel_name', label: 'Channel', field: 'channel_name', align: 'left'},
-      {name: 'title', label: 'Title', field: 'title', align: 'left'},
-      {name: 'start_ts', label: 'Start', field: row => formatTs(row.start_ts), align: 'left'},
-      {name: 'stop_ts', label: 'Stop', field: row => formatTs(row.stop_ts), align: 'left'},
-      {name: 'status', label: 'Status', field: 'status', align: 'left'},
-      {name: 'sync_status', label: 'TVH Sync Status', field: 'sync_status', align: 'left'},
-      {name: 'actions', label: '', field: 'actions', align: 'right'},
-    ];
+      statusFilter: null,
+      recordingsSearch: '',
+      rulesSearch: '',
 
-    const ruleColumns = [
-      {name: 'channel_name', label: 'Channel', field: 'channel_name', align: 'left'},
-      {name: 'title_match', label: 'Title Match', field: 'title_match', align: 'left'},
-      {name: 'lookahead_days', label: 'Lookahead', field: 'lookahead_days', align: 'left'},
-      {name: 'actions', label: '', field: 'actions', align: 'right'},
-    ];
+      recordingsSort: {
+        sortBy: 'start_ts',
+        sortDirection: 'desc',
+      },
+      rulesSort: {
+        sortBy: 'title_match',
+        sortDirection: 'asc',
+      },
 
-    const channelOptions = computed(() =>
-      channels.value.map((channel) => ({
+      recordingsFilterDialogOpen: false,
+      recordingsSortDialogOpen: false,
+      rulesSortDialogOpen: false,
+
+      filterDraft: {
+        status: null,
+      },
+      recordingsSortDraft: {
+        sortBy: 'start_ts',
+        sortDirection: 'desc',
+      },
+      rulesSortDraft: {
+        sortBy: 'title_match',
+        sortDirection: 'asc',
+      },
+
+      visibleRecordingsCount: DVR_PAGE_SIZE,
+      visibleRulesCount: DVR_PAGE_SIZE,
+
+      scheduleSaving: false,
+      ruleSaving: false,
+      scheduleForm: {
+        channel_id: null,
+        title: '',
+        start: '',
+        stop: '',
+      },
+      ruleForm: {
+        channel_id: null,
+        title_match: '',
+        lookahead_days: 7,
+      },
+      pollingActive: false,
+    };
+  },
+  computed: {
+    statusOptions() {
+      return [
+        {label: 'All', value: null},
+        {label: 'Scheduled', value: 'scheduled'},
+        {label: 'Recording', value: 'recording'},
+        {label: 'Completed', value: 'completed'},
+        {label: 'Canceled', value: 'canceled'},
+        {label: 'Deleted', value: 'deleted'},
+        {label: 'Failed', value: 'failed'},
+      ];
+    },
+    sortDirectionOptions() {
+      return [
+        {label: 'Ascending', value: 'asc'},
+        {label: 'Descending', value: 'desc'},
+      ];
+    },
+    recordingSortOptions() {
+      return [
+        {label: 'Start Time', value: 'start_ts'},
+        {label: 'Stop Time', value: 'stop_ts'},
+        {label: 'Title', value: 'title'},
+        {label: 'Channel', value: 'channel_name'},
+        {label: 'Status', value: 'status'},
+      ];
+    },
+    ruleSortOptions() {
+      return [
+        {label: 'Title Match', value: 'title_match'},
+        {label: 'Channel', value: 'channel_name'},
+        {label: 'Lookahead Days', value: 'lookahead_days'},
+      ];
+    },
+    recordingsSortLabel() {
+      const sort = this.recordingSortOptions.find((item) => item.value === this.recordingsSort.sortBy);
+      return sort ? `Sort: ${sort.label}` : 'Sort';
+    },
+    rulesSortLabel() {
+      const sort = this.ruleSortOptions.find((item) => item.value === this.rulesSort.sortBy);
+      return sort ? `Sort: ${sort.label}` : 'Sort';
+    },
+    channelOptions() {
+      return (this.channels || []).map((channel) => ({
         label: channel.name,
         value: channel.id,
-      })),
-    );
+      }));
+    },
+    filteredSortedRecordings() {
+      const statusFilter = this.statusFilter ? String(this.statusFilter).toLowerCase() : null;
+      const search = String(this.recordingsSearch || '').trim().toLowerCase();
+      const filtered = (this.recordings || []).filter((recording) => {
+        const status = String(recording.status || '').toLowerCase();
+        if (statusFilter) {
+          if (statusFilter === 'recording') {
+            if (!(status === 'recording' || status.includes('running') || status.includes('in_progress'))) {
+              return false;
+            }
+          } else if (statusFilter === 'completed') {
+            if (!'completed finished done success recorded ok'.split(' ').some((token) => status.includes(token))) {
+              return false;
+            }
+          } else if (!status.includes(statusFilter)) {
+            return false;
+          }
+        }
 
-    const formatTs = (ts) => {
+        if (!search) {
+          return true;
+        }
+
+        const values = [recording.title, recording.channel_name, recording.status, recording.sync_status];
+        return values.some((value) =>
+          String(value || '').toLowerCase().includes(search),
+        );
+      });
+
+      return this.sortRows(filtered, this.recordingsSort.sortBy, this.recordingsSort.sortDirection);
+    },
+    visibleRecordings() {
+      return this.filteredSortedRecordings.slice(0, this.visibleRecordingsCount);
+    },
+    hasMoreRecordings() {
+      return this.visibleRecordingsCount < this.filteredSortedRecordings.length;
+    },
+    filteredSortedRules() {
+      const search = String(this.rulesSearch || '').trim().toLowerCase();
+      const filtered = (this.rules || []).filter((rule) => {
+        if (!search) {
+          return true;
+        }
+        const values = [rule.title_match, rule.channel_name, String(rule.lookahead_days || '')];
+        return values.some((value) =>
+          String(value || '').toLowerCase().includes(search),
+        );
+      });
+      return this.sortRows(filtered, this.rulesSort.sortBy, this.rulesSort.sortDirection);
+    },
+    visibleRules() {
+      return this.filteredSortedRules.slice(0, this.visibleRulesCount);
+    },
+    hasMoreRules() {
+      return this.visibleRulesCount < this.filteredSortedRules.length;
+    },
+    scheduleDialogActions() {
+      return [
+        {
+          id: 'save',
+          label: 'Save',
+          icon: 'save',
+          color: 'positive',
+          loading: this.scheduleSaving,
+        },
+      ];
+    },
+    ruleDialogActions() {
+      return [
+        {
+          id: 'save',
+          label: 'Save',
+          icon: 'save',
+          color: 'positive',
+          loading: this.ruleSaving,
+        },
+      ];
+    },
+  },
+  watch: {
+    recordingsSearch() {
+      this.resetVisibleRecordings();
+    },
+    statusFilter() {
+      this.resetVisibleRecordings();
+    },
+    recordingsSort: {
+      deep: true,
+      handler() {
+        this.resetVisibleRecordings();
+      },
+    },
+    rulesSearch() {
+      this.resetVisibleRules();
+    },
+    rulesSort: {
+      deep: true,
+      handler() {
+        this.resetVisibleRules();
+      },
+    },
+  },
+  methods: {
+    sortRows(rows, sortBy, sortDirection) {
+      const direction = sortDirection === 'desc' ? -1 : 1;
+      return [...rows].sort((a, b) => {
+        const left = a?.[sortBy];
+        const right = b?.[sortBy];
+
+        if (left == null && right == null) return 0;
+        if (left == null) return 1;
+        if (right == null) return -1;
+
+        if (typeof left === 'number' && typeof right === 'number') {
+          return (left - right) * direction;
+        }
+
+        return String(left).localeCompare(String(right), undefined, {numeric: true, sensitivity: 'base'}) * direction;
+      });
+    },
+    formatTs(ts) {
       if (!ts) return '-';
       return new Date(ts * 1000).toLocaleString();
-    };
-
-    const loadRecordings = async () => {
-      const response = await axios.get('/tic-api/recordings');
-      recordings.value = response.data.data || [];
-    };
-
-    const loadRules = async () => {
-      const response = await axios.get('/tic-api/recording-rules');
-      rules.value = response.data.data || [];
-    };
-
-    const loadChannels = async () => {
+    },
+    resetVisibleRecordings() {
+      this.visibleRecordingsCount = DVR_PAGE_SIZE;
+      this.$nextTick(() => {
+        if (this.$refs.recordingsInfiniteRef) {
+          this.$refs.recordingsInfiniteRef.reset();
+        }
+      });
+    },
+    resetVisibleRules() {
+      this.visibleRulesCount = DVR_PAGE_SIZE;
+      this.$nextTick(() => {
+        if (this.$refs.rulesInfiniteRef) {
+          this.$refs.rulesInfiniteRef.reset();
+        }
+      });
+    },
+    onRecordingsLoad(index, done) {
+      if (!this.hasMoreRecordings) {
+        done(true);
+        return;
+      }
+      this.visibleRecordingsCount += DVR_PAGE_SIZE;
+      done(this.visibleRecordingsCount >= this.filteredSortedRecordings.length);
+    },
+    onRulesLoad(index, done) {
+      if (!this.hasMoreRules) {
+        done(true);
+        return;
+      }
+      this.visibleRulesCount += DVR_PAGE_SIZE;
+      done(this.visibleRulesCount >= this.filteredSortedRules.length);
+    },
+    async loadRecordings() {
+      this.loadingRecordings = true;
+      try {
+        const response = await axios.get('/tic-api/recordings');
+        this.recordings = response.data.data || [];
+        this.resetVisibleRecordings();
+      } finally {
+        this.loadingRecordings = false;
+      }
+    },
+    async loadRules() {
+      this.loadingRules = true;
+      try {
+        const response = await axios.get('/tic-api/recording-rules');
+        this.rules = response.data.data || [];
+        this.resetVisibleRules();
+      } finally {
+        this.loadingRules = false;
+      }
+    },
+    async loadChannels() {
       const response = await axios.get('/tic-api/channels/basic');
-      channels.value = response.data.data || [];
-    };
-
-    const refreshAll = async () => {
-      await Promise.all([loadRecordings(), loadRules(), loadChannels()]);
-    };
-
-    const cancelRecording = async (id) => {
+      this.channels = response.data.data || [];
+    },
+    async refreshAll() {
+      this.refreshing = true;
       try {
-        await axios.post(`/tic-api/recordings/${id}/cancel`);
-        $q.notify({color: 'positive', message: 'Recording canceled'});
-        await loadRecordings();
-      } catch (error) {
-        $q.notify({color: 'negative', message: 'Failed to cancel recording'});
+        await Promise.all([this.loadRecordings(), this.loadRules(), this.loadChannels()]);
+      } finally {
+        this.refreshing = false;
       }
-    };
-
-    const deleteRecording = async (id) => {
-      try {
-        await axios.delete(`/tic-api/recordings/${id}`);
-        $q.notify({color: 'positive', message: 'Recording deleted'});
-        await loadRecordings();
-      } catch (error) {
-        $q.notify({color: 'negative', message: 'Failed to delete recording'});
+    },
+    recordingActions(recording) {
+      const actions = [];
+      if (this.isRecordingPlayable(recording)) {
+        actions.push({id: 'play', icon: 'play_arrow', label: 'Play recording', color: 'primary'});
       }
-    };
-
-    const submitSchedule = async () => {
-      const startTs = Math.floor(new Date(scheduleForm.value.start).getTime() / 1000);
-      const stopTs = Math.floor(new Date(scheduleForm.value.stop).getTime() / 1000);
-      try {
-        await axios.post('/tic-api/recordings', {
-          channel_id: scheduleForm.value.channel_id,
-          title: scheduleForm.value.title,
-          start_ts: startTs,
-          stop_ts: stopTs,
-        });
-        $q.notify({color: 'positive', message: 'Recording scheduled'});
-        showScheduleDialog.value = false;
-        await loadRecordings();
-      } catch (error) {
-        $q.notify({color: 'negative', message: 'Failed to schedule recording'});
+      if (this.canCancelRecording(recording)) {
+        actions.push({id: 'cancel', icon: 'cancel', label: 'Cancel recording', color: 'warning'});
       }
-    };
-
-    const submitRule = async () => {
-      try {
-        if (isEditingRule.value && activeRuleId.value) {
-          await axios.put(`/tic-api/recording-rules/${activeRuleId.value}`, {
-            channel_id: ruleForm.value.channel_id,
-            title_match: ruleForm.value.title_match,
-            lookahead_days: ruleForm.value.lookahead_days,
-          });
-          $q.notify({color: 'positive', message: 'Recording rule updated'});
-        } else {
-          await axios.post('/tic-api/recording-rules', {
-            channel_id: ruleForm.value.channel_id,
-            title_match: ruleForm.value.title_match,
-            lookahead_days: ruleForm.value.lookahead_days,
-          });
-          $q.notify({color: 'positive', message: 'Recording rule created'});
-        }
-        showRuleDialog.value = false;
-        isEditingRule.value = false;
-        activeRuleId.value = null;
-        await loadRules();
-      } catch (error) {
-        $q.notify({color: 'negative', message: 'Failed to save recording rule'});
+      actions.push({id: 'delete', icon: 'delete', label: 'Delete recording', color: 'negative'});
+      return actions;
+    },
+    handleRecordingAction(action, recording) {
+      if (action.id === 'play') {
+        this.playRecording(recording);
       }
-    };
-
-    const deleteRule = async (id) => {
-      try {
-        await axios.delete(`/tic-api/recording-rules/${id}`);
-        $q.notify({color: 'positive', message: 'Recording rule deleted'});
-        await loadRules();
-      } catch (error) {
-        $q.notify({color: 'negative', message: 'Failed to delete recording rule'});
+      if (action.id === 'cancel') {
+        this.cancelRecording(recording.id);
       }
-    };
-
-    const completedStates = new Set(['completed', 'finished', 'done', 'success', 'recorded']);
-    const activeStates = new Set(['scheduled', 'recording', 'running', 'in_progress']);
-    const statusOptions = [
-      {label: 'All', value: null},
-      {label: 'Scheduled', value: 'scheduled'},
-      {label: 'Recording', value: 'recording'},
-      {label: 'Completed', value: 'completed'},
-      {label: 'Canceled', value: 'canceled'},
-      {label: 'Deleted', value: 'deleted'},
-      {label: 'Failed', value: 'failed'},
-    ];
-
-    const filteredRecordings = computed(() => {
-      const filter = statusFilter.value;
-      const normalized = filter ? String(filter).toLowerCase() : null;
-      const search = recordingsSearch.value.trim().toLowerCase();
-      return (recordings.value || []).filter((rec) => {
-        const status = String(rec.status || '').toLowerCase();
-        const channelName = String(rec.channel_name || '').toLowerCase();
-        const title = String(rec.title || '').toLowerCase();
-        const matchesSearch = !search || channelName.includes(search) || title.includes(search);
-        if (!matchesSearch) return false;
-        if (!normalized) return true;
-        if (normalized === 'recording') {
-          return status === 'recording' || status.includes('running') || status.includes('in_progress');
-        }
-        if (normalized === 'completed') {
-          return (
-            status.includes('completed') ||
-            status.includes('finished') ||
-            status.includes('done') ||
-            status.includes('success') ||
-            status.includes('recorded') ||
-            status.includes('ok')
-          );
-        }
-        return status.includes(normalized);
-      });
-    });
-
-    const filteredRules = computed(() => {
-      const search = rulesSearch.value.trim().toLowerCase();
-      if (!search) return rules.value;
-      return (rules.value || []).filter((rule) => {
-        const channelName = String(rule.channel_name || '').toLowerCase();
-        const titleMatch = String(rule.title_match || '').toLowerCase();
-        return channelName.includes(search) || titleMatch.includes(search);
-      });
-    });
-
-    const isRecordingPlayable = (rec) => {
-      if (!rec || !rec.status) return false;
-      const normalized = String(rec.status).toLowerCase().trim();
-      if (completedStates.has(normalized)) return true;
-      return normalized.includes('completed') || normalized.includes('finished') || normalized.includes('success');
-    };
-
-    const canCancelRecording = (rec) => {
-      if (!rec || !rec.status) return false;
-      return activeStates.has(String(rec.status).toLowerCase());
-    };
-
-    const playRecording = (rec) => {
-      if (!rec?.id) return;
-      videoStore.showPlayer({
-        url: `/tic-api/recordings/${rec.id}/hls.m3u8`,
-        title: rec.title || 'Recording',
+      if (action.id === 'delete') {
+        this.confirmDeleteRecording(recording);
+      }
+    },
+    ruleActions() {
+      return [
+        {id: 'edit', icon: 'edit', label: 'Edit rule', color: 'primary'},
+        {id: 'delete', icon: 'delete', label: 'Delete rule', color: 'negative'},
+      ];
+    },
+    handleRuleAction(action, rule) {
+      if (action.id === 'edit') {
+        this.openRuleDialog(rule);
+      }
+      if (action.id === 'delete') {
+        this.confirmDeleteRule(rule);
+      }
+    },
+    isRecordingPlayable(recording) {
+      const status = String(recording?.status || '').toLowerCase();
+      return 'completed finished done success recorded'.split(' ').some((token) => status.includes(token));
+    },
+    canCancelRecording(recording) {
+      const status = String(recording?.status || '').toLowerCase();
+      return (
+        status === 'scheduled' || status === 'recording' || status.includes('running') || status.includes('in_progress')
+      );
+    },
+    playRecording(recording) {
+      if (!recording?.id) return;
+      this.videoStore.showPlayer({
+        url: `/tic-api/recordings/${recording.id}/hls.m3u8`,
+        title: recording.title || 'Recording',
         type: 'application/x-mpegURL',
       });
-    };
-
-    const confirmDeleteRecording = (rec) => {
-      $q.dialog({
-        title: 'Delete recording?',
-        message: 'This will remove the recording from TIC and delete it from TVHeadend if available.',
-        cancel: true,
-        persistent: true,
+    },
+    async cancelRecording(id) {
+      try {
+        await axios.post(`/tic-api/recordings/${id}/cancel`);
+        this.$q.notify({color: 'positive', message: 'Recording canceled'});
+        await this.loadRecordings();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to cancel recording'});
+      }
+    },
+    async deleteRecording(id) {
+      try {
+        await axios.delete(`/tic-api/recordings/${id}`);
+        this.$q.notify({color: 'positive', message: 'Recording deleted'});
+        await this.loadRecordings();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to delete recording'});
+      }
+    },
+    confirmDeleteRecording(recording) {
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Delete recording?',
+          message: 'This removes the recording from TIC and TVHeadend where available.',
+          icon: 'delete_forever',
+          iconColor: 'negative',
+          confirmLabel: 'Delete',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+        },
       }).onOk(async () => {
-        await deleteRecording(rec.id);
+        await this.deleteRecording(recording.id);
       });
-    };
-
-    const confirmDeleteRule = (rule) => {
-      $q.dialog({
-        title: 'Delete recording rule?',
-        message: 'This will remove the rule and will not delete already scheduled recordings.',
-        cancel: true,
-        persistent: true,
-      }).onOk(async () => {
-        await deleteRule(rule.id);
-      });
-    };
-
-    const openRuleDialog = (rule = null) => {
+    },
+    openRuleDialog(rule = null) {
       if (rule) {
-        isEditingRule.value = true;
-        activeRuleId.value = rule.id;
-        ruleForm.value = {
+        this.isEditingRule = true;
+        this.activeRuleId = rule.id;
+        this.ruleForm = {
           channel_id: rule.channel_id ?? null,
           title_match: rule.title_match ?? '',
           lookahead_days: rule.lookahead_days ?? 7,
         };
       } else {
-        isEditingRule.value = false;
-        activeRuleId.value = null;
-        ruleForm.value = {
+        this.isEditingRule = false;
+        this.activeRuleId = null;
+        this.ruleForm = {
           channel_id: null,
           title_match: '',
           lookahead_days: 7,
         };
       }
-      showRuleDialog.value = true;
-    };
+      this.showRuleDialog = true;
+    },
+    async deleteRule(id) {
+      try {
+        await axios.delete(`/tic-api/recording-rules/${id}`);
+        this.$q.notify({color: 'positive', message: 'Recording rule deleted'});
+        await this.loadRules();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to delete recording rule'});
+      }
+    },
+    confirmDeleteRule(rule) {
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Delete recording rule?',
+          message: 'This removes the recurring rule. Existing scheduled recordings remain unchanged.',
+          icon: 'delete_forever',
+          iconColor: 'negative',
+          confirmLabel: 'Delete',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+        },
+      }).onOk(async () => {
+        await this.deleteRule(rule.id);
+      });
+    },
+    onScheduleDialogAction(action) {
+      if (action.id === 'save') {
+        this.submitSchedule();
+      }
+    },
+    async submitSchedule() {
+      const startTs = Math.floor(new Date(this.scheduleForm.start).getTime() / 1000);
+      const stopTs = Math.floor(new Date(this.scheduleForm.stop).getTime() / 1000);
+      if (
+        !this.scheduleForm.channel_id ||
+        !this.scheduleForm.start ||
+        !this.scheduleForm.stop ||
+        Number.isNaN(startTs) ||
+        Number.isNaN(stopTs)
+      ) {
+        this.$q.notify({color: 'negative', message: 'Channel, start, and stop are required'});
+        return;
+      }
 
-    let pollingActive = true;
-
-    const pollRecordings = async () => {
-      while (pollingActive) {
+      this.scheduleSaving = true;
+      try {
+        await axios.post('/tic-api/recordings', {
+          channel_id: this.scheduleForm.channel_id,
+          title: this.scheduleForm.title,
+          start_ts: startTs,
+          stop_ts: stopTs,
+        });
+        this.$q.notify({color: 'positive', message: 'Recording scheduled'});
+        this.showScheduleDialog = false;
+        this.scheduleForm = {channel_id: null, title: '', start: '', stop: ''};
+        await this.loadRecordings();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to schedule recording'});
+      } finally {
+        this.scheduleSaving = false;
+      }
+    },
+    onRuleDialogAction(action) {
+      if (action.id === 'save') {
+        this.submitRule();
+      }
+    },
+    async submitRule() {
+      this.ruleSaving = true;
+      try {
+        const payload = {
+          channel_id: this.ruleForm.channel_id,
+          title_match: this.ruleForm.title_match,
+          lookahead_days: Number(this.ruleForm.lookahead_days || 7),
+        };
+        if (this.isEditingRule && this.activeRuleId) {
+          await axios.put(`/tic-api/recording-rules/${this.activeRuleId}`, payload);
+          this.$q.notify({color: 'positive', message: 'Recording rule updated'});
+        } else {
+          await axios.post('/tic-api/recording-rules', payload);
+          this.$q.notify({color: 'positive', message: 'Recording rule created'});
+        }
+        this.showRuleDialog = false;
+        this.isEditingRule = false;
+        this.activeRuleId = null;
+        await this.loadRules();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to save recording rule'});
+      } finally {
+        this.ruleSaving = false;
+      }
+    },
+    clearRecordingFilterDraft() {
+      this.filterDraft.status = null;
+    },
+    applyRecordingFilterDraft() {
+      this.statusFilter = this.filterDraft.status;
+      this.recordingsFilterDialogOpen = false;
+    },
+    clearRecordingSortDraft() {
+      this.recordingsSortDraft = {sortBy: 'start_ts', sortDirection: 'desc'};
+    },
+    applyRecordingSortDraft() {
+      this.recordingsSort = {...this.recordingsSortDraft};
+      this.recordingsSortDialogOpen = false;
+    },
+    clearRuleSortDraft() {
+      this.rulesSortDraft = {sortBy: 'title_match', sortDirection: 'asc'};
+    },
+    applyRuleSortDraft() {
+      this.rulesSort = {...this.rulesSortDraft};
+      this.rulesSortDialogOpen = false;
+    },
+    async pollRecordings() {
+      while (this.pollingActive) {
         try {
           const response = await axios.get('/tic-api/recordings/poll', {
             params: {
@@ -573,76 +1008,66 @@ export default defineComponent({
               timeout: 25,
             },
           });
-          recordings.value = response.data.data || [];
-        } catch (error) {
+          this.recordings = response.data.data || [];
+        } catch {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
-    };
-
-    onMounted(async () => {
-      const storedRecordings = localStorage.getItem('tic_dvr_recordings_rows');
-      const storedRules = localStorage.getItem('tic_dvr_rules_rows');
-      if (storedRecordings) {
-        recordingsPagination.value = {rowsPerPage: Number(storedRecordings) || 25};
-      }
-      if (storedRules) {
-        rulesPagination.value = {rowsPerPage: Number(storedRules) || 25};
-      }
-      await refreshAll();
-      pollRecordings();
-    });
-
-    onBeforeUnmount(() => {
-      pollingActive = false;
-    });
-
-    return {
-      uiStore: useUiStore(),
-      tab,
-      recordings,
-      rules,
-      recordingColumns,
-      ruleColumns,
-      showScheduleDialog,
-      showRuleDialog,
-      isEditingRule,
-      openRuleDialog,
-      scheduleForm,
-      ruleForm,
-      channelOptions,
-      recordingsPagination,
-      rulesPagination,
-      statusFilter,
-      statusOptions,
-      recordingsSearch,
-      rulesSearch,
-      filteredRecordings,
-      filteredRules,
-      refreshAll,
-      cancelRecording,
-      deleteRecording,
-      submitSchedule,
-      submitRule,
-      deleteRule,
-      isRecordingPlayable,
-      canCancelRecording,
-      playRecording,
-      confirmDeleteRecording,
-      confirmDeleteRule,
-      onRecordingsPagination: (p) => {
-        recordingsPagination.value = p;
-        if (p?.rowsPerPage) {
-          localStorage.setItem('tic_dvr_recordings_rows', String(p.rowsPerPage));
-        }
-      },
-      onRulesPagination: (p) => {
-        rulesPagination.value = p;
-        if (p?.rowsPerPage) {
-          localStorage.setItem('tic_dvr_rules_rows', String(p.rowsPerPage));
-        }
-      },
-    };
+    },
+  },
+  async mounted() {
+    this.filterDraft.status = this.statusFilter;
+    this.recordingsSortDraft = {...this.recordingsSort};
+    this.rulesSortDraft = {...this.rulesSort};
+    await this.refreshAll();
+    this.pollingActive = true;
+    this.pollRecordings();
+  },
+  beforeUnmount() {
+    this.pollingActive = false;
   },
 });
 </script>
+
+<style scoped>
+.dvr-list-item {
+  align-items: flex-start;
+}
+
+.dvr-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+
+.dvr-meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+@media (max-width: 1023px) {
+  .dvr-list {
+    border: none;
+  }
+
+  .dvr-list-item {
+    margin: 4px 0;
+    border: 1px solid var(--q-separator-color);
+    border-radius: 8px;
+  }
+
+  .dvr-list-item :deep(.q-item__section--side) {
+    padding-left: 8px;
+  }
+}
+
+@media (max-width: 599px) {
+  .dvr-meta-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+</style>
