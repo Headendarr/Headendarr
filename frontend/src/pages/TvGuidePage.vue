@@ -1,25 +1,25 @@
 <template>
   <q-page>
 
-    <div class="q-pa-md">
+    <div :class="$q.screen.lt.sm ? 'q-pa-none' : 'q-pa-md'">
 
       <div class="row">
         <div class="col-12 help-main help-main--full">
 
           <q-card flat>
-            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+            <q-card-section
+              v-if="!isPhoneLayout"
+              :class="$q.platform.is.mobile ? 'q-px-none' : ''"
+            >
               <div class="row items-center q-col-gutter-sm justify-between tv-guide-toolbar">
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                  <div class="text-h5">TV Guide</div>
-                </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-4 col-md-3'">
+                <div v-if="!isPhoneLayout" class="col-12 col-sm-4 col-md-3">
                   <TicSearchInput
                     v-model="searchQuery"
                     label="Search Channels"
                     placeholder="Channel name"
                   />
                 </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-4 col-md-3'">
+                <div v-if="!isPhoneLayout" class="col-12 col-sm-4 col-md-3">
                   <TicSelectInput
                     v-model="selectedGroup"
                     label="Channel Group"
@@ -34,7 +34,7 @@
                     class="tv-guide-filter-select"
                   />
                 </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                <div v-if="!isPhoneLayout" class="col-auto">
                   <TicButton
                     label="Refresh"
                     icon="refresh"
@@ -47,7 +47,7 @@
               </div>
             </q-card-section>
 
-            <q-separator />
+            <q-separator v-if="!isPhoneLayout" />
 
             <q-card-section class="q-pa-none">
               <div
@@ -64,42 +64,81 @@
                 }"
               >
                 <div class="guide__header">
-                  <div class="guide__channel-col guide__channel-col--header">
-                    <div class="guide__channel-header-title">Channel</div>
-                    <div v-if="isMobileLayout" class="guide__channel-header-toggle">
-                      <TicButton
-                        v-if="!channelRailCollapsed"
-                        label="Hide"
-                        icon="chevron_left"
-                        dense
-                        variant="flat"
-                        color="primary"
-                        tooltip="Hide channel rail"
-                        @click="toggleChannelRail"
-                      />
+                  <div v-if="isPhoneLayout" class="guide__actions-strip bg-card-head">
+                    <div class="row items-center justify-end">
                       <TicActionButton
-                        v-else
-                        icon="chevron_right"
-                        color="primary"
-                        tooltip="Show channel rail"
-                        @click="toggleChannelRail"
+                        :icon="mobileActionsExpanded ? 'expand_less' : 'expand_more'"
+                        color="grey-8"
+                        :tooltip="mobileActionsExpanded ? 'Hide actions' : 'Show actions'"
+                        @click="toggleMobileActions"
                       />
                     </div>
+                    <q-slide-transition>
+                      <div v-show="mobileActionsExpanded" class="row q-col-gutter-sm q-pt-xs">
+                        <div class="col-12">
+                          <TicSearchInput
+                            v-model="searchQuery"
+                            label="Search Channels"
+                            placeholder="Channel name"
+                          />
+                        </div>
+                        <div class="col-12">
+                          <TicSelectInput
+                            v-model="selectedGroup"
+                            label="Channel Group"
+                            :options="groupOptions"
+                            option-label="label"
+                            option-value="value"
+                            :emit-value="true"
+                            :map-options="true"
+                            :clearable="false"
+                            :dense="true"
+                            behavior="dialog"
+                            class="tv-guide-filter-select"
+                          />
+                        </div>
+                      </div>
+                    </q-slide-transition>
                   </div>
-                  <div class="guide__timeline-col">
-                    <div
-                      class="guide__scroll guide__scroll--draggable"
-                      ref="scrollHeader"
-                    >
-                      <div class="guide__timeline" :style="{width: timelineWidth + 'px'}">
-                        <div
-                          v-for="slot in timeSlots"
-                          :key="slot.left"
-                          class="guide__tick"
-                          :class="{'guide__tick--hour': slot.isHour}"
-                          :style="{left: slot.left + 'px', width: slot.width + 'px'}"
-                        >
-                          {{ slot.label }}
+
+                  <div class="guide__header-main">
+                    <div class="guide__channel-col guide__channel-col--header">
+                      <div class="guide__channel-header-title">Channel</div>
+                      <div v-if="isMobileLayout" class="guide__channel-header-toggle">
+                        <TicButton
+                          v-if="!channelRailCollapsed"
+                          label="Hide"
+                          icon="chevron_left"
+                          dense
+                          variant="flat"
+                          color="primary"
+                          tooltip="Hide channel rail"
+                          @click="toggleChannelRail"
+                        />
+                        <TicActionButton
+                          v-else
+                          icon="chevron_right"
+                          color="primary"
+                          tooltip="Show channel rail"
+                          @click="toggleChannelRail"
+                        />
+                      </div>
+                    </div>
+                    <div class="guide__timeline-col">
+                      <div
+                        class="guide__scroll guide__scroll--draggable"
+                        ref="scrollHeader"
+                      >
+                        <div class="guide__timeline" :style="{width: timelineWidth + 'px'}">
+                          <div
+                            v-for="slot in timeSlots"
+                            :key="slot.left"
+                            class="guide__tick"
+                            :class="{'guide__tick--hour': slot.isHour}"
+                            :style="{left: slot.left + 'px', width: slot.width + 'px'}"
+                          >
+                            {{ slot.label }}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -338,7 +377,7 @@
 </template>
 
 <script>
-import {defineComponent, ref, computed, onMounted, onBeforeUnmount, nextTick} from 'vue';
+import {defineComponent, ref, computed, onMounted, onBeforeUnmount, nextTick, watch} from 'vue';
 import axios from 'axios';
 import {useVideoStore} from 'stores/video';
 import {useUiStore} from 'stores/ui';
@@ -394,13 +433,17 @@ export default defineComponent({
     const channelRailPinnedOpen = ref(false);
     const mobileProgrammeDialogOpen = ref(false);
     const mobileProgrammeDetails = ref(null);
+    const mobileActionsExpanded = ref(true);
+    const lastWindowScrollY = ref(0);
+    const mobileActionToggleGuardUntil = ref(0);
 
     const pxPerMinute = 6;
     const extendWindowSeconds = 6 * 3600;
     const tickMinutes = 15;
 
     const isCompactLayout = computed(() => $q.screen.lt.md);
-    const isMobileLayout = computed(() => isMobile.value || $q.screen.lt.sm);
+    const isMobileLayout = computed(() => isMobile.value || $q.screen.lt.md);
+    const isPhoneLayout = computed(() => $q.screen.lt.sm);
     const use12HourTime = computed(() => uiStore.timeFormat === '12h');
 
     const formatDisplayTime = (ts) => {
@@ -803,6 +846,32 @@ export default defineComponent({
       channelRailPinnedOpen.value = false;
     };
 
+    const toggleMobileActions = () => {
+      if (!isPhoneLayout.value) return;
+      mobileActionsExpanded.value = !mobileActionsExpanded.value;
+      mobileActionToggleGuardUntil.value = Date.now() + 350;
+      lastWindowScrollY.value = window.scrollY || 0;
+    };
+
+    const onWindowScrollForMobileActions = () => {
+      if (!isPhoneLayout.value) {
+        mobileActionsExpanded.value = true;
+        lastWindowScrollY.value = window.scrollY || 0;
+        return;
+      }
+
+      if (Date.now() < mobileActionToggleGuardUntil.value) {
+        lastWindowScrollY.value = window.scrollY || 0;
+        return;
+      }
+
+      const nextScrollY = window.scrollY || 0;
+      if (mobileActionsExpanded.value && nextScrollY > lastWindowScrollY.value + 10) {
+        mobileActionsExpanded.value = false;
+      }
+      lastWindowScrollY.value = nextScrollY;
+    };
+
     const syncScroll = (event) => {
       if (syncingScroll.value) return;
       syncingScroll.value = true;
@@ -1041,6 +1110,8 @@ export default defineComponent({
       startHeaderScrollSync();
       document.addEventListener('scroll', onGlobalScroll, true);
       document.addEventListener('wheel', onGlobalWheel, {passive: false});
+      window.addEventListener('scroll', onWindowScrollForMobileActions, {passive: true});
+      lastWindowScrollY.value = window.scrollY || 0;
       nowTimerId.value = setInterval(() => {
         nowTs.value = Math.floor(Date.now() / 1000);
       }, 60000);
@@ -1076,6 +1147,13 @@ export default defineComponent({
       }
       document.removeEventListener('scroll', onGlobalScroll, true);
       document.removeEventListener('wheel', onGlobalWheel);
+      window.removeEventListener('scroll', onWindowScrollForMobileActions);
+    });
+
+    watch(isPhoneLayout, (isPhone) => {
+      if (!isPhone) {
+        mobileActionsExpanded.value = true;
+      }
     });
 
     const recordingsIndex = computed(() => {
@@ -1183,9 +1261,12 @@ export default defineComponent({
       rowHeight,
       isCompactLayout,
       isMobileLayout,
+      isPhoneLayout,
       channelColumnWidth,
       programmeBlockHeight,
       channelRailCollapsed,
+      mobileActionsExpanded,
+      toggleMobileActions,
       mobileProgrammeDialogOpen,
       mobileProgrammeDetails,
       setProgrammeRef,
@@ -1204,7 +1285,11 @@ export default defineComponent({
   flex-direction: column;
 }
 
-.guide__header,
+.guide__actions-strip {
+  border-bottom: 1px solid var(--guide-border);
+  padding: 6px 10px 8px;
+}
+
 .guide__row {
   display: grid;
   grid-template-columns: var(--guide-channel-width, 260px) 1fr;
@@ -1216,6 +1301,12 @@ export default defineComponent({
   top: var(--guide-sticky-top, 0px);
   z-index: 7;
   background: var(--guide-channel-bg);
+}
+
+.guide__header-main {
+  display: grid;
+  grid-template-columns: var(--guide-channel-width, 260px) 1fr;
+  border-bottom: 1px solid var(--guide-border);
 }
 
 .guide__channel-col {
@@ -1490,21 +1581,73 @@ export default defineComponent({
     padding: 8px 10px;
   }
 
+  .guide__channel-col--header {
+    align-items: flex-start;
+  }
+
+  .guide--mobile-collapsed .guide__channel-col--header {
+    align-items: center;
+  }
+
+  .guide--mobile-collapsed .guide__channel-header-title {
+    display: none;
+  }
+
+  .guide--mobile-collapsed .guide__channel-header-toggle {
+    margin-top: 0;
+  }
+
   .guide__channel-row {
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .guide__channel-row--mobile-expanded {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 30px 1fr;
+    grid-template-areas:
+      'logo number'
+      'name name';
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 2px;
   }
 
   .guide__channel-logo-wrap {
-    width: 38px;
-    height: 38px;
+    width: 30px;
+    height: 30px;
   }
 
-  .guide__channel-number {
-    font-size: 0.68rem;
+  .guide__channel-row--mobile-expanded .guide__channel-logo-wrap {
+    grid-area: logo;
   }
 
-  .guide__channel-name {
-    font-size: 0.78rem;
+  .guide__channel-number--mobile {
+    grid-area: number;
+    font-size: 0.66rem;
+    font-weight: 600;
+    line-height: 1;
+    text-align: right;
+    justify-self: end;
+  }
+
+  .guide__channel-name--mobile {
+    grid-area: name;
+    font-size: 0.7rem;
+    line-height: 1.1;
+    max-width: 100%;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    text-align: left;
+  }
+
+  .guide--mobile-collapsed .guide__channel-row {
+    justify-content: center;
+    display: flex;
   }
 
   .guide__timeline {
@@ -1535,39 +1678,8 @@ export default defineComponent({
     padding: 8px 6px;
   }
 
-  .guide__channel-col--header {
-    align-items: flex-start;
-  }
-
-  .guide--mobile-collapsed .guide__channel-col--header {
-    align-items: center;
-  }
-
-  .guide--mobile-collapsed .guide__channel-header-title {
-    display: none;
-  }
-
-  .guide--mobile-collapsed .guide__channel-header-toggle {
-    margin-top: 0;
-  }
-
-  .guide__channel-row {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-  }
-
   .guide__channel-row--mobile-expanded {
-    display: grid;
-    width: 100%;
     grid-template-columns: 28px 1fr;
-    grid-template-areas:
-      'logo number'
-      'name name';
-    align-items: center;
-    column-gap: 6px;
-    row-gap: 2px;
   }
 
   .guide__channel-logo-wrap {
@@ -1575,33 +1687,12 @@ export default defineComponent({
     height: 28px;
   }
 
-  .guide__channel-row--mobile-expanded .guide__channel-logo-wrap {
-    grid-area: logo;
-  }
-
-  .guide__channel-meta {
-    align-items: center;
-    text-align: center;
-  }
-
   .guide__channel-number--mobile {
-    grid-area: number;
     font-size: 0.62rem;
-    font-weight: 600;
-    line-height: 1;
-    text-align: right;
-    justify-self: end;
   }
 
   .guide__channel-name--mobile {
-    grid-area: name;
     font-size: 0.66rem;
-    line-height: 1.1;
-    max-width: 100%;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    overflow: hidden;
-    text-align: left;
   }
 
   .guide__channel-number {
@@ -1614,11 +1705,6 @@ export default defineComponent({
     white-space: nowrap;
     text-overflow: ellipsis;
     overflow: hidden;
-  }
-
-  .guide--mobile-collapsed .guide__channel-row {
-    justify-content: center;
-    display: flex;
   }
 
   .guide__timeline {

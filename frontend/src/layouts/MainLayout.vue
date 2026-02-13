@@ -6,7 +6,7 @@
           flat
           round
           dense
-          icon="menu"
+          :icon="drawerToggleIcon"
           class="q-ml-sm"
           @click="toggleLeftDrawer"
         />
@@ -133,12 +133,36 @@
     <q-drawer
       v-model="leftDrawerOpen"
       :mini="drawerMini"
+      :width="drawerWidth"
       elevated
       side="left"
-      behavior="desktop"
+      :overlay="isMobileDrawer"
+      :behavior="drawerBehavior"
+      :show-if-above="!isMobileDrawer"
       class="drawer-layout"
     >
       <div class="drawer-content">
+        <div v-if="isMobileDrawer" class="drawer-mobile-header">
+          <q-toolbar class="bg-card-head text-primary q-py-sm">
+            <q-btn
+              outline
+              dense
+              round
+              icon="arrow_back"
+              color="grey-7"
+              class="drawer-mobile-close-btn"
+              @click="leftDrawerOpen = false"
+            >
+              <q-tooltip class="bg-white text-primary no-wrap" style="max-width: none">
+                Close
+              </q-tooltip>
+            </q-btn>
+            <q-space />
+            <div class="text-h6 text-primary ellipsis text-right q-pr-xs">
+              Menu
+            </div>
+          </q-toolbar>
+        </div>
         <div class="drawer-scroll">
           <q-list>
             <q-item-label header>
@@ -463,13 +487,28 @@ export default defineComponent({
       });
     };
 
-    const isCompactDrawer = computed(() => $q.screen.width <= 1024);
+    const isMobileDrawer = computed(() => $q.screen.width < 600);
+    const isCompactDrawer = computed(() => $q.screen.width >= 600 && $q.screen.width < 1024);
     const compactHeader = computed(() => $q.screen.width <= 1024);
     const isConnectionDialogCompact = computed(() => $q.screen.width <= 1023);
     const showConnectionDetailsDialog = ref(false);
+    const drawerBehavior = computed(() => (isMobileDrawer.value ? 'mobile' : 'desktop'));
+    const drawerWidth = computed(() => (isMobileDrawer.value ? Math.round($q.screen.width * 0.9) : 300));
+    const drawerToggleIcon = computed(() => {
+      if (isMobileDrawer.value) {
+        return leftDrawerOpen.value ? 'close' : 'menu';
+      }
+      if (isCompactDrawer.value) {
+        return drawerMini.value ? 'menu' : 'close';
+      }
+      return leftDrawerOpen.value ? 'menu_open' : 'menu';
+    });
 
     const applyDrawerMode = () => {
-      if (isCompactDrawer.value) {
+      if (isMobileDrawer.value) {
+        leftDrawerOpen.value = false;
+        drawerMini.value = false;
+      } else if (isCompactDrawer.value) {
         leftDrawerOpen.value = true;
         drawerMini.value = true;
       } else {
@@ -501,7 +540,7 @@ export default defineComponent({
       });
     });
 
-    watch(isCompactDrawer, () => {
+    watch([isMobileDrawer, isCompactDrawer], () => {
       applyDrawerMode();
     });
 
@@ -563,7 +602,15 @@ export default defineComponent({
       currentStreamingKey,
       leftDrawerOpen,
       drawerMini,
+      isMobileDrawer,
+      drawerBehavior,
+      drawerWidth,
+      drawerToggleIcon,
       toggleLeftDrawer() {
+        if (isMobileDrawer.value) {
+          leftDrawerOpen.value = !leftDrawerOpen.value;
+          return;
+        }
         if (isCompactDrawer.value) {
           drawerMini.value = !drawerMini.value;
           leftDrawerOpen.value = true;

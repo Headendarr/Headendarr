@@ -35,6 +35,9 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 17. Section-level toolbar controls (search/filter/sort/action rows) must use shared alignment classes:
    - `section-toolbar-field` for shared input/select controls in the toolbar row.
    - `section-toolbar-btn` for toolbar action buttons.
+18. Page content padding must be responsive:
+   - for screens `>= 600px`, use `<q-page><div class='q-pa-md'>...`
+   - for screens `< 600px`, use `q-pa-none` at the page content wrapper.
 
 ## Shared Component Catalog
 

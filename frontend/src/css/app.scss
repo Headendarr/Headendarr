@@ -115,51 +115,51 @@
 }
 
 .body--dark .text-grey-1 {
-  color: var(--q-grey-12) !important;
+  color: #212121 !important;
 }
 
 .body--dark .text-grey-2 {
-  color: var(--q-grey-11) !important;
+  color: #424242 !important;
 }
 
 .body--dark .text-grey-3 {
-  color: var(--q-grey-10) !important;
+  color: #616161 !important;
 }
 
 .body--dark .text-grey-4 {
-  color: var(--q-grey-9) !important;
+  color: #757575 !important;
 }
 
 .body--dark .text-grey-5 {
-  color: var(--q-grey-8) !important;
+  color: #9e9e9e !important;
 }
 
 .body--dark .text-grey-6 {
-  color: var(--q-grey-7) !important;
+  color: #bdbdbd !important;
 }
 
 .body--dark .text-grey-7 {
-  color: var(--q-grey-6) !important;
+  color: #e0e0e0 !important;
 }
 
 .body--dark .text-grey-8 {
-  color: var(--q-grey-5) !important;
+  color: #eeeeee !important;
 }
 
 .body--dark .text-grey-9 {
-  color: var(--q-grey-4) !important;
+  color: #f5f5f5 !important;
 }
 
 .body--dark .text-grey-10 {
-  color: var(--q-grey-3) !important;
+  color: #fafafa !important;
 }
 
 .body--dark .text-grey-11 {
-  color: var(--q-grey-2) !important;
+  color: #ffffff !important;
 }
 
 .body--dark .text-grey-12 {
-  color: var(--q-grey-1) !important;
+  color: #ffffff !important;
 }
 
 .disabled-item {
@@ -217,6 +217,11 @@
 .body--dark .q-drawer .q-icon,
 .body--dark .q-header .q-icon {
   color: #c7d2e0;
+}
+
+.bg-card-head {
+  background: var(--app-surface-bg) !important;
+  border-bottom: var(--tic-elevated-border) !important;
 }
 
 /* Shared toolbar control alignment (DVR + selector dialogs + similar pages) */

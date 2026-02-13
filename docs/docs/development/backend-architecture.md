@@ -1,0 +1,46 @@
+# Backend Architecture
+
+This page documents backend runtime behavior and integration boundaries.
+
+## Task Queue + Scheduler
+
+- APScheduler in `run.py` triggers the background-task loop every 10 seconds.
+- Queue execution is managed by `backend/api/tasks.py` (`TaskQueueBroker`).
+- Tasks execute sequentially (single active task at a time).
+- If a run is already active, a concurrent scheduler tick is skipped.
+
+## Background Task Patterns
+
+- EPG updates (`/tic-api/epgs/update/<id>`) are queued.
+- Playlist imports (`/tic-api/playlists/update/<id>`) are queued.
+- Channel publish/sync tasks are queued by channel task helpers.
+- DVR background tasks include:
+  - `reconcile_dvr_recordings` (frequent status reconciliation)
+  - `apply_dvr_rules` (scheduled recurring rule expansion)
+
+## API + Polling Behavior
+
+- DVR UI uses long-polling endpoint `GET /tic-api/recordings/poll` for live status updates.
+- Saving relevant settings queues TVHeadend configuration sync work.
+
+## TVHeadend Proxy Boundaries
+
+- TVHeadend HTTP proxy is served under `/tic-tvh/`.
+- TVHeadend websocket/comet proxy is served under `/tic-tvh/<path>`.
+- Proxy auth uses the internal sync user and bridges TIC auth to TVHeadend requests.
+
+## Playback Path
+
+- DVR playback endpoint: `/tic-api/recordings/<id>/hls.m3u8`.
+- Endpoint serves HLS wrapper output for TVHeadend recording files.
+
+## Current Sync Caveat
+
+- Some playlist lifecycle operations still call TVHeadend synchronously in `backend/playlists.py`.
+- Prefer queue-based background execution for heavy or potentially slow sync paths.
+
+## Event Loop Constraints
+
+- TIC runs on a single Quart async loop by default.
+- Keep request handlers and scheduled tasks non-blocking.
+- Offload CPU-heavy or long blocking work to subprocesses/executors.
