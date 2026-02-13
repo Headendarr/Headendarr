@@ -11,6 +11,13 @@
   --channel-attention-bg: #fff6e5;
   --channel-attention-border: #f2a900;
   --channel-attention-text: #5c460f;
+  --tic-scrollbar-track: #f3f5f8;
+  --tic-scrollbar-thumb: #c6ceda;
+  --tic-scrollbar-thumb-hover: #aab6c7;
+  --tic-help-bg: #fff8e6;
+  --tic-help-border: rgba(242, 192, 55, 0.55);
+  --tic-help-accent: rgba(242, 192, 55, 0.95);
+  --tic-help-text: #5c460f;
 }
 
 .body--dark {
@@ -28,9 +35,40 @@
   --channel-attention-bg: #2b1f10;
   --channel-attention-border: #d99a1c;
   --channel-attention-text: #f1d7a3;
+  --tic-scrollbar-track: #161d28;
+  --tic-scrollbar-thumb: #42536c;
+  --tic-scrollbar-thumb-hover: #5a6f8d;
+  --tic-help-bg: #2a2315;
+  --tic-help-border: rgba(242, 192, 55, 0.65);
+  --tic-help-accent: rgba(242, 192, 55, 0.95);
+  --tic-help-text: #f1d7a3;
 
   background: var(--app-page-bg);
   color: #e2e8f0;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tic-scrollbar-thumb) var(--tic-scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--tic-scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--tic-scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid var(--tic-scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--tic-scrollbar-thumb-hover);
 }
 
 .body--dark .q-page {

@@ -2,7 +2,7 @@
   <q-page>
     <div class="q-pa-md">
       <div class="row">
-        <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <q-form class="tic-form-layout" @submit.prevent="save">
@@ -133,10 +133,8 @@
             </q-card-section>
           </q-card>
         </div>
-        <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
-          <q-slide-transition>
-            <q-card v-show="uiStore.showHelp" class="note-card q-my-md">
-              <q-card-section>
+        <TicResponsiveHelp v-model="uiStore.showHelp">
+          <q-card-section>
                 <div class="text-h5 q-mb-none">Setup Steps:</div>
                 <q-list>
 
@@ -171,9 +169,9 @@
                     </q-item-section>
                   </q-item>
 
-                </q-list>
-              </q-card-section>
-              <q-card-section>
+            </q-list>
+          </q-card-section>
+          <q-card-section>
                 <div class="text-h5 q-mb-none">Notes:</div>
                 <q-list>
 
@@ -226,11 +224,9 @@
                     </q-item-section>
                   </q-item>
 
-                </q-list>
-              </q-card-section>
-            </q-card>
-          </q-slide-transition>
-        </div>
+            </q-list>
+          </q-card-section>
+        </TicResponsiveHelp>
       </div>
     </div>
   </q-page>
@@ -240,7 +236,7 @@
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
-import {TicButton, TicListActions, TicNumberInput, TicSelectInput, TicTextInput, TicToggleInput} from 'components/ui';
+import {TicButton, TicListActions, TicNumberInput, TicResponsiveHelp, TicSelectInput, TicTextInput, TicToggleInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
@@ -249,6 +245,7 @@ export default defineComponent({
     TicButton,
     TicListActions,
     TicNumberInput,
+    TicResponsiveHelp,
     TicSelectInput,
     TicTextInput,
     TicToggleInput,

@@ -31,6 +31,7 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 13. Elevated surfaces (dropdowns, popup cards) must use shared border/shadow tokens (`--tic-elevated-border`, `--tic-elevated-shadow`) so dark/light theme rendering stays consistent.
 14. For list views that already provide search/filter controls, prefer lazy loading (infinite scroll) over footer pagination controls/counters.
 15. Use checkboxes (not toggles) for multi-select list/table workflows (for example stream selectors and bulk-edit selectors). Reserve toggles for boolean settings fields in forms.
+16. Any new or updated UI must be theme-aware for both light and dark themes. Do not hardcode one-theme colors in feature components.
 
 ## Shared Component Catalog
 
@@ -70,6 +71,13 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 1. Elevated menu/dialog chrome must use `--tic-elevated-border` and `--tic-elevated-shadow`.
 2. Do not hardcode separate dark-mode shadow values in each component.
 3. If shadow style changes, update the global tokens in `frontend/src/css/app.scss`.
+
+### Theme Awareness Rules (Strict)
+
+1. All UI work must be visually validated in both light and dark themes.
+2. Use Quasar/theme tokens (`var(--q-*)`) and shared TIC tokens from `frontend/src/css/app.scss` for colors, borders, and shadows.
+3. Do not hardcode hex/rgb colors in feature components unless there is a documented exception.
+4. If new theme tokens are required, add them centrally in `frontend/src/css/app.scss` and document them here in the same change.
 
 ### Dialogs
 

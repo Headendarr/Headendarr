@@ -11,6 +11,7 @@ Use this checklist for all frontend PRs.
 - [ ] Top-page toolbars (add/search/filter/actions) stack to single-item full-width rows at `<600px`.
 - [ ] Labels/tooltips/messages are clear and consistent.
 - [ ] I avoided regressions in existing flows.
+- [ ] I verified the UI in both light and dark themes (no one-theme-only styling regressions).
 
 ## Dialogs
 

@@ -1,5 +1,13 @@
 <template>
   <q-card class="my-card" flat bordered>
+    <q-banner
+      v-if="showTopHelpHint"
+      class="bg-blue-1 text-blue-10 q-mx-sm q-mt-sm q-mb-none"
+      dense
+      rounded
+    >
+      Scroll to the bottom for setup help and usage notes.
+    </q-banner>
     <q-card-section :horizontal="!isCompact">
       <q-card-section :class="isCompact ? 'q-pa-sm' : ''">
         <q-list>
@@ -92,9 +100,6 @@
       <q-separator :vertical="!isCompact" :spaced="isCompact" />
 
       <q-card-section :class="isCompact ? 'q-pa-sm' : ''">
-        <q-banner v-if="isCompact" class="bg-blue-1 text-blue-10 q-mb-sm" dense rounded>
-          Scroll to the bottom for setup help and usage notes.
-        </q-banner>
         <q-card class="note-card q-my-md">
           <q-card-section>
             <div class="text-h6">How to use the XMLTV Guide:</div>
@@ -243,6 +248,10 @@ defineProps({
   xcPlaylistUrl: {
     type: String,
     required: true,
+  },
+  showTopHelpHint: {
+    type: Boolean,
+    default: false,
   },
 });
 

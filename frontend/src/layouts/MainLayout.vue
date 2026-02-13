@@ -108,11 +108,13 @@
               :current-streaming-key="currentStreamingKey"
               :epg-url="epgUrl"
               :xc-playlist-url="xcPlaylistUrl"
+              :show-top-help-hint="true"
               @copy-url="copyUrlToClipboard"
             />
           </TicDialogWindow>
           <q-separator dark vertical inset />
           <q-btn
+            id="header-help-toggle"
             flat
             round
             dense

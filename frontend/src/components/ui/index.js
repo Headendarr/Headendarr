@@ -6,6 +6,7 @@ export {default as TicButtonDropdown} from './buttons/TicButtonDropdown.vue';
 export {default as TicDialogPopup} from './dialogs/TicDialogPopup.vue';
 export {default as TicDialogWindow} from './dialogs/TicDialogWindow.vue';
 export {default as TicConfirmDialog} from './dialogs/TicConfirmDialog.vue';
+export {default as TicResponsiveHelp} from './dialogs/TicResponsiveHelp.vue';
 
 export {default as TicSearchInput} from './inputs/TicSearchInput.vue';
 export {default as TicSelectInput} from './inputs/TicSelectInput.vue';
