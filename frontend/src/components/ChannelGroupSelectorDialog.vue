@@ -23,9 +23,10 @@
 
           <q-slide-transition>
             <div v-show="actionsExpanded" class="col-12">
-              <div class="row q-col-gutter-sm items-center">
+              <div class="row q-col-gutter-sm items-end">
                 <div :class="$q.screen.lt.sm ? 'col-12' : 'col-6 col-md-4'">
                   <TicSearchInput
+                    class="section-toolbar-field"
                     v-model="searchValue"
                     label="Search groups"
                     placeholder="Search by group name"
@@ -36,7 +37,7 @@
 
                 <div class="col-6 col-md-3">
                   <TicSelectInput
-                    class="selector-filter-field"
+                    class="section-toolbar-field"
                     v-model="appliedFilters.playlistId"
                     label="Source"
                     :options="playlistOptions"
@@ -56,6 +57,7 @@
                     :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
                     icon="sort"
                     color="secondary"
+                    class="section-toolbar-btn"
                     :class="$q.screen.lt.sm ? 'full-width' : ''"
                     @click="openSortDialog"
                   />
@@ -602,10 +604,6 @@ export default {
   z-index: 3;
   padding: 8px 12px;
   border-bottom: 1px solid var(--q-separator-color);
-}
-
-.selector-toolbar :deep(.selector-filter-field .tic-select-input-field) {
-  padding-bottom: 0 !important;
 }
 
 .selector-selection-banner {

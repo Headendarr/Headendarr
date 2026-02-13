@@ -35,12 +35,13 @@
 
             <q-tab-panels v-model="tab" animated>
               <q-tab-panel name="recordings">
-                <div class="row q-col-gutter-sm items-center q-mb-sm">
+                <div class="row q-col-gutter-sm items-end q-mb-sm dvr-toolbar">
                   <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
                     <TicButton
                       label="Schedule Recording"
                       icon="add"
                       color="primary"
+                      class="section-toolbar-btn"
                       :class="$q.screen.lt.sm ? 'full-width' : ''"
                       @click="showScheduleDialog = true"
                     />
@@ -57,6 +58,7 @@
                     <div class="col-12 col-sm-6 col-md-3">
                       <TicSelectInput
                         v-model="statusFilter"
+                        class="section-toolbar-field"
                         label="Status"
                         :options="statusOptions"
                         option-label="label"
@@ -75,6 +77,7 @@
                         label="Filters"
                         icon="filter_list"
                         color="secondary"
+                        class="section-toolbar-btn"
                         :class="$q.screen.lt.sm ? 'full-width' : ''"
                         @click="recordingsFilterDialogOpen = true"
                       />
@@ -86,6 +89,7 @@
                       :label="$q.screen.lt.sm ? 'Sort' : recordingsSortLabel"
                       icon="sort"
                       color="secondary"
+                      class="section-toolbar-btn"
                       :class="$q.screen.lt.sm ? 'full-width' : ''"
                       @click="recordingsSortDialogOpen = true"
                     />
@@ -113,15 +117,21 @@
                         </div>
                         <div class="dvr-meta-field">
                           <span class="text-caption text-grey-7">Status</span>
-                          <q-chip dense color="primary" text-color="white">
+                          <q-chip
+                            dense
+                            class="dvr-status-chip"
+                            :color="recordingStatusColor(recording.status)"
+                            text-color="white"
+                          >
                             {{ recording.status || '-' }}
                           </q-chip>
                         </div>
                         <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">TVH Sync</span>
+                          <span class="text-caption text-grey-7">TVHeadend Sync</span>
                           <q-chip
                             dense
-                            :color="recording.sync_status === 'error' ? 'negative' : 'grey-7'"
+                            class="dvr-status-chip"
+                            :color="syncStatusColor(recording.sync_status)"
                             text-color="white"
                           >
                             {{ recording.sync_status || '-' }}
@@ -165,12 +175,13 @@
               </q-tab-panel>
 
               <q-tab-panel name="rules">
-                <div class="row q-col-gutter-sm items-center q-mb-sm">
+                <div class="row q-col-gutter-sm items-end q-mb-sm dvr-toolbar">
                   <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
                     <TicButton
                       label="Add Rule"
                       icon="add"
                       color="primary"
+                      class="section-toolbar-btn"
                       :class="$q.screen.lt.sm ? 'full-width' : ''"
                       @click="openRuleDialog()"
                     />
@@ -188,6 +199,7 @@
                       :label="$q.screen.lt.sm ? 'Sort' : rulesSortLabel"
                       icon="sort"
                       color="secondary"
+                      class="section-toolbar-btn"
                       :class="$q.screen.lt.sm ? 'full-width' : ''"
                       @click="rulesSortDialogOpen = true"
                     />
@@ -714,6 +726,50 @@ export default defineComponent({
       if (!ts) return '-';
       return new Date(ts * 1000).toLocaleString();
     },
+    recordingStatusColor(status) {
+      const normalized = String(status || '').toLowerCase();
+      if (normalized.includes('recording') || normalized.includes('running') || normalized.includes('in_progress')) {
+        return 'warning';
+      }
+      if (
+        normalized.includes('completed') ||
+        normalized.includes('finished') ||
+        normalized.includes('done') ||
+        normalized.includes('success') ||
+        normalized.includes('recorded') ||
+        normalized.includes('ok')
+      ) {
+        return 'positive';
+      }
+      if (normalized.includes('failed') || normalized.includes('error') || normalized.includes('missing')) {
+        return 'negative';
+      }
+      if (normalized.includes('cancel')) {
+        return 'grey-7';
+      }
+      if (normalized.includes('scheduled') || normalized.includes('queued')) {
+        return 'primary';
+      }
+      return 'grey-7';
+    },
+    syncStatusColor(syncStatus) {
+      const normalized = String(syncStatus || '').toLowerCase();
+      if (
+        normalized.includes('ok') ||
+        normalized.includes('synced') ||
+        normalized.includes('success') ||
+        normalized.includes('mapped')
+      ) {
+        return 'positive';
+      }
+      if (normalized.includes('error') || normalized.includes('failed') || normalized.includes('missing')) {
+        return 'negative';
+      }
+      if (normalized.includes('pending') || normalized.includes('queued') || normalized.includes('running')) {
+        return 'warning';
+      }
+      return 'grey-7';
+    },
     resetVisibleRecordings() {
       this.visibleRecordingsCount = DVR_PAGE_SIZE;
       this.$nextTick(() => {
@@ -1046,6 +1102,15 @@ export default defineComponent({
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.dvr-meta-field :deep(.q-chip) {
+  align-self: flex-start;
+}
+
+.dvr-status-chip :deep(.q-chip__content) {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 @media (max-width: 1023px) {

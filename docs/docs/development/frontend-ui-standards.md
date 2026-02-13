@@ -32,6 +32,9 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 14. For list views that already provide search/filter controls, prefer lazy loading (infinite scroll) over footer pagination controls/counters.
 15. Use checkboxes (not toggles) for multi-select list/table workflows (for example stream selectors and bulk-edit selectors). Reserve toggles for boolean settings fields in forms.
 16. Any new or updated UI must be theme-aware for both light and dark themes. Do not hardcode one-theme colors in feature components.
+17. Section-level toolbar controls (search/filter/sort/action rows) must use shared alignment classes:
+   - `section-toolbar-field` for shared input/select controls in the toolbar row.
+   - `section-toolbar-btn` for toolbar action buttons.
 
 ## Shared Component Catalog
 
@@ -88,6 +91,8 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 - `TicDialogPopup` (`frontend/src/components/ui/dialogs/TicDialogPopup.vue`)
   - Popup modal style with standard header/actions.
   - For confirmation/details/modal forms.
+  - `actions` slot is optional. Omit it when the popup does not need footer actions.
+  - Use `:show-actions='false'` when a popup should force-hide footer actions.
 - `TicConfirmDialog` (`frontend/src/components/ui/dialogs/TicConfirmDialog.vue`)
   - Standard confirm/destructive confirmation dialog template.
   - Use for delete/remove/discard confirmations via `$q.dialog({ component: TicConfirmDialog, ... })`.
@@ -164,6 +169,28 @@ Use a form container class, not per-input margin hacks:
 ```
 
 Do not add fixed bottom spacing inside `ui/inputs` components for form layout concerns.
+
+### Section Toolbar Alignment (Strict)
+
+Use shared global utility classes for top-of-section toolbars:
+
+- `section-toolbar-field`
+  - Applies consistent vertical spacing/alignment for `TicSearchInput`, `TicSelectInput`, `TicTextInput`, and `TicNumberInput` inside toolbar rows.
+- `section-toolbar-btn`
+  - Applies consistent control height for toolbar action buttons.
+
+Example:
+
+```vue
+<div class='row q-col-gutter-sm items-end'>
+  <div class='col-12 col-sm-4'>
+    <TicSearchInput class='section-toolbar-field' v-model='search' label='Search' />
+  </div>
+  <div class='col-auto'>
+    <TicButton class='section-toolbar-btn' label='Sort' icon='sort' color='secondary' />
+  </div>
+</div>
+```
 
 ## Nested Settings Rules (Strict)
 

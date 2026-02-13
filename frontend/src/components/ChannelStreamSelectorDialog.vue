@@ -23,9 +23,10 @@
 
           <q-slide-transition>
             <div v-show="actionsExpanded" class="col-12">
-              <div class="row q-col-gutter-sm items-center">
+              <div class="row q-col-gutter-sm items-end">
                 <div :class="$q.screen.lt.sm ? 'col-12' : 'col-6 col-md-4'">
                   <TicSearchInput
+                    class="section-toolbar-field"
                     v-model="searchValue"
                     label="Search streams"
                     placeholder="Search by stream name"
@@ -37,7 +38,7 @@
                 <template v-if="$q.screen.gt.sm">
                   <div class="col-6 col-md-3">
                     <TicSelectInput
-                      class="selector-filter-field"
+                      class="section-toolbar-field"
                       v-model="appliedFilters.playlistId"
                       label="Source"
                       :options="playlistOptions"
@@ -54,7 +55,7 @@
 
                   <div class="col-6 col-md-3">
                     <TicSelectInput
-                      class="selector-filter-field"
+                      class="section-toolbar-field"
                       v-model="appliedFilters.groupTitle"
                       label="Group"
                       :options="inlineGroupOptions"
@@ -76,6 +77,7 @@
                     label="Filters"
                     icon="filter_list"
                     color="secondary"
+                    class="section-toolbar-btn"
                     :class="$q.screen.lt.sm ? 'full-width' : ''"
                     @click="openFilterDialog"
                   />
@@ -86,6 +88,7 @@
                     :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
                     icon="sort"
                     color="secondary"
+                    class="section-toolbar-btn"
                     :class="$q.screen.lt.sm ? 'full-width' : ''"
                     @click="openSortDialog"
                   />
@@ -910,10 +913,6 @@ export default {
 
 .selector-select-page-row {
   margin-left: 17px;
-}
-
-.selector-toolbar :deep(.selector-filter-field .tic-select-input-field) {
-  padding-bottom: 0 !important;
 }
 
 .selector-empty {

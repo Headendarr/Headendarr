@@ -219,6 +219,21 @@
   color: #c7d2e0;
 }
 
+/* Shared toolbar control alignment (DVR + selector dialogs + similar pages) */
+.section-toolbar-btn {
+  min-height: 40px;
+}
+
+.section-toolbar-btn .q-btn {
+  min-height: 40px;
+}
+
+.section-toolbar-field .tic-select-input-field,
+.section-toolbar-field .tic-text-input-field,
+.section-toolbar-field .tic-number-input-field {
+  padding-bottom: 0 !important;
+}
+
 .guide {
   --guide-border: #e0e0e0;
   --guide-border-strong: #cfd4dc;
