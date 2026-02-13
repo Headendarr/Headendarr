@@ -34,16 +34,6 @@
                     class="tv-guide-filter-select"
                   />
                 </div>
-                <div v-if="!isPhoneLayout" class="col-auto">
-                  <TicButton
-                    label="Refresh"
-                    icon="refresh"
-                    color="primary"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
-                    :loading="loading"
-                    @click="fetchGuide"
-                  />
-                </div>
               </div>
             </q-card-section>
 
@@ -429,6 +419,7 @@ export default defineComponent({
     const lastHeaderLeft = ref(0);
     const headerEventHandlers = ref({});
     const nowTimerId = ref(null);
+    const guideRefreshTimerId = ref(null);
     const channelRailCollapsed = ref(false);
     const channelRailPinnedOpen = ref(false);
     const mobileProgrammeDialogOpen = ref(false);
@@ -739,6 +730,29 @@ export default defineComponent({
         console.error('Failed to load guide range:', error);
       } finally {
         loadingMore.value = false;
+      }
+    };
+
+    const refreshCurrentGuideWindow = async () => {
+      if (loading.value || loadingMore.value) return;
+      try {
+        const response = await axios.get('/tic-api/guide/grid', {
+          params: {start_ts: startTs.value, end_ts: endTs.value},
+        });
+
+        channels.value = response.data.channels || [];
+        const incoming = response.data.programmes || [];
+        const incomingIds = new Set(incoming.map((programme) => programme.id));
+
+        // Replace rows inside the current window while keeping any rows outside it.
+        programmes.value = programmes.value.filter((programme) => {
+          const inWindow = programme.start_ts < endTs.value && programme.stop_ts > startTs.value;
+          if (!inWindow) return true;
+          return incomingIds.has(programme.id);
+        });
+        mergeProgrammes(incoming);
+      } catch (error) {
+        console.error('Failed to refresh guide window:', error);
       }
     };
 
@@ -1115,6 +1129,9 @@ export default defineComponent({
       nowTimerId.value = setInterval(() => {
         nowTs.value = Math.floor(Date.now() / 1000);
       }, 60000);
+      guideRefreshTimerId.value = setInterval(() => {
+        refreshCurrentGuideWindow();
+      }, 5 * 60 * 1000);
       fetchGuide();
       await loadRecordings();
       pollRecordings();
@@ -1126,6 +1143,10 @@ export default defineComponent({
       if (nowTimerId.value) {
         clearInterval(nowTimerId.value);
         nowTimerId.value = null;
+      }
+      if (guideRefreshTimerId.value) {
+        clearInterval(guideRefreshTimerId.value);
+        guideRefreshTimerId.value = null;
       }
       document.removeEventListener('mousemove', onHeaderPointerMove);
       document.removeEventListener('mouseup', onHeaderPointerUp);
@@ -1241,6 +1262,7 @@ export default defineComponent({
       nowLineVisible,
       formatTime,
       fetchGuide,
+      refreshCurrentGuideWindow,
       previewChannel,
       copyStreamUrl,
       recordProgramme,
