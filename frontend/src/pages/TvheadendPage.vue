@@ -1,136 +1,118 @@
 <template>
-  <q-page padding>
-
-    <div class="q-pa-none">
-
+  <q-page>
+    <div class="q-pa-md">
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-          <div :class="$q.platform.is.mobile ? 'q-ma-sm' : 'q-ma-sm q-pa-md'">
+          <q-card flat>
+            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+              <q-form class="tic-form-layout" @submit.prevent="save">
+                <h5 v-if="aioMode === false" class="text-primary q-mt-none q-mb-none">TVHeadend Connection</h5>
 
-            <q-form @submit="save" class="q-gutter-md">
-
-              <h5 v-if="aioMode === false" class="text-primary q-mb-none">TVheadend Connection</h5>
-
-              <div v-if="aioMode === false">
-                <div>
+                <div v-if="aioMode === false">
                   <q-skeleton
                     v-if="tvhHost === null"
                     type="QInput" />
-                  <q-input
+                  <TicTextInput
                     v-else
                     v-model="tvhHost"
-                    label="TVheadend Host"
-                    hint="Set Ensure you also set this to an hostname or IP that is accessible to all applications that will connect to TVH. Not just this application."
+                    label="TVHeadend Host"
+                    description="Set a hostname or IP reachable by TIC and all clients that connect to TVHeadend."
                   />
                 </div>
-                <div>
+
+                <div v-if="aioMode === false">
                   <q-skeleton
                     v-if="tvhPort === null"
                     type="QInput" />
-                  <q-input
+                  <TicNumberInput
                     v-else
                     v-model="tvhPort"
-                    label="TVheadend Port"
+                    label="TVHeadend Port"
+                    :min="1"
+                    :max="65535"
                   />
                 </div>
-                <div>
+
+                <div v-if="aioMode === false">
                   <q-skeleton
                     v-if="tvhUsername === null || aioMode === null"
                     type="QInput" />
-                  <q-input
+                  <TicTextInput
                     v-else
                     v-model="tvhUsername"
                     :readonly="aioMode"
-                    label="TVheadend Admin Username"
-                    hint="Optional for external TVH. Leave blank if TVH has no admin user configured."
+                    label="TVHeadend Admin Username"
+                    description="Optional for external TVHeadend. Leave blank if TVHeadend has no admin user configured."
                   />
                 </div>
-                <div>
+
+                <div v-if="aioMode === false">
                   <q-skeleton
                     v-if="tvhPassword === null || aioMode === null"
                     type="QInput" />
-                  <q-input
+                  <TicTextInput
                     v-else
                     v-model="tvhPassword"
-                    label="TVheadend Admin Password"
-                    hint="Optional for external TVH. Leave blank if TVH has no admin user configured."
-                    :type="hideTvhPassword ? 'password' : 'text'">
-                    <template v-slot:append>
+                    :type="hideTvhPassword ? 'password' : 'text'"
+                    label="TVHeadend Admin Password"
+                    description="Optional for external TVHeadend. Leave blank if TVHeadend has no admin user configured."
+                  >
+                    <template #append>
                       <q-icon
                         :name="hideTvhPassword ? 'visibility_off' : 'visibility'"
                         class="cursor-pointer"
                         @click="hideTvhPassword = !hideTvhPassword"
                       />
                     </template>
-                  </q-input>
+                  </TicTextInput>
                 </div>
+
                 <q-card
-                  v-if="(tvhPassword === null || tvhPassword === '' ) && (aioMode === null || aioMode === false ) "
-                  class="warning-card q-mt-md">
+                  v-if="(tvhPassword === null || tvhPassword === '') && (aioMode === null || aioMode === false)"
+                  class="warning-card">
                   <q-card-section>
                     <div class="text-h6">Warning:</div>
-                    It is recommended that you secure your TVH installation.
-                    You really should add an admin user to your TVH server and then come back here.
+                    It is recommended that you secure your TVHeadend installation with an admin user.
                   </q-card-section>
                 </q-card>
 
-                <q-separator />
-              </div>
+                <q-separator v-if="aioMode === false" />
 
-              <h5 class="text-primary q-mb-none">Stream Config</h5>
+                <h5 class="text-primary q-mt-none q-mb-none">Stream Config</h5>
 
-              <div>
-                <q-item tag="label" dense class="q-pl-none q-mr-none">
-                  <q-item-section avatar>
-                    <q-toggle v-model="enableStreamBuffer" val="enableStreamBuffer" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Enable Stream Buffer</q-item-label>
-                    <q-item-label caption>
-                      Wraps the stream with an FFmpeg pipe. TVheadend is most reliable with MPEG-TS input; the buffer
-                      converts other stream types to TS and improves compatibility. Adds minimal overhead but can add
-                      a small startup delay for the first viewer. Recommended for most setups.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-              </div>
-
-              <div
-                v-if="enableStreamBuffer"
-                class="sub-setting">
-                <q-skeleton
-                  v-if="defaultFfmpegPipeArgs === null"
-                  type="QInput" />
-                <q-input
-                  v-else
-                  v-model="defaultFfmpegPipeArgs"
-                  label="Default FFmpeg Stream Buffer Options"
-                  hint="Note: [URL] and [SERVICE_NAME] will be replaced with the stream source and the service name respectively."
+                <TicToggleInput
+                  v-model="enableStreamBuffer"
+                  label="Enable Stream Buffer"
+                  description="Wrap streams with an FFmpeg pipe. TVHeadend is most reliable with MPEG-TS input; this converts other stream types to TS and improves compatibility."
                 />
-              </div>
 
-              <div>
-                <q-item tag="label" dense class="q-pl-none q-mr-none">
-                  <q-item-section avatar>
-                    <q-toggle v-model="periodicMuxScan" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Enable Periodic Stream Health Scans</q-item-label>
-                    <q-item-label caption>
-                      Every 6 hours TIC will mark TVHeadend muxes as pending so TVH scans them. This is useful to ensure
-                      streams are working and ready to start immediately; failed scans will disable the mux and surface
-                      a channel warning.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
-              </div>
+                <div
+                  v-if="enableStreamBuffer"
+                  class="sub-setting">
+                  <q-skeleton
+                    v-if="defaultFfmpegPipeArgs === null"
+                    type="QInput" />
+                  <TicTextareaInput
+                    v-else
+                    v-model="defaultFfmpegPipeArgs"
+                    label="Default FFmpeg Stream Buffer Options"
+                    description="Note: [URL] and [SERVICE_NAME] will be replaced with the stream source and service name."
+                    autogrow
+                  />
+                </div>
 
-              <div>
-                <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
-              </div>
+                <TicToggleInput
+                  v-model="periodicMuxScan"
+                  label="Enable Periodic Stream Health Scans"
+                  description="Every 6 hours TIC marks TVHeadend muxes as pending so TVH scans them. Failed scans disable the mux and surface channel warnings."
+                />
 
-            </q-form>
-          </div>
+                <div>
+                  <TicButton label="Save" icon="save" type="submit" color="positive" />
+                </div>
+              </q-form>
+            </q-card-section>
+          </q-card>
         </div>
         <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
           <q-slide-transition>
@@ -151,7 +133,7 @@
 
                   <template v-if="aioMode === false">
                     <q-item-label class="text-primary">
-                      TVheadend Admin Credentials:
+                      TVHeadend Admin Credentials:
                     </q-item-label>
                     <q-item>
                       <q-item-section>
@@ -172,7 +154,7 @@
                   <q-item>
                     <q-item-section>
                       <q-item-label>
-                        TVheadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
+                        TVHeadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
                         wraps sources with FFmpeg to normalize them into TS, which makes most stream types compatible.
                         This is a light overhead and helps TVH scan and tune more reliably.
                       </q-item-label>
@@ -186,8 +168,6 @@
         </div>
       </div>
     </div>
-
-
   </q-page>
 </template>
 
@@ -195,10 +175,18 @@
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
+import {TicButton, TicNumberInput, TicTextareaInput, TicTextInput, TicToggleInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
   name: 'TvheadendPage',
+  components: {
+    TicButton,
+    TicNumberInput,
+    TicTextareaInput,
+    TicTextInput,
+    TicToggleInput,
+  },
 
   setup() {
     return {
@@ -350,5 +338,9 @@ export default defineComponent({
   max-width: 0%;
   padding: 0;
   overflow: hidden;
+}
+
+.tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
 }
 </style>

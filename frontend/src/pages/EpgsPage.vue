@@ -1,40 +1,40 @@
 <template>
   <q-page>
-
     <div class="q-pa-md">
-
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row q-gutter-xs justify-between">
-                <div class="col-auto">
-                  <q-btn-group>
-                    <q-btn
-                      @click="openEpgSettings(null)"
-                      color="primary"
-                      icon-right="add"
-                      label="Add EPG" />
-                  </q-btn-group>
+              <div class="row items-center q-col-gutter-sm justify-between">
+                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <TicButton
+                    label="Add EPG"
+                    icon="add"
+                    color="primary"
+                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    @click="openEpgSettings(null)"
+                  />
+                </div>
+                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-5'">
+                  <TicSearchInput
+                    v-model="searchQuery"
+                    label="Search EPG sources"
+                    placeholder="Name, URL, description..."
+                  />
                 </div>
               </div>
             </q-card-section>
 
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div>
-                <q-list
-                  bordered
-                  separator
-                  class="rounded-borders">
-
+              <div class="q-gutter-sm">
+                <q-list bordered separator class="rounded-borders">
                   <q-item
-                    v-for="(epg, index) in listOfEpgs"
-                    v-bind:key="index"
+                    v-for="epg in filteredEpgs"
+                    :key="epg.id"
                     :class="epg.enabled ? '' : 'disabled-item'">
-                    <q-item-section avatar>
-                      <q-icon :name="epgHasIssue(epg) ? 'warning' : 'calendar_month'" :color="epgHasIssue(epg) ? 'warning' : ''" />
-                      <!--                  <q-img src="playlist_play"/>-->
+                    <q-item-section avatar top>
+                      <q-icon :name="epgHasIssue(epg) ? 'warning' : 'calendar_month'"
+                              :color="epgHasIssue(epg) ? 'warning' : ''" />
                     </q-item-section>
 
                     <q-item-section top>
@@ -53,62 +53,31 @@
                         <span v-html="epg.description"></span>
                       </q-item-label>
                       <q-item-label v-if="epgHasIssue(epg)" caption class="text-warning">
-                        Last update failed{{ epgErrorTime(epg) ? ` (${epgErrorTime(epg)})` : '' }}: {{ epgErrorMessage(epg) }}
+                        Last update failed{{ epgErrorTime(epg) ? ` (${epgErrorTime(epg)})` : '' }}: {{ epgErrorMessage(
+                        epg) }}
                       </q-item-label>
                     </q-item-section>
 
-                    <q-item-section top>
-                      <q-item-label lines="1">
+                    <q-item-section top class="gt-xs">
+                      <q-item-label lines="2">
                         <span class="text-grey-8">{{ epg.url }}</span>
                       </q-item-label>
                     </q-item-section>
 
-                    <q-separator inset vertical class="q-mx-sm" />
-
-                    <q-item-section center side>
-                      <div class="text-grey-8 q-gutter-xs">
-
-                        <q-btn-dropdown
-                          flat dense rounded
-                          size="12px"
-                          no-icon-animation
-                          dropdown-icon="more_vert">
-                          <q-list>
-
-                            <q-item clickable v-close-popup @click="updateEpg(epg.id)">
-                              <q-item-section avatar>
-                                <q-icon color="info" name="update" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Update</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                            <q-item clickable v-close-popup @click="openEpgSettings(epg.id)">
-                              <q-item-section avatar>
-                                <q-icon color="grey-8" name="tune" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Configure</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                            <q-item clickable v-close-popup @click="deleteEpg(epg.id)">
-                              <q-item-section avatar>
-                                <q-icon color="negative" name="delete" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Delete</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                          </q-list>
-                        </q-btn-dropdown>
-
-                      </div>
+                    <q-item-section top side>
+                      <TicListActions
+                        :actions="epgActions(epg)"
+                        @action="(action) => handleEpgAction(action, epg)"
+                      />
                     </q-item-section>
                   </q-item>
-
+                  <q-item v-if="!filteredEpgs.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7">
+                        No EPG sources found.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
                 </q-list>
               </div>
             </q-card-section>
@@ -116,21 +85,13 @@
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-
-              <q-form @submit="save" class="q-gutter-md">
-
+              <q-form @submit.prevent="save" class="tic-form-layout">
                 <h5 class="text-primary q-mt-none q-mb-none">Additional EPG Metadata</h5>
 
-                <div class="q-mt-sm">
-                  <q-item tag="label" dense class="q-pl-none q-mr-none">
-                    <q-item-section avatar>
-                      <q-toggle v-model="enableTmdbMetadata" val="createClientUser" />
-                    </q-item-section>
-                    <q-item-section>
-                      <q-item-label>Fetch missing data from TMDB</q-item-label>
-                    </q-item-section>
-                  </q-item>
-                </div>
+                <TicToggleInput
+                  v-model="enableTmdbMetadata"
+                  label="Fetch missing data from TMDB"
+                />
 
                 <div
                   v-if="enableTmdbMetadata"
@@ -138,35 +99,25 @@
                   <q-skeleton
                     v-if="tmdbApiKey === null"
                     type="QInput" />
-                  <q-input
+                  <TicTextInput
                     v-else
                     v-model="tmdbApiKey"
                     label="Your TMDB account API key"
-                    hint="Can be found at 'https://www.themoviedb.org/settings/api'."
+                    description="Can be found at 'https://www.themoviedb.org/settings/api'."
                   />
                 </div>
 
                 <q-separator />
 
-                <div class=" q-mt-sm">
-                  <q-item tag="label" dense class="q-pl-none q-mr-none">
-                    <q-item-section avatar>
-                      <q-toggle v-model="enableGoogleImageSearchMetadata" val="createClientUser" />
-                    </q-item-section>
-                    <q-item-section>
-                      <q-item-label>Attempt to fetch missing programme images from Google Image Search</q-item-label>
-                      <q-item-label caption>This will only fetch the first google image search result for the programme
-                        title.
-                        It will only be done if TMDB did not find anything.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                </div>
+                <TicToggleInput
+                  v-model="enableGoogleImageSearchMetadata"
+                  label="Attempt to fetch missing programme images from Google Image Search"
+                  description="This only fetches the first Google image result for the programme title when TMDB has no result."
+                />
 
                 <div>
-                  <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
+                  <TicButton label="Save" icon="save" type="submit" color="positive" />
                 </div>
-
               </q-form>
             </q-card-section>
           </q-card>
@@ -253,20 +204,26 @@
           </q-slide-transition>
         </div>
       </div>
-
     </div>
-
   </q-page>
 </template>
 
 <script>
-import {defineComponent, ref} from 'vue';
+import {defineComponent} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
 import EpgInfoDialog from 'components/EpgInfoDialog.vue';
+import {TicButton, TicConfirmDialog, TicListActions, TicSearchInput, TicTextInput, TicToggleInput} from 'components/ui';
 
 export default defineComponent({
   name: 'EpgsPage',
+  components: {
+    TicButton,
+    TicListActions,
+    TicSearchInput,
+    TicTextInput,
+    TicToggleInput,
+  },
 
   setup() {
     return {
@@ -275,11 +232,29 @@ export default defineComponent({
   },
   data() {
     return {
-      listOfEpgs: ref([]),
-      enableTmdbMetadata: ref(null),
-      tmdbApiKey: ref(null),
-      enableGoogleImageSearchMetadata: ref(null),
+      listOfEpgs: [],
+      searchQuery: '',
+      enableTmdbMetadata: null,
+      tmdbApiKey: null,
+      enableGoogleImageSearchMetadata: null,
     };
+  },
+  computed: {
+    filteredEpgs() {
+      const query = (this.searchQuery || '').trim().toLowerCase();
+      if (!query) {
+        return this.listOfEpgs;
+      }
+      return this.listOfEpgs.filter((epg) => {
+        const values = [
+          epg?.name,
+          epg?.url,
+          epg?.description,
+          epg?.health?.error,
+        ];
+        return values.some((value) => String(value || '').toLowerCase().includes(query));
+      });
+    },
   },
   methods: {
     epgHasIssue(epg) {
@@ -335,6 +310,32 @@ export default defineComponent({
         });
       });
     },
+    epgActions: function(epg) {
+      return [
+        {id: 'update', icon: 'update', label: 'Update', color: 'info', tooltip: `Update ${epg.name || 'EPG'}`},
+        {
+          id: 'configure',
+          icon: 'tune',
+          label: 'Configure EPG',
+          color: 'grey-8',
+          tooltip: `Configure ${epg.name || 'EPG'}`,
+        },
+        {id: 'delete', icon: 'delete', label: 'Delete', color: 'negative', tooltip: 'Delete'},
+      ];
+    },
+    handleEpgAction: function(action, epg) {
+      if (action.id === 'update') {
+        this.updateEpg(epg.id);
+        return;
+      }
+      if (action.id === 'configure') {
+        this.openEpgSettings(epg.id);
+        return;
+      }
+      if (action.id === 'delete') {
+        this.deleteEpg(epg.id);
+      }
+    },
     openEpgSettings: function(epgId) {
       if (!epgId) {
         epgId = null;
@@ -345,7 +346,7 @@ export default defineComponent({
         componentProps: {
           epgId: epgId,
         },
-      }).onOk((payload) => {
+      }).onOk(() => {
         this.fetchSettings();
       }).onDismiss(() => {
       });
@@ -356,7 +357,7 @@ export default defineComponent({
       axios({
         method: 'POST',
         url: '/tic-api/epgs/update/' + epgId,
-      }).then((response) => {
+      }).then(() => {
         this.$q.loading.hide();
         this.$q.notify({
           color: 'positive',
@@ -376,34 +377,50 @@ export default defineComponent({
       });
     },
     deleteEpg: function(epgId) {
-      // Fetch current settings
-      this.$q.loading.show();
-      axios({
-        method: 'DELETE',
-        url: `/tic-api/epgs/settings/${epgId}/delete`,
-      }).then((response) => {
-        this.$q.loading.hide();
-        this.fetchSettings();
-        this.$q.notify({
-          color: 'positive',
-          icon: 'cloud_done',
-          message: 'EPG deleted',
-          timeout: 200,
-        });
-      }).catch(() => {
-        this.$q.loading.hide();
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to delete EPG',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
+      const epg = this.listOfEpgs.find((item) => Number(item.id) === Number(epgId));
+      const epgName = epg?.name || `EPG ${epgId}`;
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Delete EPG?',
+          message: `Delete "${epgName}"? This action is final and cannot be undone.`,
+          icon: 'warning',
+          iconColor: 'negative',
+          confirmLabel: 'Delete',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+          cancelLabel: 'Cancel',
+          persistent: true,
+        },
+      }).onOk(() => {
+        this.$q.loading.show();
+        axios({
+          method: 'DELETE',
+          url: `/tic-api/epgs/settings/${epgId}/delete`,
+        }).then(() => {
+          this.$q.loading.hide();
+          this.fetchSettings();
+          this.$q.notify({
+            color: 'positive',
+            icon: 'cloud_done',
+            message: 'EPG deleted',
+            timeout: 200,
+          });
+        }).catch(() => {
+          this.$q.loading.hide();
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Failed to delete EPG',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
         });
       });
     },
     save: function() {
       // Save settings
-      let postData = {
+      const postData = {
         settings: {
           epgs: {
             enable_tmdb_metadata: this.enableTmdbMetadata,
@@ -416,7 +433,7 @@ export default defineComponent({
         method: 'POST',
         url: '/tic-api/save-settings',
         data: postData,
-      }).then((response) => {
+      }).then(() => {
         // Save success, show feedback
         this.fetchSettings();
         this.$q.notify({
@@ -457,5 +474,9 @@ export default defineComponent({
   max-width: 0%;
   padding: 0;
   overflow: hidden;
+}
+
+.tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
 }
 </style>

@@ -9,7 +9,7 @@
       v-if="icon"
       avatar
     >
-      <span v-if="isTvhIcon" class="tvh-icon text-primary" aria-hidden="true"></span>
+      <span v-if="isTvhIcon" :style="tvhIconStyle" class="tvh-icon text-primary" aria-hidden="true"></span>
       <q-icon v-else :name="icon" color="primary" />
     </q-item-section>
 
@@ -26,6 +26,7 @@
 <script>
 import {defineComponent, computed} from 'vue';
 import {useRoute} from 'vue-router';
+import tvhIconUrl from 'src/assets/tvh-icon.svg';
 
 export default defineComponent({
   name: 'EssentialLink',
@@ -60,11 +61,17 @@ export default defineComponent({
     });
     return {
       isActive,
+      tvhIconUrl,
     };
   },
   computed: {
     isTvhIcon() {
-      return this.icon === 'img:icons/tvh-icon.svg';
+      return this.icon === 'tvh-icon';
+    },
+    tvhIconStyle() {
+      return {
+        '--tvh-icon-url': `url("${this.tvhIconUrl}")`,
+      };
     },
   },
 });
@@ -86,7 +93,7 @@ export default defineComponent({
   height: 24px;
   display: inline-block;
   background-color: currentColor;
-  -webkit-mask: url("/icons/tvh-icon.svg") no-repeat center / contain;
-  mask: url("/icons/tvh-icon.svg") no-repeat center / contain;
+  -webkit-mask: var(--tvh-icon-url) no-repeat center / contain;
+  mask: var(--tvh-icon-url) no-repeat center / contain;
 }
 </style>

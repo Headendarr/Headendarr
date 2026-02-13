@@ -7,7 +7,7 @@
     <div
       class="floating-player__header"
       @mousedown="startDrag"
-      @touchstart.prevent="startDragTouch"
+      @touchstart="startDragTouch"
     >
       <div class="floating-player__title">
         <div class="floating-player__title-text">
@@ -44,6 +44,7 @@
           flat
           round
           icon="close"
+          @touchstart.stop
           @click.stop="closePlayer"
         >
           <q-tooltip class="bg-white text-primary">Close</q-tooltip>
@@ -581,6 +582,9 @@ function toggleFullScreen() {
 }
 
 function startDrag(event) {
+  if (event?.target?.closest?.('.floating-player__actions')) {
+    return;
+  }
   dragState.value = {
     startX: event.clientX,
     startY: event.clientY,
@@ -591,7 +595,13 @@ function startDrag(event) {
 }
 
 function startDragTouch(event) {
+  if (event?.target?.closest?.('.floating-player__actions')) {
+    return;
+  }
   const touch = event.touches[0];
+  if (!touch) {
+    return;
+  }
   dragState.value = {
     startX: touch.clientX,
     startY: touch.clientY,

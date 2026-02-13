@@ -1,0 +1,14 @@
+{
+    "singleQuote": true,
+    "semi": true,
+    "bracketSpacing": false,
+    "printWidth": 120,
+    "overrides": [
+        {
+            "files": "src/components/ui/index.js",
+            "options": {
+                "printWidth": 200
+            }
+        }
+    ]
+}

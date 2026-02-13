@@ -1,22 +1,25 @@
 <template>
   <q-page>
-
     <div class="q-pa-md">
-
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row q-gutter-xs justify-between">
-                <div class="col-auto">
-                  <q-btn-group>
-                    <q-btn
-                      @click="openPlaylistSettings(null)"
-                      color="primary"
-                      icon-right="add"
-                      label="Add Source" />
-                  </q-btn-group>
+              <div class="row items-center q-col-gutter-sm justify-between">
+                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <TicButton
+                    label="Add Source"
+                    icon="add"
+                    color="primary"
+                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    @click="openPlaylistSettings(null)" />
+                </div>
+                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-5'">
+                  <TicSearchInput
+                    v-model="searchQuery"
+                    label="Search sources"
+                    placeholder="Name, URL, type..."
+                  />
                 </div>
               </div>
             </q-card-section>
@@ -24,12 +27,10 @@
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <div class="q-gutter-sm">
                 <q-list bordered separator class="rounded-borders">
-
                   <q-item
-                    v-for="(playlist, index) in listOfPlaylists"
-                    v-bind:key="index"
+                    v-for="playlist in filteredPlaylists"
+                    :key="playlist.id"
                     :class="playlist.enabled ? '' : 'disabled-item'">
-
                     <q-item-section avatar top>
                       <q-icon name="playlist_play" color="" size="34px" />
                     </q-item-section>
@@ -40,54 +41,24 @@
                         <span class="text-grey-8"> - {{ playlist.url }}</span>
                       </q-item-label>
                       <q-item-label caption lines="1">
-                        Connections Limit: {{ playlist.connections }}
+                        Connections: {{ playlist.connections }} • Type: {{ formatPlaylistType(playlist.type) }}
                       </q-item-label>
                     </q-item-section>
 
                     <q-item-section top side>
-                      <div class="text-grey-8 q-gutter-xs">
-                        <q-btn-dropdown
-                          flat dense rounded
-                          size="12px"
-                          no-icon-animation
-                          dropdown-icon="more_vert">
-                          <q-list>
-
-                            <q-item clickable v-close-popup @click="updatePlaylist(playlist.id)">
-                              <q-item-section avatar>
-                                <q-icon color="info" name="update" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Update</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                            <q-item clickable v-close-popup @click="openPlaylistSettings(playlist.id)">
-                              <q-item-section avatar>
-                                <q-icon color="grey-8" name="tune" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Configure Source</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                            <q-item clickable v-close-popup @click="removePlaylist(playlist.id)">
-                              <q-item-section avatar>
-                                <q-icon color="negative" name="delete" />
-                              </q-item-section>
-                              <q-item-section>
-                                <q-item-label>Delete</q-item-label>
-                              </q-item-section>
-                            </q-item>
-
-                          </q-list>
-                        </q-btn-dropdown>
-
-                      </div>
+                      <TicListActions
+                        :actions="playlistActions(playlist)"
+                        @action="(action) => handlePlaylistAction(action, playlist)"
+                      />
                     </q-item-section>
-
                   </q-item>
-
+                  <q-item v-if="!filteredPlaylists.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7">
+                        No sources found.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
                 </q-list>
               </div>
             </q-card-section>
@@ -189,21 +160,24 @@
           </q-slide-transition>
         </div>
       </div>
-
     </div>
-
   </q-page>
 </template>
 
 <script>
-import {defineComponent, ref} from 'vue';
+import {defineComponent} from 'vue';
 import axios from 'axios';
 import PlaylistInfoDialog from 'components/PlaylistInfoDialog.vue';
-import {copyToClipboard} from 'quasar';
 import {useUiStore} from 'stores/ui';
+import {TicButton, TicConfirmDialog, TicListActions, TicSearchInput} from 'components/ui';
 
 export default defineComponent({
   name: 'PlaylistsPage',
+  components: {
+    TicButton,
+    TicListActions,
+    TicSearchInput,
+  },
 
   setup() {
     return {
@@ -212,15 +186,35 @@ export default defineComponent({
   },
   data() {
     return {
-      listOfPlaylists: ref([]),
-      // Application Settings
-      enableStreamBuffer: ref(null),
-      defaultFfmpegPipeArgs: ref(null),
+      listOfPlaylists: [],
+      searchQuery: '',
     };
   },
+  computed: {
+    filteredPlaylists() {
+      const query = (this.searchQuery || '').trim().toLowerCase();
+      if (!query) {
+        return this.listOfPlaylists;
+      }
+      return this.listOfPlaylists.filter((playlist) => {
+        const values = [
+          playlist?.name,
+          playlist?.url,
+          playlist?.type,
+          playlist?.user_agent,
+        ];
+        return values.some((value) => String(value || '').toLowerCase().includes(query));
+      });
+    },
+  },
   methods: {
+    formatPlaylistType: function(type) {
+      if (!type) {
+        return 'M3U';
+      }
+      return String(type).toUpperCase();
+    },
     fetchSettings: function() {
-      // Fetch current settings
       axios({
         method: 'get',
         url: '/tic-api/playlists/get',
@@ -232,26 +226,37 @@ export default defineComponent({
         this.$q.notify({
           color: 'negative',
           position: 'top',
-          message: 'Failed to fetch settings',
+          message: 'Failed to fetch sources',
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
       });
-      axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        this.enableStreamBuffer = response.data.data.enable_stream_buffer;
-        this.defaultFfmpegPipeArgs = response.data.data.default_ffmpeg_pipe_args;
-      }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to fetch settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
-      });
+    },
+    playlistActions: function(playlist) {
+      return [
+        {id: 'update', icon: 'update', label: 'Update', color: 'info', tooltip: 'Update'},
+        {
+          id: 'configure',
+          icon: 'tune',
+          label: 'Configure Source',
+          color: 'grey-8',
+          tooltip: `Configure ${playlist.name || 'source'}`,
+        },
+        {id: 'delete', icon: 'delete', label: 'Delete', color: 'negative', tooltip: 'Delete'},
+      ];
+    },
+    handlePlaylistAction: function(action, playlist) {
+      if (action.id === 'update') {
+        this.updatePlaylist(playlist.id);
+        return;
+      }
+      if (action.id === 'configure') {
+        this.openPlaylistSettings(playlist.id);
+        return;
+      }
+      if (action.id === 'delete') {
+        this.removePlaylist(playlist.id);
+      }
     },
     openPlaylistSettings: function(playlistId) {
       if (!playlistId) {
@@ -263,7 +268,7 @@ export default defineComponent({
         componentProps: {
           playlistId: playlistId,
         },
-      }).onOk((payload) => {
+      }).onOk(() => {
         this.fetchSettings();
       }).onDismiss(() => {
       });
@@ -294,79 +299,44 @@ export default defineComponent({
       });
     },
     removePlaylist: function(playlistId) {
-      // Fetch current settings
-      this.$q.loading.show();
-      axios({
-        method: 'DELETE',
-        url: `/tic-api/playlists/${playlistId}/delete`,
-      }).then((response) => {
-        this.$q.loading.hide();
-        this.$q.notify({
-          color: 'positive',
-          icon: 'cloud_done',
-          message: 'Playlist removed',
-          timeout: 200,
-        });
-        this.fetchSettings();
-      }).catch(() => {
-        this.$q.loading.hide();
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to remove playlist',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
-      });
-    },
-    copyUrlToClipboard: function(textToCopy) {
-      copyToClipboard(textToCopy).then(() => {
-        // Notify user of success
-        this.$q.notify({
-          color: 'green',
-          textColor: 'white',
-          icon: 'done',
-          message: 'URL copied to clipboard',
-        });
-      }).catch((err) => {
-        // Handle the error (e.g., clipboard API not supported)et
-        console.error('Copy failed', err);
-        this.$q.notify({
-          color: 'red',
-          textColor: 'white',
-          icon: 'error',
-          message: 'Failed to copy URL',
-        });
-      });
-    },
-    save: function() {
-      // Save settings
-      let postData = {
-        settings: {
-          enable_stream_buffer: this.enableStreamBuffer,
-          default_ffmpeg_pipe_args: this.defaultFfmpegPipeArgs,
+      const playlist = this.listOfPlaylists.find((item) => Number(item.id) === Number(playlistId));
+      const playlistName = playlist?.name || `Source ${playlistId}`;
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Delete Source?',
+          message: `Delete "${playlistName}"? This action is final and cannot be undone.`,
+          icon: 'warning',
+          iconColor: 'negative',
+          confirmLabel: 'Delete',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+          cancelLabel: 'Cancel',
+          persistent: true,
         },
-      };
-      axios({
-        method: 'POST',
-        url: '/tic-api/save-settings',
-        data: postData,
-      }).then((response) => {
-        // Save success, show feedback
-        this.fetchSettings();
-        this.$q.notify({
-          color: 'positive',
-          icon: 'cloud_done',
-          message: 'Saved',
-          timeout: 200,
-        });
-      }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to save settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
+      }).onOk(() => {
+        this.$q.loading.show();
+        axios({
+          method: 'DELETE',
+          url: `/tic-api/playlists/${playlistId}/delete`,
+        }).then(() => {
+          this.$q.loading.hide();
+          this.$q.notify({
+            color: 'positive',
+            icon: 'cloud_done',
+            message: 'Playlist removed',
+            timeout: 200,
+          });
+          this.fetchSettings();
+        }).catch(() => {
+          this.$q.loading.hide();
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Failed to remove playlist',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
         });
       });
     },

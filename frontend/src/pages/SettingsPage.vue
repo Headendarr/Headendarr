@@ -1,155 +1,137 @@
 <template>
   <q-page>
-
     <div class="q-pa-md">
-
       <div class="row">
         <div :class="uiStore.showHelp ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
-          <div :class="$q.platform.is.mobile ? 'q-ma-sm' : 'q-ma-sm q-pa-md'">
+          <q-card flat>
+            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
+              <q-form class="tic-form-layout" @submit.prevent="save">
+                <h5 class="text-primary q-mt-none q-mb-none">UI Settings</h5>
 
-            <q-form @submit="save" class="q-gutter-md">
-
-              <h5 class="text-primary q-mb-none">UI Settings</h5>
-
-              <div class="q-gutter-sm">
-                <q-toggle
+                <TicToggleInput
                   v-model="uiSettings.enable_channel_health_highlight"
                   label="Highlight channels with source issues"
-                  hint="Adds a warning highlight for channels tied to disabled playlists or failed TVH muxes."
+                  description="Adds a warning highlight for channels tied to disabled sources or failed TVHeadend muxes."
                 />
-                <q-select
+
+                <TicSelectInput
                   v-model="uiSettings.start_page"
                   :options="startPageOptions"
                   label="Start page after login"
+                  description="Choose the page users land on after signing in."
                   emit-value
                   map-options
-                  hint="Choose the page users land on after signing in."
-                  class="q-mb-sm"
                 />
-              </div>
 
-              <q-separator class="q-my-lg" />
+                <q-separator />
 
-              <h5 class="text-primary q-mb-none">Connections</h5>
+                <h5 class="text-primary q-mt-none q-mb-none">Connections</h5>
 
-              <div class="q-gutter-sm">
                 <q-skeleton
                   v-if="appUrl === null"
                   type="QInput" />
-                <q-input
+                <TicTextInput
                   v-else
                   v-model="appUrl"
                   label="TIC Host"
-                  hint="External host & port for clients to reach TIC."
+                  description="External host and port clients use to reach TIC."
                 />
-              </div>
 
-              <q-separator class="q-my-md" />
-
-              <q-toggle
-                v-model="routePlaylistsThroughTvh"
-                label="Route playlists & HDHomeRun through TVHeadend"
-                hint="When disabled, playlists and HDHomeRun URLs stream directly through TIC."
-              />
-              <div class="text-caption text-grey-7">
-                When enabled, all playlist and HDHomeRun streams are routed through TVHeadend. This lets TVH enforce
-                connection limits and stream policies in one place. Recommended if you want to use a single main
-                playlist for clients. You may want to disable it to reduce the small amount of latency added by TVH if
-                you are not using the TVH backend. Clients that cannot set per-playlist connection limits should use
-                the XC Playlist URL instead of configuring individual M3U playlists and have this option enabled.
-              </div>
-
-              <q-separator class="q-my-lg" />
-
-              <h5 class="text-primary q-mb-none">User Agents</h5>
-
-              <div class="row items-center justify-between q-mt-sm">
-                <div class="text-caption text-grey-7">
-                  Configure User-Agent headers for fetching playlists and EPGs.
-                </div>
-                <q-btn
-                  color="primary"
-                  icon="add"
-                  label="Add User Agent"
-                  @click="addUserAgent"
+                <TicToggleInput
+                  v-model="routePlaylistsThroughTvh"
+                  label="Route playlists & HDHomeRun through TVHeadend"
+                  description="When enabled, all playlist and HDHomeRun streams are routed through TVHeadend so TVH can enforce stream policies."
                 />
-              </div>
 
-              <q-table
-                class="q-mt-sm"
-                flat
-                bordered
-                hide-bottom
-                :rows="userAgents"
-                :columns="userAgentColumns"
-                row-key="id"
-                no-data-label="No user agents configured"
-              >
-                <template v-slot:body-cell-name="props">
-                  <q-td :props="props">
-                    <q-input v-model="props.row.name" dense outlined placeholder="Name" />
-                  </q-td>
-                </template>
-                <template v-slot:body-cell-value="props">
-                  <q-td :props="props">
-                    <q-input v-model="props.row.value" dense outlined placeholder="User-Agent string" />
-                  </q-td>
-                </template>
-                <template v-slot:body-cell-actions="props">
-                  <q-td :props="props">
-                    <q-btn
-                      dense
-                      flat
-                      round
-                      icon="delete"
-                      color="negative"
-                      @click="removeUserAgent(props.row.id)"
+                <q-separator />
+
+                <h5 class="text-primary q-mt-none q-mb-none">User Agents</h5>
+
+                <div class="row items-center q-col-gutter-sm justify-between">
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col'">
+                    <div class="text-caption text-grey-7">
+                      Configure User-Agent headers for fetching sources and EPGs.
+                    </div>
+                  </div>
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                    <TicButton
+                      color="primary"
+                      icon="add"
+                      label="Add User Agent"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="addUserAgent"
                     />
-                  </q-td>
-                </template>
-              </q-table>
+                  </div>
+                </div>
 
-              <q-separator class="q-my-lg" />
+                <q-list bordered separator class="rounded-borders">
+                  <q-item v-for="agent in userAgents" :key="agent.id" class="user-agent-item">
+                    <q-item-section>
+                      <TicTextInput
+                        v-model="agent.name"
+                        dense
+                        label="Name"
+                        placeholder="Name"
+                      />
+                    </q-item-section>
+                    <q-item-section>
+                      <TicTextInput
+                        v-model="agent.value"
+                        dense
+                        label="User-Agent"
+                        placeholder="User-Agent string"
+                      />
+                    </q-item-section>
+                    <q-item-section side top>
+                      <TicListActions
+                        :actions="[{id: 'delete', icon: 'delete', label: 'Delete', color: 'negative'}]"
+                        @action="() => removeUserAgent(agent.id)"
+                      />
+                    </q-item-section>
+                  </q-item>
+                  <q-item v-if="!userAgents.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7">
+                        No user agents configured.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
 
-              <h5 class="text-primary q-mb-none">DVR Settings</h5>
+                <q-separator />
 
-              <div class="q-gutter-sm">
-                <q-input
+                <h5 class="text-primary q-mt-none q-mb-none">DVR Settings</h5>
+
+                <TicNumberInput
                   v-model.number="dvr.pre_padding_mins"
-                  type="number"
-                  min="0"
+                  :min="0"
                   label="Pre-recording padding (minutes)"
-                  hint="Minutes to record before the scheduled start time."
+                  description="Minutes to record before the scheduled start time."
                 />
-                <q-input
+                <TicNumberInput
                   v-model.number="dvr.post_padding_mins"
-                  type="number"
-                  min="0"
+                  :min="0"
                   label="Post-recording padding (minutes)"
-                  hint="Minutes to record after the scheduled end time."
+                  description="Minutes to record after the scheduled end time."
                 />
-              </div>
 
-              <q-separator class="q-my-lg" />
+                <q-separator />
 
-              <h5 class="text-primary q-mb-none">Audit Logging</h5>
+                <h5 class="text-primary q-mt-none q-mb-none">Audit Logging</h5>
 
-              <div class="q-gutter-sm">
-                <q-input
+                <TicNumberInput
                   v-model.number="auditLogRetentionDays"
-                  type="number"
-                  min="1"
+                  :min="1"
                   label="Audit log retention (days)"
-                  hint="How long to keep audit logs in the database."
+                  description="How long to keep audit logs in the database."
                 />
-              </div>
 
-              <div>
-                <q-btn label="Save" type="submit" color="primary" class="q-mt-lg" />
-              </div>
-
-            </q-form>
-          </div>
+                <div>
+                  <TicButton label="Save" icon="save" type="submit" color="positive" />
+                </div>
+              </q-form>
+            </q-card-section>
+          </q-card>
         </div>
         <div :class="uiStore.showHelp ? 'col-sm-5 col-md-4 help-panel' : 'help-panel help-panel--hidden'">
           <q-slide-transition>
@@ -251,8 +233,6 @@
         </div>
       </div>
     </div>
-
-
   </q-page>
 </template>
 
@@ -260,10 +240,19 @@
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
+import {TicButton, TicListActions, TicNumberInput, TicSelectInput, TicTextInput, TicToggleInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
   name: 'SettingsPage',
+  components: {
+    TicButton,
+    TicListActions,
+    TicNumberInput,
+    TicSelectInput,
+    TicTextInput,
+    TicToggleInput,
+  },
 
   setup() {
     return {
@@ -319,11 +308,6 @@ export default defineComponent({
         {label: 'Channels', value: '/channels'},
         {label: 'TV Guide', value: '/guide'},
         {label: 'DVR', value: '/dvr'},
-      ],
-      userAgentColumns: [
-        {name: 'name', label: 'Name', field: 'name', align: 'left'},
-        {name: 'value', label: 'User-Agent', field: 'value', align: 'left'},
-        {name: 'actions', label: '', field: 'actions', align: 'right'},
       ],
     };
   },
@@ -492,5 +476,13 @@ export default defineComponent({
   max-width: 0%;
   padding: 0;
   overflow: hidden;
+}
+
+.tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
+}
+
+.user-agent-item :deep(.tic-text-input-field) {
+  padding-bottom: 0 !important;
 }
 </style>

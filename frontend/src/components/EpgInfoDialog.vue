@@ -1,238 +1,225 @@
 <template>
-  <!--
-    TODO:
-      - Configure mobile view such that the form elements on the settings tab are not padded
-      - Fix header wrapping on mobile view
-    -->
+  <TicDialogWindow
+    v-model="isOpen"
+    title="EPG Settings"
+    :persistent="isDirty"
+    :prevent-close="isDirty"
+    :close-tooltip="closeTooltip"
+    :actions="dialogActions"
+    @action="onDialogAction"
+    @close-request="onCloseRequest"
+    @hide="onDialogHide"
+  >
+    <div class="q-pa-lg q-gutter-md">
+      <q-form class="tic-form-layout" @submit.prevent="save">
+        <q-skeleton v-if="loading" type="QInput" />
 
-  <!-- START DIALOG CONFIG
-  Right fullscreen pop-up
-  Note: Update template q-dialog ref="" value
+        <template v-else>
+          <TicToggleInput
+            v-model="enabled"
+            label="Enabled"
+            description="Enable this EPG source for background update/import jobs."
+          />
 
-  All Platforms:
-   - Swipe right to dismiss
-  Desktop:
-   - Width 700px
-   - Minimise button top-right
-  Mobile:
-   - Full screen
-   - Back button top-left
-  -->
-  <q-dialog
-    ref="epgInfoDialogRef"
-    :maximized="$q.platform.is.mobile"
-    :transition-show="$q.platform.is.mobile ? 'jump-left' : 'slide-left'"
-    :transition-hide="$q.platform.is.mobile ? 'jump-right' : 'slide-right'"
-    full-height
-    position="right"
-    @before-hide="beforeDialogHide"
-    @hide="onDialogHide">
+          <TicTextInput
+            v-model="name"
+            label="EPG Name"
+            description="Display name used for this EPG source in TIC."
+          />
 
-    <q-card
-      v-touch-swipe.touch.right="hide"
-      :style="$q.platform.is.mobile ? 'max-width: 100vw;' : 'max-width: 95vw;'"
-      style="width:700px;">
+          <TicTextareaInput
+            v-model="url"
+            label="EPG URL"
+            description="XMLTV source URL (supports .xml and .xml.gz sources)."
+            :rows="3"
+            :autogrow="true"
+          />
 
-      <q-card-section class="bg-card-head">
-        <div class="row items-center no-wrap">
-          <div
-            v-if="$q.platform.is.mobile"
-            class="col">
-            <q-btn
-              color="grey-7"
-              dense
-              round
-              flat
-              icon="arrow_back"
-              v-close-popup>
-            </q-btn>
-          </div>
-
-          <div class="col">
-            <div class="text-h6 text-blue-10">
-              EPG Settings
-            </div>
-          </div>
-
-          <div
-            v-if="!$q.platform.is.mobile"
-            class="col-auto">
-            <q-btn
-              color="grey-7"
-              dense
-              round
-              flat
-              icon="arrow_forward"
-              v-close-popup>
-              <q-tooltip class="bg-white text-primary">Close</q-tooltip>
-            </q-btn>
-          </div>
-        </div>
-      </q-card-section>
-      <!-- END DIALOG CONFIG -->
-
-      <q-separator/>
-
-      <div class="row">
-        <div class="col col-12 q-pa-lg">
-          <div>
-            <q-form
-              @submit="save"
-              class="q-gutter-md"
-            >
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="enabled === null"
-                  type="QCheckbox"/>
-                <q-toggle v-model="enabled" label="Enabled"/>
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="name === null"
-                  type="QInput"/>
-                <q-input
-                  v-else
-                  v-model="name"
-                  label="EPG Name"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="url === null"
-                  type="QInput"/>
-                <q-input
-                  v-else
-                  v-model="url"
-                  type="textarea"
-                  label="EPG URL"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="userAgent === null"
-                  type="QInput" />
-                <q-select
-                  v-else
-                  v-model="userAgent"
-                  :options="userAgents"
-                  option-value="value"
-                  option-label="name"
-                  emit-value
-                  map-options
-                  label="User Agent"
-                  hint="User-Agent header to use when fetching this EPG"
-                  clearable
-                />
-              </div>
-
-              <div>
-                <q-btn label="Save" type="submit" color="primary"/>
-              </div>
-
-            </q-form>
-
-          </div>
-        </div>
-      </div>
-
-    </q-card>
-
-  </q-dialog>
+          <TicSelectInput
+            v-model="userAgent"
+            :options="userAgents"
+            option-label="name"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            label="User Agent"
+            description="User-Agent header used when TIC fetches this source."
+          />
+        </template>
+      </q-form>
+    </div>
+  </TicDialogWindow>
 </template>
 
 <script>
-/*
-tab          - The tab to display first ['info', 'settings']
-*/
+import axios from 'axios';
+import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
+import TicConfirmDialog from 'components/ui/dialogs/TicConfirmDialog.vue';
+import TicTextInput from 'components/ui/inputs/TicTextInput.vue';
+import TicTextareaInput from 'components/ui/inputs/TicTextareaInput.vue';
+import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
+import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 
-import axios from "axios";
-import {ref} from "vue";
+const FALLBACK_USER_AGENTS = [
+  {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
+  {
+    name: 'Chrome',
+    value:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+  },
+  {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+];
 
 export default {
   name: 'EpgInfoDialog',
+  components: {
+    TicDialogWindow,
+    TicTextInput,
+    TicTextareaInput,
+    TicSelectInput,
+    TicToggleInput,
+  },
   props: {
     epgId: {
-      type: String
-    }
+      type: String,
+      default: null,
+    },
   },
-  emits: [
-    // REQUIRED
-    'ok', 'hide', 'path'
-  ],
+  emits: ['ok', 'hide'],
   data() {
     return {
-      enabled: ref(null),
-      name: ref(null),
-      url: ref(null),
-      userAgent: ref(null),
-      userAgents: ref([]),
-    }
+      isOpen: false,
+      loading: false,
+      saving: false,
+      enabled: true,
+      name: '',
+      url: '',
+      userAgent: null,
+      userAgents: [],
+      initialStateSignature: '',
+      hasSavedInSession: false,
+    };
+  },
+  computed: {
+    isDirty() {
+      if (!this.initialStateSignature) {
+        return false;
+      }
+      return this.currentStateSignature() !== this.initialStateSignature;
+    },
+    closeTooltip() {
+      return this.isDirty ? 'Unsaved changes. Save before closing or discard changes.' : 'Close';
+    },
+    dialogActions() {
+      return [
+        {
+          id: 'save',
+          icon: 'save',
+          label: 'Save',
+          color: 'positive',
+          unelevated: true,
+          disable: this.loading || this.saving,
+          class: this.isDirty ? 'save-action-pulse' : '',
+          tooltip: this.isDirty ? 'Save changes' : 'No unsaved changes',
+        },
+      ];
+    },
   },
   methods: {
-    // following method is REQUIRED
-    // (don't change its name --> "show")
     show() {
-      this.$refs.epgInfoDialogRef.show();
+      this.isOpen = true;
+      this.loading = true;
+      this.hasSavedInSession = false;
+
       this.fetchUserAgents().then(() => {
         if (this.epgId) {
-          this.fetchPlaylistData();
-          return
+          return this.fetchEpgData();
         }
-        this.enabled = true
-        this.name = ''
-        this.url = ''
-        this.userAgent = this.getPreferredUserAgent('Chrome')
+        this.applyDefaultState();
+        return Promise.resolve();
+      }).finally(() => {
+        this.captureInitialState();
+        this.loading = false;
       });
     },
-
-    // following method is REQUIRED
-    // (don't change its name --> "hide")
     hide() {
-      this.$refs.epgInfoDialogRef.hide();
+      this.isOpen = false;
     },
-
     onDialogHide() {
-      // required to be emitted
-      // when QDialog emits "hide" event
-      this.$emit('ok', {})
-      this.$emit('hide')
+      this.$emit('ok', {saved: this.hasSavedInSession});
+      this.$emit('hide');
     },
-
-    fetchPlaylistData: function () {
-      // Fetch from server
-      axios({
+    onDialogAction(action) {
+      if (action.id === 'save') {
+        this.save();
+      }
+    },
+    onCloseRequest() {
+      if (!this.isDirty) {
+        this.hide();
+        return;
+      }
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Discard Changes?',
+          message: 'You have unsaved changes. Close this dialog and discard them?',
+          icon: 'warning',
+          iconColor: 'warning',
+          confirmLabel: 'Discard',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+          cancelLabel: 'Keep Editing',
+          persistent: true,
+        },
+      }).onOk(() => {
+        this.hide();
+      });
+    },
+    applyDefaultState() {
+      this.enabled = true;
+      this.name = '';
+      this.url = '';
+      this.userAgent = this.getPreferredUserAgent('Chrome');
+    },
+    captureInitialState() {
+      this.initialStateSignature = this.currentStateSignature();
+    },
+    currentStateSignature() {
+      return JSON.stringify({
+        enabled: this.enabled,
+        name: this.name,
+        url: this.url,
+        userAgent: this.userAgent,
+      });
+    },
+    fetchEpgData() {
+      return axios({
         method: 'GET',
         url: '/tic-api/epgs/settings/' + this.epgId,
       }).then((response) => {
-        this.enabled = response.data.data.enabled
-        this.name = response.data.data.name
-        this.url = response.data.data.url
-        this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('Chrome')
+        this.enabled = response.data.data.enabled;
+        this.name = response.data.data.name;
+        this.url = response.data.data.url;
+        this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('Chrome');
       });
     },
     fetchUserAgents() {
       return axios({
-        method: 'get',
+        method: 'GET',
         url: '/tic-api/get-settings',
       }).then((response) => {
-        const agents = response.data.data.user_agents || []
+        const agents = response.data.data.user_agents || [];
         this.userAgents = agents.map((agent) => ({
           name: agent.name,
           value: agent.value,
         }));
         if (!this.userAgents.length) {
-          this.userAgents = [
-            {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
-            {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
-            {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
-          ];
+          this.userAgents = [...FALLBACK_USER_AGENTS];
         }
       }).catch(() => {
-        this.userAgents = [
-          {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
-          {name: 'Chrome', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3'},
-          {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
-        ];
+        this.userAgents = [...FALLBACK_USER_AGENTS];
       });
     },
     getPreferredUserAgent(preferredName) {
@@ -240,62 +227,72 @@ export default {
       const match = this.userAgents.find((agent) => agent.name === preferredName);
       return (match || this.userAgents[0]).value;
     },
-    save: function () {
-      let url = '/tic-api/epgs/settings/new'
-      if (this.epgId) {
-        url = `/tic-api/epgs/settings/${this.epgId}/save`
+    save() {
+      if (this.saving) {
+        return;
       }
-      let data = {
+      this.saving = true;
+
+      let targetUrl = '/tic-api/epgs/settings/new';
+      if (this.epgId) {
+        targetUrl = `/tic-api/epgs/settings/${this.epgId}/save`;
+      }
+
+      const data = {
         enabled: this.enabled,
         name: this.name,
         url: this.url,
         user_agent: this.userAgent,
-      }
+      };
+
       axios({
         method: 'POST',
-        url: url,
-        data: data
-      }).then((response) => {
-        // Save success, show feedback
+        url: targetUrl,
+        data,
+      }).then(() => {
+        this.hasSavedInSession = true;
+        this.captureInitialState();
         this.$q.notify({
           color: 'positive',
-          position: 'top',
           icon: 'cloud_done',
           message: 'Saved',
-          timeout: 200
-        })
-        this.hide()
+          timeout: 400,
+        });
+        this.hide();
       }).catch(() => {
         this.$q.notify({
           color: 'negative',
           position: 'top',
           message: 'Failed to save settings',
           icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}]
-        })
+          actions: [{icon: 'close', color: 'white'}],
+        });
+      }).finally(() => {
+        this.saving = false;
       });
     },
-
-    updateAndTriggerSave: function (key, value) {
-      for (let i = 0; i < this.settings.length; i++) {
-        if (this.settings[i].key_id === key) {
-          this.settings[i].value = value;
-          break
-        }
-      }
-      this.save()
-    },
   },
-  watch: {
-    uuid(value) {
-      if (value.length > 0) {
-        this.currentUuid = this.uuid;
-      }
-    }
-  }
-}
+};
 </script>
 
-<style>
+<style scoped>
+:deep(.save-action-pulse) {
+  animation: savePulse 1.2s ease-in-out infinite;
+}
 
+@keyframes savePulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
+}
 </style>

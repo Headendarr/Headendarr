@@ -1,380 +1,376 @@
 <template>
-  <!--
-    TODO:
-      - Configure mobile view such that the form elements on the settings tab are not padded
-      - Fix header wrapping on mobile view
-    -->
+  <TicDialogWindow
+    v-model="isOpen"
+    title="Stream Source Settings"
+    :persistent="isDirty"
+    :prevent-close="isDirty"
+    :close-tooltip="closeTooltip"
+    :actions="dialogActions"
+    @action="onDialogAction"
+    @close-request="onCloseRequest"
+    @hide="onDialogHide"
+  >
+    <div class="q-pa-lg q-gutter-md">
+      <q-form class="tic-form-layout" @submit.prevent="save">
+        <q-skeleton v-if="loading" type="QInput" />
 
-  <!-- START DIALOG CONFIG
-  Right fullscreen pop-up
-  Note: Update template q-dialog ref="" value
+        <template v-else>
+          <TicToggleInput
+            v-model="enabled"
+            label="Enabled"
+            description="Enable this stream source for channel updates and sync tasks."
+          />
 
-  All Platforms:
-   - Swipe right to dismiss
-  Desktop:
-   - Width 700px
-   - Minimise button top-right
-  Mobile:
-   - Full screen
-   - Back button top-left
-  -->
-  <q-dialog
-    ref="playlistInfoDialogRef"
-    :maximized="$q.platform.is.mobile"
-    :transition-show="$q.platform.is.mobile ? 'jump-left' : 'slide-left'"
-    :transition-hide="$q.platform.is.mobile ? 'jump-right' : 'slide-right'"
-    full-height
-    position="right"
-    @before-hide="beforeDialogHide"
-    @hide="onDialogHide">
+          <TicTextInput
+            v-model="name"
+            label="Source Name"
+            description="Display name used throughout TIC for this stream source."
+          />
 
-    <q-card
-      v-touch-swipe.touch.right="hide"
-      :style="$q.platform.is.mobile ? 'max-width: 100vw;' : 'max-width: 95vw;'"
-      style="width:700px;">
+          <TicTextareaInput
+            v-model="url"
+            :label="accountType === 'XC' ? 'Host' : 'Source URL'"
+            :description="
+              accountType === 'XC'
+                ? 'Xtream Codes host (protocol + host, optional port).'
+                : 'Playlist URL to fetch channels from.'
+            "
+          />
 
-      <q-card-section class="bg-card-head">
-        <div class="row items-center no-wrap">
-          <div
-            v-if="$q.platform.is.mobile"
-            class="col">
-            <q-btn
-              color="grey-7"
-              dense
-              round
-              flat
-              icon="arrow_back"
-              v-close-popup>
-            </q-btn>
-          </div>
+          <TicSelectInput
+            v-model="accountType"
+            :options="accountTypeOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            label="Source Type"
+            description="M3U for direct playlist URLs, Xtream Codes for panel-based services."
+          />
 
-          <div class="col">
-            <div class="text-h6 text-blue-10">
-              Stream Source Settings
+          <div v-if="accountType === 'XC'" class="q-gutter-sm">
+            <div class="text-caption text-grey-7">
+              Add one or more Xtream Codes accounts for this host. Each account can have its own connection limit.
             </div>
-          </div>
 
-          <div
-            v-if="!$q.platform.is.mobile"
-            class="col-auto">
-            <q-btn
-              color="grey-7"
-              dense
-              round
-              flat
-              icon="arrow_forward"
-              v-close-popup>
-              <q-tooltip class="bg-white text-primary">Close</q-tooltip>
-            </q-btn>
-          </div>
-        </div>
-      </q-card-section>
-      <!-- END DIALOG CONFIG -->
-
-      <q-separator />
-
-      <div class="row">
-        <div class="col col-12 q-pa-lg">
-          <div>
-            <q-form
-              @submit="save"
-              class="q-gutter-md"
+            <div
+              v-for="(account, index) in xcAccounts"
+              :key="account.localId || account.id || index"
+              class="sub-setting xc-account-block q-gutter-sm q-pr-sm"
             >
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="enabled === null"
-                  type="QCheckbox" />
-                <q-toggle v-model="enabled" label="Enabled" />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="name === null"
-                  type="QInput" />
-                <q-input
-                  v-else
-                  v-model="name"
-                  label="Source Name"
+              <div class="text-subtitle2 text-primary">Account {{ index + 1 }}</div>
+
+              <TicTextInput
+                v-model="account.username"
+                label="Username"
+                description="Username for Xtream Codes authentication."
+              />
+
+              <TicTextInput
+                v-model="account.password"
+                type="password"
+                label="Password"
+                :description="xcPasswordHint(account)"
+              />
+
+              <TicNumberInput
+                v-model="account.connection_limit"
+                label="Connections"
+                description="Connection count allocated to this account."
+              />
+
+              <TicToggleInput
+                v-model="account.enabled"
+                label="Enabled"
+                description="Disable account to exclude it from channel and EPG operations."
+              />
+
+              <TicTextInput
+                v-model="account.label"
+                label="Label"
+                description="Optional internal label to identify this account."
+              />
+
+              <div class="row justify-end">
+                <TicActionButton
+                  icon="delete"
+                  color="negative"
+                  tooltip="Delete account"
+                  @click="removeXcAccount(index)"
                 />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="url === null"
-                  type="QInput" />
-                <q-input
-                  v-else
-                  v-model="url"
-                  type="textarea"
-                  :label="accountType === 'XC' ? 'Host' : 'Source URL'"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="accountType === null"
-                  type="QInput" />
-                <q-select
-                  v-else
-                  v-model="accountType"
-                  :options="accountTypeOptions"
-                  option-value="value"
-                  option-label="label"
-                  emit-value
-                  map-options
-                  label="Source Type"
-                  hint="M3U for direct playlist URLs, Xtream Codes for panel-based services"
-                />
-              </div>
-              <div
-                v-if="accountType === 'XC'"
-                class="q-gutter-sm">
-                <div class="text-caption text-grey-7">
-                  Add one or more Xtream Codes accounts for this host. Each account can have its own connection limit.
-                </div>
-                <div
-                  v-for="(account, index) in xcAccounts"
-                  :key="account.localId || account.id || index"
-                  class="q-gutter-sm q-ml-md q-pa-sm bordered rounded-borders">
-                  <q-input
-                    v-model="account.username"
-                    label="Username"
-                    hint="Username for Xtream Codes authentication"
-                  />
-                  <q-input
-                    v-model="account.password"
-                    type="password"
-                    label="Password"
-                    :hint="xcPasswordHint(account)"
-                  />
-                  <q-input
-                    v-model.number="account.connection_limit"
-                    type="number"
-                    label="Connections"
-                    style="max-width: 200px"
-                  />
-                  <q-toggle
-                    v-model="account.enabled"
-                    label="Enabled"
-                  />
-                  <q-input
-                    v-model="account.label"
-                    label="Label (optional)"
-                  />
-                  <div class="row justify-end">
-                    <q-btn
-                      flat
-                      round
-                      color="negative"
-                      icon="delete"
-                      @click="removeXcAccount(index)"
-                    >
-                      <q-tooltip class="bg-white text-primary">Delete account</q-tooltip>
-                    </q-btn>
-                  </div>
-                  <q-separator />
-                </div>
-                <q-btn
-                  color="primary"
-                  label="Add account"
-                  @click="addXcAccount"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="connections === null"
-                  type="QInput" />
-                <q-input
-                  v-else-if="accountType === 'XC'"
-                  :model-value="totalXcConnections"
-                  type="number"
-                  label="Connections"
-                  hint="Total connections from enabled XC accounts"
-                  disable
-                  style="max-width: 200px"
-                />
-                <q-input
-                  v-else
-                  v-model.number="connections"
-                  type="number"
-                  label="Connections"
-                  style="max-width: 200px"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-skeleton
-                  v-if="userAgent === null"
-                  type="QInput" />
-                <q-select
-                  v-else
-                  v-model="userAgent"
-                  :options="userAgents"
-                  option-value="value"
-                  option-label="name"
-                  emit-value
-                  map-options
-                  label="User Agent"
-                  hint="User-Agent header to use when fetching this playlist"
-                  clearable
-                  @update:model-value="onUserAgentChange"
-                />
-              </div>
-              <div class="q-gutter-sm">
-                <q-item tag="label" v-ripple>
-                  <q-item-section avatar>
-                    <q-skeleton
-                      v-if="useHlsProxy === null"
-                      type="QCheckbox" />
-                    <q-toggle
-                      v-else
-                      v-model="useHlsProxy" />
-                  </q-item-section>
-                  <q-item-section>
-                    <q-item-label>Use HLS proxy</q-item-label>
-                    <q-item-label caption>TVH-IPTV-Config comes with an inbuilt HLS (M3U8) playlist proxy. Selecting
-                      this will modify all playlist URLs to use it.
-                    </q-item-label>
-                  </q-item-section>
-                </q-item>
               </div>
 
-              <div v-if="useHlsProxy" class="sub-setting">
+            </div>
 
-                <div class="q-gutter-sm">
-                  <q-item class="q-ml-none" tag="label" v-ripple>
-                    <q-item-section avatar>
-                      <q-skeleton
-                        v-if="useCustomHlsProxy === null"
-                        type="QCheckbox" />
-                      <q-toggle
-                        v-else
-                        v-model="useCustomHlsProxy" />
-                    </q-item-section>
-                    <q-item-section>
-                      <q-item-label>Use a custom HLS Proxy path</q-item-label>
-                      <q-item-label caption>If enabled, the playlist uses the custom proxy URL (optionally chained
-                        through TIC below).
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item v-if="useCustomHlsProxy" class="q-ma-none" tag="label">
-                    <q-item-section>
-                      <q-input
-                        v-model="hlsProxyPath"
-                        label="HLS Proxy Path"
-                        hint="Note: Insert [URL] or [B64_URL] in the URL as a placeholder for the playlist URL. If '[B64 URL]' is used, then the URL will be base64 encoded before inserting"
-                      />
-                    </q-item-section>
-                  </q-item>
-                  <q-item v-if="useCustomHlsProxy" class="q-ml-none" tag="label" v-ripple>
-                    <q-item-section avatar>
-                      <q-skeleton
-                        v-if="chainCustomHlsProxy === null"
-                        type="QCheckbox" />
-                      <q-toggle
-                        v-else
-                        v-model="chainCustomHlsProxy" />
-                    </q-item-section>
-                    <q-item-section>
-                      <q-item-label>Proxy through both (TIC → custom)</q-item-label>
-                      <q-item-label caption>Useful when clients can only reach TIC’s URL/port. TIC handles the single
-                        entry point, then forwards to the custom proxy (for example, a proxy that routes via VPNs).
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                </div>
-              </div>
-
-              <div class="q-mt-md">
-                <q-btn label="Save" type="submit" color="primary" />
-              </div>
-
-            </q-form>
-
+            <TicButton label="Add account" color="primary" @click="addXcAccount" />
           </div>
-        </div>
-      </div>
 
-    </q-card>
+          <TicNumberInput
+            v-if="accountType === 'XC'"
+            :model-value="totalXcConnections"
+            label="Connections"
+            description="Total connections from enabled XC accounts."
+            disable
+          />
+          <TicNumberInput
+            v-else
+            v-model="connections"
+            label="Connections"
+            description="Maximum concurrent streams to allow from this source."
+          />
 
-  </q-dialog>
+          <TicSelectInput
+            v-model="userAgent"
+            :options="userAgents"
+            option-label="name"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            label="User Agent"
+            description="User-Agent header used when TIC fetches this source."
+            @update:model-value="onUserAgentChange"
+          />
+
+          <TicToggleInput
+            v-model="useHlsProxy"
+            label="Use HLS proxy"
+            description="Enable TIC built-in HLS proxy and rewrite playlist URLs through TIC."
+          />
+
+          <div v-if="useHlsProxy" class="sub-setting q-gutter-sm">
+            <TicToggleInput
+              v-model="useCustomHlsProxy"
+              label="Use a custom HLS Proxy path"
+              description="If enabled, playlist URLs use the custom proxy URL below."
+            />
+
+            <TicTextInput
+              v-if="useCustomHlsProxy"
+              v-model="hlsProxyPath"
+              label="HLS Proxy Path"
+              description="Use [URL] or [B64_URL] placeholder for the playlist URL."
+            />
+
+            <TicToggleInput
+              v-if="useCustomHlsProxy"
+              v-model="chainCustomHlsProxy"
+              label="Proxy through both (TIC -> custom)"
+              description="Use TIC as entry point, then forward to custom proxy."
+            />
+          </div>
+        </template>
+      </q-form>
+    </div>
+  </TicDialogWindow>
 </template>
 
 <script>
-
 import axios from 'axios';
-import {ref} from 'vue';
+import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
+import TicConfirmDialog from 'components/ui/dialogs/TicConfirmDialog.vue';
+import TicButton from 'components/ui/buttons/TicButton.vue';
+import TicActionButton from 'components/ui/buttons/TicActionButton.vue';
+import TicTextInput from 'components/ui/inputs/TicTextInput.vue';
+import TicTextareaInput from 'components/ui/inputs/TicTextareaInput.vue';
+import TicNumberInput from 'components/ui/inputs/TicNumberInput.vue';
+import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
+import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
 
 export default {
   name: 'PlaylistInfoDialog',
+  components: {
+    TicDialogWindow,
+    TicButton,
+    TicActionButton,
+    TicTextInput,
+    TicTextareaInput,
+    TicNumberInput,
+    TicToggleInput,
+    TicSelectInput,
+  },
   props: {
     playlistId: {
       type: String,
+      default: null,
     },
   },
-  emits: [
-    // REQUIRED
-    'ok', 'hide', 'path',
-  ],
+  emits: ['ok', 'hide'],
   data() {
     return {
-      enabled: ref(null),
-      name: ref(null),
-      url: ref(null),
-      accountType: ref(null),
+      isOpen: false,
+      loading: false,
+      saving: false,
+      enabled: true,
+      name: '',
+      url: '',
+      accountType: 'M3U',
       accountTypeOptions: [
         {label: 'M3U', value: 'M3U'},
         {label: 'Xtream Codes', value: 'XC'},
       ],
-      xcAccounts: ref([]),
-      connections: ref(null),
-      userAgent: ref(null),
-      userAgents: ref([]),
-      userAgentTouched: ref(false),
-      useHlsProxy: ref(null),
-      useCustomHlsProxy: ref(null),
-      chainCustomHlsProxy: ref(null),
-      hlsProxyPath: ref(null),
+      xcAccounts: [],
+      connections: 1,
+      userAgent: null,
+      userAgents: [],
+      userAgentTouched: false,
+      useHlsProxy: false,
+      useCustomHlsProxy: false,
+      chainCustomHlsProxy: false,
+      hlsProxyPath: 'https://proxy.example.com/hls/[B64_URL].m3u8',
+      initialStateSignature: '',
+      hasSavedInSession: false,
     };
   },
+  computed: {
+    totalXcConnections() {
+      return this.xcAccounts.reduce((total, account) => {
+        if (account.enabled === false) return total;
+        return total + (parseInt(account.connection_limit || 0, 10) || 0);
+      }, 0);
+    },
+    isDirty() {
+      if (!this.initialStateSignature) {
+        return false;
+      }
+      return this.currentStateSignature() !== this.initialStateSignature;
+    },
+    closeTooltip() {
+      return this.isDirty ? 'Unsaved changes. Save before closing or discard changes.' : 'Close';
+    },
+    dialogActions() {
+      return [
+        {
+        id: 'save',
+        icon: 'save',
+        label: 'Save',
+        color: 'positive',
+        unelevated: true,
+        disable: this.loading || this.saving,
+          class: this.isDirty ? 'save-action-pulse' : '',
+          tooltip: this.isDirty ? 'Save changes' : 'No unsaved changes',
+        },
+      ];
+    },
+  },
+  watch: {
+    useHlsProxy(newValue) {
+      if (!newValue) {
+        this.useCustomHlsProxy = false;
+        this.chainCustomHlsProxy = false;
+      }
+    },
+    useCustomHlsProxy(newValue) {
+      if (!newValue) {
+        this.chainCustomHlsProxy = false;
+      }
+    },
+    accountType(newValue) {
+      if (this.playlistId) {
+        return;
+      }
+      if (newValue !== 'XC') {
+        return;
+      }
+      if (!this.userAgentTouched) {
+        this.userAgent = this.getPreferredUserAgent('TiviMate');
+      }
+      if (!this.xcAccounts.length) {
+        this.addXcAccount();
+      }
+    },
+  },
   methods: {
-    // following method is REQUIRED
-    // (don't change its name --> "show")
     show() {
-      this.$refs.playlistInfoDialogRef.show();
+      this.isOpen = true;
+      this.loading = true;
+      this.hasSavedInSession = false;
       this.fetchUserAgents().then(() => {
         if (this.playlistId) {
-          this.fetchPlaylistData();
-          return;
+          return this.fetchPlaylistData();
         }
-        // Set default values for new playlist
-        this.enabled = true;
-        this.name = '';
-        this.url = '';
-        this.accountType = 'M3U';
-        this.xcAccounts = [];
-        this.connections = 1;
-        this.userAgent = this.getPreferredUserAgent('VLC');
-        this.userAgentTouched = false;
-        this.useHlsProxy = false;
-        this.useCustomHlsProxy = false;
-        this.hlsProxyPath = 'https://proxy.example.com/hls/[B64_URL].m3u8';
+        this.applyDefaultState();
+        return Promise.resolve();
+      }).finally(() => {
+        this.captureInitialState();
+        this.loading = false;
       });
     },
-
-    // following method is REQUIRED
-    // (don't change its name --> "hide")
     hide() {
-      this.$refs.playlistInfoDialogRef.hide();
+      this.isOpen = false;
     },
-
     onDialogHide() {
-      // required to be emitted
-      // when QDialog emits "hide" event
-      this.$emit('ok', {});
+      this.$emit('ok', {saved: this.hasSavedInSession});
       this.$emit('hide');
     },
-
-    fetchPlaylistData: function() {
-      // Fetch from server
-      axios({
+    onDialogAction(action) {
+      if (action.id === 'save') {
+        this.save();
+      }
+    },
+    onCloseRequest() {
+      if (!this.isDirty) {
+        this.hide();
+        return;
+      }
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Discard Changes?',
+          message: 'You have unsaved changes. Close this dialog and discard them?',
+          icon: 'warning',
+          iconColor: 'warning',
+          confirmLabel: 'Discard',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+          cancelLabel: 'Keep Editing',
+          persistent: true,
+        },
+      }).onOk(() => {
+        this.hide();
+      });
+    },
+    applyDefaultState() {
+      this.enabled = true;
+      this.name = '';
+      this.url = '';
+      this.accountType = 'M3U';
+      this.xcAccounts = [];
+      this.connections = 1;
+      this.userAgent = this.getPreferredUserAgent('VLC');
+      this.userAgentTouched = false;
+      this.useHlsProxy = false;
+      this.useCustomHlsProxy = false;
+      this.chainCustomHlsProxy = false;
+      this.hlsProxyPath = 'https://proxy.example.com/hls/[B64_URL].m3u8';
+    },
+    captureInitialState() {
+      this.initialStateSignature = this.currentStateSignature();
+    },
+    currentStateSignature() {
+      return JSON.stringify({
+        enabled: this.enabled,
+        name: this.name,
+        url: this.url,
+        accountType: this.accountType,
+        xcAccounts: this.xcAccounts.map((account) => ({
+          id: account.id || null,
+          username: account.username || '',
+          password: account.password || '',
+          passwordSet: account.passwordSet || false,
+          enabled: account.enabled !== false,
+          connection_limit: account.connection_limit || 1,
+          label: account.label || '',
+        })),
+        connections: this.connections,
+        userAgent: this.userAgent,
+        useHlsProxy: this.useHlsProxy,
+        useCustomHlsProxy: this.useCustomHlsProxy,
+        chainCustomHlsProxy: this.chainCustomHlsProxy,
+        hlsProxyPath: this.hlsProxyPath,
+      });
+    },
+    fetchPlaylistData() {
+      return axios({
         method: 'GET',
         url: '/tic-api/playlists/settings/' + this.playlistId,
       }).then((response) => {
@@ -403,7 +399,8 @@ export default {
               enabled: true,
               connection_limit: response.data.data.connections || 1,
               label: '',
-            }];
+            },
+          ];
         }
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
@@ -429,7 +426,8 @@ export default {
             {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
             {
               name: 'Chrome',
-              value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+              value:
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
             },
             {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
           ];
@@ -439,7 +437,8 @@ export default {
           {name: 'VLC', value: 'VLC/3.0.23 LibVLC/3.0.23'},
           {
             name: 'Chrome',
-            value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
+            value:
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
           },
           {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
         ];
@@ -450,19 +449,26 @@ export default {
       const match = this.userAgents.find((agent) => agent.name === preferredName);
       return (match || this.userAgents[0]).value;
     },
-    save: async function() {
-      let url = '/tic-api/playlists/new';
+    async save() {
+      if (this.saving) {
+        return;
+      }
+      this.saving = true;
+      let targetUrl = '/tic-api/playlists/new';
       const isNew = !this.playlistId;
       if (this.playlistId) {
-        url = `/tic-api/playlists/settings/${this.playlistId}/save`;
+        targetUrl = `/tic-api/playlists/settings/${this.playlistId}/save`;
       }
+
       if (isNew && this.accountType === 'XC') {
         const proceed = await this.confirmXcHostUnique();
         if (!proceed) {
+          this.saving = false;
           return;
         }
       }
-      let data = {
+
+      const data = {
         enabled: this.enabled,
         name: this.name,
         url: this.url,
@@ -477,17 +483,19 @@ export default {
       if (this.accountType === 'XC') {
         data.xc_accounts = this.buildXcAccountsPayload();
       }
+
       axios({
         method: 'POST',
-        url: url,
-        data: data,
+        url: targetUrl,
+        data,
       }).then(() => {
-        // Save success, show feedback
+        this.hasSavedInSession = true;
+        this.captureInitialState();
         this.$q.notify({
           color: 'positive',
           icon: 'cloud_done',
           message: 'Saved',
-          timeout: 200,
+          timeout: 400,
         });
         if (isNew && this.accountType === 'XC') {
           this.promptCreateXcEpgSource();
@@ -501,17 +509,9 @@ export default {
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
+      }).finally(() => {
+        this.saving = false;
       });
-    },
-
-    updateAndTriggerSave: function(key, value) {
-      for (let i = 0; i < this.settings.length; i++) {
-        if (this.settings[i].key_id === key) {
-          this.settings[i].value = value;
-          break;
-        }
-      }
-      this.save();
     },
     addXcAccount() {
       this.xcAccounts.push({
@@ -542,7 +542,7 @@ export default {
     },
     normalizeHost(url) {
       if (!url) return url;
-      let trimmed = url.replace(/\s+/g, '').replace(/\/+$/, '');
+      const trimmed = url.replace(/\s+/g, '').replace(/\/+$/, '');
       const match = trimmed.match(/^(https?:\/\/[^/]+)/i);
       return match ? match[1] : trimmed;
     },
@@ -569,10 +569,18 @@ export default {
         }
         return await new Promise((resolve) => {
           this.$q.dialog({
-            title: 'Duplicate XC Host',
-            message: 'A playlist with this Xtream Codes host already exists. Add multiple accounts to a single XC playlist instead of creating duplicates. Continue anyway?',
-            cancel: true,
-            persistent: true,
+            component: TicConfirmDialog,
+            componentProps: {
+              title: 'Duplicate XC Host',
+              message:
+                'A playlist with this Xtream Codes host already exists. Add multiple accounts to a single XC playlist instead of creating duplicates. Continue anyway?',
+              icon: 'warning',
+              iconColor: 'warning',
+              confirmLabel: 'Continue',
+              confirmColor: 'primary',
+              cancelLabel: 'Cancel',
+              persistent: true,
+            },
           }).onOk(() => resolve(true)).onCancel(() => resolve(false));
         });
       } catch (err) {
@@ -582,15 +590,28 @@ export default {
     getPrimaryXcAccount() {
       return this.xcAccounts.find((account) => account.enabled !== false) || null;
     },
-    promptCreateXcEpgSource() {
+    async promptCreateXcEpgSource() {
       const account = this.getPrimaryXcAccount();
       if (!this.url || !account || !account.password) {
         return;
       }
-      const ok = window.confirm(
-        'Create an EPG source for this Xtream Codes account now?',
-      );
-      if (!ok) {
+      const confirmed = await new Promise((resolve) => {
+        this.$q.dialog({
+          component: TicConfirmDialog,
+          componentProps: {
+            title: 'Create EPG Source?',
+            message: 'Create an EPG source for this Xtream Codes account now?',
+            icon: 'help_outline',
+            iconColor: 'primary',
+            confirmLabel: 'Create',
+            confirmIcon: 'add',
+            confirmColor: 'positive',
+            cancelLabel: 'Not now',
+            persistent: true,
+          },
+        }).onOk(() => resolve(true)).onCancel(() => resolve(false));
+      });
+      if (!confirmed) {
         return;
       }
       const host = this.normalizeHost(this.url);
@@ -631,54 +652,46 @@ export default {
         return '';
       }
       if (this.playlistId && account?.passwordSet) {
-        return 'Password for Xtream Codes authentication. Leave blank to keep existing password.';
+        return 'Leave blank to keep the existing password for this account.';
       }
       return 'Password for Xtream Codes authentication.';
-    },
-  },
-  computed: {
-    totalXcConnections() {
-      return this.xcAccounts.reduce((total, account) => {
-        if (account.enabled === false) return total;
-        return total + (parseInt(account.connection_limit || 0, 10) || 0);
-      }, 0);
-    },
-  },
-  watch: {
-    useHlsProxy(newValue) {
-      if (!newValue) {
-        this.useCustomHlsProxy = false;
-        this.chainCustomHlsProxy = false;
-      }
-    },
-    useCustomHlsProxy(newValue) {
-      if (!newValue) {
-        this.chainCustomHlsProxy = false;
-      }
-    },
-    uuid(value) {
-      if (value.length > 0) {
-        this.currentUuid = this.uuid;
-      }
-    },
-    accountType(newValue, oldValue) {
-      if (this.playlistId) {
-        return;
-      }
-      if (newValue !== 'XC') {
-        return;
-      }
-      if (!this.userAgentTouched) {
-        this.userAgent = this.getPreferredUserAgent('TiviMate');
-      }
-      if (!this.xcAccounts.length) {
-        this.addXcAccount();
-      }
     },
   },
 };
 </script>
 
-<style>
+<style scoped>
+:deep(.save-action-pulse) {
+  animation: savePulse 1.2s ease-in-out infinite;
+}
 
+@keyframes savePulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.sub-setting {
+  margin-left: 24px;
+  padding-left: 14px;
+  border-left: solid thin var(--q-primary);
+}
+
+.xc-account-block {
+  margin-bottom: 16px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--q-primary), transparent 96%);
+}
+
+.tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
+}
 </style>
