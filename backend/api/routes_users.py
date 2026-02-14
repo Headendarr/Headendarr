@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from backend.api import blueprint
 from backend.api.tasks import TaskQueueBroker, sync_user_to_tvh
 from backend.auth import admin_auth_required, user_auth_required, get_user_from_token
+from backend.datetime_utils import to_utc_iso
 from backend.models import Session, User
 from backend.users import (
     create_user,
@@ -28,10 +29,10 @@ def _serialize_user(user: User):
         "roles": [role.name for role in user.roles] if user.roles else [],
         "is_active": user.is_active,
         "streaming_key": user.streaming_key,
-        "streaming_key_created_at": user.streaming_key_created_at.isoformat() if user.streaming_key_created_at else None,
+        "streaming_key_created_at": to_utc_iso(user.streaming_key_created_at),
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
-        "tvh_sync_updated_at": user.tvh_sync_updated_at.isoformat() if user.tvh_sync_updated_at else None,
+        "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
     }
 
 

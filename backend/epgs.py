@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from mimetypes import guess_extension
 from pathlib import Path
 from urllib.parse import quote
@@ -28,6 +28,7 @@ from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import normalize_id
 
 logger = logging.getLogger('tic.epgs')
+XMLTV_UTC_FORMAT = "%Y%m%d%H%M%S +0000"
 
 
 def generate_epg_channel_id(number, name):
@@ -229,6 +230,33 @@ def _derive_timestamp(raw_value):
         return None
 
 
+def _normalize_timestamp(ts_value):
+    if ts_value in (None, ""):
+        return None
+    try:
+        return str(int(str(ts_value).strip()))
+    except Exception:
+        return None
+
+
+def _xmltv_utc_from_timestamp(ts_value):
+    normalized = _normalize_timestamp(ts_value)
+    if not normalized:
+        return None
+    try:
+        return datetime.fromtimestamp(int(normalized), tz=timezone.utc).strftime(XMLTV_UTC_FORMAT)
+    except Exception:
+        return None
+
+
+def _normalize_xmltv_time(raw_value, ts_value):
+    ts_normalized = _normalize_timestamp(ts_value) or _derive_timestamp(raw_value)
+    if not ts_normalized:
+        return raw_value, None
+    utc_value = _xmltv_utc_from_timestamp(ts_normalized)
+    return (utc_value or raw_value), ts_normalized
+
+
 def _clear_epg_channel_data_sync(epg_id):
     try:
         db.session.execute(
@@ -338,8 +366,10 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
 
         start = elem.attrib.get("start")
         stop = elem.attrib.get("stop")
-        start_timestamp = elem.attrib.get("start_timestamp") or _derive_timestamp(start)
-        stop_timestamp = elem.attrib.get("stop_timestamp") or _derive_timestamp(stop)
+        start_timestamp = elem.attrib.get("start_timestamp")
+        stop_timestamp = elem.attrib.get("stop_timestamp")
+        start, start_timestamp = _normalize_xmltv_time(start, start_timestamp)
+        stop, stop_timestamp = _normalize_xmltv_time(stop, stop_timestamp)
         icon = elem.find("icon")
         programme_rows.append(
             {
@@ -614,14 +644,22 @@ async def build_custom_epg(config, throttle=False):
             # Create a <programme> element for the output file and copy the attributes from the input programme
             output_programme = ET.SubElement(output_root, 'programme')
             # Build programmes from DB data (manually create attributes etc.
-            if epg_channel_programme['start']:
-                output_programme.set('start', epg_channel_programme['start'])
-            if epg_channel_programme['stop']:
-                output_programme.set('stop', epg_channel_programme['stop'])
-            if epg_channel_programme['start_timestamp']:
-                output_programme.set('start_timestamp', epg_channel_programme['start_timestamp'])
-            if epg_channel_programme['stop_timestamp']:
-                output_programme.set('stop_timestamp', epg_channel_programme['stop_timestamp'])
+            start_value, start_ts = _normalize_xmltv_time(
+                epg_channel_programme.get('start'),
+                epg_channel_programme.get('start_timestamp'),
+            )
+            stop_value, stop_ts = _normalize_xmltv_time(
+                epg_channel_programme.get('stop'),
+                epg_channel_programme.get('stop_timestamp'),
+            )
+            if start_value:
+                output_programme.set('start', start_value)
+            if stop_value:
+                output_programme.set('stop', stop_value)
+            if start_ts:
+                output_programme.set('start_timestamp', start_ts)
+            if stop_ts:
+                output_programme.set('stop_timestamp', stop_ts)
             # Set the "channel" ident here
             output_programme.set('channel', str(channel_id))
             # Loop through all child elements of the input programme and copy them to the output programme

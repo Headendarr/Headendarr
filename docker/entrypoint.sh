@@ -27,6 +27,21 @@ print_log() {
     echo "[${timestamp}] [${pid}] [${level^^}] ${message}"
 }
 
+configure_container_timezone() {
+    local tz_name
+    tz_name="${TZ:-Etc/UTC}"
+    if [ -f "/usr/share/zoneinfo/${tz_name}" ]; then
+        ln -snf "/usr/share/zoneinfo/${tz_name}" /etc/localtime
+        echo "${tz_name}" >/etc/timezone
+        print_log info "Configured container timezone to ${tz_name}"
+    else
+        print_log warn "TZ '${tz_name}' is invalid; falling back to Etc/UTC"
+        export TZ="Etc/UTC"
+        ln -snf "/usr/share/zoneinfo/Etc/UTC" /etc/localtime
+        echo "Etc/UTC" >/etc/timezone
+    fi
+}
+
 kill_pid() {
     local name="$1"
     local pid="$2"
@@ -145,7 +160,7 @@ setup_postgres() {
     fi
 
     print_log info "Starting Postgres"
-    "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" start -w -t 60 -o "-c port=${POSTGRES_PORT} -c unix_socket_directories=${POSTGRES_SOCKET_DIR}"
+    "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" start -w -t 60 -o "-c port=${POSTGRES_PORT} -c unix_socket_directories=${POSTGRES_SOCKET_DIR} -c timezone=UTC -c log_timezone=UTC"
     pg_pid="$("${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" status | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')"
     print_log info "Postgres started with PID ${pg_pid}"
 
@@ -262,6 +277,7 @@ start_tic() {
 
 # Root setup and drop privileges
 if [ "$(id -u)" = "0" ]; then
+    configure_container_timezone
     prepare_dirs_root
     exec gosu "${PUID:-1000}" env HOME="/config" "$0" "$@"
 fi

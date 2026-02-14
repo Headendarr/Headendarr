@@ -43,3 +43,10 @@ sudo docker-compose up -d --force-recreate --pull
 
 After container executes successfully, navigate to your docker host URL in your browser on port 9985 and click connect.
 `http://<host-ip>:9985/`
+
+## Timezone Notes
+
+- Set `TZ` in your compose file for container-local logs/runtime behavior (example: `TZ=Pacific/Auckland`).
+- TIC persists application timestamps in UTC in the database.
+- TIC API returns timestamps in UTC (`...Z`) and the frontend renders them in local time for the user/device.
+- Keep host clock and container clock in sync (NTP) to avoid skew.

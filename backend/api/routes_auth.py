@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-from datetime import datetime
 
 from quart import request, jsonify, current_app
 from sqlalchemy import select
@@ -8,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.api import blueprint
 from backend.auth import get_user_from_token, unauthorized_response, _get_bearer_token, get_request_client_ip
+from backend.datetime_utils import to_utc_iso, utc_now_naive
 from backend.models import Session, UserSession, User
 from backend.security import (
     generate_session_token,
@@ -24,10 +24,10 @@ def _serialize_user(user: User):
         "roles": [role.name for role in user.roles] if user.roles else [],
         "is_active": user.is_active,
         "streaming_key": user.streaming_key,
-        "streaming_key_created_at": user.streaming_key_created_at.isoformat() if user.streaming_key_created_at else None,
+        "streaming_key_created_at": to_utc_iso(user.streaming_key_created_at),
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
-        "tvh_sync_updated_at": user.tvh_sync_updated_at.isoformat() if user.tvh_sync_updated_at else None,
+        "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
     }
 
 
@@ -61,13 +61,13 @@ async def auth_login():
             session_obj = UserSession(
                 user_id=user.id,
                 token_hash=token_hash,
-                created_at=datetime.utcnow(),
+                created_at=utc_now_naive(),
                 expires_at=expires_at,
                 revoked=False,
                 user_agent=request.headers.get("User-Agent"),
                 ip_address=get_request_client_ip(),
             )
-            user.last_login_at = datetime.utcnow()
+            user.last_login_at = utc_now_naive()
             if needs_rehash:
                 from backend.security import hash_password
                 user.password_hash = hash_password(password)

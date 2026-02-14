@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.datetime_utils import to_utc_iso
+
 
 def derive_audit_mode(event_type: str | None, endpoint: str | None) -> str | None:
     event = (event_type or "").strip().lower()
@@ -97,7 +99,7 @@ def serialize_audit_row(row: dict[str, Any]) -> dict[str, Any]:
     details = row.get("details")
     return {
         "id": row.get("id"),
-        "created_at": created_at.isoformat() if created_at else None,
+        "created_at": to_utc_iso(created_at),
         "event_type": event_type,
         "endpoint": endpoint,
         "details": details,

@@ -44,3 +44,11 @@ This page documents backend runtime behavior and integration boundaries.
 - TIC runs on a single Quart async loop by default.
 - Keep request handlers and scheduled tasks non-blocking.
 - Offload CPU-heavy or long blocking work to subprocesses/executors.
+
+## Timestamp + Timezone Policy
+
+- Persist application timestamps in UTC in the database (UTC at rest).
+- Treat model date/time fields (`created_at`, `updated_at`, audit/session timestamps) as UTC values.
+- API payloads should serialize timestamps as explicit UTC ISO-8601 (for example `2026-02-14T09:30:00Z`).
+- Frontend/UI renders timestamps in the viewer's local timezone (or configured UI timezone setting when implemented), with 12h/24h formatting applied in UI.
+- Container `TZ` controls process-local time behavior for runtime tools/logs; DB/application timestamp persistence must still remain UTC.
