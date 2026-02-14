@@ -1234,6 +1234,14 @@ export default defineComponent({
   padding-right: 8px;
 }
 
+@media (min-width: 1024px) {
+  .dvr-list-item :deep(.q-item__section--side) {
+    width: 72px;
+    min-width: 72px;
+    align-items: flex-end;
+  }
+}
+
 @media (max-width: 1023px) {
   .dvr-list {
     border: none;
