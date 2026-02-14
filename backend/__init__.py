@@ -94,6 +94,8 @@ def register_blueprints(app):
     import_module('backend.api.routes_channels')
     import_module('backend.api.routes_dvr')
     import_module('backend.api.routes_guide')
+    import_module('backend.api.routes_audit')
+    import_module('backend.api.routes_dashboard')
     import_module('backend.api.routes_playlist_proxy')
     import_module('backend.api.routes_hls_proxy')
     import_module('backend.api.routes_xc')

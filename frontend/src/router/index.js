@@ -28,7 +28,7 @@ export default route(function (/* { store, ssrContext } */) {
   })
 
   const startPageKey = 'tic_ui_start_page'
-  const defaultStartPage = '/channels'
+  const defaultStartPage = '/dashboard'
   const getStartPage = () => localStorage.getItem(startPageKey) || defaultStartPage
 
   const canAccessRoute = (path, roles) => {
@@ -49,7 +49,7 @@ export default route(function (/* { store, ssrContext } */) {
       return defaultStartPage
     }
     if (roles.includes('streamer')) {
-      return '/guide'
+      return '/dashboard'
     }
     return '/login'
   }
@@ -65,27 +65,27 @@ export default route(function (/* { store, ssrContext } */) {
           const startPage = getStartPage()
           const target = canAccessRoute(startPage, roles) ? startPage : getFallbackStartPage(roles)
           if (target && target !== to.path) {
-            next(target)
+            next({ path: target, replace: true })
             return
           }
         }
         if (to.meta.requiresAdmin) {
           const roles = authStore.user?.roles || [];
           if (!roles.includes('admin')) {
-            next('/');
+            next({ path: '/', replace: true });
             return;
           }
         }
         if (to.meta.requiresStreamer) {
           const roles = authStore.user?.roles || [];
           if (!roles.includes('admin') && !roles.includes('streamer')) {
-            next('/');
+            next({ path: '/', replace: true });
             return;
           }
         }
         next();
       } else {
-        next('/login');
+        next({ path: '/login', replace: true });
       }
     } else {
       next();

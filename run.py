@@ -3,7 +3,7 @@
 
 from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, rebuild_custom_epg, \
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
-    TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes
+    TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
 from backend.auth import cleanup_stream_audit_logs
 from backend import create_app, config
@@ -36,6 +36,11 @@ async def every_30_seconds():
             'function': reconcile_dvr_recordings,
             'args':     [app],
         }, priority=20)
+        await task_broker.add_task({
+            'name':     'Polling TVHeadend subscription status',
+            'function': poll_tvh_subscription_status,
+            'args':     [app],
+        }, priority=21)
 
 
 @scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=60, misfire_grace_time=30)

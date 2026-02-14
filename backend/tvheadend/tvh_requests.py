@@ -49,6 +49,8 @@ api_epggrab_list = "epggrab/module/list"
 api_dvr_entry_grid = "dvr/entry/grid"
 api_dvr_entry_create = "dvr/entry/create"
 api_dvr_entry_cancel = "dvr/entry/cancel"
+api_status_subscriptions = "status/subscriptions"
+api_status_subscriptions_grid = "status/subscriptions/grid"
 
 tvh_config = {
     "server_name":    "TVH-IPTV",
@@ -342,6 +344,32 @@ class Tvheadend:
                 "description": entry.get("disp_description") or entry.get("disp_summary"),
             })
         return entries
+
+    async def list_status_subscriptions(self):
+        """Return current TVH subscriptions from status API across TVH versions."""
+        # TVH APIs vary across versions: try legacy + grid variants.
+        attempts = (
+            ("GET", f"{self.api_url}/{api_status_subscriptions}", {"all": 1, "limit": 999999}),
+            ("POST", f"{self.api_url}/{api_status_subscriptions}", {"all": 1, "limit": 999999}),
+            ("POST", f"{self.api_url}/{api_status_subscriptions_grid}", {"all": 1, "limit": 999999}),
+            ("GET", f"{self.api_url}/{api_status_subscriptions_grid}", {"all": 1, "limit": 999999}),
+        )
+        last_exc = None
+        for method, url, payload in attempts:
+            try:
+                if method == "GET":
+                    result = await self.__get(url, payload=payload, rformat="json")
+                else:
+                    result = await self.__post(url, payload=payload, rformat="json")
+                entries = result.get("entries") if isinstance(result, dict) else []
+                if isinstance(entries, list):
+                    return entries
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        return []
 
     async def create_dvr_entry(self, channel_uuid, start_ts, stop_ts, title, description=None):
         conf = {

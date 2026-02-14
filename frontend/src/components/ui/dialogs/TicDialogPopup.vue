@@ -2,14 +2,14 @@
   <q-dialog
     class="tic-dialog-popup"
     backdrop-filter="grayscale(80%) blur(0.7px)"
-    :model-value="modelValue"
+    :model-value="internalOpen"
     :maximized="isMobile && mobileFullscreen"
     :persistent="persistent"
     :transition-show="isMobile ? 'jump-up' : 'scale'"
     :transition-hide="isMobile ? 'jump-down' : 'scale'"
-    @update:model-value="$emit('update:modelValue', $event)"
+    @update:model-value="onModelUpdate"
     @show="$emit('show')"
-    @hide="$emit('hide')"
+    @hide="onDialogHide"
   >
     <q-card :style="cardStyle" :class="['dialog-popup-card', {'dialog-card-mobile': isMobile}]">
       <q-card-section class="dialog-sticky-header bg-card-head" :class="{'dialog-header-mobile': isMobile}">
@@ -49,8 +49,9 @@
 </template>
 
 <script setup>
-import {computed} from 'vue';
+import {computed, ref, watch} from 'vue';
 import {useQuasar} from 'quasar';
+import {useDialogRouteHistory} from 'src/composables/useDialogRouteHistory';
 
 const props = defineProps({
   modelValue: {
@@ -89,6 +90,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'show', 'hide', 'close']);
 const $q = useQuasar();
+const internalOpen = ref(props.modelValue);
 
 const isMobile = computed(() => $q.screen.lt.md);
 const cardStyle = computed(() => {
@@ -98,10 +100,39 @@ const cardStyle = computed(() => {
   return `width:${props.width};max-width:${props.maxWidth};`;
 });
 
+watch(
+  () => props.modelValue,
+  (nextValue) => {
+    internalOpen.value = nextValue;
+  },
+);
+
+watch(internalOpen, (nextValue) => {
+  if (nextValue !== props.modelValue) {
+    emit('update:modelValue', nextValue);
+  }
+});
+
+const onModelUpdate = (value) => {
+  internalOpen.value = value;
+};
+
+const onDialogHide = () => {
+  emit('hide');
+};
+
 const onCloseClick = () => {
   emit('close');
-  emit('update:modelValue', false);
+  internalOpen.value = false;
 };
+
+useDialogRouteHistory({
+  isOpen: internalOpen,
+  setOpen: (value) => {
+    internalOpen.value = value;
+  },
+  canClose: () => true,
+});
 </script>
 
 <style scoped>

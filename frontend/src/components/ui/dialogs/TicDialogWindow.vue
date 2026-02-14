@@ -195,9 +195,10 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useQuasar } from 'quasar';
-import { useMobile } from 'src/composables/useMobile';
+import {computed, onBeforeUnmount, ref, watch} from 'vue';
+import {useQuasar} from 'quasar';
+import {useMobile} from 'src/composables/useMobile';
+import {useDialogRouteHistory} from 'src/composables/useDialogRouteHistory';
 import TicButtonDropdown from 'components/ui/buttons/TicButtonDropdown.vue';
 
 const props = defineProps({
@@ -250,7 +251,7 @@ const emit = defineEmits([
 ]);
 
 const $q = useQuasar();
-const { isMobile } = useMobile();
+const {isMobile} = useMobile();
 const dialogRef = ref(null);
 const internalOpen = ref(props.modelValue);
 const attentionActive = ref(false);
@@ -327,6 +328,18 @@ const onCloseClick = () => {
 const triggerAction = (action) => {
   emit('action', action);
 };
+
+useDialogRouteHistory({
+  isOpen: internalOpen,
+  setOpen: (value) => {
+    internalOpen.value = value;
+  },
+  canClose: () => !(props.persistent || props.preventClose),
+  onBlockedClose: () => {
+    onShake();
+    emit('close-request');
+  },
+});
 
 onBeforeUnmount(() => {
   if (attentionTimer) {

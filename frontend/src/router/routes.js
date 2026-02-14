@@ -5,7 +5,31 @@ const routes = [
     children: [
       {
         path: '',
-        component: () => import('pages/ChannelsPage.vue'),
+        component: () => import('pages/DashboardPage.vue'),
+        meta: {requiresAuth: true},
+      },
+    ],
+  },
+  {
+    name: 'dashboard',
+    path: '/dashboard',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/DashboardPage.vue'),
+        meta: {requiresAuth: true},
+      },
+    ],
+  },
+  {
+    name: 'audit',
+    path: '/audit',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/AuditPage.vue'),
         meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],

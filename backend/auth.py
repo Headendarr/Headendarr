@@ -24,6 +24,16 @@ class TvhStreamUser:
         self.roles = []
 
 
+def is_tvh_backend_stream_user(user) -> bool:
+    if not user:
+        return False
+    if isinstance(user, TvhStreamUser):
+        return True
+    username = str(getattr(user, "username", "") or "")
+    user_id = getattr(user, "id", None)
+    return username.startswith("tic-tvh-") and not user_id
+
+
 class _StreamKeyCache:
     def __init__(self, ttl_seconds=30):
         self.ttl_seconds = ttl_seconds
@@ -55,6 +65,40 @@ def unauthorized_response(message="Unauthorized"):
 
 def forbidden_response(message="Forbidden"):
     return jsonify({"success": False, "message": message}), 403
+
+
+def get_request_client_ip() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        # Respect reverse-proxy/client forwarding headers first.
+        xff = (request.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            # Format: client, proxy1, proxy2...
+            candidate = xff.split(",")[0].strip()
+            if candidate:
+                return candidate
+        forwarded = (request.headers.get("Forwarded") or "").strip()
+        if forwarded:
+            # RFC 7239 e.g. for=203.0.113.195;proto=https;by=...
+            first = forwarded.split(",")[0]
+            for part in first.split(";"):
+                part = part.strip()
+                if part.lower().startswith("for="):
+                    candidate = part[4:].strip().strip('"')
+                    if candidate.startswith("[") and "]" in candidate:
+                        candidate = candidate[1:candidate.index("]")]
+                    if ":" in candidate and candidate.count(":") == 1 and "." in candidate:
+                        candidate = candidate.split(":", 1)[0]
+                    if candidate:
+                        return candidate
+        for header in ("X-Real-IP", "CF-Connecting-IP", "True-Client-IP"):
+            value = (request.headers.get(header) or "").strip()
+            if value:
+                return value
+    except Exception:
+        pass
+    return getattr(request, "remote_addr", None)
 
 
 def _get_bearer_token():
@@ -225,9 +269,10 @@ def stream_key_required(func):
             _, basic_password = _get_basic_auth_credentials()
             stream_key = basic_password
         request._stream_key = stream_key
-        ip_address = request.remote_addr
+        ip_address = get_request_client_ip()
         user_agent = request.headers.get("User-Agent")
-        if not getattr(func, "_skip_stream_connect_audit", False):
+        should_audit = not getattr(func, "_skip_stream_connect_audit", False) and not is_tvh_backend_stream_user(user)
+        if should_audit:
             await audit_stream_event(
                 user,
                 "stream_connect",
@@ -236,7 +281,7 @@ def stream_key_required(func):
                 user_agent=user_agent,
             )
         response = await func(*args, **kwargs)
-        if not getattr(func, "_skip_stream_connect_audit", False):
+        if should_audit:
             response = await make_response(response)
             try:
                 response.call_on_close(
@@ -276,10 +321,12 @@ async def audit_stream_event(
     ip_address: str = None,
     user_agent: str = None,
 ):
+    if is_tvh_backend_stream_user(user):
+        return
     async with Session() as session:
         async with session.begin():
             if has_request_context():
-                ip_value = ip_address or getattr(request, "remote_addr", None)
+                ip_value = ip_address or get_request_client_ip()
                 user_agent_value = user_agent
                 if user_agent_value is None:
                     try:

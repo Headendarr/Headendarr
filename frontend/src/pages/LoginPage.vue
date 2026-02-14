@@ -60,7 +60,7 @@ export default {
       authStore.checkAuthentication().then(() => {
         if (authStore.isAuthenticated) {
           resolveStartPage().then((startPage) => {
-            router.push({path: startPage});
+            router.replace({path: startPage});
           });
         }
       });
@@ -72,7 +72,7 @@ export default {
         const response = await authStore.login(username.value, password.value);
         if (response.status === 200 && response.data.success) {
           const startPage = await resolveStartPage();
-          await router.push({path: startPage});
+          await router.replace({path: startPage});
         }
       } catch (error) {
         $q.notify({

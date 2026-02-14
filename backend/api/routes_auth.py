@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from backend.api import blueprint
-from backend.auth import get_user_from_token, unauthorized_response, _get_bearer_token
+from backend.auth import get_user_from_token, unauthorized_response, _get_bearer_token, get_request_client_ip
 from backend.models import Session, UserSession, User
 from backend.security import (
     generate_session_token,
@@ -65,7 +65,7 @@ async def auth_login():
                 expires_at=expires_at,
                 revoked=False,
                 user_agent=request.headers.get("User-Agent"),
-                ip_address=request.remote_addr,
+                ip_address=get_request_client_ip(),
             )
             user.last_login_at = datetime.utcnow()
             if needs_rehash:

@@ -2,7 +2,8 @@
   <q-page>
     <div class="q-pa-md">
       <div class="row">
-        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <div
+          :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <q-form class="tic-form-layout" @submit.prevent="save">
@@ -135,94 +136,94 @@
         </div>
         <TicResponsiveHelp v-model="uiStore.showHelp">
           <q-card-section>
-                <div class="text-h5 q-mb-none">Setup Steps:</div>
-                <q-list>
+            <div class="text-h5 q-mb-none">Setup Steps:</div>
+            <q-list>
 
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
-                        This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                        When enabled, clients connect to TVH for tuning and TVH pulls streams from TIC on their behalf.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        3. Add User Agents for provider compatibility. You can select these per source or EPG.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        4. Set DVR padding to record extra minutes before and after each scheduled recording.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
+                    This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
+                    When enabled, clients connect to TVH for tuning and TVH pulls streams from TIC on their behalf.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    3. Add User Agents for provider compatibility. You can select these per source or EPG.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    4. Set DVR padding to record extra minutes before and after each scheduled recording.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
 
             </q-list>
           </q-card-section>
           <q-card-section>
-                <div class="text-h5 q-mb-none">Notes:</div>
-                <q-list>
+            <div class="text-h5 q-mb-none">Notes:</div>
+            <q-list>
 
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
-                        other devices can reach.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not TIC. TVH
-                        becomes the “streaming client” that fetches channels from TIC and can apply its own buffering,
-                        mux handling, and DVR behavior.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
-                        compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach TIC.
-                        When disabled, clients connect directly to TIC for streams.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
-                        clients; choose a compatible agent if downloads fail.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        DVR padding is applied when syncing recording defaults to TVHeadend.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        Audit log retention controls how long stream and API access events are kept in the database.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
+                    other devices can reach.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not TIC. TVH
+                    becomes the “streaming client” that fetches channels from TIC and can apply its own buffering,
+                    mux handling, and DVR behavior.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
+                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach TIC.
+                    When disabled, clients connect directly to TIC for streams.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
+                    clients; choose a compatible agent if downloads fail.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    DVR padding is applied when syncing recording defaults to TVHeadend.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    Audit log retention controls how long stream and API access events are kept in the database.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
 
             </q-list>
           </q-card-section>
@@ -236,7 +237,15 @@
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
-import {TicButton, TicListActions, TicNumberInput, TicResponsiveHelp, TicSelectInput, TicTextInput, TicToggleInput} from 'components/ui';
+import {
+  TicButton,
+  TicListActions,
+  TicNumberInput,
+  TicResponsiveHelp,
+  TicSelectInput,
+  TicTextInput,
+  TicToggleInput,
+} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
@@ -274,7 +283,7 @@ export default defineComponent({
       }),
       uiSettings: ref({
         enable_channel_health_highlight: true,
-        start_page: '/channels',
+        start_page: '/dashboard',
       }),
 
       // Defaults
@@ -296,15 +305,17 @@ export default defineComponent({
         },
         uiSettings: {
           enable_channel_health_highlight: true,
-          start_page: '/channels',
+          start_page: '/dashboard',
         },
       }),
       startPageOptions: [
+        {label: 'Dashboard', value: '/dashboard'},
         {label: 'Sources', value: '/playlists'},
         {label: 'EPGs', value: '/epgs'},
         {label: 'Channels', value: '/channels'},
         {label: 'TV Guide', value: '/guide'},
         {label: 'DVR', value: '/dvr'},
+        {label: 'Audit', value: '/audit'},
       ],
     };
   },
@@ -436,7 +447,7 @@ export default defineComponent({
         });
         if (this.prevAdminPassword !== this.adminPassword) {
           // Reload page to properly trigger the auth refresh
-          this.$router.push({name: 'login'});
+          this.$router.replace({name: 'login'});
         }
         localStorage.setItem('tic_ui_start_page', this.uiSettings.start_page);
         this.fetchSettings();

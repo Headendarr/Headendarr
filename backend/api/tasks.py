@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+from asyncio import Lock, PriorityQueue
+import itertools
 import asyncio
 import logging
+import re
+from types import SimpleNamespace
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from backend.utils import is_truthy
 
 scheduler = AsyncIOScheduler()
 
 logger = logging.getLogger('tic.tasks')
-
-import itertools
-from asyncio import Lock, PriorityQueue
 
 
 class TaskQueueBroker:
@@ -264,3 +265,193 @@ async def apply_dvr_rules(app):
     config = app.config['APP_CONFIG']
     from backend.dvr import apply_recurring_rules
     await apply_recurring_rules(config)
+
+
+_TVH_ACTIVE_SUBSCRIPTIONS = {}
+_IPV4_PATTERN = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
+
+
+def _first_non_empty(entry, *keys):
+    for key in keys:
+        value = entry.get(key)
+        if isinstance(value, dict):
+            value = next((v for v in value.values() if v), None)
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value:
+            return value
+    return None
+
+
+def _extract_ipv4(value):
+    if not value:
+        return None
+    match = _IPV4_PATTERN.search(str(value))
+    return match.group(0) if match else None
+
+
+def _extract_subscription_ip(entry):
+    for key in ("ip", "ip_address", "peer", "client", "hostname", "host", "remote", "address"):
+        found = _extract_ipv4(entry.get(key))
+        if found:
+            return found
+    return None
+
+
+def _subscription_identity(entry):
+    direct = _first_non_empty(entry, "uuid", "id", "subscription_id", "identifier")
+    if direct:
+        return direct
+    username = _first_non_empty(entry, "username", "user") or ""
+    channel = _first_non_empty(entry, "channelname", "channel", "title", "service") or ""
+    user_agent = _first_non_empty(entry, "user_agent", "client", "hostname", "peer") or ""
+    return f"{username}|{channel}|{user_agent}"
+
+
+def _is_testing_state(entry):
+    state = (_first_non_empty(entry, "state", "status") or "").lower()
+    return state in {"test", "testing"}
+
+
+def _build_active_recording_index(dvr_entries):
+    channel_ids = set()
+    channel_names = set()
+    for rec in dvr_entries or []:
+        state = str(rec.get("state") or "").lower()
+        if state not in {"recording", "running"}:
+            continue
+        channel_id = str(rec.get("channel") or "").strip()
+        channel_name = str(rec.get("channelname") or "").strip().lower()
+        if channel_id:
+            channel_ids.add(channel_id)
+        if channel_name:
+            channel_names.add(channel_name)
+    return channel_ids, channel_names
+
+
+def _is_recording_subscription(entry, recording_channel_ids, recording_channel_names):
+    user_agent = _first_non_empty(entry, "user_agent", "client_user_agent")
+    if user_agent:
+        return False
+    channel_id = str(entry.get("channel") or "").strip()
+    channel_name = (_first_non_empty(entry, "channelname", "title", "service") or "").lower()
+    if channel_id and channel_id in recording_channel_ids:
+        return True
+    if channel_name and channel_name in recording_channel_names:
+        return True
+    return False
+
+
+def _build_subscription_details(entry, username, state, is_recording):
+    channel = _first_non_empty(entry, "channelname", "title", "service", "channel") or "Unknown"
+    parts = [
+        "TVHeadend recording" if is_recording else "TVHeadend subscription",
+        f"Channel: {channel}",
+    ]
+    if username:
+        parts.append(f"Username: {username}")
+    if state:
+        parts.append(f"State: {state}")
+    return " | ".join(parts)
+
+
+def _make_audit_user(user_id, username):
+    if user_id is None:
+        return None
+    return SimpleNamespace(id=user_id, username=username or "", is_active=True, roles=[])
+
+
+def _is_tvh_backend_username(username):
+    return bool(username and str(username).strip().lower().startswith("tic-tvh-"))
+
+
+async def poll_tvh_subscription_status(app):
+    config = app.config['APP_CONFIG']
+    from backend.auth import audit_stream_event
+    from backend.tvheadend.tvh_requests import get_tvh
+    from backend.users import get_user_by_username
+
+    global _TVH_ACTIVE_SUBSCRIPTIONS
+
+    try:
+        async with await get_tvh(config) as tvh:
+            subscriptions = await tvh.list_status_subscriptions()
+            dvr_entries = await tvh.list_dvr_entries()
+    except Exception as exc:
+        logger.debug("Skipping TVH status monitor poll: %s", exc)
+        return
+
+    recording_channel_ids, recording_channel_names = _build_active_recording_index(dvr_entries)
+    observed = {}
+    user_id_cache = {}
+
+    for entry in subscriptions or []:
+        if not isinstance(entry, dict):
+            continue
+        if _is_testing_state(entry):
+            continue
+
+        subscription_id = _subscription_identity(entry)
+        if not subscription_id:
+            continue
+
+        username = _first_non_empty(entry, "username", "user")
+        if _is_tvh_backend_username(username):
+            continue
+        if username not in user_id_cache:
+            user = await get_user_by_username(username) if username else None
+            user_id_cache[username] = user.id if user else None
+        user_id = user_id_cache.get(username)
+
+        state = _first_non_empty(entry, "state", "status")
+        is_recording = _is_recording_subscription(entry, recording_channel_ids, recording_channel_names)
+        event_type = "recording_start" if is_recording else "stream_start"
+        stop_event_type = "recording_stop" if is_recording else "stream_stop"
+        user_agent = _first_non_empty(entry, "user_agent", "client_user_agent")
+        if is_recording and not user_agent:
+            user_agent = "TVHeadend Recorder"
+        if not user_agent:
+            user_agent = "TVHeadend"
+        ip_address = _extract_subscription_ip(entry)
+        details = _build_subscription_details(entry, username, state, is_recording)
+        endpoint = f"/tic-tvh/api/status/subscriptions/{subscription_id}"
+
+        observed[subscription_id] = {
+            "user_id": user_id,
+            "username": username,
+            "event_type": event_type,
+            "stop_event_type": stop_event_type,
+            "endpoint": endpoint,
+            "details": details,
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+        }
+
+    previous = _TVH_ACTIVE_SUBSCRIPTIONS
+    started_ids = sorted(set(observed.keys()) - set(previous.keys()))
+    stopped_ids = sorted(set(previous.keys()) - set(observed.keys()))
+
+    for sub_id in started_ids:
+        event = observed[sub_id]
+        await audit_stream_event(
+            _make_audit_user(event.get("user_id"), event.get("username")),
+            event.get("event_type"),
+            event.get("endpoint"),
+            details=event.get("details"),
+            ip_address=event.get("ip_address"),
+            user_agent=event.get("user_agent"),
+        )
+
+    for sub_id in stopped_ids:
+        event = previous[sub_id]
+        await audit_stream_event(
+            _make_audit_user(event.get("user_id"), event.get("username")),
+            event.get("stop_event_type") or "stream_stop",
+            event.get("endpoint"),
+            details=event.get("details"),
+            ip_address=event.get("ip_address"),
+            user_agent=event.get("user_agent"),
+        )
+
+    _TVH_ACTIVE_SUBSCRIPTIONS = observed

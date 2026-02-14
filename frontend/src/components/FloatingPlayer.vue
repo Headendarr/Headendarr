@@ -91,6 +91,7 @@
 </template>
 
 <script setup>
+import axios from 'axios';
 import {computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch} from 'vue';
 import {useVideoStore} from 'stores/video';
 import Hls from 'hls.js';
@@ -123,15 +124,15 @@ const streamDetails = ref({
   audioCodec: '',
   bitrate: null,
 });
+const directStartAuditLoggedForUrl = ref(null);
+const pendingDirectStartAudit = ref(null);
 
 const streamDetailsText = computed(() => {
   const parts = [];
   if (streamDetails.value.resolution) {
     parts.push(streamDetails.value.resolution);
   }
-  const codecLabel = [streamDetails.value.videoCodec, streamDetails.value.audioCodec]
-    .filter(Boolean)
-    .join('/');
+  const codecLabel = [streamDetails.value.videoCodec, streamDetails.value.audioCodec].filter(Boolean).join('/');
   if (codecLabel) {
     parts.push(codecLabel);
   }
@@ -203,9 +204,11 @@ function parseCodecString(codecString) {
   let audio = '';
   for (const part of parts) {
     const lowered = part.toLowerCase();
-    if (!video && (lowered.startsWith('avc') || lowered.startsWith('hev') || lowered.startsWith('hvc') || lowered.startsWith('av01') || lowered.startsWith('vp'))) {
+    if (!video && (lowered.startsWith('avc') || lowered.startsWith('hev') || lowered.startsWith('hvc') ||
+      lowered.startsWith('av01') || lowered.startsWith('vp'))) {
       video = normalizeCodecLabel(part);
-    } else if (!audio && (lowered.startsWith('mp4a') || lowered.startsWith('ac-3') || lowered.startsWith('ec-3') || lowered.startsWith('opus') || lowered.startsWith('mp3'))) {
+    } else if (!audio && (lowered.startsWith('mp4a') || lowered.startsWith('ac-3') || lowered.startsWith('ec-3') ||
+      lowered.startsWith('opus') || lowered.startsWith('mp3'))) {
       audio = normalizeCodecLabel(part);
     }
   }
@@ -317,6 +320,7 @@ function cleanupPlayer() {
     el.load();
   }
   resetStreamDetails();
+  pendingDirectStartAudit.value = null;
   console.info('[FloatingPlayer] cleanupPlayer done');
 }
 
@@ -332,6 +336,36 @@ function detectStreamType(url, forcedType) {
     return 'mpegts';
   }
   return 'native';
+}
+
+function isTicManagedPlaybackUrl(url) {
+  const lowered = String(url || '').toLowerCase();
+  return (
+    lowered.includes('/tic-hls-proxy/') ||
+    lowered.includes('/tic-api/tvh_stream/') ||
+    lowered.includes('/tic-api/recordings/')
+  );
+}
+
+async function auditDirectPlaybackStart() {
+  const pending = pendingDirectStartAudit.value;
+  if (!pending?.url) {
+    return;
+  }
+  if (directStartAuditLoggedForUrl.value === pending.url) {
+    return;
+  }
+  try {
+    await axios.post('/tic-api/audit/playback-start', {
+      url: pending.url,
+      title: pending.title || '',
+    });
+    directStartAuditLoggedForUrl.value = pending.url;
+  } catch (error) {
+    console.warn('[FloatingPlayer] direct start audit failed', error);
+  } finally {
+    pendingDirectStartAudit.value = null;
+  }
 }
 
 async function initPlayer() {
@@ -393,6 +427,7 @@ async function initPlayer() {
     videoPlayingHandler.value = () => {
       errorMessage.value = '';
       isLoading.value = false;
+      auditDirectPlaybackStart();
       if (loadTimeout.value) {
         clearTimeout(loadTimeout.value);
         loadTimeout.value = null;
@@ -419,6 +454,11 @@ async function initPlayer() {
     }, 12000);
   }
   const type = detectStreamType(url, videoStore.streamType);
+  const shouldAuditDirectStart = !isTicManagedPlaybackUrl(url);
+  pendingDirectStartAudit.value = shouldAuditDirectStart ? {url, title: videoStore.streamTitle || ''} : null;
+  if (!shouldAuditDirectStart) {
+    directStartAuditLoggedForUrl.value = null;
+  }
   isLoading.value = true;
   console.info('[FloatingPlayer] initPlayer', {url, type});
 
@@ -550,6 +590,7 @@ async function initPlayer() {
 function closePlayer() {
   console.info('[FloatingPlayer] closePlayer');
   cleanupPlayer();
+  directStartAuditLoggedForUrl.value = null;
   videoStore.hidePlayer();
 }
 

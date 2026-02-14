@@ -19,6 +19,8 @@ from quart import Response, current_app, redirect, request, stream_with_context
 from backend.api import blueprint
 from backend.auth import (
     audit_stream_event,
+    get_request_client_ip,
+    is_tvh_backend_stream_user,
     skip_stream_connect_audit,
     stream_key_required,
 )
@@ -79,10 +81,14 @@ async def _mark_stream_activity(decoded_url, event_type="stream_start"):
         user = getattr(request, "_stream_user", None)
     except Exception:
         user = None
+    if is_tvh_backend_stream_user(user):
+        return
     user_id = getattr(user, "id", None)
     username = getattr(user, "username", None)
     stream_key = getattr(user, "streaming_key", None)
-    key = f"{user_id or username or 'anon'}:{decoded_url}"
+    ip_address = get_request_client_ip()
+    user_agent = request.headers.get("User-Agent")
+    key = f"{user_id or username or 'anon'}:{_activity_identity(decoded_url)}"
     now = time.time()
     async with _stream_activity_lock:
         entry = _stream_activity.get(key)
@@ -94,6 +100,8 @@ async def _mark_stream_activity(decoded_url, event_type="stream_start"):
                 "stream_key": stream_key,
                 "endpoint": request.path,
                 "details": decoded_url,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
             }
             audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
             await audit_stream_event(
@@ -104,6 +112,24 @@ async def _mark_stream_activity(decoded_url, event_type="stream_start"):
             )
         else:
             entry["last_seen"] = now
+            entry["ip_address"] = ip_address
+            entry["user_agent"] = user_agent
+
+
+def _activity_identity(decoded_url: str) -> str:
+    try:
+        parsed = urlparse(decoded_url)
+        if not parsed.scheme or not parsed.netloc:
+            return decoded_url
+        path = parsed.path or "/"
+        if "/" in path:
+            # Normalize to parent directory so segment churn doesn't create new identities.
+            parent = path.rsplit("/", 1)[0] or "/"
+        else:
+            parent = "/"
+        return f"{parsed.scheme}://{parsed.netloc}{parent}"
+    except Exception:
+        return decoded_url
 
 
 async def _cleanup_stream_activity():
@@ -122,7 +148,31 @@ async def _cleanup_stream_activity():
             "stream_stop",
             entry.get("endpoint") or "",
             details=entry.get("details"),
+            ip_address=entry.get("ip_address"),
+            user_agent=entry.get("user_agent"),
         )
+
+
+async def get_stream_activity_snapshot():
+    now = time.time()
+    async with _stream_activity_lock:
+        entries = []
+        for value in _stream_activity.values():
+            entries.append(
+                {
+                    "user_id": value.get("user_id"),
+                    "username": value.get("username"),
+                    "stream_key": value.get("stream_key"),
+                    "endpoint": value.get("endpoint"),
+                    "details": value.get("details"),
+                    "ip_address": value.get("ip_address"),
+                    "user_agent": value.get("user_agent"),
+                    "last_seen": value.get("last_seen"),
+                    "age_seconds": max(int(now - (value.get("last_seen") or now)), 0),
+                }
+            )
+    entries.sort(key=lambda item: item.get("last_seen") or 0, reverse=True)
+    return entries
 # A dictionary to keep track of active streams
 active_streams = {}
 
@@ -728,7 +778,6 @@ async def proxy_key(instance_id, encoded_url):
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _mark_stream_activity(decoded_url)
 
     # Check if the .key file is already cached
     if await cache.exists(decoded_url):
@@ -763,7 +812,6 @@ async def proxy_ts(instance_id, encoded_url):
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _mark_stream_activity(decoded_url)
 
     # Check if the .ts file is already cached
     if await cache.exists(decoded_url):
@@ -809,7 +857,6 @@ async def proxy_vtt(instance_id, encoded_url):
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _mark_stream_activity(decoded_url)
 
     # Check if the .vtt file is already cached
     if await cache.exists(decoded_url):
@@ -872,7 +919,8 @@ async def stream_ts(instance_id, encoded_url):
 
     # Add a new buffer for this connection
     stream.add_buffer(connection_id)
-    await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
+    if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):
+        await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
 
     # Create a generator to stream data from the connection-specific buffer
     @stream_with_context

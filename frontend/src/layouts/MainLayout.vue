@@ -369,6 +369,12 @@ import {useRouter} from 'vue-router';
 
 const linksList = [
   {
+    title: 'Dashboard',
+    caption: 'Overview and live activity',
+    icon: 'dashboard',
+    link: '/dashboard',
+  },
+  {
     title: 'Sources',
     caption: 'Configure Stream Sources',
     icon: 'playlist_play',
@@ -405,6 +411,13 @@ const linksList = [
     caption: 'Manage users and roles',
     icon: 'manage_accounts',
     link: '/users',
+    adminOnly: true,
+  },
+  {
+    title: 'Audit',
+    caption: 'View audit activity logs',
+    icon: 'history',
+    link: '/audit',
     adminOnly: true,
   },
   {
@@ -571,7 +584,7 @@ export default defineComponent({
 
     const logout = async () => {
       await authStore.logout();
-      await router.push({path: '/login'});
+      await router.replace({path: '/login'});
     };
 
     const goToUserSettings = async () => {
