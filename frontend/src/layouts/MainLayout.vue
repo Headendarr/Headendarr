@@ -11,10 +11,11 @@
           @click="toggleLeftDrawer"
         />
         <q-toolbar-title class="q-mx-lg">
-          <q-avatar size="2rem" font-size="82px">
+          <q-avatar size="2rem" font-size="82px" class="q-mr-sm">
             <img src="~assets/icon.png">
           </q-avatar>
-          TIC (<u>T</u>Vheadend <u>I</u>PTV <u>C</u>onfig)
+          <span class="gt-xs">TIC</span>
+          <span class="gt-sm"> (<u>T</u>Vheadend <u>I</u>PTV <u>C</u>onfig)</span>
         </q-toolbar-title>
         <q-separator dark vertical inset />
 

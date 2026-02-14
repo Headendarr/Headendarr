@@ -322,6 +322,9 @@ If an action is not listed, choose the closest semantic icon/color and document 
 - `<600px`: mobile layout rules apply, including collapsed row actions and mobile dialog behavior.
 - For top-page toolbars (e.g. add button + search/filter controls), use full-width single-item rows at `<600px`.
 - At `<600px`, each toolbar control should occupy one row (`col-12`) and primary actions should be full width.
+- Prefer Quasar responsive utility classes (`gt-sm`, `lt-md`, `gt-md`, etc.) for simple show/hide behavior in templates.
+- Avoid `$q.screen` in template conditionals when CSS utility classes can express the same visibility rule; keep `$q.screen` for logic/layout decisions that cannot be handled by classes alone.
+- Do not use `$q.platform.is.mobile` for responsive layout decisions; use Quasar visibility classes for template visibility and `$q.screen`/`useMobile` only when JavaScript logic is required.
 - Use `frontend/src/composables/useMobile.js` for component-level mobile/desktop logic.
 - Do not re-implement mobile detection logic per component.
 
