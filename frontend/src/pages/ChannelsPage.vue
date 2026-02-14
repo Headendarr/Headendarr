@@ -1030,7 +1030,13 @@ export default defineComponent({
       };
       for (let i = 0; i < this.listOfChannels.length; i++) {
         const item = this.listOfChannels[i];
-        data.channels[item.id] = item;
+        const payload = {
+          ...item,
+          logo_url: item.source_logo_url ?? item.logo_url,
+        };
+        delete payload.status;
+        delete payload.selected;
+        data.channels[item.id] = payload;
       }
       axios({
         method: 'POST',

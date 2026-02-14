@@ -585,7 +585,13 @@ async def update_channel(config, channel_id, data):
             channel = query.scalar_one()
             channel.enabled = data.get("enabled")
             channel.name = data.get("name")
-            channel.logo_url = data.get("logo_url")
+            # Channels API returns a rendered backend proxy URL in `logo_url` for UI display.
+            # Prefer `source_logo_url` when present so bulk UI saves do not overwrite the
+            # persisted source logo with a cache/proxy URL.
+            logo_url = data.get("source_logo_url")
+            if logo_url is None:
+                logo_url = data.get("logo_url")
+            channel.logo_url = logo_url
             number_value = data.get("number")
             if number_value in ("", None):
                 channel.number = None
