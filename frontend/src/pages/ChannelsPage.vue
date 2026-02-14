@@ -2,7 +2,8 @@
   <q-page padding>
     <div class="q-pa-none">
       <div class="row">
-        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <div
+          :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <div class="row items-center q-col-gutter-sm justify-between">
@@ -318,26 +319,28 @@
                         </template>
 
                         <template v-else>
-                          <q-item-section class="channel-compact-layout">
-                            <div class="channel-item-header row items-start justify-between no-wrap">
-                              <div class="row items-center no-wrap q-pr-sm">
-                                <div class="handle channel-drag-handle q-mr-sm">
-                                  <q-checkbox
-                                    v-if="bulkEditMode === true"
-                                    v-model="element.selected"
-                                    color="primary"
-                                    @click="toggleSelection(element)"
-                                  />
-                                  <q-icon v-else name="format_line_spacing" size="22px" style="cursor: grab" />
-                                </div>
-                                <div>
-                                  <div class="text-caption text-grey-7">Reorder</div>
-                                  <div class="text-caption text-grey-6" v-if="!bulkEditMode && $q.screen.lt.sm">
-                                    Tap and hold to drag
+                          <q-item-section>
+                            <TicListItemCard>
+                              <template #header-left>
+                                <div class="row items-center no-wrap q-pr-sm">
+                                  <div class="handle channel-drag-handle q-mr-sm">
+                                    <q-checkbox
+                                      v-if="bulkEditMode === true"
+                                      v-model="element.selected"
+                                      color="primary"
+                                      @click="toggleSelection(element)"
+                                    />
+                                    <q-icon v-else name="format_line_spacing" size="22px" style="cursor: grab" />
+                                  </div>
+                                  <div>
+                                    <div class="text-caption text-grey-7">Reorder</div>
+                                    <div class="text-caption text-grey-6" v-if="!bulkEditMode && $q.screen.lt.sm">
+                                      Tap and hold to drag
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                              <div class="row items-center no-wrap q-gutter-xs">
+                              </template>
+                              <template #header-actions>
                                 <TicActionButton
                                   v-for="action in channelActions(element)"
                                   :key="`compact-${element.id}-${action.id}`"
@@ -346,10 +349,7 @@
                                   :tooltip="action.label || ''"
                                   @click="handleChannelAction(action, element)"
                                 />
-                              </div>
-                            </div>
-
-                            <div class="channel-item-content">
+                              </template>
                               <div class="row items-start">
                                 <q-avatar rounded :size="$q.screen.lt.sm ? '32px' : '30px'" class="q-mr-sm">
                                   <q-img :src="element.logo_url" />
@@ -415,7 +415,7 @@
                                   <div class="text-caption channel-wrap-text">{{ element.tags }}</div>
                                 </div>
                               </div>
-                            </div>
+                            </TicListItemCard>
                           </q-item-section>
                         </template>
                       </q-item>
@@ -428,70 +428,70 @@
         </div>
         <TicResponsiveHelp v-model="uiStore.showHelp">
           <q-card-section>
-                <div class="text-h5 q-mb-none">Setup Steps:</div>
-                <q-list>
-                  <q-separator inset spaced />
+            <div class="text-h5 q-mb-none">Setup Steps:</div>
+            <q-list>
+              <q-separator inset spaced />
 
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        1. Start by clicking the <b>Import Channels from stream source</b> button. With this dialog
-                        open, select one or more streams from your imported stream sources, then close the dialog to
-                        import them into your channel list.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        2. Click on the <b>Configure</b>
-                        (
-                        <q-icon name="tune" />
-                        ) button for each added channel.
-                        <br />
-                        In the Channel Settings dialog that opens you can further configure channel categories and
-                        additional streams from other sources.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        3. Click and hold the drag (
-                        <q-icon name="format_line_spacing" />
-                        ) icon to quickly change the order of your channel list.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label> 4. Click a channel's number to open the channel number editor.</q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        5. Click the <b>Bulk Edit</b> button above the channel list to modify multiple channels at once.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    1. Start by clicking the <b>Import Channels from stream source</b> button. With this dialog
+                    open, select one or more streams from your imported stream sources, then close the dialog to
+                    import them into your channel list.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    2. Click on the <b>Configure</b>
+                    (
+                    <q-icon name="tune" />
+                    ) button for each added channel.
+                    <br />
+                    In the Channel Settings dialog that opens you can further configure channel categories and
+                    additional streams from other sources.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    3. Click and hold the drag (
+                    <q-icon name="format_line_spacing" />
+                    ) icon to quickly change the order of your channel list.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label> 4. Click a channel's number to open the channel number editor.</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    5. Click the <b>Bulk Edit</b> button above the channel list to modify multiple channels at once.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
           <q-card-section>
-                <div class="text-h5 q-mb-none">Notes:</div>
-                <q-list>
-                  <q-separator inset spaced />
+            <div class="text-h5 q-mb-none">Notes:</div>
+            <q-list>
+              <q-separator inset spaced />
 
-                  <q-item-label class="text-primary"> Channel Settings - Streams:</q-item-label>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        When you open a channel's settings, you can configure multiple streams for each channel. Drag
-                        the streams in order of preference. If a stream has reached the connection limits, the next
-                        stream will be used automatically.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+              <q-item-label class="text-primary"> Channel Settings - Streams:</q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    When you open a channel's settings, you can configure multiple streams for each channel. Drag
+                    the streams in order of preference. If a stream has reached the connection limits, the next
+                    stream will be used automatically.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
         </TicResponsiveHelp>
@@ -518,6 +518,7 @@ import {
   TicButtonDropdown,
   TicConfirmDialog,
   TicDialogPopup,
+  TicListItemCard,
   TicListActions,
   TicNumberInput,
   TicResponsiveHelp,
@@ -532,6 +533,7 @@ export default defineComponent({
     TicButton,
     TicButtonDropdown,
     TicDialogPopup,
+    TicListItemCard,
     TicListActions,
     TicNumberInput,
     TicResponsiveHelp,
@@ -1328,22 +1330,6 @@ export default defineComponent({
   margin-left: 8px;
 }
 
-.channel-compact-layout {
-  background: rgba(127, 127, 127, 0.08);
-  padding: 0;
-}
-
-.channel-item-header {
-  margin: 0;
-  padding: 8px;
-  background: rgba(127, 127, 127, 0.12);
-  border-bottom: 1px solid var(--q-separator-color);
-}
-
-.channel-item-content {
-  margin: 8px;
-}
-
 .channel-drag-handle {
   min-width: 26px;
   display: inline-flex;
@@ -1375,18 +1361,11 @@ export default defineComponent({
     border-bottom: none;
   }
 
-  .channel-item-content {
-    margin: 8px;
-  }
 }
 
 @media (max-width: 599px) {
   .channel-list-item {
     border-bottom: 2px solid var(--q-separator-color);
-  }
-
-  .channel-item-content {
-    margin: 8px 8px 10px;
   }
 }
 

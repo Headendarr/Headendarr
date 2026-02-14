@@ -72,24 +72,24 @@
                   </div>
                 </template>
 
-                <div v-else :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                <div v-else :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-left' : 'col-auto'">
                   <TicButton
                     label="Filters"
                     icon="filter_list"
                     color="secondary"
-                    class="section-toolbar-btn"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    :dense="$q.screen.lt.sm"
+                    class="section-toolbar-btn section-toolbar-btn--compact"
                     @click="openFilterDialog"
                   />
                 </div>
 
-                <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-right' : 'col-auto'">
                   <TicButton
                     :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
                     icon="sort"
                     color="secondary"
-                    class="section-toolbar-btn"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    :dense="$q.screen.lt.sm"
+                    class="section-toolbar-btn section-toolbar-btn--compact"
                     @click="openSortDialog"
                   />
                 </div>

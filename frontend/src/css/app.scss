@@ -18,6 +18,7 @@
   --tic-help-border: rgba(242, 192, 55, 0.55);
   --tic-help-accent: rgba(242, 192, 55, 0.95);
   --tic-help-text: #5c460f;
+  --guide-channel-bg: #fafafa;
 }
 
 .body--dark {
@@ -42,6 +43,7 @@
   --tic-help-border: rgba(242, 192, 55, 0.65);
   --tic-help-accent: rgba(242, 192, 55, 0.95);
   --tic-help-text: #f1d7a3;
+  --guide-channel-bg: #0f141c;
 
   background: var(--app-page-bg);
   color: #e2e8f0;
@@ -229,14 +231,36 @@
   min-height: 40px;
 }
 
+.section-toolbar-btn.q-btn,
 .section-toolbar-btn .q-btn {
   min-height: 40px;
+}
+
+.section-toolbar-split-left {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.section-toolbar-split-right {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .section-toolbar-field .tic-select-input-field,
 .section-toolbar-field .tic-text-input-field,
 .section-toolbar-field .tic-number-input-field {
   padding-bottom: 0 !important;
+}
+
+@media (max-width: 599px) {
+  .section-toolbar-btn--compact.q-btn,
+  .section-toolbar-btn--compact .q-btn {
+    min-height: 34px;
+    min-width: 96px;
+    padding: 0 12px;
+    font-size: 12px;
+    line-height: 1.2;
+  }
 }
 
 .guide {

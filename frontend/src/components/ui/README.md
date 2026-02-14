@@ -16,6 +16,13 @@ This folder contains the first-pass standardized UI building blocks for TIC.
   controls, plus unsaved-close protection support via `persistent`, `preventClose`, and `close-request`.
 - `dialogs/TicDialogPopup.vue`: centered popup dialog with standardized sticky header and footer actions slot.
 
+## Lists
+
+- `lists/TicListItemCard.vue`: compact list card shell with a shared header/body structure:
+  - `header-left` slot for contextual content (drag/status/title/channel)
+  - `header-actions` slot for action buttons
+  - default slot for row body content
+
 ## Inputs
 
 - `inputs/TicSearchInput.vue`: standard search input with search icon.

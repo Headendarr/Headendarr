@@ -1,6 +1,6 @@
 <template>
   <q-page>
-    <div class="q-pa-md">
+    <div :class="$q.screen.lt.sm ? 'q-pa-none' : 'q-pa-md'">
       <div class="row">
         <div
           :class="
@@ -8,32 +8,21 @@
           "
         >
           <q-card flat>
-            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-col-gutter-sm justify-between">
-                <div class="col-auto">
-                  <div class="text-h5">DVR</div>
-                </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                  <TicButton
-                    label="Refresh"
-                    icon="refresh"
-                    color="primary"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
-                    :loading="refreshing"
-                    @click="refreshAll"
-                  />
-                </div>
-              </div>
-            </q-card-section>
-
-            <q-tabs v-model="tab" class="text-primary">
-              <q-tab name="recordings" label="Recordings" />
-              <q-tab name="rules" label="Recording Rules" />
-            </q-tabs>
+            <div class="dvr-tabs-bar">
+              <q-tabs
+                v-model="tab"
+                align="left"
+                class="dvr-tabs text-primary"
+                content-class="dvr-tabs-content"
+              >
+                <q-tab name="recordings" label="Recordings" />
+                <q-tab name="rules" label="Recording Rules" />
+              </q-tabs>
+            </div>
 
             <q-separator />
 
-            <q-tab-panels v-model="tab" animated>
+            <q-tab-panels v-model="tab" animated class="dvr-tab-panels">
               <q-tab-panel name="recordings">
                 <div class="row q-col-gutter-sm items-end q-mb-sm dvr-toolbar">
                   <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
@@ -49,6 +38,7 @@
                   <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
                     <TicSearchInput
                       v-model="recordingsSearch"
+                      class="section-toolbar-field"
                       label="Search recordings"
                       placeholder="Title, channel, status..."
                     />
@@ -72,25 +62,25 @@
                     </div>
                   </template>
                   <template v-else>
-                    <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                    <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-left' : 'col-auto'">
                       <TicButton
                         label="Filters"
                         icon="filter_list"
                         color="secondary"
-                        class="section-toolbar-btn"
-                        :class="$q.screen.lt.sm ? 'full-width' : ''"
+                        :dense="$q.screen.lt.sm"
+                        class="section-toolbar-btn section-toolbar-btn--compact"
                         @click="recordingsFilterDialogOpen = true"
                       />
                     </div>
                   </template>
 
-                  <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                  <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-right' : 'col-auto'">
                     <TicButton
                       :label="$q.screen.lt.sm ? 'Sort' : recordingsSortLabel"
                       icon="sort"
                       color="secondary"
-                      class="section-toolbar-btn"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      :dense="$q.screen.lt.sm"
+                      class="section-toolbar-btn section-toolbar-btn--compact"
                       @click="recordingsSortDialogOpen = true"
                     />
                   </div>
@@ -98,54 +88,113 @@
 
                 <q-list bordered separator class="rounded-borders dvr-list">
                   <q-item v-for="recording in visibleRecordings" :key="recording.id" class="dvr-list-item">
-                    <q-item-section top>
-                      <q-item-label class="text-weight-medium">
-                        {{ recording.title || 'Untitled Recording' }}
-                      </q-item-label>
-                      <q-item-label caption>
-                        {{ recording.channel_name || 'Unknown channel' }}
-                      </q-item-label>
+                    <template v-if="!$q.screen.lt.md">
+                      <q-item-section top>
+                        <q-item-label class="text-weight-medium">
+                          {{ recording.title || 'Untitled Recording' }}
+                        </q-item-label>
+                        <q-item-label caption>
+                          {{ recording.channel_name || 'Unknown channel' }}
+                        </q-item-label>
 
-                      <div class="dvr-meta-grid">
-                        <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">Start</span>
-                          <span>{{ formatTs(recording.start_ts) }}</span>
+                        <div class="dvr-meta-grid">
+                          <div class="dvr-meta-field">
+                            <span class="text-caption text-grey-7">Start</span>
+                            <span>{{ formatTs(recording.start_ts) }}</span>
+                          </div>
+                          <div class="dvr-meta-field">
+                            <span class="text-caption text-grey-7">Stop</span>
+                            <span>{{ formatTs(recording.stop_ts) }}</span>
+                          </div>
+                          <div class="dvr-meta-field">
+                            <span class="text-caption text-grey-7">Status</span>
+                            <q-chip
+                              dense
+                              class="dvr-status-chip"
+                              :color="recordingStatusColor(recording.status)"
+                              text-color="white"
+                            >
+                              {{ recording.status || '-' }}
+                            </q-chip>
+                          </div>
+                          <div class="dvr-meta-field">
+                            <span class="text-caption text-grey-7">TVHeadend Sync</span>
+                            <q-chip
+                              dense
+                              class="dvr-status-chip"
+                              :color="syncStatusColor(recording.sync_status)"
+                              text-color="white"
+                            >
+                              {{ recording.sync_status || '-' }}
+                            </q-chip>
+                          </div>
                         </div>
-                        <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">Stop</span>
-                          <span>{{ formatTs(recording.stop_ts) }}</span>
-                        </div>
-                        <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">Status</span>
-                          <q-chip
-                            dense
-                            class="dvr-status-chip"
-                            :color="recordingStatusColor(recording.status)"
-                            text-color="white"
-                          >
-                            {{ recording.status || '-' }}
-                          </q-chip>
-                        </div>
-                        <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">TVHeadend Sync</span>
-                          <q-chip
-                            dense
-                            class="dvr-status-chip"
-                            :color="syncStatusColor(recording.sync_status)"
-                            text-color="white"
-                          >
-                            {{ recording.sync_status || '-' }}
-                          </q-chip>
-                        </div>
-                      </div>
-                    </q-item-section>
+                      </q-item-section>
 
-                    <q-item-section side top>
-                      <TicListActions
-                        :actions="recordingActions(recording)"
-                        @action="(action) => handleRecordingAction(action, recording)"
-                      />
-                    </q-item-section>
+                      <q-item-section side top>
+                        <TicListActions
+                          :actions="recordingActions(recording)"
+                          @action="(action) => handleRecordingAction(action, recording)"
+                        />
+                      </q-item-section>
+                    </template>
+
+                    <template v-else>
+                      <q-item-section>
+                        <TicListItemCard>
+                          <template #header-left>
+                            <div class="dvr-card-title text-weight-medium">
+                              {{ recording.title || 'Untitled Recording' }}
+                            </div>
+                            <div class="text-caption text-grey-7">
+                              {{ recording.channel_name || 'Unknown channel' }}
+                            </div>
+                          </template>
+                          <template #header-actions>
+                            <TicActionButton
+                              v-for="action in recordingActions(recording)"
+                              :key="`recording-${recording.id}-${action.id}`"
+                              :icon="action.icon"
+                              :color="action.color || 'grey-8'"
+                              :tooltip="action.label || ''"
+                              @click="handleRecordingAction(action, recording)"
+                            />
+                          </template>
+                          <div class="dvr-meta-grid q-mt-sm">
+                            <div class="dvr-meta-field">
+                              <span class="text-caption text-grey-7">Start</span>
+                              <span>{{ formatTs(recording.start_ts) }}</span>
+                            </div>
+                            <div class="dvr-meta-field">
+                              <span class="text-caption text-grey-7">Stop</span>
+                              <span>{{ formatTs(recording.stop_ts) }}</span>
+                            </div>
+                            <div class="dvr-meta-field">
+                              <span class="text-caption text-grey-7">Status</span>
+                              <q-chip
+                                dense
+                                class="dvr-status-chip"
+                                :color="recordingStatusColor(recording.status)"
+                                text-color="white"
+                              >
+                                {{ recording.status || '-' }}
+                              </q-chip>
+                            </div>
+                            <div class="dvr-meta-field">
+                              <span class="text-caption text-grey-7">TVHeadend Sync</span>
+                              <q-chip
+                                dense
+                                class="dvr-status-chip"
+                                :color="syncStatusColor(recording.sync_status)"
+                                text-color="white"
+                              >
+                                {{ recording.sync_status || '-' }}
+                              </q-chip>
+                            </div>
+                          </div>
+                        </TicListItemCard>
+                      </q-item-section>
+                    </template>
                   </q-item>
 
                   <q-item v-if="!loadingRecordings && !visibleRecordings.length">
@@ -189,18 +238,19 @@
                   <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
                     <TicSearchInput
                       v-model="rulesSearch"
+                      class="section-toolbar-field"
                       label="Search rules"
                       placeholder="Title match or channel..."
                     />
                   </div>
 
-                  <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
+                  <div :class="$q.screen.lt.sm ? 'col-12 section-toolbar-split-right' : 'col-auto'">
                     <TicButton
                       :label="$q.screen.lt.sm ? 'Sort' : rulesSortLabel"
                       icon="sort"
                       color="secondary"
-                      class="section-toolbar-btn"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      :dense="$q.screen.lt.sm"
+                      class="section-toolbar-btn section-toolbar-btn--compact"
                       @click="rulesSortDialogOpen = true"
                     />
                   </div>
@@ -208,28 +258,61 @@
 
                 <q-list bordered separator class="rounded-borders dvr-list">
                   <q-item v-for="rule in visibleRules" :key="rule.id" class="dvr-list-item">
-                    <q-item-section top>
-                      <q-item-label class="text-weight-medium">
-                        {{ rule.title_match || 'Untitled Rule' }}
-                      </q-item-label>
-                      <q-item-label caption>
-                        {{ rule.channel_name || 'All channels' }}
-                      </q-item-label>
+                    <template v-if="!$q.screen.lt.md">
+                      <q-item-section top>
+                        <q-item-label class="text-weight-medium">
+                          {{ rule.title_match || 'Untitled Rule' }}
+                        </q-item-label>
+                        <q-item-label caption>
+                          {{ rule.channel_name || 'All channels' }}
+                        </q-item-label>
 
-                      <div class="dvr-meta-grid">
-                        <div class="dvr-meta-field">
-                          <span class="text-caption text-grey-7">Lookahead</span>
-                          <span>{{ rule.lookahead_days || 7 }} days</span>
+                        <div class="dvr-meta-grid">
+                          <div class="dvr-meta-field">
+                            <span class="text-caption text-grey-7">Lookahead</span>
+                            <span>{{ rule.lookahead_days || 7 }} days</span>
+                          </div>
                         </div>
-                      </div>
-                    </q-item-section>
+                      </q-item-section>
 
-                    <q-item-section side top>
-                      <TicListActions
-                        :actions="ruleActions(rule)"
-                        @action="(action) => handleRuleAction(action, rule)"
-                      />
-                    </q-item-section>
+                      <q-item-section side top>
+                        <TicListActions
+                          :actions="ruleActions(rule)"
+                          @action="(action) => handleRuleAction(action, rule)"
+                        />
+                      </q-item-section>
+                    </template>
+
+                    <template v-else>
+                      <q-item-section>
+                        <TicListItemCard>
+                          <template #header-left>
+                            <div class="dvr-card-title text-weight-medium">
+                              {{ rule.title_match || 'Untitled Rule' }}
+                            </div>
+                            <div class="text-caption text-grey-7">
+                              {{ rule.channel_name || 'All channels' }}
+                            </div>
+                          </template>
+                          <template #header-actions>
+                            <TicActionButton
+                              v-for="action in ruleActions(rule)"
+                              :key="`rule-${rule.id}-${action.id}`"
+                              :icon="action.icon"
+                              :color="action.color || 'grey-8'"
+                              :tooltip="action.label || ''"
+                              @click="handleRuleAction(action, rule)"
+                            />
+                          </template>
+                          <div class="dvr-meta-grid q-mt-sm">
+                            <div class="dvr-meta-field">
+                              <span class="text-caption text-grey-7">Lookahead</span>
+                              <span>{{ rule.lookahead_days || 7 }} days</span>
+                            </div>
+                          </div>
+                        </TicListItemCard>
+                      </q-item-section>
+                    </template>
                   </q-item>
 
                   <q-item v-if="!loadingRules && !visibleRules.length">
@@ -460,9 +543,11 @@ import {useUiStore} from 'stores/ui';
 import {useVideoStore} from 'stores/video';
 import {
   TicButton,
+  TicActionButton,
   TicConfirmDialog,
   TicDialogPopup,
   TicDialogWindow,
+  TicListItemCard,
   TicListActions,
   TicNumberInput,
   TicResponsiveHelp,
@@ -477,8 +562,10 @@ export default defineComponent({
   name: 'DvrPage',
   components: {
     TicButton,
+    TicActionButton,
     TicDialogPopup,
     TicDialogWindow,
+    TicListItemCard,
     TicListActions,
     TicNumberInput,
     TicResponsiveHelp,
@@ -495,7 +582,6 @@ export default defineComponent({
   data() {
     return {
       tab: 'recordings',
-      refreshing: false,
       loadingRecordings: false,
       loadingRules: false,
       recordings: [],
@@ -552,6 +638,7 @@ export default defineComponent({
         lookahead_days: 7,
       },
       pollingActive: false,
+      dvrRefreshTimerId: null,
     };
   },
   computed: {
@@ -827,12 +914,17 @@ export default defineComponent({
       this.channels = response.data.data || [];
     },
     async refreshAll() {
-      this.refreshing = true;
-      try {
-        await Promise.all([this.loadRecordings(), this.loadRules(), this.loadChannels()]);
-      } finally {
-        this.refreshing = false;
+      await Promise.all([this.loadRecordings(), this.loadRules(), this.loadChannels()]);
+    },
+    startDvrAutoRefreshTimer() {
+      if (this.dvrRefreshTimerId) {
+        clearInterval(this.dvrRefreshTimerId);
       }
+      this.dvrRefreshTimerId = setInterval(() => {
+        this.refreshAll().catch(() => {
+          // Keep timer alive if one refresh cycle fails.
+        });
+      }, 60 * 1000);
     },
     recordingActions(recording) {
       const actions = [];
@@ -1076,18 +1168,47 @@ export default defineComponent({
     this.recordingsSortDraft = {...this.recordingsSort};
     this.rulesSortDraft = {...this.rulesSort};
     await this.refreshAll();
+    this.startDvrAutoRefreshTimer();
     this.pollingActive = true;
     this.pollRecordings();
   },
   beforeUnmount() {
     this.pollingActive = false;
+    if (this.dvrRefreshTimerId) {
+      clearInterval(this.dvrRefreshTimerId);
+      this.dvrRefreshTimerId = null;
+    }
   },
 });
 </script>
 
 <style scoped>
+.dvr-tabs-bar {
+  background: transparent;
+}
+
+.dvr-tabs {
+  background: transparent !important;
+}
+
+.dvr-tabs :deep(.dvr-tabs-content) {
+  background: var(--guide-channel-bg);
+}
+
+.dvr-tab-panels {
+  background: transparent !important;
+}
+
+.dvr-tab-panels :deep(.q-tab-panel) {
+  background: transparent !important;
+}
+
 .dvr-list-item {
   align-items: flex-start;
+}
+
+.dvr-card-title {
+  line-height: 1.3;
 }
 
 .dvr-meta-grid {
@@ -1119,20 +1240,24 @@ export default defineComponent({
   }
 
   .dvr-list-item {
-    margin: 4px 0;
-    border: 1px solid var(--q-separator-color);
-    border-radius: 8px;
+    margin-top: 4px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--q-separator-color);
+    padding-left: 0;
+    padding-right: 0;
+    padding-top: 0;
+    padding-bottom: 0;
   }
 
-  .dvr-list-item :deep(.q-item__section--side) {
-    padding-left: 8px;
+  .dvr-list .dvr-list-item:last-child {
+    border-bottom: none;
   }
+
 }
 
 @media (max-width: 599px) {
-  .dvr-meta-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+  .dvr-list-item {
+    border-bottom: 2px solid var(--q-separator-color);
   }
 }
 </style>

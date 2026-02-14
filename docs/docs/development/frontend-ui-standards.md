@@ -181,6 +181,11 @@ Use shared global utility classes for top-of-section toolbars:
   - Applies consistent vertical spacing/alignment for `TicSearchInput`, `TicSelectInput`, `TicTextInput`, and `TicNumberInput` inside toolbar rows.
 - `section-toolbar-btn`
   - Applies consistent control height for toolbar action buttons.
+- On `<600px`, filter/sort button pairs must:
+  - stay on one row (`col-6` each),
+  - keep `Filters` on the left and `Sort` on the right,
+  - use compact dense styling via `section-toolbar-btn--compact`,
+  - use `section-toolbar-split-left` / `section-toolbar-split-right` for alignment.
 
 Example:
 
@@ -236,6 +241,24 @@ Example:
   ]"
   @action="onRowAction"
 />
+```
+
+### Compact List Card Layout (`<1024px`)
+
+Use `TicListItemCard` for compact list rows that need a header with left content + right action buttons and a separate body section.
+
+```vue
+<TicListItemCard>
+  <template #header-left>
+    <div class="text-caption text-grey-7">Reorder</div>
+  </template>
+  <template #header-actions>
+    <TicActionButton icon="edit" color="primary" tooltip="Edit" />
+    <TicActionButton icon="delete" color="negative" tooltip="Delete" />
+  </template>
+
+  <div>Row body content goes here.</div>
+</TicListItemCard>
 ```
 
 ## Standard Row Action Mapping (Strict)
