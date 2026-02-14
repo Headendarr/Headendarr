@@ -76,7 +76,7 @@
 
                   <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-right' : 'col-auto'">
                     <TicButton
-                      :label="$q.screen.lt.sm ? 'Sort' : recordingsSortLabel"
+                      :label="$q.screen.lt.md ? 'Sort' : recordingsSortLabel"
                       icon="sort"
                       color="secondary"
                       :dense="$q.screen.lt.sm"
@@ -246,7 +246,7 @@
 
                   <div :class="$q.screen.lt.sm ? 'col-12 section-toolbar-split-right' : 'col-auto'">
                     <TicButton
-                      :label="$q.screen.lt.sm ? 'Sort' : rulesSortLabel"
+                      :label="$q.screen.lt.md ? 'Sort' : rulesSortLabel"
                       icon="sort"
                       color="secondary"
                       :dense="$q.screen.lt.sm"

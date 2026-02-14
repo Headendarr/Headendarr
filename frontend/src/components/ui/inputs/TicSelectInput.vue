@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div :class="{'tic-select-input--with-description': !!description}">
     <q-select
       class="tic-select-input-field"
       outlined
@@ -156,6 +156,10 @@ const onFilter = (value, update) => {
 
 <style scoped>
 .tic-select-input-field {
+  padding-bottom: 0 !important;
+}
+
+.tic-select-input--with-description .tic-select-input-field {
   padding-bottom: 8px !important;
 }
 
