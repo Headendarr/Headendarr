@@ -9,38 +9,61 @@
               <div class="text-caption text-grey-7">Active streaming sessions and connection details</div>
             </q-card-section>
             <q-separator />
-            <q-list separator>
-              <q-item v-for="(item, idx) in activity" :key="`${item.username || 'anon'}-${item.last_seen || idx}`">
-                <q-item-section>
-                  <q-item-label class="text-weight-medium">
-                    {{ item.username || 'Unknown user' }}
-                  </q-item-label>
-                  <q-item-label caption>
-                    {{ item.device_label || fallbackDevice(item.user_agent) }}
-                    <span class="q-mx-xs">|</span>
-                    {{ item.region_label || 'Unknown region' }}
-                    <span class="q-mx-xs">|</span>
-                    {{ item.ip_address || 'No IP' }}
-                  </q-item-label>
-                  <q-item-label caption>
-                    Endpoint: {{ item.endpoint || '-' }}
-                  </q-item-label>
-                  <q-item-label v-if="item.details" caption class="text-grey-7">
-                    {{ item.details }}
-                  </q-item-label>
-                </q-item-section>
-                <q-item-section side top>
-                  <q-chip dense color="primary" text-color="white">
-                    Active {{ activityAgeLabel(item.age_seconds) }}
-                  </q-chip>
-                </q-item-section>
-              </q-item>
-              <q-item v-if="!activityLoading && !activity.length">
-                <q-item-section>
-                  <q-item-label class="text-grey-7">No active streams right now.</q-item-label>
-                </q-item-section>
-              </q-item>
-            </q-list>
+            <q-card-section>
+              <div v-if="!activityLoading && activity.length" class="row q-col-gutter-md">
+                <div
+                  v-for="(item, idx) in activity"
+                  :key="activityCardKey(item, idx)"
+                  class="col-12 col-sm-6"
+                >
+                  <q-card flat bordered class="activity-tile">
+                    <q-card-section class="q-pa-sm q-pb-xs">
+                      <div class="row items-start justify-between no-wrap">
+                        <div class="row items-center no-wrap activity-title-wrap">
+                          <q-avatar size="34px" class="q-mr-sm activity-logo">
+                            <q-img
+                              v-if="item.channel_logo_url"
+                              :src="item.channel_logo_url"
+                              fit="contain"
+                            />
+                            <q-icon v-else name="live_tv" size="20px" color="grey-6" />
+                          </q-avatar>
+                          <div class="activity-title ellipsis">
+                            {{ displayActivityTitle(item) }}
+                          </div>
+                        </div>
+                        <div class="column items-end q-ml-sm">
+                          <q-chip dense color="primary" text-color="white" size="sm">
+                            Active {{ activityAgeLabel(item.active_seconds ?? item.age_seconds) }}
+                          </q-chip>
+                          <div class="text-caption text-grey-7">
+                            User: {{ displayUsername(item) }}
+                          </div>
+                        </div>
+                      </div>
+                      <div class="activity-subtitle text-grey-7 q-mt-xs">
+                        Client: {{ item.device_label || fallbackDevice(item.user_agent) }}
+                      </div>
+                    </q-card-section>
+                    <q-card-section class="q-pa-sm q-pt-xs">
+                      <div class="activity-field activity-field--compact">
+                        <span class="activity-field-label">Streaming</span>
+                        <span class="activity-field-value activity-url ellipsis" :title="displayStreamTarget(item)">
+                          {{ displayStreamTarget(item) }}
+                        </span>
+                      </div>
+                      <div class="activity-field activity-field--compact">
+                        <span class="activity-field-label">Connection</span>
+                        <span class="activity-field-value text-caption">
+                          {{ item.region_label || 'Unknown region' }} | {{ item.ip_address || 'No IP' }}
+                        </span>
+                      </div>
+                    </q-card-section>
+                  </q-card>
+                </div>
+              </div>
+              <div v-else-if="!activityLoading" class="text-grey-7">No active streams right now.</div>
+            </q-card-section>
             <q-inner-loading :showing="activityLoading">
               <q-spinner-dots size="36px" color="primary" />
             </q-inner-loading>
@@ -225,6 +248,44 @@ export default defineComponent({
       const value = String(userAgent || '').trim();
       return value || 'Unknown';
     },
+    displayUsername(item) {
+      const username = String(item?.username || '').trim();
+      if (username) {
+        return username;
+      }
+      if (item?.user_id !== null && item?.user_id !== undefined && item?.user_id !== '') {
+        return `User ID ${item.user_id}`;
+      }
+      return 'TVH backend';
+    },
+    displayActivityTitle(item) {
+      const channelName = String(item?.channel_name || '').trim();
+      if (channelName) {
+        return channelName;
+      }
+      const streamName = String(item?.stream_name || '').trim();
+      if (streamName) {
+        return `Playlist stream: ${streamName}`;
+      }
+      return 'Direct stream';
+    },
+    activityCardKey(item, idx) {
+      const connectionId = String(item?.connection_id || '').trim();
+      if (connectionId) {
+        return `cid:${connectionId}`;
+      }
+      const username = String(item?.username || item?.user_id || 'anon').trim();
+      const source = String(item?.source_url || item?.display_url || item?.stream_name || item?.channel_id || '').
+        trim();
+      if (source) {
+        return `src:${username}:${source}`;
+      }
+      return `row:${idx}`;
+    },
+    displayStreamTarget(item) {
+      const value = String(item?.display_url || item?.source_url || '').trim();
+      return value || '-';
+    },
     formatAuditTimestamp(value) {
       if (!value) {
         return '-';
@@ -298,15 +359,20 @@ export default defineComponent({
         }
       }
     },
-    async loadActivity() {
-      this.activityLoading = true;
+    async loadActivity(options = {}) {
+      const silent = !!options.silent;
+      if (!silent) {
+        this.activityLoading = true;
+      }
       try {
         const response = await axios.get('/tic-api/dashboard/activity');
         this.activity = response.data.data || [];
       } catch (error) {
         console.error('Failed to load dashboard activity:', error);
       } finally {
-        this.activityLoading = false;
+        if (!silent) {
+          this.activityLoading = false;
+        }
       }
     },
     async loadEpgIssueSummary() {
@@ -342,13 +408,13 @@ export default defineComponent({
       try {
         await Promise.all([
           this.loadSummary({silent: true}),
-          this.loadActivity(),
+          this.loadActivity({silent: true}),
           this.loadEpgIssueSummary(),
         ]);
       } finally {
         this.pollInFlight = false;
         if (!this.pollCancelled) {
-          this.pollTimer = setTimeout(() => this.runDashboardPoll(), 25000);
+          this.pollTimer = setTimeout(() => this.runDashboardPoll(), 5000);
         }
       }
     },
@@ -389,6 +455,65 @@ export default defineComponent({
 
 .dashboard-card--activity {
   min-height: 360px;
+}
+
+.activity-tile {
+  border-color: var(--tic-elevated-border);
+  min-height: 132px;
+}
+
+.activity-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-title-wrap {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.activity-logo {
+  border: 1px solid var(--tic-elevated-border);
+  background: #fff;
+}
+
+.activity-subtitle {
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+
+.activity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.activity-field--compact:last-child {
+  margin-bottom: 0;
+}
+
+.activity-field-label {
+  font-size: 0.68rem;
+  color: #757575;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.activity-field-value {
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.activity-url {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .storage-utilization-text {

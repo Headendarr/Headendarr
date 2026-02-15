@@ -3,6 +3,7 @@
     ref="dialogRef"
     backdrop-filter="grayscale(80%) blur(1px)"
     :model-value="internalOpen"
+    :no-route-dismiss="routeHistory"
     :position="isMobile ? 'left' : position"
     :maximized="isMobile && mobileFullscreen"
     :transition-show="isMobile ? 'slide-right' : 'slide-left'"
@@ -238,6 +239,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  routeHistory: {
+    type: Boolean,
+    default: true,
+  },
 });
 
 const emit = defineEmits([
@@ -329,17 +334,19 @@ const triggerAction = (action) => {
   emit('action', action);
 };
 
-useDialogRouteHistory({
-  isOpen: internalOpen,
-  setOpen: (value) => {
-    internalOpen.value = value;
-  },
-  canClose: () => !(props.persistent || props.preventClose),
-  onBlockedClose: () => {
-    onShake();
-    emit('close-request');
-  },
-});
+if (props.routeHistory) {
+  useDialogRouteHistory({
+    isOpen: internalOpen,
+    setOpen: (value) => {
+      internalOpen.value = value;
+    },
+    canClose: () => !(props.persistent || props.preventClose),
+    onBlockedClose: () => {
+      onShake();
+      emit('close-request');
+    },
+  });
+}
 
 onBeforeUnmount(() => {
   if (attentionTimer) {

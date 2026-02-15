@@ -875,6 +875,7 @@ export default defineComponent({
         return;
       }
       this.$q.dialog({
+        noRouteDismiss: true,
         component: ChannelIssuesDialog,
         componentProps: {
           channel,
@@ -904,6 +905,7 @@ export default defineComponent({
       }
       // Display the dialog
       this.$q.dialog({
+        noRouteDismiss: true,
         component: ChannelInfoDialog,
         componentProps: {
           channelId: channelId,
@@ -919,6 +921,7 @@ export default defineComponent({
         return;
       }
       this.$q.dialog({
+        noRouteDismiss: true,
         component: ChannelSuggestionsDialog,
         componentProps: {
           channelId: channel.id,
@@ -937,6 +940,7 @@ export default defineComponent({
     },
     openChannelsImport: function() {
       this.$q.dialog({
+        noRouteDismiss: true,
         component: ChannelStreamSelectorDialog,
         componentProps: {
           hideStreams: [],
@@ -1090,6 +1094,7 @@ export default defineComponent({
     },
     openChannelsGroupImport: function() {
       this.$q.dialog({
+        noRouteDismiss: true,
         component: ChannelGroupSelectorDialog,
       }).onOk((payload) => {
         if (typeof payload.selectedGroups !== 'undefined' && payload.selectedGroups.length > 0) {
@@ -1248,6 +1253,7 @@ export default defineComponent({
     },
     confirmBulkDeleteChannels: function() {
       this.$q.dialog({
+        noRouteDismiss: true,
         component: TicConfirmDialog,
         componentProps: {
           title: 'Delete Selected Channels?',

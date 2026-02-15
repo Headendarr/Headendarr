@@ -9,6 +9,7 @@ from quart import jsonify, request
 from sqlalchemy import and_, or_, select
 
 from backend.api import blueprint
+from backend.api.routes_hls_proxy import stop_stream_activity, upsert_stream_activity
 from backend.audit_view import serialize_audit_row
 from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
 from backend.models import Session, StreamAuditLog, User
@@ -183,3 +184,37 @@ async def api_audit_playback_start():
         details=details,
     )
     return jsonify({"success": True})
+
+
+@blueprint.route('/tic-api/audit/playback-heartbeat', methods=['POST'])
+@streamer_or_admin_required
+async def api_audit_playback_heartbeat():
+    data = await request.get_json(force=True, silent=True) or {}
+    url = (data.get("url") or "").strip()
+    connection_id = (data.get("connection_id") or data.get("cid") or "").strip() or None
+    if not url:
+        return jsonify({"success": False, "message": "Missing playback url"}), 400
+    state = await upsert_stream_activity(
+        url,
+        connection_id=connection_id,
+        endpoint_override="/tic-web/player",
+        start_event_type="stream_start",
+    )
+    return jsonify({"success": True, "state": state})
+
+
+@blueprint.route('/tic-api/audit/playback-stop', methods=['POST'])
+@streamer_or_admin_required
+async def api_audit_playback_stop():
+    data = await request.get_json(force=True, silent=True) or {}
+    url = (data.get("url") or "").strip()
+    connection_id = (data.get("connection_id") or data.get("cid") or "").strip() or None
+    if not url:
+        return jsonify({"success": False, "message": "Missing playback url"}), 400
+    stopped = await stop_stream_activity(
+        url,
+        connection_id=connection_id,
+        event_type="stream_stop",
+        endpoint_override="/tic-web/player",
+    )
+    return jsonify({"success": True, "stopped": bool(stopped)})

@@ -51,13 +51,13 @@
         </q-btn>
       </div>
     </div>
+    <div v-if="errorMessage" class="floating-player__error-floating">
+      {{ errorMessage }}
+    </div>
 
     <div class="floating-player__body">
       <div v-if="isLoading" class="floating-player__overlay">
         <q-spinner size="32px" color="white" />
-      </div>
-      <div v-if="errorMessage" class="floating-player__error">
-        {{ errorMessage }}
       </div>
       <video
         ref="videoEl"
@@ -111,6 +111,7 @@ const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
 const isMobile = ref(window.innerWidth < 600);
 const volumeHandler = ref(null);
+const applyingPersistedVolume = ref(false);
 const videoErrorHandler = ref(null);
 const videoPlayingHandler = ref(null);
 const videoWaitingHandler = ref(null);
@@ -118,14 +119,15 @@ const metadataHandler = ref(null);
 const resizeHandler = ref(null);
 const loadTimeout = ref(null);
 const loadingStartedAt = ref(0);
+const errorAutoClearTimer = ref(null);
 const streamDetails = ref({
   resolution: '',
   videoCodec: '',
   audioCodec: '',
   bitrate: null,
 });
-const directStartAuditLoggedForUrl = ref(null);
-const pendingDirectStartAudit = ref(null);
+const heartbeatTimer = ref(null);
+const activePlaybackContext = ref(null);
 
 const streamDetailsText = computed(() => {
   const parts = [];
@@ -153,14 +155,58 @@ async function safePlay(el) {
     return true;
   } catch (error) {
     console.warn('[FloatingPlayer] play failed', error);
-    errorMessage.value = 'Unable to start playback. The stream may be invalid or unsupported.';
+    setErrorMessage('Unable to start playback. The stream may be invalid or unsupported.');
     isLoading.value = false;
     return false;
   }
 }
 
+function clearErrorMessage() {
+  if (errorAutoClearTimer.value) {
+    clearTimeout(errorAutoClearTimer.value);
+    errorAutoClearTimer.value = null;
+  }
+  errorMessage.value = '';
+}
+
+function setErrorMessage(message, autoClearMs = 0) {
+  if (errorAutoClearTimer.value) {
+    clearTimeout(errorAutoClearTimer.value);
+    errorAutoClearTimer.value = null;
+  }
+  errorMessage.value = message || '';
+  if (message && autoClearMs > 0) {
+    const expected = message;
+    errorAutoClearTimer.value = setTimeout(() => {
+      if (errorMessage.value === expected) {
+        errorMessage.value = '';
+      }
+      errorAutoClearTimer.value = null;
+    }, autoClearMs);
+  }
+}
+
 function getVideoElement() {
   return videoEl.value || document.querySelector('.floating-player__video');
+}
+
+function persistedVolumeValue() {
+  const value = Number(videoStore.volume);
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function applyPersistedVolume(el) {
+  if (!el) {
+    return;
+  }
+  applyingPersistedVolume.value = true;
+  el.volume = persistedVolumeValue();
+  setTimeout(() => {
+    applyingPersistedVolume.value = false;
+  }, 0);
 }
 
 function resetStreamDetails() {
@@ -247,6 +293,8 @@ const playerStyle = computed(() => {
 
 function cleanupPlayer() {
   console.info('[FloatingPlayer] cleanupPlayer start');
+  stopPlaybackHeartbeat(true);
+  clearErrorMessage();
   for (const hls of Array.from(hlsInstances)) {
     try {
       hls.stopLoad();
@@ -281,6 +329,7 @@ function cleanupPlayer() {
   mpegtsInstance.value = null;
   const el = getVideoElement();
   if (el) {
+    videoStore.setVolume(el.volume);
     if (volumeHandler.value) {
       el.removeEventListener('volumechange', volumeHandler.value);
       volumeHandler.value = null;
@@ -320,7 +369,6 @@ function cleanupPlayer() {
     el.load();
   }
   resetStreamDetails();
-  pendingDirectStartAudit.value = null;
   console.info('[FloatingPlayer] cleanupPlayer done');
 }
 
@@ -338,41 +386,105 @@ function detectStreamType(url, forcedType) {
   return 'native';
 }
 
-function isTicManagedPlaybackUrl(url) {
-  const lowered = String(url || '').toLowerCase();
-  return (
-    lowered.includes('/tic-hls-proxy/') ||
-    lowered.includes('/tic-api/tvh_stream/') ||
-    lowered.includes('/tic-api/recordings/')
-  );
+function generateConnectionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function auditDirectPlaybackStart() {
-  const pending = pendingDirectStartAudit.value;
-  if (!pending?.url) {
-    return;
+function ensureProxyConnectionId(url, forcedConnectionId = null) {
+  const value = String(url || '').trim();
+  if (!value) {
+    return value;
   }
-  if (directStartAuditLoggedForUrl.value === pending.url) {
+  if (!value.toLowerCase().includes('/tic-hls-proxy/')) {
+    return value;
+  }
+  try {
+    const parsed = new URL(value, window.location.origin);
+    const sessionConnectionId = String(forcedConnectionId || '').trim() || generateConnectionId();
+    // Floating player owns session identity; always replace stale inbound IDs.
+    parsed.searchParams.set('connection_id', sessionConnectionId);
+    parsed.searchParams.delete('cid');
+    return parsed.toString();
+  } catch {
+    return value;
+  }
+}
+
+function resolvePlaybackContext(url, title) {
+  const value = String(url || '').trim();
+  if (!value) {
+    return null;
+  }
+  let connectionId = '';
+  try {
+    const parsed = new URL(value, window.location.origin);
+    connectionId = parsed.searchParams.get('connection_id') || parsed.searchParams.get('cid') || '';
+  } catch {
+    connectionId = '';
+  }
+  return {
+    url: value,
+    title: String(title || '').trim(),
+    connection_id: String(connectionId || '').trim() || null,
+  };
+}
+
+async function sendPlaybackHeartbeat() {
+  const context = activePlaybackContext.value;
+  if (!context?.url) {
     return;
   }
   try {
-    await axios.post('/tic-api/audit/playback-start', {
-      url: pending.url,
-      title: pending.title || '',
-    });
-    directStartAuditLoggedForUrl.value = pending.url;
+    await axios.post('/tic-api/audit/playback-heartbeat', context);
   } catch (error) {
-    console.warn('[FloatingPlayer] direct start audit failed', error);
-  } finally {
-    pendingDirectStartAudit.value = null;
+    console.warn('[FloatingPlayer] playback heartbeat failed', error);
+  }
+}
+
+function startPlaybackHeartbeat(url, title) {
+  stopPlaybackHeartbeat(false);
+  activePlaybackContext.value = resolvePlaybackContext(url, title);
+  if (!activePlaybackContext.value) {
+    return;
+  }
+  sendPlaybackHeartbeat();
+  heartbeatTimer.value = setInterval(() => {
+    sendPlaybackHeartbeat();
+  }, 5000);
+}
+
+async function sendPlaybackStop(context) {
+  if (!context?.url) {
+    return;
+  }
+  try {
+    await axios.post('/tic-api/audit/playback-stop', context);
+  } catch (error) {
+    console.warn('[FloatingPlayer] playback stop audit failed', error);
+  }
+}
+
+function stopPlaybackHeartbeat(sendStop) {
+  if (heartbeatTimer.value) {
+    clearInterval(heartbeatTimer.value);
+    heartbeatTimer.value = null;
+  }
+  const context = activePlaybackContext.value;
+  activePlaybackContext.value = null;
+  if (sendStop && context?.url) {
+    sendPlaybackStop(context);
   }
 }
 
 async function initPlayer() {
   const token = ++initToken.value;
   cleanupPlayer();
-  errorMessage.value = '';
-  const url = videoStore.streamUrl;
+  clearErrorMessage();
+  const sessionConnectionId = generateConnectionId();
+  const url = ensureProxyConnectionId(videoStore.streamUrl, sessionConnectionId);
   if (!url) {
     return;
   }
@@ -386,10 +498,13 @@ async function initPlayer() {
   }
   videoEl.value = el;
   el.controls = true;
-  el.volume = typeof videoStore.volume === 'number' ? videoStore.volume : 1;
+  applyPersistedVolume(el);
   loadingStartedAt.value = Date.now();
   if (!volumeHandler.value) {
     volumeHandler.value = () => {
+      if (applyingPersistedVolume.value) {
+        return;
+      }
       videoStore.setVolume(el.volume);
     };
     el.addEventListener('volumechange', volumeHandler.value);
@@ -409,15 +524,15 @@ async function initPlayer() {
         console.warn('[FloatingPlayer] media error', mediaError);
       }
       if (mediaError?.code === 1) {
-        errorMessage.value = 'Stream loading was aborted.';
+        setErrorMessage('Stream loading was aborted.', 3000);
       } else if (mediaError?.code === 2) {
-        errorMessage.value = 'Network error while loading the stream.';
+        setErrorMessage('Network error while loading the stream.', 4000);
       } else if (mediaError?.code === 3) {
-        errorMessage.value = 'Stream could not be decoded. The format may be unsupported.';
+        setErrorMessage('Stream could not be decoded. The format may be unsupported.', 4000);
       } else if (mediaError?.code === 4) {
-        errorMessage.value = 'Stream is not supported or is invalid.';
+        setErrorMessage('Stream is not supported or is invalid.');
       } else {
-        errorMessage.value = 'Unable to load stream. Please try again.';
+        setErrorMessage('Unable to load stream. Please try again.', 4000);
       }
       isLoading.value = false;
     };
@@ -425,9 +540,9 @@ async function initPlayer() {
   }
   if (!videoPlayingHandler.value) {
     videoPlayingHandler.value = () => {
-      errorMessage.value = '';
+      clearErrorMessage();
       isLoading.value = false;
-      auditDirectPlaybackStart();
+      startPlaybackHeartbeat(url, videoStore.streamTitle || '');
       if (loadTimeout.value) {
         clearTimeout(loadTimeout.value);
         loadTimeout.value = null;
@@ -448,17 +563,12 @@ async function initPlayer() {
   if (!loadTimeout.value) {
     loadTimeout.value = setTimeout(() => {
       if (!errorMessage.value && isLoading.value) {
-        errorMessage.value = 'No data received from the stream.';
+        setErrorMessage('No data received from the stream.', 4000);
         isLoading.value = false;
       }
     }, 12000);
   }
   const type = detectStreamType(url, videoStore.streamType);
-  const shouldAuditDirectStart = !isTicManagedPlaybackUrl(url);
-  pendingDirectStartAudit.value = shouldAuditDirectStart ? {url, title: videoStore.streamTitle || ''} : null;
-  if (!shouldAuditDirectStart) {
-    directStartAuditLoggedForUrl.value = null;
-  }
   isLoading.value = true;
   console.info('[FloatingPlayer] initPlayer', {url, type});
 
@@ -489,8 +599,9 @@ async function initPlayer() {
           applyBitrate(initialLevel.bitrate);
         }
         const started = await safePlay(el);
+        applyPersistedVolume(el);
         if (!started) {
-          errorMessage.value = 'Playback blocked by browser. Press play to start.';
+          setErrorMessage('Playback blocked by browser. Press play to start.');
         }
         isLoading.value = !started;
         snapToAspectRatio();
@@ -519,17 +630,17 @@ async function initPlayer() {
         const status = data?.response?.code;
         const details = data?.details;
         if (status === 401 || status === 403) {
-          errorMessage.value = 'Stream rejected (unauthorized).';
+          setErrorMessage('Stream rejected (unauthorized).');
         } else if (status === 404) {
-          errorMessage.value = 'Stream not found.';
+          setErrorMessage('Stream not found.', data?.fatal ? 0 : 3500);
         } else if (details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
-          errorMessage.value = 'Stream manifest failed to load.';
+          setErrorMessage('Stream manifest failed to load.', data?.fatal ? 0 : 3500);
         } else if (details === Hls.ErrorDetails.LEVEL_LOAD_ERROR) {
-          errorMessage.value = 'Stream level failed to load.';
+          setErrorMessage('Stream level failed to load.', data?.fatal ? 0 : 3500);
         } else if (details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
-          errorMessage.value = 'Stream data failed to load.';
+          setErrorMessage('Stream data failed to load.', data?.fatal ? 0 : 3500);
         } else if (data?.fatal) {
-          errorMessage.value = 'Unable to load stream. Please try again.';
+          setErrorMessage('Unable to load stream. Please try again.');
         }
         if (data?.fatal || details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
           isLoading.value = false;
@@ -549,6 +660,7 @@ async function initPlayer() {
       player.attachMediaElement(el);
       player.load();
       await safePlay(el);
+      applyPersistedVolume(el);
       isLoading.value = false;
       snapToAspectRatio();
       player.on?.(mpegts.Events.MEDIA_INFO, (info) => {
@@ -570,7 +682,7 @@ async function initPlayer() {
       });
       player.on?.(mpegts.Events.ERROR, (err) => {
         console.warn('[FloatingPlayer] MPEGTS error', err);
-        errorMessage.value = 'Unable to load stream. Please try again.';
+        setErrorMessage('Unable to load stream. Please try again.');
         isLoading.value = false;
       });
       return;
@@ -578,11 +690,12 @@ async function initPlayer() {
 
     el.src = url;
     await safePlay(el);
+    applyPersistedVolume(el);
     isLoading.value = false;
     snapToAspectRatio();
   } catch (error) {
     console.error('Failed to initialize player:', error);
-    errorMessage.value = 'Unable to start playback.';
+    setErrorMessage('Unable to start playback.');
     isLoading.value = false;
   }
 }
@@ -590,7 +703,6 @@ async function initPlayer() {
 function closePlayer() {
   console.info('[FloatingPlayer] closePlayer');
   cleanupPlayer();
-  directStartAuditLoggedForUrl.value = null;
   videoStore.hidePlayer();
 }
 
@@ -906,6 +1018,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResizeEvent);
+  stopPlaybackHeartbeat(true);
 });
 </script>
 
@@ -966,6 +1079,25 @@ onUnmounted(() => {
   gap: 4px;
 }
 
+.floating-player__error-floating {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 34px;
+  z-index: 5;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.58);
+  color: #ff7f7f;
+  border: 1px solid rgba(255, 127, 127, 0.45);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .floating-player__body {
   position: relative;
   flex: 1;
@@ -995,19 +1127,6 @@ onUnmounted(() => {
   justify-content: center;
   background: rgba(0, 0, 0, 0.35);
   z-index: 1;
-}
-
-.floating-player__error {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px;
-  text-align: center;
-  color: #f5f5f5;
-  background: rgba(0, 0, 0, 0.6);
-  z-index: 2;
 }
 
 .floating-player__resize-handle {

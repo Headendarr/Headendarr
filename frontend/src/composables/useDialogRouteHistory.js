@@ -114,10 +114,17 @@ export const useDialogRouteHistory = ({
 
   watch(
     [() => route.path, () => route.query[DIALOG_STACK_QUERY_KEY]],
-    async ([nextPath], previous = []) => {
-      const [previousPath] = previous;
+    async ([nextPath], previous) => {
+      const hasPreviousRouteState = Array.isArray(previous);
+      const [previousPath] = hasPreviousRouteState ? previous : [];
       const isInRouteStack = readDialogStack(route.query).includes(dialogId);
       const pathChanged = nextPath !== previousPath;
+
+      // If this dialog is mounted in an already-open state, wait for the
+      // isOpen watcher to push route state instead of force-closing here.
+      if (!hasPreviousRouteState && isOpen.value && !isInRouteStack) {
+        return;
+      }
 
       if (isInRouteStack && !isOpen.value) {
         withSyncGuard(() => {
@@ -158,7 +165,11 @@ export const useDialogRouteHistory = ({
         return;
       }
 
-      await removeDialogState({preferBack: true});
+      // Use route replacement for close-state sync. Browser/hardware Back
+      // still closes dialogs via route pop, while this avoids push->back
+      // bounce loops caused by internal dialog model transitions.
+      await removeDialogState({preferBack: false});
     },
+    {immediate: true},
   );
 };

@@ -3,6 +3,7 @@ import {defineStore} from 'pinia';
 const DEFAULT_SIZE = {width: 360, height: 203};
 const DEFAULT_POSITION = {right: 24, bottom: 24};
 const STORAGE_KEY = 'tic_video_player_state';
+const LOADED_STATE = loadState();
 
 function loadState() {
   try {
@@ -42,9 +43,9 @@ export const useVideoStore = defineStore('video', {
     streamUrl: null,
     streamTitle: null,
     streamType: 'auto',
-    size: loadState().size || DEFAULT_SIZE,
-    position: loadState().position || DEFAULT_POSITION,
-    volume: typeof loadState().volume === 'number' ? loadState().volume : 1,
+    size: LOADED_STATE.size || DEFAULT_SIZE,
+    position: LOADED_STATE.position || DEFAULT_POSITION,
+    volume: typeof LOADED_STATE.volume === 'number' ? LOADED_STATE.volume : 1,
   }),
   actions: {
     showPlayer({url, title = null, type = 'auto'}) {
@@ -68,7 +69,9 @@ export const useVideoStore = defineStore('video', {
       persistState(this);
     },
     setVolume(volume) {
-      this.volume = volume;
+      const parsed = Number(volume);
+      const normalized = Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 1;
+      this.volume = normalized;
       persistState(this);
     },
   },

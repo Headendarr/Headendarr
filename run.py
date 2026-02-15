@@ -4,7 +4,11 @@
 from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, rebuild_custom_epg, \
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
     TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status
-from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
+from backend.api.routes_hls_proxy import (
+    cleanup_hls_proxy_state,
+    load_stream_activity_state,
+    persist_stream_activity_state,
+)
 from backend.auth import cleanup_stream_audit_logs
 from backend import create_app, config
 import asyncio
@@ -27,6 +31,13 @@ async def background_tasks():
         await task_broker.execute_tasks()
 
 
+@scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=15, misfire_grace_time=15)
+async def every_15_seconds_hls_cleanup():
+    async with app.app_context():
+        await cleanup_hls_proxy_state()
+        await persist_stream_activity_state()
+
+
 @scheduler.scheduled_job('interval', id='do_30_seconds', seconds=30, misfire_grace_time=15)
 async def every_30_seconds():
     async with app.app_context():
@@ -41,12 +52,6 @@ async def every_30_seconds():
             'function': poll_tvh_subscription_status,
             'args':     [app],
         }, priority=21)
-
-
-@scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=60, misfire_grace_time=30)
-async def every_60_seconds():
-    async with app.app_context():
-        await cleanup_hls_proxy_state()
 
 
 @scheduler.scheduled_job('interval', id='audit_log_cleanup', hours=6, misfire_grace_time=300)
@@ -152,19 +157,26 @@ async def every_12_hours():
 
 
 async def main():
+    async with app.app_context():
+        await load_stream_activity_state()
+
     # Start scheduler inside a running event loop (required by APScheduler on Py 3.13+)
     app.logger.info("Starting scheduler...")
     scheduler.start()
     app.logger.info("Scheduler started.")
 
-    # Start Quart server
-    app.logger.info("Starting Quart server...")
-    await app.run_task(
-        host=config.flask_run_host,
-        port=config.flask_run_port,
-        debug=config.enable_app_debugging
-    )
-    app.logger.info("Quart server completed.")
+    try:
+        # Start Quart server
+        app.logger.info("Starting Quart server...")
+        await app.run_task(
+            host=config.flask_run_host,
+            port=config.flask_run_port,
+            debug=config.enable_app_debugging
+        )
+        app.logger.info("Quart server completed.")
+    finally:
+        async with app.app_context():
+            await persist_stream_activity_state()
 
 
 if __name__ == "__main__":
