@@ -32,16 +32,32 @@
                     :key="playlist.id"
                     :class="playlist.enabled ? '' : 'disabled-item'">
                     <q-item-section avatar top>
-                      <q-icon name="playlist_play" color="" size="34px" />
+                      <q-icon :name="playlistHasIssue(playlist) ? 'warning' : 'playlist_play'"
+                              :color="playlistHasIssue(playlist) ? 'warning' : ''"
+                              size="34px" />
                     </q-item-section>
 
                     <q-item-section top>
-                      <q-item-label lines="1">
+                      <q-item-label class="row items-center no-wrap q-gutter-sm">
                         <span class="text-weight-medium">{{ playlist.name }}</span>
-                        <span class="text-grey-8"> - {{ playlist.url }}</span>
+                        <q-chip
+                          v-if="playlistHasIssue(playlist)"
+                          dense
+                          color="orange-6"
+                          text-color="white">
+                          <q-icon name="warning" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
+                          <span v-if="$q.screen.gt.lg">Needs attention</span>
+                        </q-chip>
+                      </q-item-label>
+                      <q-item-label lines="1">
+                        <span class="text-grey-8">{{ playlist.url }}</span>
                       </q-item-label>
                       <q-item-label caption lines="1">
                         Connections: {{ playlist.connections }} • Type: {{ formatPlaylistType(playlist.type) }}
+                      </q-item-label>
+                      <q-item-label v-if="playlistHasIssue(playlist)" caption class="text-warning">
+                        Last update failed{{ playlistErrorTime(playlist) ? ` (${playlistErrorTime(playlist)})` : '' }}: {{
+                        playlistErrorMessage(playlist) }}
                       </q-item-label>
                     </q-item-section>
 
@@ -199,12 +215,31 @@ export default defineComponent({
           playlist?.url,
           playlist?.type,
           playlist?.user_agent,
+          playlist?.health?.error,
         ];
         return values.some((value) => String(value || '').toLowerCase().includes(query));
       });
     },
   },
   methods: {
+    playlistHasIssue(playlist) {
+      return playlist?.health?.status === 'error';
+    },
+    playlistErrorMessage(playlist) {
+      const error = playlist?.health?.error || 'Unknown download/import error';
+      return error.length > 180 ? `${error.substring(0, 177)}...` : error;
+    },
+    playlistErrorTime(playlist) {
+      const ts = playlist?.health?.last_failure_at;
+      if (!ts) {
+        return '';
+      }
+      try {
+        return new Date(ts * 1000).toLocaleString();
+      } catch {
+        return '';
+      }
+    },
     formatPlaylistType: function(type) {
       if (!type) {
         return 'M3U';

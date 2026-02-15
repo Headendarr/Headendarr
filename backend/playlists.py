@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -22,6 +23,46 @@ logger = logging.getLogger("tic.playlists")
 
 XC_ACCOUNT_TYPE = "XC"
 M3U_ACCOUNT_TYPE = "M3U"
+
+
+def _playlist_health_state_path(config):
+    return os.path.join(config.config_path, "cache", "playlist_health.json")
+
+
+def _read_playlist_health_map(config):
+    try:
+        path = _playlist_health_state_path(config)
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and isinstance(payload.get("playlists"), dict):
+            return payload["playlists"]
+    except Exception:
+        pass
+    return {}
+
+
+def _write_playlist_health_map(config, playlist_map):
+    path = _playlist_health_state_path(config)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"playlists": playlist_map}, f, indent=2, sort_keys=True)
+
+
+def _set_playlist_health(config, playlist_id, payload):
+    playlist_map = _read_playlist_health_map(config)
+    playlist_key = str(playlist_id)
+    current = playlist_map.get(playlist_key, {})
+    current.update(payload)
+    playlist_map[playlist_key] = current
+    _write_playlist_health_map(config, playlist_map)
+
+
+def _clear_playlist_health(config, playlist_id):
+    playlist_map = _read_playlist_health_map(config)
+    playlist_map.pop(str(playlist_id), None)
+    _write_playlist_health_map(config, playlist_map)
 
 
 def _normalize_xc_host(host_url):
@@ -229,6 +270,7 @@ async def _import_xc_playlist_streams(settings, playlist):
 
 async def read_config_all_playlists(config, output_for_export=False):
     return_list = []
+    playlist_health_map = _read_playlist_health_map(config) if config else {}
     async with Session() as session:
         async with session.begin():
             query = await session.execute(select(Playlist))
@@ -270,6 +312,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "hls_proxy_path": result.hls_proxy_path
                         if result.hls_proxy_path
                         else "https://proxy.example.com/hls/[B64_URL].m3u8",
+                        "health": playlist_health_map.get(str(result.id), {}),
                     }
                 )
     return return_list
@@ -282,6 +325,7 @@ async def read_config_one_playlist(config, playlist_id):
         raise ValueError(f"Invalid playlist id: {playlist_id}")
 
     return_item = {}
+    playlist_health_map = _read_playlist_health_map(config) if config else {}
     async with Session() as session:
         async with session.begin():
             query = await session.execute(
@@ -322,6 +366,7 @@ async def read_config_one_playlist(config, playlist_id):
                     "hls_proxy_path": result.hls_proxy_path
                     if result.hls_proxy_path
                     else "https://proxy.example.com/hls/[B64_URL].m3u8",
+                    "health": playlist_health_map.get(str(result.id), {}),
                 }
     return return_item
 
@@ -481,6 +526,7 @@ async def delete_playlist(config, playlist_id):
                     os.remove(f)
             # Remove from DB
             await session.delete(playlist)
+    _clear_playlist_health(config, playlist_id)
     return net_uuids
 
 
@@ -660,48 +706,92 @@ async def import_playlist_data(config, playlist_id):
                 select(Playlist).where(Playlist.id == playlist_id)
             )
             playlist = result.scalar_one()
+    attempt_ts = int(time.time())
+    source_url = playlist.url
 
-    if playlist.account_type == XC_ACCOUNT_TYPE:
-        logger.info(
-            "Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url
-        )
-        ok = await _import_xc_playlist_streams(settings, playlist)
-        if ok:
+    try:
+        if playlist.account_type == XC_ACCOUNT_TYPE:
+            logger.info(
+                "Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url
+            )
+            ok = await _import_xc_playlist_streams(settings, playlist)
+            if not ok:
+                raise RuntimeError("Failed to import Xtream Codes source")
             from backend.channel_suggestions import update_channel_suggestions_for_playlist
             update_channel_suggestions_for_playlist(playlist_id)
-        return
+            _set_playlist_health(
+                config,
+                playlist_id,
+                {
+                    "status": "ok",
+                    "error": None,
+                    "http_status": None,
+                    "last_attempt_at": attempt_ts,
+                    "last_success_at": int(time.time()),
+                    "source_url": source_url,
+                },
+            )
+            return
 
-    # Download playlist data and save to YAML cache file
-    logger.info(
-        "Downloading updated M3U file for playlist #%s from url - '%s'",
-        playlist_id,
-        playlist.url,
-    )
-    start_time = time.time()
-    m3u_file = os.path.join(
-        config.config_path, "cache", "playlists", f"{playlist_id}.m3u"
-    )
-    await download_playlist_file(settings, playlist.url, m3u_file, playlist.user_agent)
-    execution_time = time.time() - start_time
-    logger.info(
-        "Updated M3U file for playlist #%s was downloaded in '%s' seconds",
-        playlist_id,
-        int(execution_time),
-    )
-    # Parse the M3U file and cache the data in a YAML file for faster parsing
-    logger.info("Importing updated data for playlist #%s", playlist_id)
-    start_time = time.time()
-    await store_playlist_streams(config, playlist_id)
-    execution_time = time.time() - start_time
-    logger.info(
-        "Updated data for playlist #%s was imported in '%s' seconds",
-        playlist_id,
-        int(execution_time),
-    )
-    from backend.channel_suggestions import update_channel_suggestions_for_playlist
-    update_channel_suggestions_for_playlist(playlist_id)
-    # Publish changes to TVH
-    await publish_playlist_networks(config)
+        # Download playlist data and save to YAML cache file
+        logger.info(
+            "Downloading updated M3U file for playlist #%s from url - '%s'",
+            playlist_id,
+            playlist.url,
+        )
+        start_time = time.time()
+        m3u_file = os.path.join(
+            config.config_path, "cache", "playlists", f"{playlist_id}.m3u"
+        )
+        await download_playlist_file(
+            settings, playlist.url, m3u_file, playlist.user_agent
+        )
+        execution_time = time.time() - start_time
+        logger.info(
+            "Updated M3U file for playlist #%s was downloaded in '%s' seconds",
+            playlist_id,
+            int(execution_time),
+        )
+        # Parse the M3U file and cache the data in a YAML file for faster parsing
+        logger.info("Importing updated data for playlist #%s", playlist_id)
+        start_time = time.time()
+        await store_playlist_streams(config, playlist_id)
+        execution_time = time.time() - start_time
+        logger.info(
+            "Updated data for playlist #%s was imported in '%s' seconds",
+            playlist_id,
+            int(execution_time),
+        )
+        from backend.channel_suggestions import update_channel_suggestions_for_playlist
+        update_channel_suggestions_for_playlist(playlist_id)
+        # Publish changes to TVH
+        await publish_playlist_networks(config)
+        _set_playlist_health(
+            config,
+            playlist_id,
+            {
+                "status": "ok",
+                "error": None,
+                "http_status": None,
+                "last_attempt_at": attempt_ts,
+                "last_success_at": int(time.time()),
+                "source_url": source_url,
+            },
+        )
+    except Exception as exc:
+        _set_playlist_health(
+            config,
+            playlist_id,
+            {
+                "status": "error",
+                "error": str(exc),
+                "http_status": getattr(exc, "status", None),
+                "last_attempt_at": attempt_ts,
+                "last_failure_at": int(time.time()),
+                "source_url": source_url,
+            },
+        )
+        raise
 
 
 async def import_playlist_data_for_all_playlists(config):
