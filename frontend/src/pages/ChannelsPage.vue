@@ -3,63 +3,63 @@
     <div class="q-pa-none">
       <div class="row">
         <div
-          :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+          :class="uiStore.showHelp ? 'col-12 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <div class="row items-center q-col-gutter-sm justify-between">
                 <template v-if="bulkEditMode !== true">
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Add Channel"
                       icon="add"
                       color="primary"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="openChannelSettings(null)"
                     />
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Import Channels from stream source"
                       icon="dvr"
                       color="primary"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="openChannelsImport()"
                     />
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Import Channels by Group"
                       icon="group_work"
                       color="primary"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="openChannelsGroupImport()"
                     />
                   </div>
                 </template>
 
                 <template v-else>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Edit Categories"
                       color="primary"
                       :disable="!anyChannelsSelectedInBulkEdit"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="showBulkEditCategoriesDialog()"
                     />
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       :label="allChannelsSelected ? 'Deselect All' : 'Select All'"
                       color="primary"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="selectAllChannels()"
                     />
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButtonDropdown
                       label="Select by Category"
                       color="primary"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                     >
                       <q-list>
                         <q-item
@@ -74,32 +74,32 @@
                       </q-list>
                     </TicButtonDropdown>
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Refresh Channel Streams"
                       color="info"
                       :disable="!anyChannelsSelectedInBulkEdit"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="triggerRefreshChannelSources()"
                     />
                   </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                  <div class="col-12 col-sm-auto">
                     <TicButton
                       label="Delete Channels"
                       color="negative"
                       :disable="!anyChannelsSelectedInBulkEdit"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      class="channels-toolbar-btn"
                       @click="confirmBulkDeleteChannels()"
                     />
                   </div>
                 </template>
 
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                <div class="col-12 col-sm-auto">
                   <TicButton
                     :label="bulkEditMode ? 'Exit Bulk Edit' : 'Bulk Edit'"
                     :icon="bulkEditMode ? 'format_line_spacing' : 'fact_check'"
                     color="primary"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
+                    class="channels-toolbar-btn"
                     @click="bulkEditMode = !bulkEditMode"
                   />
                 </div>
@@ -239,49 +239,15 @@
 
                           <q-item-section top class="q-mx-md">
                             <q-item-label lines="1" class="text-left">
-                              <q-avatar rounded size="35px">
-                                <q-img :src="element.logo_url" style="max-width: 30px" />
-                              </q-avatar>
-                              <span class="text-weight-medium text-primary q-ml-sm">{{ element.name }}</span>
-                            </q-item-label>
-                            <q-item-label caption lines="1" class="text-left q-ml-none">
-                              <div class="row">
-                                <div class="col-sm-3">Stream sources:</div>
-                                <div class="col-sm-9">{{ streamSourceNames(element) }}</div>
-                              </div>
-                              <div class="row">
-                                <div class="col-sm-3">Categories:</div>
-                                <div class="col-sm-9">{{ element.tags }}</div>
-                              </div>
-                            </q-item-label>
-                          </q-item-section>
-
-                          <q-separator inset vertical class="gt-xs" />
-
-                          <q-item-section class="q-px-sm q-mx-sm">
-                            <q-item-label lines="1" class="text-left">
                               <div class="row items-center no-wrap">
-                                <span class="q-ml-sm">Guide</span>
+                                <q-avatar rounded size="35px">
+                                  <q-img :src="element.logo_url" style="max-width: 30px" />
+                                </q-avatar>
+                                <span class="text-weight-medium text-primary q-ml-sm channel-name-label">
+                                  {{ element.name }}
+                                </span>
                                 <q-space />
-                                <div class="column items-end q-gutter-xs">
-                                  <q-chip
-                                    v-if="
-                                      enableChannelHealthHighlight &&
-                                      element.status &&
-                                      element.status.state === 'warning'
-                                    "
-                                    dense
-                                    color="orange-6"
-                                    text-color="white"
-                                    clickable
-                                    @click.stop="openChannelIssuesDialog(element)"
-                                  >
-                                    <q-icon name="warning" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
-                                    <span v-if="$q.screen.gt.lg">Needs attention</span>
-                                    <q-tooltip class="bg-white text-primary">
-                                      {{ channelIssueFirstLabel(element.status) }}
-                                    </q-tooltip>
-                                  </q-chip>
+                                <div class="row items-center no-wrap q-gutter-xs">
                                   <q-chip
                                     v-if="
                                       enableChannelHealthHighlight &&
@@ -294,14 +260,56 @@
                                     clickable
                                     @click.stop="openChannelSuggestionsDialog(element)"
                                   >
-                                    <q-icon name="tips_and_updates" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
-                                    <span v-if="$q.screen.gt.lg">Stream suggestions</span>
+                                    <q-icon name="tips_and_updates" />
+                                    <span class="gt-lg q-ml-xs">Stream suggestions</span>
                                     <q-tooltip class="bg-white text-primary">
                                       Potential matching streams are available for this channel.
                                     </q-tooltip>
                                   </q-chip>
+                                  <q-chip
+                                    v-if="
+                                      enableChannelHealthHighlight &&
+                                      element.status &&
+                                      element.status.state === 'warning'
+                                    "
+                                    dense
+                                    color="orange-6"
+                                    text-color="white"
+                                    clickable
+                                    @click.stop="openChannelIssuesDialog(element)"
+                                  >
+                                    <q-icon name="warning" />
+                                    <span class="gt-lg q-ml-xs">Needs attention</span>
+                                    <q-tooltip class="bg-white text-primary">
+                                      {{ channelIssueFirstLabel(element.status) }}
+                                    </q-tooltip>
+                                  </q-chip>
                                 </div>
                               </div>
+                            </q-item-label>
+                            <q-item-label caption lines="1" class="text-left q-ml-none">
+                              <div class="channel-meta-list">
+                                <div class="channel-meta-row lt-lg">
+                                  <div class="channel-meta-label">Guide:</div>
+                                  <div class="channel-meta-value">{{ formatGuideLabel(element) }}</div>
+                                </div>
+                                <div class="channel-meta-row">
+                                  <div class="channel-meta-label">Stream sources:</div>
+                                  <div class="channel-meta-value">{{ streamSourceNames(element) }}</div>
+                                </div>
+                                <div class="channel-meta-row">
+                                  <div class="channel-meta-label">Categories:</div>
+                                  <div class="channel-meta-value">{{ element.tags }}</div>
+                                </div>
+                              </div>
+                            </q-item-label>
+                          </q-item-section>
+
+                          <q-separator inset vertical class="gt-xs gt-md" />
+
+                          <q-item-section class="q-px-sm q-mx-sm gt-md">
+                            <q-item-label lines="1" class="text-left">
+                              <span class="q-ml-sm">Guide</span>
                             </q-item-label>
                             <q-item-label caption lines="1" class="text-left q-ml-sm">
                               {{ formatGuideLabel(element) }}
@@ -334,7 +342,7 @@
                                   </div>
                                   <div>
                                     <div class="text-caption text-grey-7">Reorder</div>
-                                    <div class="text-caption text-grey-6" v-if="!bulkEditMode && $q.screen.lt.sm">
+                                    <div v-if="!bulkEditMode" class="text-caption text-grey-6 lt-sm">
                                       Tap and hold to drag
                                     </div>
                                   </div>
@@ -351,7 +359,7 @@
                                 />
                               </template>
                               <div class="row items-start">
-                                <q-avatar rounded :size="$q.screen.lt.sm ? '32px' : '30px'" class="q-mr-sm">
+                                <q-avatar rounded class="q-mr-sm channel-card-avatar">
                                   <q-img :src="element.logo_url" />
                                 </q-avatar>
                                 <div class="col">
@@ -381,7 +389,7 @@
                                     @click.stop="openChannelIssuesDialog(element)"
                                   >
                                     <q-icon name="warning" class="q-mr-xs" />
-                                    <span v-if="!$q.screen.lt.sm">Needs attention</span>
+                                    <span class="gt-xs">Needs attention</span>
                                   </q-chip>
                                   <q-chip
                                     v-if="
@@ -396,7 +404,7 @@
                                     @click.stop="openChannelSuggestionsDialog(element)"
                                   >
                                     <q-icon name="tips_and_updates" class="q-mr-xs" />
-                                    <span v-if="!$q.screen.lt.sm">Stream suggestions</span>
+                                    <span class="gt-xs">Stream suggestions</span>
                                   </q-chip>
                                 </div>
                               </div>
@@ -1386,5 +1394,52 @@ export default defineComponent({
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+
+.channel-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channel-meta-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 140px) minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+}
+
+.channel-meta-label {
+  white-space: nowrap;
+}
+
+.channel-meta-value {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.channel-name-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channels-toolbar-btn {
+  width: 100%;
+}
+
+.channel-card-avatar {
+  width: 30px;
+  height: 30px;
+}
+
+@media (max-width: 599px) {
+  .channel-card-avatar {
+    width: 32px;
+    height: 32px;
+  }
 }
 </style>
