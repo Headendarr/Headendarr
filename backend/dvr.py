@@ -377,6 +377,14 @@ async def reconcile_tvh_recordings(config):
                         rec.sync_status = "synced"
                     continue
 
+                if rec.tvh_uuid and rec.tvh_uuid not in tvh_map:
+                    # TVH entry no longer exists (deleted/expired externally). Reflect that in TIC
+                    # instead of recreating a brand-new TVH DVR entry for the same local row.
+                    rec.sync_status = "synced"
+                    rec.sync_error = None
+                    await session.delete(rec)
+                    continue
+
                 if rec.tvh_uuid and rec.tvh_uuid in tvh_map:
                     entry = tvh_map.get(rec.tvh_uuid, {})
                     rec.status = entry.get("state") or rec.status
