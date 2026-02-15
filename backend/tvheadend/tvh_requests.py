@@ -1003,19 +1003,28 @@ async def configure_tvh(config):
 
 async def ensure_tvh_sync_user(config):
     sync_user = await asyncio.to_thread(config.get_tvh_sync_user)
-    if not sync_user.get("username") or not sync_user.get("password"):
+    conn = await config.tvh_connection_settings()
+    sync_username = sync_user.get("username") or conn.get("tvh_username") or "tic-admin"
+    sync_password = conn.get("tvh_password") if conn.get("tvh_local") else sync_user.get("password")
+    if not sync_username or not sync_password:
         return
     try:
         async with await get_tvh(config) as tvh:
             await tvh.upsert_user(
-                sync_user.get("username", "tic-admin"),
-                sync_user.get("password"),
+                sync_username,
+                sync_password,
                 is_admin=True,
                 enabled=True,
                 access_comment=tvh_sync_access_entry_comment,
                 password_comment=tvh_sync_password_comment,
             )
-        if not sync_user.get("provisioned"):
+        if (
+            sync_user.get("username") != sync_username
+            or sync_user.get("password") != sync_password
+            or not sync_user.get("provisioned")
+        ):
+            sync_user["username"] = sync_username
+            sync_user["password"] = sync_password
             sync_user["provisioned"] = True
             await asyncio.to_thread(config.update_tvh_sync_user, sync_user)
     except Exception as exc:

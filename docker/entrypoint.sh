@@ -231,22 +231,53 @@ start_nginx() {
     fi
 }
 
+seed_local_tvh_sync_user() {
+    local sync_username
+    local sync_password
+    local sync_password2
+    local sync_access_file
+    local sync_passwd_file
+    local sync_user_file
+    local access_template
+    local passwd_template
+    local sync_user_template
+
+    sync_username="${TVH_SYNC_USERNAME:-tic-admin}"
+    sync_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
+    sync_password2="$(printf 'TVHeadend-Hide-%s' "${sync_password}" | base64 -w 0)"
+    sync_access_file="/config/.tvheadend/accesscontrol/83e4a7e5712d79a97b570b54e8e0e781"
+    sync_passwd_file="/config/.tvheadend/passwd/c0a8261ea68035cd447a29a57d12ff7c"
+    sync_user_file="/config/.tvh_iptv_config/tvh_sync_user.json"
+    access_template="/defaults/tvheadend/admin_accesscontrol"
+    passwd_template="/defaults/tvheadend/admin_auth"
+    sync_user_template="/defaults/tvh_iptv_config/tvh_sync_user.json.template"
+
+    mkdir -p /config/.tvheadend/accesscontrol
+    mkdir -p /config/.tvheadend/passwd
+    mkdir -p /config/.tvh_iptv_config
+
+    sed \
+        -e "s|__TVH_SYNC_USERNAME__|${sync_username}|g" \
+        "${access_template}" >"${sync_access_file}"
+    sed \
+        -e "s|__TVH_SYNC_USERNAME__|${sync_username}|g" \
+        -e "s|__TVH_SYNC_PASSWORD2__|${sync_password2}|g" \
+        "${passwd_template}" >"${sync_passwd_file}"
+    sed \
+        -e "s|__TVH_SYNC_USERNAME__|${sync_username}|g" \
+        -e "s|__TVH_SYNC_PASSWORD__|${sync_password}|g" \
+        "${sync_user_template}" >"${sync_user_file}"
+
+    print_log info "Seeded local TVH sync user '${sync_username}' and rotated password for this start"
+}
+
 start_tvh() {
     if command -v tvheadend >/dev/null 2>&1; then
         if [ -f /config/.tvheadend/.lock ]; then
             print_log warn "Removing stale TVHeadend lock file: /config/.tvheadend/.lock"
             rm -f /config/.tvheadend/.lock || true
         fi
-        if [ ! -f /config/.tvheadend/accesscontrol/83e4a7e5712d79a97b570b54e8e0e781 ]; then
-            print_log info "Installing admin tvheadend accesscontrol"
-            mkdir -p /config/.tvheadend/accesscontrol
-            cp -rf /defaults/tvheadend/admin_accesscontrol /config/.tvheadend/accesscontrol/83e4a7e5712d79a97b570b54e8e0e781
-        fi
-        if [ ! -f /config/.tvheadend/passwd/c0a8261ea68035cd447a29a57d12ff7c ]; then
-            print_log info "Installing admin tvheadend passwd"
-            mkdir -p /config/.tvheadend/passwd
-            cp -rf /defaults/tvheadend/admin_auth /config/.tvheadend/passwd/c0a8261ea68035cd447a29a57d12ff7c
-        fi
+        seed_local_tvh_sync_user
         if [ ! -f /config/.tvheadend/config ]; then
             print_log info "Installing default tvheadend config"
             mkdir -p /config/.tvheadend

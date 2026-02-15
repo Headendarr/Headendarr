@@ -1,41 +1,49 @@
 {
-	"index": 1,
-	"enabled": true,
-	"username": "admin",
-	"prefix": "0.0.0.0/0,::/0",
-	"change": [
-		"change_rights"
-	],
-	"uilevel": -1,
-	"uilevel_nochange": -1,
-	"streaming": [
-		"basic",
-		"advanced",
-		"htsp"
-	],
-	"profile": [
-	],
-	"dvr": [
-		"basic",
-		"htsp",
-		"all",
-		"all_rw",
-		"failed"
-	],
-	"htsp_anonymize": false,
-	"dvr_config": [
-	],
-	"webui": true,
-	"admin": true,
-	"conn_limit_type": 0,
-	"conn_limit": 0,
-	"channel_min": 0,
-	"channel_max": 0,
-	"channel_tag_exclude": false,
-	"channel_tag": [
-	],
-	"xmltv_output_format": 0,
-	"htsp_output_format": 0,
-	"comment": "Default access entry",
-	"wizard": false
+    "index": 1,
+    "enabled": true,
+    "username": "__TVH_SYNC_USERNAME__",
+    "prefix": "0.0.0.0/0,::/0",
+    "change": [
+        "change_rights",
+        "change_chrange",
+        "change_chtags",
+        "change_dvr_configs",
+        "change_profiles",
+        "change_conn_limit",
+        "change_lang",
+        "change_lang_ui",
+        "change_theme",
+        "change_uilevel",
+        "change_xmltv_output",
+        "change_htsp_output"
+    ],
+    "uilevel": -1,
+    "uilevel_nochange": -1,
+    "streaming": [
+        "basic",
+        "advanced",
+        "htsp"
+    ],
+    "profile": [],
+    "dvr": [
+        "basic",
+        "htsp",
+        "all",
+        "all_rw",
+        "failed"
+    ],
+    "htsp_anonymize": false,
+    "dvr_config": [],
+    "webui": true,
+    "admin": true,
+    "conn_limit_type": 0,
+    "conn_limit": 0,
+    "channel_min": 0,
+    "channel_max": 0,
+    "channel_tag_exclude": false,
+    "channel_tag": [],
+    "xmltv_output_format": 0,
+    "htsp_output_format": 0,
+    "comment": "TVH IPTV Config sync access entry",
+    "wizard": false
 }

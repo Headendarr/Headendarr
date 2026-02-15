@@ -1,11 +1,11 @@
 {
-	"enabled": true,
-	"username": "admin",
-	"password2": "VFZIZWFkZW5kLUhpZGUtYWRtaW4=",
-	"auth": [
-		"enable"
-	],
-	"authcode": "PBx9zTIBrAgObrCpEq5iS7pR-jYo",
-	"comment": "TVH IPTV Config admin password entry",
-	"wizard": true
+    "enabled": true,
+    "username": "__TVH_SYNC_USERNAME__",
+    "password2": "__TVH_SYNC_PASSWORD2__",
+    "auth": [
+        "enable"
+    ],
+    "authcode": "PBx9zTIBrAgObrCpEq5iS7pR-jYo",
+    "comment": "TVH IPTV Config sync password entry",
+    "wizard": false
 }

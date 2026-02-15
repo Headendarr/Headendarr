@@ -57,7 +57,7 @@ def is_tvh_process_running_locally_sync():
         return False
 
 
-async def get_admin_file(directory):
+async def get_user_file(directory, username):
     if os.path.exists(directory) and os.listdir(directory):
         for filename in os.listdir(directory):
             file_path = os.path.join(directory, filename)
@@ -66,7 +66,7 @@ async def get_admin_file(directory):
                     try:
                         contents = await file.read()
                         data = json.loads(contents)
-                        if data.get("username") == "admin":
+                        if data.get("username") == username:
                             return file_path, data
                     except (json.JSONDecodeError, IOError) as e:
                         print(f"Error processing file {file_path}: {e}")
@@ -75,25 +75,29 @@ async def get_admin_file(directory):
 
 async def update_accesscontrol_files():
     accesscontrol_path = os.path.join(get_home_dir(), ".tvheadend", "accesscontrol")
-    file_path, data = await get_admin_file(accesscontrol_path)
+    file_path, data = await get_user_file(accesscontrol_path, "tic-admin")
     if data:
         data["prefix"] = "0.0.0.0/0,::/0"
         async with aiofiles.open(file_path, "w") as outfile:
             await outfile.write(json.dumps(data, indent=4))
 
 
-async def get_local_tvh_proc_admin_password():
+async def get_local_tvh_proc_sync_user_credentials(username="tic-admin"):
     passwd_path = os.path.join(get_home_dir(), ".tvheadend", "passwd")
-    file_path, data = await get_admin_file(passwd_path)
+    file_path, data = await get_user_file(passwd_path, username)
     if data:
         encoded_password = data.get("password2")
         try:
             decoded_password = base64.b64decode(encoded_password).decode("utf-8")
+            prefix = "TVHeadend-Hide-"
+            if decoded_password.startswith(prefix):
+                return username, decoded_password[len(prefix):]
             parts = decoded_password.split("-")
-            return parts[2]
+            if len(parts) >= 3:
+                return username, parts[2]
         except Exception as e:
             print(f"Error decoding password: {e}")
-    return None
+    return None, None
 
 
 def write_yaml(file, data):
@@ -157,7 +161,7 @@ class Config:
                     "password": "",
                 },
                 "app_url": None,
-                "route_playlists_through_tvh": True,
+                "route_playlists_through_tvh": False,
                 "periodic_mux_scan": False,
                 "audit_log_retention_days": 7,
                 "user_agents": [
@@ -318,12 +322,10 @@ class Config:
             tvh_host = "127.0.0.1"
             tvh_port = "9981"
             tvh_path = "/tic-tvh"
-            if sync_user.get("provisioned"):
-                tvh_username = sync_user.get("username", "tic-admin")
-                tvh_password = sync_user.get("password")
-            else:
-                tvh_username = "admin"
-                tvh_password = await get_local_tvh_proc_admin_password()
+            desired_username = sync_user.get("username", "tic-admin")
+            local_username, local_password = await get_local_tvh_proc_sync_user_credentials(desired_username)
+            tvh_username = local_username or desired_username
+            tvh_password = local_password or sync_user.get("password")
             return {
                 "tvh_local": True,
                 "tvh_host": tvh_host,
