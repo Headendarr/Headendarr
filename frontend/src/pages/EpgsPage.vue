@@ -34,12 +34,13 @@
                     :class="epg.enabled ? '' : 'disabled-item'">
                     <q-item-section avatar top>
                       <q-icon :name="epgHasIssue(epg) ? 'warning' : 'calendar_month'"
-                              :color="epgHasIssue(epg) ? 'warning' : ''" />
+                              :color="epgHasIssue(epg) ? 'warning' : ''"
+                              size="34px" />
                     </q-item-section>
 
                     <q-item-section top>
                       <q-item-label class="row items-center no-wrap q-gutter-sm">
-                        <span>{{ epg.name }}</span>
+                        <span class="text-weight-medium">{{ epg.name }}</span>
                         <q-chip
                           v-if="epgHasIssue(epg)"
                           dense
@@ -49,18 +50,16 @@
                           <span v-if="$q.screen.gt.lg">Needs attention</span>
                         </q-chip>
                       </q-item-label>
-                      <q-item-label caption lines="3">
-                        <span v-html="epg.description"></span>
+                      <q-item-label lines="1">
+                        <span class="text-grey-8">{{ epg.url }}</span>
+                      </q-item-label>
+                      <q-item-label caption lines="1">
+                        <span v-if="epg.description" v-html="epg.description"></span>
+                        <span v-else>No description</span>
                       </q-item-label>
                       <q-item-label v-if="epgHasIssue(epg)" caption class="text-warning">
                         Last update failed{{ epgErrorTime(epg) ? ` (${epgErrorTime(epg)})` : '' }}: {{ epgErrorMessage(
                         epg) }}
-                      </q-item-label>
-                    </q-item-section>
-
-                    <q-item-section top class="gt-xs">
-                      <q-item-label lines="2">
-                        <span class="text-grey-8">{{ epg.url }}</span>
                       </q-item-label>
                     </q-item-section>
 
