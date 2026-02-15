@@ -9,6 +9,7 @@ from quart import request, jsonify, current_app
 from backend.api import blueprint
 from backend.auth import streamer_or_admin_required
 from backend.api.tasks import TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules
+from backend.dvr_profiles import get_profile_key_or_default, read_recording_profiles_from_settings
 from backend.dvr import (
     list_recordings,
     list_rules,
@@ -20,13 +21,60 @@ from backend.dvr import (
     update_rule,
 )
 from backend.tvheadend.tvh_requests import ensure_tvh_sync_user
+from backend.models import Session, Recording, RecordingRule
+
+
+def _is_admin(user) -> bool:
+    roles = [role.name for role in (getattr(user, "roles", None) or [])]
+    return "admin" in roles
+
+
+def _dvr_access_mode(user) -> str:
+    return str(getattr(user, "dvr_access_mode", "none") or "none").strip().lower()
+
+
+def _can_use_dvr(user) -> bool:
+    if _is_admin(user):
+        return True
+    return _dvr_access_mode(user) in {"read_write_own", "read_all_write_own"}
+
+
+def _can_read_all_dvr(user) -> bool:
+    if _is_admin(user):
+        return True
+    return _dvr_access_mode(user) == "read_all_write_own"
+
+
+async def _get_recording(recording_id: int):
+    async with Session() as session:
+        result = await session.execute(select(Recording).where(Recording.id == recording_id))
+        return result.scalar_one_or_none()
+
+
+async def _get_rule(rule_id: int):
+    async with Session() as session:
+        result = await session.execute(select(RecordingRule).where(RecordingRule.id == rule_id))
+        return result.scalar_one_or_none()
 
 
 @blueprint.route('/tic-api/recordings', methods=['GET'])
 @streamer_or_admin_required
 async def api_list_recordings():
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     records = await list_recordings()
+    if user and not _can_read_all_dvr(user):
+        records = [item for item in records if item.get("owner_user_id") == user.id]
     return jsonify({"success": True, "data": records})
+
+
+@blueprint.route('/tic-api/recording-profiles', methods=['GET'])
+@streamer_or_admin_required
+async def api_list_recording_profiles():
+    settings = current_app.config["APP_CONFIG"].read_settings()
+    profiles = read_recording_profiles_from_settings(settings)
+    return jsonify({"success": True, "data": profiles})
 
 
 async def _get_tvh_proxy_base():
@@ -71,6 +119,9 @@ async def _fetch_tvh_dvr_entry(base_url, username, password, tvh_uuid):
 @blueprint.route('/tic-api/recordings/poll', methods=['GET'])
 @streamer_or_admin_required
 async def api_poll_recordings():
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     wait = request.args.get('wait', '0')
     timeout = request.args.get('timeout', '0')
     try:
@@ -83,11 +134,15 @@ async def api_poll_recordings():
         timeout = 0
 
     data = await list_recordings()
+    if user and not _can_read_all_dvr(user):
+        data = [item for item in data if item.get("owner_user_id") == user.id]
     if wait and timeout:
         start = asyncio.get_event_loop().time()
         while True:
             await asyncio.sleep(1)
             updated = await list_recordings()
+            if user and not _can_read_all_dvr(user):
+                updated = [item for item in updated if item.get("owner_user_id") == user.id]
             if updated != data:
                 data = updated
                 break
@@ -99,11 +154,13 @@ async def api_poll_recordings():
 @blueprint.route('/tic-api/recordings/<int:recording_id>/stream', methods=['GET', 'HEAD'])
 @streamer_or_admin_required
 async def api_stream_recording(recording_id):
-    from backend.models import Session, Recording
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
 
-    async with Session() as session:
-        result = await session.execute(select(Recording).where(Recording.id == recording_id))
-        recording = result.scalar_one_or_none()
+    recording = await _get_recording(recording_id)
+    if user and not _can_read_all_dvr(user) and recording and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     if not recording or not recording.tvh_uuid:
         return jsonify({"success": False, "message": "Recording not found"}), 404
 
@@ -149,11 +206,13 @@ async def api_stream_recording(recording_id):
 @blueprint.route('/tic-api/recordings/<int:recording_id>/hls.m3u8', methods=['GET', 'HEAD'])
 @streamer_or_admin_required
 async def api_stream_recording_hls(recording_id):
-    from backend.models import Session, Recording
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
 
-    async with Session() as session:
-        result = await session.execute(select(Recording).where(Recording.id == recording_id))
-        recording = result.scalar_one_or_none()
+    recording = await _get_recording(recording_id)
+    if user and not _can_read_all_dvr(user) and recording and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     if not recording or not recording.tvh_uuid:
         return jsonify({"success": False, "message": "Recording not found"}), 404
 
@@ -273,6 +332,9 @@ async def api_stream_recording_hls(recording_id):
 @blueprint.route('/tic-api/recordings', methods=['POST'])
 @streamer_or_admin_required
 async def api_create_recording():
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     payload = await request.get_json()
     channel_id = payload.get("channel_id")
     title = payload.get("title")
@@ -280,6 +342,9 @@ async def api_create_recording():
     stop_ts = payload.get("stop_ts")
     description = payload.get("description")
     epg_programme_id = payload.get("epg_programme_id")
+    settings = current_app.config["APP_CONFIG"].read_settings()
+    profiles = read_recording_profiles_from_settings(settings)
+    profile_key = get_profile_key_or_default(payload.get("recording_profile_key"), profiles)
 
     if not channel_id or not start_ts or not stop_ts:
         return jsonify({"success": False, "message": "Missing channel_id/start_ts/stop_ts"}), 400
@@ -291,6 +356,8 @@ async def api_create_recording():
         stop_ts=int(stop_ts),
         description=description,
         epg_programme_id=epg_programme_id,
+        owner_user_id=getattr(user, "id", None),
+        recording_profile_key=profile_key,
     )
 
     task_broker = await TaskQueueBroker.get_instance()
@@ -306,6 +373,14 @@ async def api_create_recording():
 @blueprint.route('/tic-api/recordings/<int:recording_id>/cancel', methods=['POST'])
 @streamer_or_admin_required
 async def api_cancel_recording(recording_id):
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+    recording = await _get_recording(recording_id)
+    if not recording:
+        return jsonify({"success": False, "message": "Recording not found"}), 404
+    if user and not _is_admin(user) and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     ok = await cancel_recording(recording_id)
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
@@ -321,6 +396,14 @@ async def api_cancel_recording(recording_id):
 @blueprint.route('/tic-api/recordings/<int:recording_id>', methods=['DELETE'])
 @streamer_or_admin_required
 async def api_delete_recording(recording_id):
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+    recording = await _get_recording(recording_id)
+    if not recording:
+        return jsonify({"success": False, "message": "Recording not found"}), 404
+    if user and not _is_admin(user) and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     ok = await delete_recording(recording_id)
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
@@ -336,20 +419,37 @@ async def api_delete_recording(recording_id):
 @blueprint.route('/tic-api/recording-rules', methods=['GET'])
 @streamer_or_admin_required
 async def api_list_recording_rules():
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     rules = await list_rules()
+    if user and not _can_read_all_dvr(user):
+        rules = [item for item in rules if item.get("owner_user_id") == user.id]
     return jsonify({"success": True, "data": rules})
 
 
 @blueprint.route('/tic-api/recording-rules', methods=['POST'])
 @streamer_or_admin_required
 async def api_create_recording_rule():
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     payload = await request.get_json()
     channel_id = payload.get("channel_id")
     title_match = payload.get("title_match")
     lookahead_days = payload.get("lookahead_days", 7)
+    settings = current_app.config["APP_CONFIG"].read_settings()
+    profiles = read_recording_profiles_from_settings(settings)
+    profile_key = get_profile_key_or_default(payload.get("recording_profile_key"), profiles)
     if not channel_id or not title_match:
         return jsonify({"success": False, "message": "Missing channel_id/title_match"}), 400
-    rule_id = await create_rule(channel_id, title_match, lookahead_days=int(lookahead_days))
+    rule_id = await create_rule(
+        channel_id,
+        title_match,
+        lookahead_days=int(lookahead_days),
+        owner_user_id=getattr(user, "id", None),
+        recording_profile_key=profile_key,
+    )
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task({
         'name': f'Applying DVR recording rules',
@@ -367,6 +467,14 @@ async def api_create_recording_rule():
 @blueprint.route('/tic-api/recording-rules/<int:rule_id>', methods=['DELETE'])
 @streamer_or_admin_required
 async def api_delete_recording_rule(rule_id):
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+    rule = await _get_rule(rule_id)
+    if not rule:
+        return jsonify({"success": False, "message": "Rule not found"}), 404
+    if user and not _is_admin(user) and rule.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     ok = await delete_rule(rule_id)
     if not ok:
         return jsonify({"success": False, "message": "Rule not found"}), 404
@@ -376,17 +484,31 @@ async def api_delete_recording_rule(rule_id):
 @blueprint.route('/tic-api/recording-rules/<int:rule_id>', methods=['PUT'])
 @streamer_or_admin_required
 async def api_update_recording_rule(rule_id):
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+    rule = await _get_rule(rule_id)
+    if not rule:
+        return jsonify({"success": False, "message": "Rule not found"}), 404
+    if user and not _is_admin(user) and rule.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
     payload = await request.get_json()
     channel_id = payload.get("channel_id")
     title_match = payload.get("title_match")
     lookahead_days = payload.get("lookahead_days")
     enabled = payload.get("enabled")
+    profile_key = None
+    if "recording_profile_key" in payload:
+        settings = current_app.config["APP_CONFIG"].read_settings()
+        profiles = read_recording_profiles_from_settings(settings)
+        profile_key = get_profile_key_or_default(payload.get("recording_profile_key"), profiles)
     ok = await update_rule(
         rule_id,
         channel_id=channel_id,
         title_match=title_match,
         lookahead_days=lookahead_days,
         enabled=enabled,
+        recording_profile_key=profile_key,
     )
     if not ok:
         return jsonify({"success": False, "message": "Rule not found"}), 404

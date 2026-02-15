@@ -183,6 +183,24 @@ class Config:
                 "dvr": {
                     "pre_padding_mins": 2,
                     "post_padding_mins": 5,
+                    "retention_policy": "forever",
+                    "recording_profiles": [
+                        {
+                            "key": "default",
+                            "name": "Default",
+                            "pathname": "%F_%R $u$n.$x",
+                        },
+                        {
+                            "key": "shows",
+                            "name": "Shows",
+                            "pathname": "$Q$n.$x",
+                        },
+                        {
+                            "key": "movies",
+                            "name": "Movies",
+                            "pathname": "$Q$n.$x",
+                        },
+                    ],
                 },
                 "ui_settings": {
                     "enable_channel_health_highlight": True,

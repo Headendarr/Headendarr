@@ -186,6 +186,28 @@ run_migrations() {
     fi
 }
 
+rollback_last_migration() {
+    print_log info "Current Alembic revision(s):"
+    alembic current
+    print_log info "Rolling back last Alembic migration"
+    alembic downgrade -1
+    print_log info "Alembic revision(s) after rollback:"
+    alembic current
+}
+
+print_current_migration() {
+    print_log info "Current Alembic revision(s):"
+    alembic current
+}
+
+stop_postgres_for_migration_mode() {
+    local mode_label="${1:-migration mode}"
+    if [ -n "${PG_BINDIR:-}" ] && [ -n "${POSTGRES_DIR:-}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
+        print_log info "Stopping Postgres via pg_ctl (${mode_label})"
+        "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" stop -m fast || true
+    fi
+}
+
 migrate_sqlite_to_postgres() {
     if [ -f "/config/.tvh_iptv_config/db.sqlite3" ]; then
         print_log info "Running SQLite -> Postgres migration"
@@ -211,6 +233,10 @@ start_nginx() {
 
 start_tvh() {
     if command -v tvheadend >/dev/null 2>&1; then
+        if [ -f /config/.tvheadend/.lock ]; then
+            print_log warn "Removing stale TVHeadend lock file: /config/.tvheadend/.lock"
+            rm -f /config/.tvheadend/.lock || true
+        fi
         if [ ! -f /config/.tvheadend/accesscontrol/83e4a7e5712d79a97b570b54e8e0e781 ]; then
             print_log info "Installing admin tvheadend accesscontrol"
             mkdir -p /config/.tvheadend/accesscontrol
@@ -302,6 +328,16 @@ fi
 
 install_packages
 setup_postgres
+if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ] || [ "${PRINT_CURRENT_MIGRATION}" = "true" ]; then
+    if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ]; then
+        rollback_last_migration
+        stop_postgres_for_migration_mode "rollback mode"
+    else
+        print_current_migration
+        stop_postgres_for_migration_mode "current migration mode"
+    fi
+    exit 0
+fi
 run_migrations
 cleanup_migrated_sqlite
 vacuum_sqlite_if_exists

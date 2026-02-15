@@ -35,6 +35,16 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} build tic
 
+  backend:migrate:rollback-last:
+    desc: Roll back the most recent Alembic migration using a one-off backend (tic) container
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e ROLLBACK_LAST_MIGRATION=true tic
+
+  backend:migrate:current:
+    desc: Print the current Alembic migration revision using a one-off backend (tic) container
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true tic
+
   frontend:start:
     desc: Start frontend dev server service in dev AIO stack (detached)
     cmds:

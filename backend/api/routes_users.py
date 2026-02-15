@@ -14,15 +14,19 @@ from backend.users import (
     create_user,
     update_user_roles,
     set_user_active,
+    update_user_dvr_settings,
     reset_user_password,
     rotate_stream_key,
     change_user_password,
     get_user_by_id,
     set_user_tvh_sync_status,
+    user_has_admin_role,
 )
 
 
 def _serialize_user(user: User):
+    is_admin = user_has_admin_role(user)
+    dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
     return {
         "id": user.id,
         "username": user.username,
@@ -33,6 +37,8 @@ def _serialize_user(user: User):
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
         "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
+        "dvr_access_mode": dvr_access_mode,
+        "dvr_retention_policy": user.dvr_retention_policy or "forever",
     }
 
 
@@ -65,12 +71,20 @@ async def create_user_route():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     roles = data.get("roles") or []
+    dvr_access_mode = data.get("dvr_access_mode")
+    dvr_retention_policy = data.get("dvr_retention_policy")
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password are required"}), 400
     try:
         user, stream_key = await create_user(username, password, roles)
     except sqlalchemy.exc.IntegrityError:
         return jsonify({"success": False, "message": "Username already exists"}), 409
+    await update_user_dvr_settings(
+        user.id,
+        dvr_access_mode=dvr_access_mode,
+        dvr_retention_policy=dvr_retention_policy,
+    )
+    user = await get_user_by_id(user.id)
     await _queue_user_sync(user.id, user.username)
     return jsonify({"success": True, "user": _serialize_user(user), "streaming_key": stream_key})
 
@@ -81,10 +95,17 @@ async def update_user_route(user_id):
     data = await request.get_json(force=True, silent=True) or {}
     roles = data.get("roles") or []
     is_active = data.get("is_active")
+    dvr_access_mode = data.get("dvr_access_mode")
+    dvr_retention_policy = data.get("dvr_retention_policy")
     if roles is not None:
         await update_user_roles(user_id, roles)
     if is_active is not None:
         await set_user_active(user_id, bool(is_active))
+    await update_user_dvr_settings(
+        user_id,
+        dvr_access_mode=dvr_access_mode,
+        dvr_retention_policy=dvr_retention_policy,
+    )
     user = await get_user_by_id(user_id)
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404

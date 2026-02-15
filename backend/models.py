@@ -271,6 +271,8 @@ class RecordingRule(Base):
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
+    owner_user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    recording_profile_key = Column(String(64), nullable=False, default="default")
     title_match = Column(String(500), index=True, unique=False)
     enabled = Column(Boolean, nullable=False, unique=False, default=True)
     lookahead_days = Column(Integer, nullable=False, default=7)
@@ -290,6 +292,8 @@ class Recording(Base):
 
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
     rule_id = Column(Integer, ForeignKey('recording_rules.id'), nullable=True)
+    owner_user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    recording_profile_key = Column(String(64), nullable=False, default="default")
     epg_programme_id = Column(Integer, nullable=True)
 
     title = Column(String(500), index=True, unique=False)
@@ -334,6 +338,8 @@ class User(Base):
     tvh_sync_status = Column(String(32), nullable=True)
     tvh_sync_error = Column(String(1024), nullable=True)
     tvh_sync_updated_at = Column(DateTime, nullable=True)
+    dvr_access_mode = Column(String(32), nullable=False, default="none")
+    dvr_retention_policy = Column(String(32), nullable=False, default="forever")
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

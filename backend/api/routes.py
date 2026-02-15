@@ -9,8 +9,10 @@ from quart import request, jsonify, send_from_directory, current_app, Response, 
 from backend.api import blueprint
 
 from backend.api.tasks import TaskQueueBroker
+from backend.api.tasks import sync_all_users_to_tvh
 from backend.auth import admin_auth_required, get_user_from_token, stream_key_required, audit_stream_event
 from backend.config import is_tvh_process_running_locally
+from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.tvheadend.tvh_requests import configure_tvh, ensure_tvh_sync_user
 from backend.channels import build_channel_logo_proxy_url
@@ -413,6 +415,17 @@ async def api_save_config():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
 
+    settings_payload = json_data.get("settings") if isinstance(json_data, dict) else None
+    if isinstance(settings_payload, dict):
+        dvr_payload = settings_payload.get("dvr")
+        if isinstance(dvr_payload, dict):
+            settings_payload["dvr"] = {
+                "pre_padding_mins": int(dvr_payload.get("pre_padding_mins", 2) or 2),
+                "post_padding_mins": int(dvr_payload.get("post_padding_mins", 5) or 5),
+                "retention_policy": normalize_retention_policy(dvr_payload.get("retention_policy")),
+                "recording_profiles": normalize_recording_profiles(dvr_payload.get("recording_profiles")),
+            }
+
     # Mark first run as complete
     json_data['settings']['first_run'] = False
 
@@ -435,6 +448,12 @@ async def api_save_config():
             'function': configure_tvh,
             'args':     [config],
         }, priority=15)
+        if 'dvr' in (json_data.get('settings') or {}):
+            await task_broker.add_task({
+                'name':     'Sync all users to TVH',
+                'function': sync_all_users_to_tvh,
+                'args':     [config],
+            }, priority=16)
     return jsonify(
         {
             "success": True

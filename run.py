@@ -3,7 +3,8 @@
 
 from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, rebuild_custom_epg, \
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
-    TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status
+    TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status, \
+    sync_all_users_to_tvh
 from backend.api.routes_hls_proxy import (
     cleanup_hls_proxy_state,
     load_stream_activity_state,
@@ -133,6 +134,11 @@ async def every_60_mins():
             'function': update_tvh_epg,
             'args':     [app],
         }, priority=30)
+        await task_broker.add_task({
+            'name':     'Syncing all users to TVH',
+            'function': sync_all_users_to_tvh,
+            'args':     [app.config['APP_CONFIG']],
+        }, priority=17)
 
 
 @scheduler.scheduled_job('cron', id='do_job_twice_a_day', hour='0/12', minute=1, misfire_grace_time=900)

@@ -115,6 +115,66 @@
                   label="Post-recording padding (minutes)"
                   description="Minutes to record after the scheduled end time."
                 />
+                <TicSelectInput
+                  v-model="dvr.retention_policy"
+                  :options="retentionPolicyOptions"
+                  label="Default recording retention"
+                  description="Applies to TVHeadend recording profiles synced by TIC."
+                  emit-value
+                  map-options
+                />
+
+                <div class="row items-center q-col-gutter-sm justify-between">
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col'">
+                    <div class="text-caption text-grey-7">
+                      Recording profiles for DVR scheduling. The first item in this list is treated as the default
+                      profile for users and fallback scheduling.
+                    </div>
+                  </div>
+                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
+                    <TicButton
+                      color="primary"
+                      icon="add"
+                      label="Add Recording Profile"
+                      :class="$q.screen.lt.sm ? 'full-width' : ''"
+                      @click="addRecordingProfile"
+                    />
+                  </div>
+                </div>
+
+                <q-list bordered separator class="rounded-borders">
+                  <q-item v-for="(profile, index) in recordingProfiles" :key="profile.id" class="user-agent-item">
+                    <q-item-section>
+                      <TicTextInput
+                        v-model="profile.name"
+                        dense
+                        label="Profile Name"
+                        placeholder="Shows"
+                      />
+                    </q-item-section>
+                    <q-item-section>
+                      <TicTextInput
+                        v-model="profile.pathname"
+                        dense
+                        label="Pathname Format"
+                        placeholder="$Q$n.$x"
+                      />
+                    </q-item-section>
+                    <q-item-section side top>
+                      <TicListActions
+                        :actions="recordingProfileActions(index)"
+                        @action="(action) => handleRecordingProfileAction(action, index)"
+                      />
+                    </q-item-section>
+                  </q-item>
+                  <q-item v-if="!recordingProfiles.length">
+                    <q-item-section>
+                      <q-item-label class="text-grey-7">
+                        No recording profiles configured.
+                      </q-item-label>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
 
                 <q-separator />
 
@@ -280,7 +340,10 @@ export default defineComponent({
       dvr: ref({
         pre_padding_mins: 2,
         post_padding_mins: 5,
+        retention_policy: 'forever',
+        recording_profiles: [],
       }),
+      recordingProfiles: ref([]),
       uiSettings: ref({
         enable_channel_health_highlight: true,
         start_page: '/dashboard',
@@ -302,6 +365,12 @@ export default defineComponent({
         dvr: {
           pre_padding_mins: 2,
           post_padding_mins: 5,
+          retention_policy: 'forever',
+          recording_profiles: [
+            {key: 'default', name: 'Default', pathname: '%F_%R $u$n.$x'},
+            {key: 'shows', name: 'Shows', pathname: '$Q$n.$x'},
+            {key: 'movies', name: 'Movies', pathname: '$Q$n.$x'},
+          ],
         },
         uiSettings: {
           enable_channel_health_highlight: true,
@@ -317,8 +386,26 @@ export default defineComponent({
         {label: 'DVR', value: '/dvr'},
         {label: 'Audit', value: '/audit'},
       ],
+      retentionPolicyOptions: [
+        {label: '1 day', value: '1_day'},
+        {label: '3 days', value: '3_days'},
+        {label: '5 days', value: '5_days'},
+        {label: '1 week', value: '1_week'},
+        {label: '2 weeks', value: '2_weeks'},
+        {label: '3 weeks', value: '3_weeks'},
+        {label: '1 month', value: '1_month'},
+        {label: '2 months', value: '2_months'},
+        {label: '3 months', value: '3_months'},
+        {label: '6 months', value: '6_months'},
+        {label: '1 year', value: '1_year'},
+        {label: '2 years', value: '2_years'},
+        {label: '3 years', value: '3_years'},
+        {label: 'Maintained space', value: 'maintained_space'},
+        {label: 'Forever', value: 'forever'},
+      ],
     };
   },
+  computed: {},
   methods: {
     convertToCamelCase(str) {
       return str.replace(/([-_][a-z])/g, (group) => group.toUpperCase().replace('-', '').replace('_', ''));
@@ -331,6 +418,54 @@ export default defineComponent({
         value: item.value || '',
       }));
     },
+    normalizeRecordingProfiles(list) {
+      const safeList = Array.isArray(list) ? list : [];
+      const seenKeys = new Set();
+      const normalized = safeList
+        .map((item, index) => {
+          const rawKey = String(item.key || item.name || `profile_${index + 1}`)
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, '_');
+          return {
+            id: item.id || `rp-${index}-${Date.now()}`,
+            key: rawKey === 'events' ? 'default' : rawKey,
+            name: String(item.name || '').trim(),
+            pathname: String(item.pathname || '').trim(),
+          };
+        })
+        .filter((item) => item.pathname)
+        .map((item, index) => {
+          let nextKey = item.key || `profile_${index + 1}`;
+          while (seenKeys.has(nextKey)) {
+            nextKey = `${nextKey}_${index + 1}`;
+          }
+          seenKeys.add(nextKey);
+          return {...item, key: nextKey};
+        });
+      if (!normalized.length) {
+        normalized.push({
+          id: `rp-default-${Date.now()}`,
+          key: 'default',
+          name: 'Default',
+          pathname: '%F_%R $u$n.$x',
+        });
+      }
+
+      return normalized.map((item, index) => ({
+        id: item.id || `rp-${index}-${Date.now()}`,
+        key: item.key || `profile_${index + 1}`,
+        name: item.name || item.key,
+        pathname: item.pathname || '%F_%R $u$n.$x',
+      }));
+    },
+    makeRecordingProfileKey(name) {
+      return String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || `profile_${Date.now()}`;
+    },
     addUserAgent() {
       this.userAgents.push({
         id: `ua-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
@@ -340,6 +475,53 @@ export default defineComponent({
     },
     removeUserAgent(id) {
       this.userAgents = this.userAgents.filter((agent) => agent.id !== id);
+    },
+    addRecordingProfile() {
+      this.recordingProfiles.push({
+        id: `rp-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+        key: `profile_${Date.now()}`,
+        name: '',
+        pathname: '$Q$n.$x',
+      });
+    },
+    recordingProfileActions(index) {
+      return [
+        {id: 'move_up', icon: 'arrow_upward', label: 'Move up', color: 'secondary', disabled: index === 0},
+        {
+          id: 'move_down',
+          icon: 'arrow_downward',
+          label: 'Move down',
+          color: 'secondary',
+          disabled: index >= this.recordingProfiles.length - 1,
+        },
+        {id: 'delete', icon: 'delete', label: 'Delete', color: 'negative', disabled: this.recordingProfiles.length <= 1},
+      ];
+    },
+    handleRecordingProfileAction(action, index) {
+      if (action.id === 'move_up') {
+        this.moveRecordingProfile(index, index - 1);
+      }
+      if (action.id === 'move_down') {
+        this.moveRecordingProfile(index, index + 1);
+      }
+      if (action.id === 'delete') {
+        this.removeRecordingProfile(this.recordingProfiles[index]?.id);
+      }
+    },
+    moveRecordingProfile(fromIndex, toIndex) {
+      if (toIndex < 0 || toIndex >= this.recordingProfiles.length) {
+        return;
+      }
+      const items = [...this.recordingProfiles];
+      const [item] = items.splice(fromIndex, 1);
+      items.splice(toIndex, 0, item);
+      this.recordingProfiles = items;
+    },
+    removeRecordingProfile(id) {
+      if (this.recordingProfiles.length <= 1) {
+        return;
+      }
+      this.recordingProfiles = this.recordingProfiles.filter((profile) => profile.id !== id);
     },
     fetchSettings: function() {
       // Fetch current settings
@@ -363,7 +545,10 @@ export default defineComponent({
         this.dvr = {
           pre_padding_mins: Number(appSettings.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
           post_padding_mins: Number(appSettings.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
+          retention_policy: appSettings.dvr?.retention_policy ?? this.defSet.dvr.retention_policy,
+          recording_profiles: appSettings.dvr?.recording_profiles ?? this.defSet.dvr.recording_profiles,
         };
+        this.recordingProfiles = this.normalizeRecordingProfiles(this.dvr.recording_profiles);
         this.uiSettings = {
           enable_channel_health_highlight: Boolean(
             appSettings.ui_settings?.enable_channel_health_highlight
@@ -385,6 +570,9 @@ export default defineComponent({
         }
         if (!this.dvr) {
           this.dvr = {...this.defSet.dvr};
+        }
+        if (!this.recordingProfiles.length) {
+          this.recordingProfiles = this.normalizeRecordingProfiles(this.defSet.dvr.recording_profiles);
         }
         if (!this.uiSettings) {
           this.uiSettings = {...this.defSet.uiSettings};
@@ -423,6 +611,12 @@ export default defineComponent({
       postData.settings.dvr = {
         pre_padding_mins: Number(this.dvr?.pre_padding_mins ?? this.defSet.dvr.pre_padding_mins),
         post_padding_mins: Number(this.dvr?.post_padding_mins ?? this.defSet.dvr.post_padding_mins),
+        retention_policy: this.dvr?.retention_policy ?? this.defSet.dvr.retention_policy,
+        recording_profiles: this.normalizeRecordingProfiles(this.recordingProfiles).map((profile) => ({
+          key: profile.key || this.makeRecordingProfileKey(profile.name || profile.key),
+          name: profile.name || profile.key,
+          pathname: profile.pathname,
+        })),
       };
       postData.settings.ui_settings = {
         enable_channel_health_highlight: Boolean(

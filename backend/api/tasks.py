@@ -7,6 +7,7 @@ import logging
 import re
 from types import SimpleNamespace
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
 from backend.utils import is_truthy
 
 scheduler = AsyncIOScheduler()
@@ -225,9 +226,43 @@ async def sync_user_to_tvh(config, user_id):
         tvh_user_access_comment_prefix,
         tvh_user_password_comment_prefix,
     )
+    from backend.dvr_profiles import (
+        build_user_profile_name,
+        normalize_retention_policy,
+        read_recording_profiles_from_settings,
+    )
     try:
         await ensure_tvh_sync_user(config)
+        settings = config.read_settings()
+        dvr_settings = settings.get("settings", {}).get("dvr", {}) or {}
+        pre_padding = max(0, int(dvr_settings.get("pre_padding_mins", 2) or 2))
+        post_padding = max(0, int(dvr_settings.get("post_padding_mins", 5) or 5))
+        retention_policy = normalize_retention_policy(getattr(user, "dvr_retention_policy", "forever"))
+        dvr_access_mode = str(getattr(user, "dvr_access_mode", "none") or "none").strip().lower()
+        if is_admin:
+            dvr_access_mode = "read_all_write_own"
+        profile_templates = read_recording_profiles_from_settings(settings)
+        default_template = profile_templates[0] if profile_templates else None
+        default_dvr_config = ""
+        dvr_permissions = []
+        if dvr_access_mode == "read_write_own":
+            dvr_permissions = ["basic", "htsp"]
+        elif dvr_access_mode == "read_all_write_own":
+            dvr_permissions = ["basic", "htsp", "all"]
         async with await get_tvh(config) as tvh:
+            if dvr_permissions:
+                for profile in profile_templates:
+                    profile_name = build_user_profile_name(user.username, profile.get("name"))
+                    ensured_profile = await tvh.ensure_user_recorder_profile(
+                        user.username,
+                        profile_name=profile_name,
+                        pathname=profile.get("pathname"),
+                        pre_padding_mins=pre_padding,
+                        post_padding_mins=post_padding,
+                        retention_policy=retention_policy,
+                    )
+                    if default_template and profile.get("key") == default_template.get("key"):
+                        default_dvr_config = ensured_profile or ""
             await tvh.upsert_user(
                 user.username,
                 user.streaming_key,
@@ -235,12 +270,24 @@ async def sync_user_to_tvh(config, user_id):
                 enabled=user.is_active and is_streamer,
                 access_comment=f"{tvh_user_access_comment_prefix}:{user.username}",
                 password_comment=f"{tvh_user_password_comment_prefix}:{user.username}",
+                dvr_config=default_dvr_config or None,
+                dvr_permissions=dvr_permissions,
             )
     except Exception as exc:
         logger.exception("Failed to sync TVH user - user_id=%s", user_id)
         await set_user_tvh_sync_status(user_id, "failed", str(exc))
         return
     await set_user_tvh_sync_status(user_id, "success", None)
+
+
+async def sync_all_users_to_tvh(config):
+    logger.info("Syncing all users to TVH")
+    from backend.models import Session, User
+    async with Session() as session:
+        result = await session.execute(select(User.id))
+        user_ids = [row[0] for row in result.all()]
+    for user_id in user_ids:
+        await sync_user_to_tvh(config, user_id)
 
 
 async def map_new_tvh_services(app):

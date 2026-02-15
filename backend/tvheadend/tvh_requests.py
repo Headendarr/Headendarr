@@ -4,10 +4,12 @@
 import json
 import logging
 import os
+import re
 import aiohttp
 import asyncio
 
 from backend.config import flask_run_port
+from backend.dvr_profiles import normalize_retention_policy, retention_policy_to_tvh_days
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
     append_stream_key,
@@ -15,6 +17,17 @@ from backend.streaming import (
 )
 
 logger = logging.getLogger('tic.tvh_requests')
+
+_SAFE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _build_user_scoped_pathname(username: str, pathname: str) -> str:
+    safe_username = _SAFE_SEGMENT_RE.sub("_", str(username or "user")).strip("._-") or "user"
+    raw_pathname = str(pathname or "").strip()
+    normalized = raw_pathname.lstrip("/")
+    if not normalized:
+        normalized = "$t/$t-$c-%F_%R$n.$x"
+    return f"{safe_username}/{normalized}"
 
 # TVheadend API URLs:
 api_config_save = "config/save"
@@ -49,6 +62,7 @@ api_epggrab_list = "epggrab/module/list"
 api_dvr_entry_grid = "dvr/entry/grid"
 api_dvr_entry_create = "dvr/entry/create"
 api_dvr_entry_cancel = "dvr/entry/cancel"
+api_dvr_config_create = "dvr/config/create"
 api_status_subscriptions = "status/subscriptions"
 api_status_subscriptions_grid = "status/subscriptions/grid"
 
@@ -371,13 +385,13 @@ class Tvheadend:
             raise last_exc
         return []
 
-    async def create_dvr_entry(self, channel_uuid, start_ts, stop_ts, title, description=None):
+    async def create_dvr_entry(self, channel_uuid, start_ts, stop_ts, title, description=None, config_name=""):
         conf = {
             "channel": channel_uuid,
             "start": int(start_ts),
             "stop": int(stop_ts),
             "title": {"eng": title},
-            "config_name": "",
+            "config_name": config_name or "",
         }
         if description:
             conf["description"] = {"eng": description}
@@ -586,6 +600,8 @@ class Tvheadend:
         enabled=True,
         access_comment=None,
         password_comment=None,
+        dvr_config=None,
+        dvr_permissions=None,
     ):
         access_comment = access_comment or f"{tvh_user_access_comment_prefix}:{username}"
         password_comment = password_comment or f"{tvh_user_password_comment_prefix}:{username}"
@@ -613,6 +629,10 @@ class Tvheadend:
         access_node["enabled"] = enabled
         access_node["admin"] = True if is_admin else False
         access_node["webui"] = True if is_admin else False
+        if dvr_config is not None:
+            access_node["dvr_config"] = dvr_config
+        if dvr_permissions is not None:
+            access_node["dvr"] = dvr_permissions
         await self.idnode_save(access_node)
 
         password_node = tvh_u_password.copy()
@@ -665,15 +685,83 @@ class Tvheadend:
                 node['uuid'] = profile['key']
                 await self.idnode_save(node)
 
-    async def configure_default_recorder_profile(self, pre_padding_mins=2, post_padding_mins=5):
+    async def configure_default_recorder_profile(self, pre_padding_mins=2, post_padding_mins=5, retention_policy="forever"):
+        retention_days, removal_days = retention_policy_to_tvh_days(retention_policy)
+        recordings_root = (os.environ.get("TVH_RECORDINGS_PATH") or "/recordings").strip() or "/recordings"
+        if self.local_conn:
+            try:
+                os.makedirs(recordings_root, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Failed to create recordings root '%s': %s", recordings_root, exc)
         response = await self.idnode_load({'enum': 1, 'class': 'dvrconfig'})
         for profile in response.get('entries', []):
             if profile['val'] == "(Default profile)":
                 node = default_recorder_profile_template.copy()
+                node["storage"] = recordings_root
                 node["pre-extra-time"] = int(pre_padding_mins or 0)
                 node["post-extra-time"] = int(post_padding_mins or 0)
+                node["retention-days"] = int(retention_days)
+                node["removal-days"] = int(removal_days)
                 node['uuid'] = profile['key']
                 await self.idnode_save(node)
+
+    async def ensure_user_recorder_profile(
+        self,
+        username,
+        profile_name,
+        pathname,
+        pre_padding_mins=2,
+        post_padding_mins=5,
+        retention_policy="forever",
+    ):
+        try:
+            retention_days, removal_days = retention_policy_to_tvh_days(retention_policy)
+            recordings_root = (os.environ.get("TVH_RECORDINGS_PATH") or "/recordings").strip() or "/recordings"
+            scoped_pathname = _build_user_scoped_pathname(username, pathname)
+            if self.local_conn:
+                try:
+                    os.makedirs(recordings_root, exist_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to create recordings root '%s' for user '%s': %s",
+                        recordings_root,
+                        username,
+                        exc,
+                    )
+            response = await self.idnode_load({'enum': 1, 'class': 'dvrconfig'})
+            profile_uuid = None
+            for profile in response.get('entries', []):
+                if profile.get('val') == profile_name:
+                    profile_uuid = profile.get('key')
+                    break
+
+            node = default_recorder_profile_template.copy()
+            node["name"] = profile_name
+            node["comment"] = f"TIC user profile for {username}"
+            node["pathname"] = scoped_pathname
+            node["storage"] = recordings_root
+            node["pre-extra-time"] = int(pre_padding_mins or 0)
+            node["post-extra-time"] = int(post_padding_mins or 0)
+            node["retention-days"] = int(retention_days)
+            node["removal-days"] = int(removal_days)
+
+            if not profile_uuid:
+                url = f"{self.api_url}/{api_dvr_config_create}"
+                payload = {"conf": json.dumps(node)}
+                response = await self.__post(url, payload=payload)
+                try:
+                    created = json.loads(response)
+                    profile_uuid = created.get("uuid")
+                except json.JSONDecodeError:
+                    profile_uuid = None
+
+            if profile_uuid:
+                node["uuid"] = profile_uuid
+                await self.idnode_save(node)
+                return profile_name
+        except Exception as exc:
+            logger.warning("Failed to ensure user recorder profile '%s': %s", profile_name, exc)
+        return ""
 
     async def configure_timeshift(self):
         url = f"{self.api_url}/{api_timeshift_config_save}"
@@ -862,6 +950,15 @@ async def get_tvh(config):
     return Tvheadend(tvh_host, tvh_port, tvh_path, tvh_username, tvh_password, tvh_local)
 
 
+async def get_tvh_with_credentials(config, username, password):
+    conn = await config.tvh_connection_settings()
+    tvh_local = conn.get('tvh_local', False)
+    tvh_host = conn.get('tvh_host')
+    tvh_port = conn.get('tvh_port')
+    tvh_path = conn.get('tvh_path')
+    return Tvheadend(tvh_host, tvh_port, tvh_path, username, password, tvh_local)
+
+
 async def configure_tvh(config):
     settings = config.read_settings()
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
@@ -898,7 +995,8 @@ async def configure_tvh(config):
         dvr_settings = settings.get('settings', {}).get('dvr', {})
         pre_padding_mins = dvr_settings.get('pre_padding_mins', 2)
         post_padding_mins = dvr_settings.get('post_padding_mins', 5)
-        await tvh.configure_default_recorder_profile(pre_padding_mins, post_padding_mins)
+        retention_policy = normalize_retention_policy(dvr_settings.get('retention_policy'))
+        await tvh.configure_default_recorder_profile(pre_padding_mins, post_padding_mins, retention_policy)
         # Configure the timeshift settings
         await tvh.configure_timeshift()
 

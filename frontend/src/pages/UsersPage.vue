@@ -54,6 +54,9 @@
                       </q-chip>
                     </q-item-label>
                     <q-item-label caption> Roles: {{ (user.roles || []).join(', ') || 'None' }}</q-item-label>
+                    <q-item-label caption>
+                      DVR: {{ dvrModeLabel(user.dvr_access_mode) }}
+                    </q-item-label>
                     <q-item-label caption class="row items-center q-gutter-xs no-wrap">
                       <span class="text-weight-medium">Streaming key:</span>
                       <span class="text-mono ellipsis">{{ user.streaming_key || '-' }}</span>
@@ -135,6 +138,42 @@
             :clearable="false"
             :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
           />
+
+          <q-banner
+            v-if="form.roles.includes('admin')"
+            rounded
+            dense
+            class="bg-blue-1 text-primary"
+          >
+            Note: Admin users always have DVR access to everyone's recordings.
+          </q-banner>
+          <TicSelectInput
+            v-model="form.dvr_access_mode"
+            label="DVR Access"
+            description="Choose whether this streaming user can access DVR recordings."
+            :options="dvrAccessOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+            :disable="form.roles.includes('admin')"
+          />
+          <template v-if="form.dvr_access_mode !== 'none'">
+            <TicSelectInput
+              v-model="form.dvr_retention_policy"
+              label="Retention policy"
+              :options="retentionPolicyOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              :disable="form.roles.includes('admin')"
+            />
+          </template>
         </q-form>
       </div>
     </TicDialogWindow>
@@ -147,48 +186,91 @@
       @action="onEditDialogAction"
     >
       <div class="q-pa-md">
-        <q-form class="tic-form-layout">
-          <TicSelectInput
-            v-model="form.roles"
-            label="Roles"
-            description="Assign one or more access roles."
-            :options="roleOptions"
-            option-label="label"
-            option-value="value"
-            :emit-value="true"
-            :map-options="true"
-            :multiple="true"
-            :clearable="false"
-            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-          />
+        <q-form class="tic-form-layout users-edit-form">
+          <div class="users-edit-section">
+            <TicToggleInput
+              v-model="form.is_active"
+              label="Enabled"
+              description="Disable this account to block logins and API use."
+            />
 
-          <TicToggleInput
-            v-model="form.is_active"
-            label="Active"
-            description="Disable this account to block logins and API use."
-          />
+            <TicSelectInput
+              v-model="form.roles"
+              label="Roles"
+              description="Assign one or more access roles."
+              :options="roleOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :multiple="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+            />
 
-          <TicTextInput
-            v-model="form.streaming_key"
-            readonly
-            label="Streaming Key"
-            description="Used for playlist, EPG, and HDHomeRun endpoints."
-          >
-            <template #append>
-              <TicActionButton
-                icon="content_copy"
-                color="grey-8"
-                tooltip="Copy streaming key"
-                @click="copyStreamingKey(form.streaming_key)"
-              />
-              <TicActionButton
-                icon="refresh"
-                color="warning"
-                tooltip="Rotate streaming key"
-                @click="confirmRotateStreamingKey(editUser)"
+            <TicTextInput
+              v-model="form.streaming_key"
+              readonly
+              label="Streaming Key"
+              description="Used for playlist, EPG, and HDHomeRun endpoints."
+            >
+              <template #append>
+                <TicActionButton
+                  icon="content_copy"
+                  color="grey-8"
+                  tooltip="Copy streaming key"
+                  @click="copyStreamingKey(form.streaming_key)"
+                />
+                <TicActionButton
+                  icon="refresh"
+                  color="warning"
+                  tooltip="Rotate streaming key"
+                  @click="confirmRotateStreamingKey(editUser)"
+                />
+              </template>
+            </TicTextInput>
+          </div>
+
+          <q-separator class="users-edit-separator" />
+
+          <div class="users-edit-heading">DVR</div>
+          <div class="users-edit-section">
+            <q-banner
+              v-if="isAdminUser(editUser)"
+              rounded
+              dense
+              class="bg-blue-1 text-primary"
+            >
+              NOTE: Admin users always have DVR access to everyone's recordings.
+            </q-banner>
+            <TicSelectInput
+              v-model="form.dvr_access_mode"
+              label="DVR Access"
+              description="Choose whether this streaming user can access DVR recordings."
+              :options="dvrAccessOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              :disable="isAdminUser(editUser)"
+            />
+            <template v-if="form.dvr_access_mode !== 'none'">
+              <TicSelectInput
+                v-model="form.dvr_retention_policy"
+                label="Retention policy"
+                :options="retentionPolicyOptions"
+                option-label="label"
+                option-value="value"
+                :emit-value="true"
+                :map-options="true"
+                :clearable="false"
+                :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                :disable="isAdminUser(editUser)"
               />
             </template>
-          </TicTextInput>
+          </div>
         </q-form>
       </div>
     </TicDialogWindow>
@@ -241,10 +323,34 @@ export default {
         roles: [],
         is_active: true,
         streaming_key: '',
+        dvr_access_mode: 'none',
+        dvr_retention_policy: 'forever',
       },
       roleOptions: [
         {label: 'Admin', value: 'admin'},
         {label: 'Streamer', value: 'streamer'},
+      ],
+      dvrAccessOptions: [
+        {label: 'No DVR access', value: 'none'},
+        {label: 'Access own recordings only', value: 'read_write_own'},
+        {label: "Grant access to everyone's recordings", value: 'read_all_write_own'},
+      ],
+      retentionPolicyOptions: [
+        {label: '1 day', value: '1_day'},
+        {label: '3 days', value: '3_days'},
+        {label: '5 days', value: '5_days'},
+        {label: '1 week', value: '1_week'},
+        {label: '2 weeks', value: '2_weeks'},
+        {label: '3 weeks', value: '3_weeks'},
+        {label: '1 month', value: '1_month'},
+        {label: '2 months', value: '2_months'},
+        {label: '3 months', value: '3_months'},
+        {label: '6 months', value: '6_months'},
+        {label: '1 year', value: '1_year'},
+        {label: '2 years', value: '2_years'},
+        {label: '3 years', value: '3_years'},
+        {label: 'Maintained space', value: 'maintained_space'},
+        {label: 'Forever', value: 'forever'},
       ],
     };
   },
@@ -304,6 +410,15 @@ export default {
     },
     roleFilter() {
       this.resetVisibleUsers();
+    },
+    'form.roles': {
+      deep: true,
+      handler(nextRoles) {
+        const roles = Array.isArray(nextRoles) ? nextRoles : [];
+        if (roles.includes('admin')) {
+          this.form.dvr_access_mode = 'read_all_write_own';
+        }
+      },
     },
   },
   methods: {
@@ -366,6 +481,8 @@ export default {
         roles: ['streamer'],
         is_active: true,
         streaming_key: '',
+        dvr_access_mode: 'none',
+        dvr_retention_policy: 'forever',
       };
       this.showCreate = true;
     },
@@ -379,12 +496,16 @@ export default {
         this.$q.notify({color: 'negative', message: 'Username and password are required'});
         return;
       }
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : [];
+      const isAdmin = roles.includes('admin');
       this.creating = true;
       try {
         await axios.post('/tic-api/users', {
           username: this.form.username,
           password: this.form.password,
-          roles: this.form.roles,
+          roles,
+          dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
+          dvr_retention_policy: this.form.dvr_retention_policy,
         });
         this.showCreate = false;
         await this.loadUsers();
@@ -395,11 +516,14 @@ export default {
       }
     },
     openEditDialog(user) {
+      const isAdmin = this.isAdminUser(user);
       this.editUser = user;
       this.form = {
         roles: [...(user.roles || [])],
         is_active: Boolean(user.is_active),
         streaming_key: user.streaming_key || '',
+        dvr_access_mode: isAdmin ? 'read_all_write_own' : (user.dvr_access_mode || 'none'),
+        dvr_retention_policy: user.dvr_retention_policy || 'forever',
       };
       this.showEdit = true;
     },
@@ -412,11 +536,15 @@ export default {
       if (!this.editUser) {
         return;
       }
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : [];
+      const isAdmin = roles.includes('admin');
       this.saving = true;
       try {
         await axios.put(`/tic-api/users/${this.editUser.id}`, {
-          roles: this.form.roles,
+          roles,
           is_active: this.form.is_active,
+          dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
+          dvr_retention_policy: this.form.dvr_retention_policy,
         });
         this.showEdit = false;
         await this.loadUsers();
@@ -474,6 +602,14 @@ export default {
       await copyToClipboard(streamingKey);
       this.$q.notify({color: 'positive', message: 'Streaming key copied to clipboard'});
     },
+    dvrModeLabel(mode) {
+      const found = this.dvrAccessOptions.find((item) => item.value === mode);
+      return found ? found.label : 'No DVR access';
+    },
+    isAdminUser(user) {
+      const roles = Array.isArray(user?.roles) ? user.roles : [];
+      return roles.includes('admin');
+    },
   },
   mounted() {
     this.loadUsers();
@@ -488,6 +624,22 @@ export default {
 
 .users-infinite-anchor {
   min-height: 1px;
+}
+
+.users-edit-heading {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--q-primary);
+}
+
+.users-edit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.users-edit-separator {
+  margin: 8px 0;
 }
 
 @media (max-width: 1023px) {

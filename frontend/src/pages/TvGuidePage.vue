@@ -395,6 +395,7 @@ export default defineComponent({
     const channels = ref([]);
     const programmes = ref([]);
     const recordings = ref([]);
+    const recordingProfiles = ref([]);
     const hoveredChannelId = ref(null);
     const expandedProgramId = ref(null);
     const expandedSizes = ref({});
@@ -688,6 +689,54 @@ export default defineComponent({
       }
     };
 
+    const loadRecordingProfiles = async () => {
+      try {
+        const response = await axios.get('/tic-api/recording-profiles');
+        recordingProfiles.value = response.data.data || [];
+      } catch (error) {
+        console.error('Failed to load recording profiles:', error);
+        recordingProfiles.value = [{key: 'default', name: 'Default'}];
+      }
+    };
+
+    const promptRecordingProfile = async () => {
+      const options = (recordingProfiles.value || []).map((profile) => ({
+        label: profile.name || profile.key || 'Profile',
+        value: profile.key || null,
+      }));
+      if (!options.length) {
+        return null;
+      }
+      if (options.length === 1) {
+        return options[0].value;
+      }
+
+      return await new Promise((resolve) => {
+        const state = {selected: options[0].value};
+        if (!options.some((item) => item.value === state.selected)) {
+          state.selected = options[0].value;
+        }
+        $q.dialog({
+          title: 'Select Recording Profile',
+          message: 'Choose the recording profile/pathname for this schedule.',
+          options: {
+            type: 'radio',
+            model: state.selected,
+            items: options,
+            isValid: (val) => !!val,
+          },
+          cancel: true,
+          persistent: true,
+          ok: {
+            label: 'Continue',
+            color: 'positive',
+          },
+        }).onOk((value) => resolve(value || options[0].value))
+          .onCancel(() => resolve(null))
+          .onDismiss(() => resolve(null));
+      });
+    };
+
     const fetchGuideRange = async (rangeStart, rangeEnd, {prepend = false} = {}) => {
       if (rangeStart < minStartTs) {
         rangeStart = minStartTs;
@@ -790,6 +839,10 @@ export default defineComponent({
     };
 
     const recordProgramme = async (channel, programme) => {
+      const recordingProfileKey = await promptRecordingProfile();
+      if (!recordingProfileKey) {
+        return;
+      }
       try {
         await axios.post('/tic-api/recordings', {
           channel_id: channel.id,
@@ -798,6 +851,7 @@ export default defineComponent({
           start_ts: programme.start_ts,
           stop_ts: programme.stop_ts,
           epg_programme_id: programme.id,
+          recording_profile_key: recordingProfileKey,
         });
         $q.notify({color: 'positive', message: 'Recording scheduled'});
         await loadRecordings();
@@ -820,11 +874,16 @@ export default defineComponent({
     };
 
     const recordSeries = async (channel, programme) => {
+      const recordingProfileKey = await promptRecordingProfile();
+      if (!recordingProfileKey) {
+        return;
+      }
       try {
         await axios.post('/tic-api/recording-rules', {
           channel_id: channel.id,
           title_match: programme.title,
           lookahead_days: 7,
+          recording_profile_key: recordingProfileKey,
         });
         $q.notify({color: 'positive', message: 'Recording rule created'});
       } catch (error) {
@@ -1133,7 +1192,7 @@ export default defineComponent({
         refreshCurrentGuideWindow();
       }, 5 * 60 * 1000);
       fetchGuide();
-      await loadRecordings();
+      await Promise.all([loadRecordings(), loadRecordingProfiles()]);
       pollRecordings();
     });
     onBeforeUnmount(() => {
@@ -1245,6 +1304,7 @@ export default defineComponent({
       channels,
       programmes,
       recordings,
+      recordingProfiles,
       hoveredChannelId,
       guideStickyTop,
       expandedProgramId,
