@@ -8,6 +8,9 @@ body:
     attributes:
       value: |
         Thanks for taking the time to help improve!
+
+        ---
+        **CONTRIBUTORS:** Please note that all pull requests must be targeted at the `staging` branch. Pull requests against `master` will be closed.
   - type: textarea
     id: problem
     attributes:

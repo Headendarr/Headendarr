@@ -9,6 +9,9 @@ body:
     attributes:
       value: |
         **THIS IS NOT THE PLACE TO ASK FOR SUPPORT!** Please use [Discord](https://unmanic.app/discord) for support issues.
+
+        ---
+        **CONTRIBUTORS:** Please note that all pull requests must be targeted at the `staging` branch. Pull requests against `master` will be closed.
   - type: textarea
     id: description
     attributes:

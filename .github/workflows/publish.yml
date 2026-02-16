@@ -1,11 +1,10 @@
-name: Build All Packages CI
+name: Build & Publish
 
 on:
+  workflow_dispatch:
   push:
-    branches: ["dev-**", "pr-**", "staging", "master"]
+    branches: ["feature-**", "fix-**", "dev-**", "pr-**", "staging", "master"]
     tags: ["**"]
-  pull_request:
-    branches: ["staging", "master"]
   schedule:
     # At 02:30 on Saturday
     - cron: "30 2 * * 6"
@@ -15,7 +14,7 @@ jobs:
     name: Build Docker Image
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     strategy:
       matrix:
@@ -26,6 +25,9 @@ jobs:
       # ---
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # ---
       - name: Set up QEMU
@@ -60,11 +62,25 @@ jobs:
           DOCKER_HUB_IMAGE=docker.io/josh5/${SERVICE_NAME:?}
           GHCR_IMAGE=ghcr.io/${ORG:?}/${SERVICE_NAME:?}
 
+          # Get version from frontend/package.json
+          APP_VERSION=$(jq -r .version frontend/package.json)
+          echo "app_version:${APP_VERSION}"
+          echo "app_version=${APP_VERSION}" >> $GITHUB_OUTPUT
+
           DOCKER_TAGS=""
           DOCKER_PUSH="false"
+          CREATE_GIT_TAG="false"
+
           if [[ ${GITHUB_REF} == refs/heads/master ]]; then
             DOCKER_PUSH="true"
             DOCKER_TAGS="${DOCKER_TAGS}${DOCKER_HUB_IMAGE}:latest,${GHCR_IMAGE}:latest,"
+            
+            # Check if this version already has a tag
+            if ! git rev-parse "v${APP_VERSION}" >/dev/null 2>&1; then
+              echo "New version detected: v${APP_VERSION}"
+              DOCKER_TAGS="${DOCKER_TAGS}${DOCKER_HUB_IMAGE}:${APP_VERSION},${GHCR_IMAGE}:${APP_VERSION},"
+              CREATE_GIT_TAG="true"
+            fi
           elif [[ ${GITHUB_REF} == refs/heads/staging ]]; then
             DOCKER_PUSH="true"
             DOCKER_TAGS="${DOCKER_TAGS}${DOCKER_HUB_IMAGE}:staging,${GHCR_IMAGE}:staging,"
@@ -107,6 +123,9 @@ jobs:
 
           echo "docker_build_date:${BUILD_DATE:?}" 
           echo "docker_build_date=${BUILD_DATE:?}" >> $GITHUB_OUTPUT
+
+          echo "create_git_tag:${CREATE_GIT_TAG}"
+          echo "create_git_tag=${CREATE_GIT_TAG}" >> $GITHUB_OUTPUT
 
       # ---
       - name: Log into GHCR registry
@@ -203,3 +222,43 @@ jobs:
             type=gha,scope=${{ steps.prepare.outputs.service_name }}-frontend-build-stage
             type=gha,scope=${{ steps.prepare.outputs.service_name }}-backend-build-stage
           cache-to: type=gha,scope=${{ steps.prepare.outputs.service_name }}-main,mode=max
+
+      # ---
+      - name: Check Tag Already Exists
+        uses: mukunku/tag-exists-action@bdad1eaa119ce71b150b952c97351c75025c06a9 #v1.6.0
+        id: check_tag_exists
+        if: success() && github.ref == 'refs/heads/master' && matrix.base-image == 'ghcr.io/tvheadend/tvheadend:edge-debian'
+        with:
+          tag: "v${{ steps.prepare.outputs.app_version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---
+      - name: Generate Tagged Release
+        uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174 #v1.16.0
+        if: success() && github.ref == 'refs/heads/master' && matrix.base-image == 'ghcr.io/tvheadend/tvheadend:edge-debian' && steps.check_tag_exists.outputs.exists == 'false'
+        with:
+          name: "Release: v${{ steps.prepare.outputs.app_version }}"
+          body: "Automated versioned release for Headendarr v${{ steps.prepare.outputs.app_version }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
+          allowUpdates: false
+          skipIfReleaseExists: true
+          tag: "v${{ steps.prepare.outputs.app_version }}"
+          commit: master
+
+      # ---
+      - name: Update Latest Release
+        uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174 #v1.16.0
+        if: success() && github.ref == 'refs/heads/master' && matrix.base-image == 'ghcr.io/tvheadend/tvheadend:edge-debian'
+        with:
+          name: "Latest Development Build"
+          body: "Latest development release (bleeding edge) from the master branch."
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
+          allowUpdates: true
+          removeArtifacts: true
+          replacesArtifacts: true
+          tag: latest
+          commit: master
+          prerelease: true

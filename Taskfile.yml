@@ -84,3 +84,14 @@ tasks:
     desc: Tail docs dev server logs
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} docs
+
+  set-version:
+    desc: Set the version in frontend/package.json
+    cmds:
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "Error: No version provided. Usage: task set-version -- 1.0.1"
+          exit 1
+        fi
+        cd frontend && npm version "{{.CLI_ARGS}}" --no-git-tag-version
+        echo "Version updated to {{.CLI_ARGS}} in frontend/package.json and package-lock.json"
