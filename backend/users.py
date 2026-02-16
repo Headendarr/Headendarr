@@ -92,6 +92,8 @@ async def create_user(username: str, password: str, role_names=None):
                 dvr_retention_policy="forever",
             )
             for role_name in role_names:
+                if not isinstance(role_name, str):
+                    continue
                 role = roles.get(role_name)
                 if role:
                     user.roles.append(role)
@@ -114,6 +116,8 @@ async def update_user_roles(user_id: int, role_names):
                 return None
             user.roles.clear()
             for role_name in role_names:
+                if not isinstance(role_name, str):
+                    continue
                 role = roles.get(role_name)
                 if role:
                     user.roles.append(role)

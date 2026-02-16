@@ -175,6 +175,7 @@ async def _build_stream_source_index():
             Channel.id.label("channel_id"),
             Channel.name.label("channel_name"),
             Channel.logo_url.label("channel_logo_url"),
+            Channel.tvh_uuid.label("tvh_uuid"),
             ChannelSource.playlist_stream_name.label("stream_name"),
             ChannelSource.playlist_stream_url.label("stream_url"),
             ChannelSource.priority.label("priority"),
@@ -187,26 +188,39 @@ async def _build_stream_source_index():
         rows = result.mappings().all()
 
     exact_map = {}
+    tvh_uuid_map = {}
+    name_map = {}
     for row in rows:
         stream_candidates = _candidate_urls(row.get("stream_url"))
-        if not stream_candidates:
-            continue
-        stream_url = stream_candidates[0]
         payload = {
             "channel_id": row.get("channel_id"),
             "channel_name": row.get("channel_name"),
             "channel_logo_url": row.get("channel_logo_url"),
             "stream_name": row.get("stream_name"),
-            "stream_url": stream_url,
             "priority": str(row.get("priority") or ""),
         }
         priority_rank = _priority_rank(payload.get("priority"))
+        ranking = (0, priority_rank)  # Default ranking for non-URL matches
+
+        tvh_uuid = row.get("tvh_uuid")
+        if tvh_uuid:
+            tvh_uuid_map[tvh_uuid] = payload
+
+        channel_name = row.get("channel_name")
+        if channel_name:
+            existing = name_map.get(channel_name)
+            if not existing or ranking < existing.get("_ranking", (1_000_000, 1_000_000)):
+                name_map[channel_name] = {**payload, "_ranking": ranking}
+
+        if not stream_candidates:
+            continue
+        payload["stream_url"] = stream_candidates[0]
         for depth, candidate_url in enumerate(stream_candidates):
             ranking = (depth, priority_rank)
             existing = exact_map.get(candidate_url)
             if not existing or ranking < existing.get("_ranking", (1_000_000, 1_000_000)):
                 exact_map[candidate_url] = {**payload, "_ranking": ranking}
-    return {"exact": exact_map}
+    return {"exact": exact_map, "tvh_uuid": tvh_uuid_map, "name": name_map}
 
 
 def _resolve_stream_target(details: str | None, source_index: dict, related_urls: list[str] | None = None) -> dict:
@@ -217,10 +231,12 @@ def _resolve_stream_target(details: str | None, source_index: dict, related_urls
                 candidates.append(candidate)
 
     exact_map = source_index.get("exact", {})
+    tvh_uuid_map = source_index.get("tvh_uuid", {})
+    name_map = source_index.get("name", {})
 
     matched_source = None
     for candidate in candidates:
-        matched_source = exact_map.get(candidate)
+        matched_source = exact_map.get(candidate) or tvh_uuid_map.get(candidate) or name_map.get(candidate)
         if matched_source:
             break
 

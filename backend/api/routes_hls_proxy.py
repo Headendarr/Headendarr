@@ -266,8 +266,20 @@ class StreamActivityTracker:
             },
         }
 
-    async def mark(self, decoded_url, event_type="stream_start", connection_id=None, endpoint_override=None):
-        user = self._request_user()
+    async def mark(
+        self,
+        decoded_url,
+        event_type="stream_start",
+        connection_id=None,
+        endpoint_override=None,
+        user=None,
+        ip_address=None,
+        user_agent=None,
+        perform_audit=True,
+        details_override=None,
+    ):
+        if not user:
+            user = self._request_user()
         if is_tvh_backend_stream_user(user):
             return
         user_id = getattr(user, "id", None)
@@ -277,8 +289,14 @@ class StreamActivityTracker:
         connection_idx_key = f"{actor_scope}:{connection_id}" if connection_id else None
         key = None
         now = time.time()
-        ip_address = get_request_client_ip()
-        user_agent = request.headers.get("User-Agent")
+        if ip_address is None:
+            ip_address = get_request_client_ip()
+        if user_agent is None:
+            try:
+                user_agent = request.headers.get("User-Agent")
+            except Exception:
+                user_agent = None
+
         history_entry = None
         async with self.activity_lock:
             if connection_idx_key:
@@ -290,8 +308,13 @@ class StreamActivityTracker:
                 key = self._activity_key_unlocked(user_id, username, decoded_url)
             entry = self.activity.get(key)
             if not entry:
-                base_endpoint = endpoint_override or request.path
-                base_details = decoded_url
+                base_endpoint = endpoint_override
+                if not base_endpoint:
+                    try:
+                        base_endpoint = request.path
+                    except Exception:
+                        base_endpoint = ""
+                base_details = details_override or decoded_url
                 base_user_agent = user_agent
                 base_ip = ip_address
                 if history_entry:
@@ -311,13 +334,14 @@ class StreamActivityTracker:
                     "user_agent": base_user_agent,
                     "connection_id": connection_id,
                 }
-                audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
-                await audit_stream_event(
-                    audit_user,
-                    event_type,
-                    endpoint_override or request.path,
-                    details=decoded_url,
-                )
+                if perform_audit:
+                    audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
+                    await audit_stream_event(
+                        audit_user,
+                        event_type,
+                        base_endpoint,
+                        details=base_details,
+                    )
                 entry = self.activity[key]
             else:
                 entry["last_seen"] = now
@@ -333,8 +357,9 @@ class StreamActivityTracker:
                 self._store_connection_history_unlocked(connection_idx_key, entry, now, disconnected=False)
             self._register_aliases_unlocked(actor_scope, key, decoded_url, now)
 
-    async def touch(self, decoded_url, connection_id=None):
-        user = self._request_user()
+    async def touch(self, decoded_url, connection_id=None, user=None, ip_address=None, user_agent=None):
+        if not user:
+            user = self._request_user()
         if is_tvh_backend_stream_user(user):
             return False
         user_id = getattr(user, "id", None)
@@ -342,8 +367,13 @@ class StreamActivityTracker:
         actor_scope = self._actor_scope(user_id, username)
         connection_idx_key = f"{actor_scope}:{connection_id}" if connection_id else None
         key = self._activity_key_unlocked(user_id, username, decoded_url)
-        ip_address = get_request_client_ip()
-        user_agent = request.headers.get("User-Agent")
+        if ip_address is None:
+            ip_address = get_request_client_ip()
+        if user_agent is None:
+            try:
+                user_agent = request.headers.get("User-Agent")
+            except Exception:
+                user_agent = None
         now = time.time()
         async with self.activity_lock:
             entry = None
@@ -380,8 +410,19 @@ class StreamActivityTracker:
                 return True
         return False
 
-    async def stop(self, decoded_url, connection_id=None, event_type="stream_stop", endpoint_override=None):
-        user = self._request_user()
+    async def stop(
+        self,
+        decoded_url,
+        connection_id=None,
+        event_type="stream_stop",
+        endpoint_override=None,
+        user=None,
+        ip_address=None,
+        user_agent=None,
+        perform_audit=True,
+    ):
+        if not user:
+            user = self._request_user()
         if is_tvh_backend_stream_user(user):
             return False
 
@@ -438,15 +479,16 @@ class StreamActivityTracker:
             if history_key:
                 self._store_connection_history_unlocked(history_key, removed, now, disconnected=True)
 
-        audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
-        await audit_stream_event(
-            audit_user,
-            event_type,
-            endpoint_override or removed.get("endpoint") or request.path,
-            details=removed.get("details") or decoded_url,
-            ip_address=removed.get("ip_address"),
-            user_agent=removed.get("user_agent"),
-        )
+        if perform_audit:
+            audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
+            await audit_stream_event(
+                audit_user,
+                event_type,
+                endpoint_override or removed.get("endpoint") or "",
+                details=removed.get("details") or decoded_url,
+                ip_address=ip_address or removed.get("ip_address"),
+                user_agent=user_agent or removed.get("user_agent"),
+            )
         return True
 
     async def register_playlist_parent(self, child_url: str, parent_url: str):
@@ -703,7 +745,7 @@ class StreamActivityTracker:
         return True
 
 
-_stream_activity_tracker = StreamActivityTracker()
+_stream_activity_tracker = StreamActivityTracker(activity_ttl=60)
 
 
 async def _mark_stream_activity(decoded_url, event_type="stream_start"):
@@ -754,8 +796,19 @@ async def upsert_stream_activity(
     connection_id: str | None = None,
     endpoint_override: str | None = None,
     start_event_type: str = "stream_start",
+    user=None,
+    ip_address=None,
+    user_agent=None,
+    perform_audit=True,
+    details_override: str | None = None,
 ):
-    touched = await _stream_activity_tracker.touch(decoded_url, connection_id=connection_id)
+    touched = await _stream_activity_tracker.touch(
+        decoded_url,
+        connection_id=connection_id,
+        user=user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
     if touched:
         return "touched"
     await _stream_activity_tracker.mark(
@@ -763,6 +816,11 @@ async def upsert_stream_activity(
         event_type=start_event_type,
         connection_id=connection_id,
         endpoint_override=endpoint_override,
+        user=user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        perform_audit=perform_audit,
+        details_override=details_override,
     )
     return "started"
 
@@ -772,12 +830,20 @@ async def stop_stream_activity(
     connection_id: str | None = None,
     event_type: str = "stream_stop",
     endpoint_override: str | None = None,
+    user=None,
+    ip_address=None,
+    user_agent=None,
+    perform_audit=True,
 ):
     return await _stream_activity_tracker.stop(
         decoded_url,
         connection_id=connection_id,
         event_type=event_type,
         endpoint_override=endpoint_override,
+        user=user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        perform_audit=perform_audit,
     )
 # A dictionary to keep track of active streams
 active_streams = {}

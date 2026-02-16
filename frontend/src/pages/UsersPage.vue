@@ -496,7 +496,7 @@ export default {
         this.$q.notify({color: 'negative', message: 'Username and password are required'});
         return;
       }
-      const roles = this.form.roles ? [this.form.roles] : [];
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
       const isAdmin = roles.includes('admin');
       this.creating = true;
       try {
@@ -536,7 +536,7 @@ export default {
       if (!this.editUser) {
         return;
       }
-      const roles = this.form.roles ? [this.form.roles] : [];
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
       const isAdmin = roles.includes('admin');
       this.saving = true;
       try {
