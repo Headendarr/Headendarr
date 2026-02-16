@@ -5,6 +5,9 @@ import itertools
 import asyncio
 import logging
 import re
+import os
+import json
+import aiofiles
 from types import SimpleNamespace
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -315,6 +318,39 @@ async def apply_dvr_rules(app):
 
 
 _TVH_ACTIVE_SUBSCRIPTIONS = {}
+_TVH_POLL_LOCK = Lock()
+
+
+def _tvh_poll_state_path(config):
+    return os.path.join(config.config_path, "cache", "tvh_poll_state.json")
+
+
+async def _load_tvh_poll_state(config):
+    global _TVH_ACTIVE_SUBSCRIPTIONS
+    path = _tvh_poll_state_path(config)
+    if not os.path.exists(path):
+        return
+    try:
+        async with aiofiles.open(path, mode='r') as f:
+            content = await f.read()
+            _TVH_ACTIVE_SUBSCRIPTIONS = json.loads(content)
+    except Exception as e:
+        logger.warning("Failed to load TVH poll state: %s", e)
+
+
+async def _save_tvh_poll_state(config):
+    global _TVH_ACTIVE_SUBSCRIPTIONS
+    path = _tvh_poll_state_path(config)
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        async with aiofiles.open(path, mode='w') as f:
+            await f.write(json.dumps(_TVH_ACTIVE_SUBSCRIPTIONS))
+    except Exception as e:
+        logger.warning("Failed to save TVH poll state: %s", e)
+
+
 _IPV4_PATTERN = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 
 
@@ -349,11 +385,11 @@ def _extract_subscription_ip(entry):
 def _subscription_identity(entry):
     direct = _first_non_empty(entry, "uuid", "id", "subscription_id", "identifier")
     if direct:
-        return direct
+        return f"tvh-{direct}"
     username = _first_non_empty(entry, "username", "user") or ""
     channel = _first_non_empty(entry, "channelname", "channel", "service") or ""
     user_agent = _first_non_empty(entry, "user_agent", "client", "hostname", "peer") or ""
-    return f"{username}|{channel}|{user_agent}"
+    return f"tvh-{username}|{channel}|{user_agent}"
 
 
 def _is_testing_state(entry):
@@ -382,7 +418,7 @@ def _is_recording_subscription(entry, recording_channel_ids, recording_channel_n
     if user_agent:
         return False
     channel_id = str(entry.get("channel") or "").strip()
-    channel_name = (_first_non_empty(entry, "channelname", "title", "service") or "").lower()
+    channel_name = (_first_non_empty(entry, "channelname", "channel", "title", "service") or "").lower()
     if channel_id and channel_id in recording_channel_ids:
         return True
     if channel_name and channel_name in recording_channel_names:
@@ -391,7 +427,7 @@ def _is_recording_subscription(entry, recording_channel_ids, recording_channel_n
 
 
 def _build_subscription_details(entry, username, state, is_recording, channel_name=None):
-    channel = channel_name or _first_non_empty(entry, "channelname", "channel", "service") or "Unknown"
+    channel = channel_name or _first_non_empty(entry, "channel", "channelname", "service") or "Unknown"
     parts = [
         "TVHeadend recording" if is_recording else "TVHeadend subscription",
         f"Channel: {channel}",
@@ -415,143 +451,132 @@ def _is_tvh_backend_username(username):
 
 async def poll_tvh_subscription_status(app):
     config = app.config['APP_CONFIG']
-    from backend.auth import audit_stream_event
     from backend.tvheadend.tvh_requests import get_tvh
     from backend.users import get_user_by_username
     from backend.api.routes_hls_proxy import upsert_stream_activity, stop_stream_activity
     from backend.channels import read_config_all_channels
 
-    global _TVH_ACTIVE_SUBSCRIPTIONS
+    global _TVH_ACTIVE_SUBSCRIPTIONS, _TVH_POLL_LOCK
 
-    try:
-        async with await get_tvh(config) as tvh:
-            subscriptions = await tvh.list_status_subscriptions()
-            dvr_entries = await tvh.list_dvr_entries()
-    except Exception as exc:
-        logger.debug("Skipping TVH status monitor poll: %s", exc)
+    if _TVH_POLL_LOCK.locked():
         return
 
-    # Build a map of TVH UUIDs and names to TIC channel names for better identity resolution
-    channels_config = await read_config_all_channels()
-    tvh_uuid_map = {c.get('tvh_uuid'): c.get('name') for c in channels_config if c.get('tvh_uuid')}
-    channel_name_map = {c.get('name'): c.get('name') for c in channels_config if c.get('name')}
+    async with _TVH_POLL_LOCK:
+        # Load state from disk if we don't have it in memory (e.g. after restart)
+        if not _TVH_ACTIVE_SUBSCRIPTIONS:
+            await _load_tvh_poll_state(config)
 
-    recording_channel_ids, recording_channel_names = _build_active_recording_index(dvr_entries)
-    observed = {}
-    user_id_cache = {}
+        try:
+            async with await get_tvh(config) as tvh:
+                subscriptions = await tvh.list_status_subscriptions()
+                dvr_entries = await tvh.list_dvr_entries()
+        except Exception as exc:
+            logger.debug("Skipping TVH status monitor poll: %s", exc)
+            return
 
-    for entry in subscriptions or []:
-        if not isinstance(entry, dict):
-            continue
-        if _is_testing_state(entry):
-            continue
+        # Build a map of TVH UUIDs and names to TIC channel names for better identity resolution
+        channels_config = await read_config_all_channels()
+        tvh_uuid_map = {c.get('tvh_uuid'): c for c in channels_config if c.get('tvh_uuid')}
+        channel_name_map = {c.get('name'): c for c in channels_config if c.get('name')}
 
-        subscription_id = _subscription_identity(entry)
-        if not subscription_id:
-            continue
+        recording_channel_ids, recording_channel_names = _build_active_recording_index(dvr_entries)
+        observed = {}
+        user_id_cache = {}
 
-        username = _first_non_empty(entry, "username", "user")
-        if _is_tvh_backend_username(username):
-            continue
-        if username not in user_id_cache:
-            user = await get_user_by_username(username) if username else None
-            user_id_cache[username] = user.id if user else None
-        user_id = user_id_cache.get(username)
+        for entry in subscriptions or []:
+            if not isinstance(entry, dict):
+                continue
+            if _is_testing_state(entry):
+                continue
 
-        state = _first_non_empty(entry, "state", "status")
-        is_recording = _is_recording_subscription(entry, recording_channel_ids, recording_channel_names)
-        event_type = "recording_start" if is_recording else "stream_start"
-        stop_event_type = "recording_stop" if is_recording else "stream_stop"
-        user_agent = _first_non_empty(entry, "user_agent", "client_user_agent", "client")
-        if is_recording and not user_agent:
-            user_agent = "TVHeadend Recorder"
-        if not user_agent:
-            user_agent = "TVHeadend"
-        ip_address = _extract_subscription_ip(entry)
-        tvh_channel_id = entry.get("channel")  # TVH status API 'channel' is often the name
-        resolved_channel_name = tvh_uuid_map.get(tvh_channel_id) or channel_name_map.get(tvh_channel_id)
-        details = _build_subscription_details(entry, username, state, is_recording, channel_name=resolved_channel_name)
-        endpoint = f"/tic-tvh/api/status/subscriptions/{subscription_id}"
+            subscription_id = _subscription_identity(entry)
+            if not subscription_id:
+                continue
 
-        observed[subscription_id] = {
-            "user_id": user_id,
-            "username": username,
-            "event_type": event_type,
-            "stop_event_type": stop_event_type,
-            "endpoint": endpoint,
-            "details": details,
-            "tvh_channel_id": tvh_channel_id,
-            "ip_address": ip_address,
-            "user_agent": user_agent,
-        }
+            username = _first_non_empty(entry, "username", "user")
+            if _is_tvh_backend_username(username):
+                continue
+            if username not in user_id_cache:
+                user = await get_user_by_username(username) if username else None
+                user_id_cache[username] = user.id if user else None
+            user_id = user_id_cache.get(username)
 
-    previous = _TVH_ACTIVE_SUBSCRIPTIONS
-    started_ids = sorted(set(observed.keys()) - set(previous.keys()))
-    stopped_ids = sorted(set(previous.keys()) - set(observed.keys()))
+            state = _first_non_empty(entry, "state", "status")
+            is_recording = _is_recording_subscription(entry, recording_channel_ids, recording_channel_names)
+            event_type = "recording_start" if is_recording else "stream_start"
+            stop_event_type = "recording_stop" if is_recording else "stream_stop"
+            user_agent = _first_non_empty(entry, "user_agent", "client_user_agent", "client")
+            if is_recording and not user_agent:
+                user_agent = "TVHeadend Recorder"
+            if not user_agent:
+                user_agent = "TVHeadend"
+            ip_address = _extract_subscription_ip(entry)
+            tvh_channel_id = entry.get("channel")  # TVH status API 'channel' is often the name
+            service_name = entry.get("service")
+            resolved_channel = tvh_uuid_map.get(tvh_channel_id) or channel_name_map.get(tvh_channel_id)
+            resolved_channel_name = resolved_channel.get("name") if resolved_channel else None
+            details = _build_subscription_details(
+                entry,
+                username,
+                state,
+                is_recording,
+                channel_name=resolved_channel_name
+            )
+            endpoint = f"/tic-tvh/api/status/subscriptions/{subscription_id}"
 
-    for sub_id in started_ids:
-        event = observed[sub_id]
-        user = _make_audit_user(event.get("user_id"), event.get("username"))
-        await audit_stream_event(
-            user,
-            event.get("event_type"),
-            event.get("endpoint"),
-            details=event.get("details"),
-            ip_address=event.get("ip_address"),
-            user_agent=event.get("user_agent"),
-        )
-        # Also register in the activity tracker for the dashboard
-        # Use the TVH channel ID as the primary identity for resolution, but override details for auditing/display.
-        await upsert_stream_activity(
-            event.get("tvh_channel_id") or event.get("details"),
-            connection_id=sub_id,
-            endpoint_override=event.get("endpoint"),
-            start_event_type=event.get("event_type"),
-            user=user,
-            ip_address=event.get("ip_address"),
-            user_agent=event.get("user_agent"),
-            perform_audit=False,  # Already audited above
-            details_override=event.get("details"),
-        )
+            observed[subscription_id] = {
+                "user_id": user_id,
+                "username": username,
+                "event_type": event_type,
+                "stop_event_type": stop_event_type,
+                "endpoint": endpoint,
+                "details": details,
+                "tvh_channel_id": tvh_channel_id,
+                "channel_id": resolved_channel.get("id") if resolved_channel else None,
+                "channel_name": resolved_channel_name,
+                "channel_logo_url": resolved_channel.get("logo_url") if resolved_channel else None,
+                "service_name": service_name,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
+            }
 
-    # Touch all currently active subscriptions in the tracker to keep them alive
-    for sub_id, event in observed.items():
-        if sub_id in started_ids:
-            continue
-        user = _make_audit_user(event.get("user_id"), event.get("username"))
-        await upsert_stream_activity(
-            event.get("tvh_channel_id") or event.get("details"),
-            connection_id=sub_id,
-            endpoint_override=event.get("endpoint"),
-            start_event_type=event.get("event_type"),
-            user=user,
-            ip_address=event.get("ip_address"),
-            user_agent=event.get("user_agent"),
-            perform_audit=False,
-            details_override=event.get("details"),
-        )
+        previous = _TVH_ACTIVE_SUBSCRIPTIONS
+        stopped_ids = sorted(set(previous.keys()) - set(observed.keys()))
 
-    for sub_id in stopped_ids:
-        event = previous[sub_id]
-        user = _make_audit_user(event.get("user_id"), event.get("username"))
-        await audit_stream_event(
-            user,
-            event.get("stop_event_type") or "stream_stop",
-            event.get("endpoint"),
-            details=event.get("details"),
-            ip_address=event.get("ip_address"),
-            user_agent=event.get("user_agent"),
-        )
-        # Also remove from the activity tracker
-        await stop_stream_activity(
-            event.get("tvh_channel_id") or event.get("details"),
-            connection_id=sub_id,
-            event_type=event.get("stop_event_type") or "stream_stop",
-            endpoint_override=event.get("endpoint"),
-            user=user,
-            ip_address=event.get("ip_address"),
-            user_agent=event.get("user_agent"),
-            perform_audit=False,  # Already audited above
-        )
+        # Register/Touch all currently active subscriptions
+        for sub_id, event in observed.items():
+            is_new = sub_id not in previous
+            user = _make_audit_user(event.get("user_id"), event.get("username"))
+            await upsert_stream_activity(
+                event.get("tvh_channel_id") or event.get("details"),
+                connection_id=sub_id,
+                endpoint_override=event.get("endpoint"),
+                start_event_type=event.get("event_type"),
+                user=user,
+                ip_address=event.get("ip_address"),
+                user_agent=event.get("user_agent"),
+                perform_audit=is_new,
+                details_override=event.get("details"),
+                channel_id=event.get("channel_id"),
+                channel_name=event.get("channel_name"),
+                channel_logo_url=event.get("channel_logo_url"),
+                display_url=event.get("service_name"),
+            )
 
-    _TVH_ACTIVE_SUBSCRIPTIONS = observed
+        # Explicitly stop subscriptions that TVH no longer reports
+        for sub_id in stopped_ids:
+            event = previous[sub_id]
+            user = _make_audit_user(event.get("user_id"), event.get("username"))
+            await stop_stream_activity(
+                "",  # identity not needed for CID-based stop
+                connection_id=sub_id,
+                event_type=event.get("stop_event_type") or "stream_stop",
+                endpoint_override=event.get("endpoint"),
+                user=user,
+                ip_address=event.get("ip_address"),
+                user_agent=event.get("user_agent"),
+                perform_audit=True,
+            )
+
+        _TVH_ACTIVE_SUBSCRIPTIONS = observed
+        await _save_tvh_poll_state(config)

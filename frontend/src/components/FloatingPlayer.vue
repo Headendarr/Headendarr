@@ -111,6 +111,7 @@ const mpegtsInstances = new Set();
 const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
 const { isMobile } = useMobile();
+const currentSessionId = ref(null);
 const volumeHandler = ref(null);
 const applyingPersistedVolume = ref(false);
 const videoErrorHandler = ref(null);
@@ -370,6 +371,7 @@ function cleanupPlayer() {
     el.load();
   }
   resetStreamDetails();
+  currentSessionId.value = null;
   console.info('[FloatingPlayer] cleanupPlayer done');
 }
 
@@ -414,22 +416,24 @@ function ensureProxyConnectionId(url, forcedConnectionId = null) {
   }
 }
 
-function resolvePlaybackContext(url, title) {
+function resolvePlaybackContext(url, title, connectionId = null) {
   const value = String(url || '').trim();
   if (!value) {
     return null;
   }
-  let connectionId = '';
-  try {
-    const parsed = new URL(value, window.location.origin);
-    connectionId = parsed.searchParams.get('connection_id') || parsed.searchParams.get('cid') || '';
-  } catch {
-    connectionId = '';
+  let cid = String(connectionId || '').trim();
+  if (!cid) {
+    try {
+      const parsed = new URL(value, window.location.origin);
+      cid = parsed.searchParams.get('connection_id') || parsed.searchParams.get('cid') || '';
+    } catch {
+      cid = '';
+    }
   }
   return {
     url: value,
     title: String(title || '').trim(),
-    connection_id: String(connectionId || '').trim() || null,
+    connection_id: String(cid || '').trim() || null,
   };
 }
 
@@ -445,9 +449,9 @@ async function sendPlaybackHeartbeat() {
   }
 }
 
-function startPlaybackHeartbeat(url, title) {
+function startPlaybackHeartbeat(url, title, connectionId) {
   stopPlaybackHeartbeat(false);
-  activePlaybackContext.value = resolvePlaybackContext(url, title);
+  activePlaybackContext.value = resolvePlaybackContext(url, title, connectionId);
   if (!activePlaybackContext.value) {
     return;
   }
@@ -484,8 +488,10 @@ async function initPlayer() {
   const token = ++initToken.value;
   cleanupPlayer();
   clearErrorMessage();
-  const sessionConnectionId = generateConnectionId();
-  const url = ensureProxyConnectionId(videoStore.streamUrl, sessionConnectionId);
+  if (!currentSessionId.value) {
+    currentSessionId.value = generateConnectionId();
+  }
+  const url = ensureProxyConnectionId(videoStore.streamUrl, currentSessionId.value);
   if (!url) {
     return;
   }
@@ -543,7 +549,7 @@ async function initPlayer() {
     videoPlayingHandler.value = () => {
       clearErrorMessage();
       isLoading.value = false;
-      startPlaybackHeartbeat(url, videoStore.streamTitle || '');
+      startPlaybackHeartbeat(url, videoStore.streamTitle || '', currentSessionId.value);
       if (loadTimeout.value) {
         clearTimeout(loadTimeout.value);
         loadTimeout.value = null;

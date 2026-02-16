@@ -10,7 +10,7 @@ import re
 import time
 from collections import OrderedDict
 from mimetypes import guess_type
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import aiofiles
 import aiohttp
@@ -1975,3 +1975,217 @@ async def add_channels_from_groups(config, groups):
 
     logger.info(f"Successfully added {added_channel_count} channels from groups")
     return added_channel_count
+
+
+def region_label(ip_address: str | None) -> str:
+    ip = (ip_address or "").strip()
+    if not ip:
+        return "Unknown region"
+    if ip.startswith("10.") or ip.startswith("192.168."):
+        return "Local network"
+    if ip.startswith("172."):
+        try:
+            second_octet = int(ip.split(".")[1])
+            if 16 <= second_octet <= 31:
+                return "Local network"
+        except Exception:
+            pass
+    if ip.startswith("fd") or ip.startswith("fc") or ip.startswith("fe80:"):
+        return "Local network"
+    if ip in {"127.0.0.1", "::1"}:
+        return "Local host"
+    return "Unknown region"
+
+
+def normalize_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    normalized = parsed._replace(fragment="", query="")
+    return urlunparse(normalized)
+
+
+def maybe_decode_embedded_url_once(value: str | None) -> str | None:
+    from urllib.parse import urlparse, urlunparse
+    normalized = normalize_url(value)
+    if not normalized:
+        return None
+    try:
+        parsed = urlparse(normalized)
+    except Exception:
+        return None
+    tail = (parsed.path or "").rsplit("/", 1)[-1]
+    if not tail:
+        return None
+    token = tail.split(".", 1)[0]
+    if not token:
+        return None
+    padded = token + "=" * (-len(token) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            decoded = decoder(padded.encode("utf-8")).decode("utf-8")
+        except Exception:
+            continue
+        decoded_norm = normalize_url(decoded)
+        if decoded_norm and decoded_norm.startswith(("http://", "https://")):
+            return decoded_norm
+    return None
+
+
+def candidate_urls(value: str | None) -> list[str]:
+    candidates = []
+    normalized = normalize_url(value)
+    if normalized:
+        candidates.append(normalized)
+    current = normalized
+    seen = set(candidates)
+    while current:
+        decoded = maybe_decode_embedded_url_once(current)
+        if not decoded:
+            break
+        decoded_norm = normalize_url(decoded)
+        if not decoded_norm or decoded_norm in seen:
+            break
+        candidates.append(decoded_norm)
+        seen.add(decoded_norm)
+        current = decoded_norm
+    return candidates
+
+
+def priority_rank(value: str | None) -> int:
+    try:
+        return int(str(value or "").strip())
+    except Exception:
+        return 1_000_000
+
+
+_SOURCE_INDEX_CACHE = {"index": None, "expires": 0}
+
+
+async def build_stream_source_index():
+    global _SOURCE_INDEX_CACHE
+    now = time.time()
+    if _SOURCE_INDEX_CACHE["index"] and now < _SOURCE_INDEX_CACHE["expires"]:
+        return _SOURCE_INDEX_CACHE["index"]
+
+    stmt = (
+        select(
+            Channel.id.label("channel_id"),
+            Channel.name.label("channel_name"),
+            Channel.logo_url.label("channel_logo_url"),
+            Channel.tvh_uuid.label("tvh_uuid"),
+            ChannelSource.playlist_stream_name.label("stream_name"),
+            ChannelSource.playlist_stream_url.label("stream_url"),
+            ChannelSource.priority.label("priority"),
+        )
+        .select_from(Channel)
+        .outerjoin(ChannelSource, Channel.id == ChannelSource.channel_id)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        rows = result.mappings().all()
+
+    exact_map = {}
+    tvh_uuid_map = {}
+    name_map = {}
+    for row in rows:
+        stream_url = row.get("stream_url")
+        stream_candidates = candidate_urls(stream_url) if stream_url else []
+        payload = {
+            "channel_id": row.get("channel_id"),
+            "channel_name": row.get("channel_name"),
+            "channel_logo_url": row.get("channel_logo_url"),
+            "stream_name": row.get("stream_name"),
+            "stream_url": stream_url,
+            "priority": str(row.get("priority") or ""),
+        }
+        p_rank = priority_rank(payload.get("priority"))
+        ranking = (0, p_rank)  # Default ranking for non-URL matches
+
+        tvh_uuid = row.get("tvh_uuid")
+        if tvh_uuid:
+            tvh_uuid_map[tvh_uuid] = payload
+
+        channel_name = row.get("channel_name")
+        if channel_name:
+            existing = name_map.get(channel_name)
+            if not existing or ranking < existing.get("_ranking", (1_000_000, 1_000_000)):
+                name_map[channel_name] = {**payload, "_ranking": ranking}
+
+        if not stream_candidates:
+            continue
+        for depth, candidate_url in enumerate(stream_candidates):
+            ranking = (depth, p_rank)
+            existing = exact_map.get(candidate_url)
+            if not existing or ranking < existing.get("_ranking", (1_000_000, 1_000_000)):
+                exact_map[candidate_url] = {**payload, "_ranking": ranking}
+
+    # Also include PlaylistStreams for anonymous lookup
+    async with Session() as session:
+        stmt_streams = select(
+            PlaylistStreams.url.label("stream_url"),
+            PlaylistStreams.name.label("stream_name"),
+            PlaylistStreams.tvg_logo.label("stream_logo"),
+        ).where(PlaylistStreams.tvg_logo != None)
+        result = await session.execute(stmt_streams)
+        stream_rows = result.mappings().all()
+
+    for row in stream_rows:
+        s_url = row.get("stream_url")
+        if not s_url:
+            continue
+        payload = {
+            "channel_id": None,
+            "channel_name": row.get("stream_name"),
+            "channel_logo_url": row.get("stream_logo"),
+            "stream_name": row.get("stream_name"),
+            "stream_url": s_url,
+            "_ranking": (100, 1_000_000),
+        }
+        for cand in candidate_urls(s_url):
+            if cand not in exact_map:
+                exact_map[cand] = payload
+
+    index = {"exact": exact_map, "tvh_uuid": tvh_uuid_map, "name": name_map}
+    _SOURCE_INDEX_CACHE = {"index": index, "expires": now + 60}
+    return index
+
+
+def resolve_stream_target(details: str | None, source_index: dict, related_urls: list[str] | None = None) -> dict:
+    candidates = candidate_urls(details)
+    for url_value in related_urls or []:
+        for candidate in candidate_urls(url_value):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    exact_map = source_index.get("exact", {})
+    tvh_uuid_map = source_index.get("tvh_uuid", {})
+    name_map = source_index.get("name", {})
+
+    matched_source = None
+    for candidate in candidates:
+        matched_source = exact_map.get(candidate) or tvh_uuid_map.get(candidate) or name_map.get(candidate)
+        if matched_source:
+            break
+
+    display_url = candidates[0] if candidates else None
+    source_url = matched_source.get("stream_url") if matched_source else None
+    if not display_url and source_url:
+        display_url = source_url
+
+    return {
+        "channel_id": matched_source.get("channel_id") if matched_source else None,
+        "channel_name": matched_source.get("channel_name") if matched_source else None,
+        "channel_logo_url": matched_source.get("channel_logo_url") if matched_source else None,
+        "stream_name": matched_source.get("stream_name") if matched_source else None,
+        "source_url": source_url,
+        "display_url": display_url,
+    }

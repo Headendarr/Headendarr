@@ -76,83 +76,54 @@ class _AuditUser:
 
 class StreamActivityTracker:
     """
-    In-memory tracker for HLS playback activity used by audit logging and dashboard status.
+    In-memory tracker for HLS and TVHeadend playback activity used by audit logging and dashboard status.
 
     High-level model:
-    - A playback session is represented by an entry in `self.activity`.
-    - A session is keyed by "<actor_scope>:<activity_identity>" where:
-      - actor_scope = user_id, username, or "anon"
-      - activity_identity = normalized URL identity for the stream
+    - A playback session is uniquely identified by a `connection_id`.
+    - Active sessions are stored in `self.sessions`.
+    - Recently ended or expired sessions are moved to `self.history`.
     - Session data stores user/client/request fields required for:
       - emitting `stream_start` / `stream_stop` audit events
       - reporting active sessions in `/tic-api/dashboard/activity`
 
-    Why this class exists:
-    - HLS clients request multiple related URLs for one logical playback
-      (master m3u8, variant m3u8, segments, keys, subtitles).
-    - Without correlation, those requests can appear as multiple sessions.
-    - This tracker correlates those requests into one logical session.
-
-    Correlation mechanisms:
+    Tracking mechanisms:
     1. connection_id (primary)
-       - The proxy appends `connection_id` to rewritten child URLs.
-       - `self.connection_index` maps "<actor_scope>:<connection_id>" to an active
-         activity key for fast and deterministic lookup.
+       - All tracking relies on a persistent `connection_id`.
+       - For HLS proxy, this is appended to child URLs and passed back by the client.
+       - For TVHeadend, this is derived from the subscription UUID or metadata.
+       - This allows deterministic mapping of requests to a single logical session.
 
-    2. URL aliases (secondary)
-       - `self.aliases` maps multiple URL candidates (root/master/variant/decoded)
-         to the same activity key.
-       - Used when connection_id is absent or when requests arrive on related URLs.
+    2. Identity Resolution
+       - The tracker resolves "segment" URLs back to their parent playlist URL
+         using `self.playlist_parents`.
+       - This ensures that even if a request is for a chunk, the session's primary
+         `identity` remains the playlist URL, which is required for channel resolution.
 
-    3. Playlist parent mapping
-       - `self.playlist_parents` tracks child->parent URL relationships discovered
-         while rewriting playlists.
-       - This allows canonicalization to root playlist identity and alias linking.
+    3. Session Rehydration
+       - If a client disconnects (e.g. app restart or network blip) and resumes with
+         the same `connection_id`, the session is moved from `history` back to `sessions`.
+       - This preserves original metadata (identity, started_at, channel resolution)
+         across restarts, ensuring the dashboard remains consistent.
 
-    Resume behavior for paused/interrupted clients:
-    - Active sessions expire after `activity_ttl` seconds of inactivity.
-    - On expiry, `stream_stop` is emitted and the active entry is removed.
-    - Connection context is retained in `self.connection_history` for
-      `connection_history_ttl` seconds (default 1 hour).
-    - If the same client resumes with the same connection_id, metadata is rehydrated
-      and a new `stream_start` is logged with preserved context.
+    Persistence and Expiry:
+    - Active sessions expire after `activity_ttl` seconds of inactivity (default 20s).
+    - On expiry, a `stream_stop` audit event is emitted and the session moves to history.
+    - History items are pruned after `history_ttl` seconds (default 1 hour).
+    - Both `sessions` and `history` are persisted to `stream_activity_state.json`
+      every 15 seconds, allowing full state recovery after a process restart.
 
     Concurrency model:
-    - `activity`, `aliases`, `connection_index`, and `connection_history` are guarded
-      by `activity_lock`.
-    - `playlist_parents` is guarded by `playlist_parent_lock`.
-    - Public methods are async and safe to call from concurrent requests.
-
-    Main entry points:
-    - `mark(...)`:
-      Called on session-start style requests (typically m3u8 entrypoint).
-      Creates or refreshes an active session and emits start audit when newly active.
-    - `touch(...)`:
-      Called on child/segment requests (.ts/.key/.vtt) to keep session alive.
-    - `register_playlist_parent(...)`:
-      Records parent-child playlist relationships discovered during rewrite.
-    - `snapshot()`:
-      Returns current active sessions for dashboard activity API.
-    - `cleanup()`:
-      Expires stale entries, emits stop audit events, and prunes caches/history.
+    - All state modifications are guarded by `self.lock`.
+    - Public methods are async and safe to call from concurrent requests or background tasks.
     """
 
-    def __init__(self, activity_ttl=20, alias_ttl=600, parent_ttl=600, connection_history_ttl=3600):
-        self.activity = {}
-        self.aliases = {}
-        self.connection_index = {}
-        self.connection_history = {}
-        self.playlist_parents = {}
-        self.activity_lock = asyncio.Lock()
-        self.playlist_parent_lock = asyncio.Lock()
+    def __init__(self, activity_ttl=20, history_ttl=3600):
+        self.sessions = {}  # connection_id -> session_dict
+        self.history = {}   # connection_id -> { 'last_seen': float, 'entry': dict }
+        self.playlist_parents = {}  # child_url -> parent_url (short-lived)
+        self.lock = asyncio.Lock()
         self.activity_ttl = activity_ttl
-        self.alias_ttl = alias_ttl
-        self.parent_ttl = parent_ttl
-        self.connection_history_ttl = connection_history_ttl
-
-    @staticmethod
-    def _actor_scope(user_id, username) -> str:
-        return str(user_id or username or "anon")
+        self.history_ttl = history_ttl
 
     @staticmethod
     def _request_user():
@@ -161,114 +132,26 @@ class StreamActivityTracker:
         except Exception:
             return None
 
-    @staticmethod
-    def _alias_key(actor_scope: str, url: str) -> str:
-        return f"{actor_scope}:{url}"
-
-    @staticmethod
-    def _maybe_decode_embedded_url(value: str) -> str | None:
-        try:
-            parsed = urlparse(value)
-        except Exception:
-            return None
-        tail = (parsed.path or "").rsplit("/", 1)[-1]
-        if not tail:
-            return None
-        token = tail.split(".", 1)[0]
-        if not token:
-            return None
-        padded = token + "=" * (-len(token) % 4)
-        for decoder in (base64.urlsafe_b64decode, base64.b64decode):
-            try:
-                decoded = decoder(padded.encode("utf-8")).decode("utf-8")
-            except Exception:
-                continue
-            if decoded.startswith(("http://", "https://")):
-                return decoded
-        return None
-
-    def _resolve_playlist_root_unlocked(self, url: str) -> str:
+    def _resolve_playlist_root(self, url: str) -> str:
         current = url
         seen = set()
-        while current and current not in seen:
+        while current and current in self.playlist_parents and current not in seen:
             seen.add(current)
-            parent_entry = self.playlist_parents.get(current)
-            if not parent_entry:
-                break
-            parent_url = parent_entry.get("parent")
-            if not parent_url:
-                break
-            current = parent_url
+            current = self.playlist_parents[current]
         return current or url
 
-    def _canonical_url_unlocked(self, decoded_url: str) -> str:
-        # Keep canonical identity in the proxied URL chain first so
-        # master/variant aliases from the same upstream map to one session.
-        root = self._resolve_playlist_root_unlocked(decoded_url)
-        return root or decoded_url
-
-    def _activity_identity_unlocked(self, decoded_url: str) -> str:
-        normalized_url = self._canonical_url_unlocked(decoded_url)
-        try:
-            parsed = urlparse(normalized_url)
-            if not parsed.scheme or not parsed.netloc:
-                return normalized_url
-            path = parsed.path or "/"
-            return f"{parsed.scheme}://{parsed.netloc}{path}"
-        except Exception:
-            return normalized_url
-
-    def _activity_key_unlocked(self, user_id, username, decoded_url: str) -> str:
-        actor_scope = self._actor_scope(user_id, username)
-        return f"{actor_scope}:{self._activity_identity_unlocked(decoded_url)}"
-
-    def _activity_url_candidates_unlocked(self, decoded_url: str) -> list[str]:
-        values = []
-        seen = set()
-        initial = [decoded_url, self._canonical_url_unlocked(decoded_url)]
-        for value in initial:
-            if value and value not in seen:
-                values.append(value)
-                seen.add(value)
-        current = values[-1] if values else None
-        while current:
-            parent_entry = self.playlist_parents.get(current)
-            if not parent_entry:
-                break
-            parent_url = parent_entry.get("parent")
-            if not parent_url or parent_url in seen:
-                break
-            values.append(parent_url)
-            seen.add(parent_url)
-            current = parent_url
-        return values
-
-    def _register_aliases_unlocked(self, actor_scope: str, activity_key: str, decoded_url: str, now: float):
-        for candidate_url in self._activity_url_candidates_unlocked(decoded_url):
-            alias_key = self._alias_key(actor_scope, candidate_url)
-            self.aliases[alias_key] = {"activity_key": activity_key, "last_seen": now}
-
-    def _store_connection_history_unlocked(self, connection_idx_key: str, payload: dict, now: float, disconnected=False):
-        if not connection_idx_key:
-            return
-        self.connection_history[connection_idx_key] = {
-            "last_seen": now,
-            "disconnected_at": now if disconnected else None,
-            "entry": {
-                "user_id": payload.get("user_id"),
-                "username": payload.get("username"),
-                "stream_key": payload.get("stream_key"),
-                "endpoint": payload.get("endpoint"),
-                "details": payload.get("details"),
-                "ip_address": payload.get("ip_address"),
-                "user_agent": payload.get("user_agent"),
-                "connection_id": payload.get("connection_id"),
-            },
-        }
+    @staticmethod
+    def _is_segment(url: str) -> bool:
+        if not url:
+            return False
+        from backend.channels import normalize_url
+        normalized = normalize_url(url)
+        path = urlparse(normalized).path.lower()
+        return path.endswith((".ts", ".vtt", ".key"))
 
     async def mark(
         self,
-        decoded_url,
+        identity,
         event_type="stream_start",
         connection_id=None,
         endpoint_override=None,
@@ -277,17 +160,22 @@ class StreamActivityTracker:
         user_agent=None,
         perform_audit=True,
         details_override=None,
+        channel_id=None,
+        channel_name=None,
+        channel_logo_url=None,
+        stream_name=None,
+        source_url=None,
+        display_url=None,
     ):
         if not user:
             user = self._request_user()
         if is_tvh_backend_stream_user(user):
-            return
+            return "ignored"
+
         user_id = getattr(user, "id", None)
         username = getattr(user, "username", None)
         stream_key = getattr(user, "streaming_key", None)
-        actor_scope = self._actor_scope(user_id, username)
-        connection_idx_key = f"{actor_scope}:{connection_id}" if connection_id else None
-        key = None
+
         now = time.time()
         if ip_address is None:
             ip_address = get_request_client_ip()
@@ -297,123 +185,183 @@ class StreamActivityTracker:
             except Exception:
                 user_agent = None
 
-        history_entry = None
-        async with self.activity_lock:
-            if connection_idx_key:
-                existing_key = self.connection_index.get(connection_idx_key, {}).get("activity_key")
-                if existing_key and existing_key in self.activity:
-                    key = existing_key
-                history_entry = self.connection_history.get(connection_idx_key, {}).get("entry")
-            if not key:
-                key = self._activity_key_unlocked(user_id, username, decoded_url)
-            entry = self.activity.get(key)
-            if not entry:
-                base_endpoint = endpoint_override
-                if not base_endpoint:
-                    try:
-                        base_endpoint = request.path
-                    except Exception:
-                        base_endpoint = ""
-                base_details = details_override or decoded_url
-                base_user_agent = user_agent
-                base_ip = ip_address
-                if history_entry:
-                    base_endpoint = history_entry.get("endpoint") or base_endpoint
-                    base_details = history_entry.get("details") or base_details
-                    base_user_agent = history_entry.get("user_agent") or base_user_agent
-                    base_ip = history_entry.get("ip_address") or base_ip
-                self.activity[key] = {
-                    "started_at": now,
-                    "last_seen": now,
-                    "user_id": user_id,
-                    "username": username,
-                    "stream_key": stream_key,
-                    "endpoint": base_endpoint,
-                    "details": base_details,
-                    "ip_address": base_ip,
-                    "user_agent": base_user_agent,
-                    "connection_id": connection_id,
-                }
+        if not connection_id:
+            connection_id = uuid.uuid4().hex
+
+        from backend.channels import build_stream_source_index, resolve_stream_target, normalize_url
+        normalized_identity = normalize_url(identity)
+        # Resolve authoritative identity (playlist > segment)
+        canonical_identity = self._resolve_playlist_root(normalized_identity)
+
+        # Check existing state to see if we already have a resolved channel
+        existing_channel_name = None
+        async with self.lock:
+            existing = self.sessions.get(connection_id)
+            if not existing and connection_id in self.history:
+                existing = self.history[connection_id]["entry"]
+            if existing:
+                existing_channel_name = existing.get("channel_name")
+
+        # Try to resolve metadata if not provided and not already known
+        resolved_stream_name = stream_name
+        resolved_source_url = source_url
+        resolved_display_url = display_url
+        if not channel_name and not existing_channel_name:
+            source_index = await build_stream_source_index()
+            # Try resolution with both canonical and raw identity
+            resolved = resolve_stream_target(canonical_identity, source_index, related_urls=[normalized_identity])
+            channel_id = channel_id or resolved.get("channel_id")
+            channel_name = channel_name or resolved.get("channel_name")
+            channel_logo_url = channel_logo_url or resolved.get("channel_logo_url")
+            resolved_stream_name = resolved_stream_name or resolved.get("stream_name")
+            resolved_source_url = resolved_source_url or resolved.get("source_url")
+            resolved_display_url = resolved_display_url or resolved.get("display_url")
+
+        async with self.lock:
+            # 1. Update existing active session
+            session = self.sessions.get(connection_id)
+            if session:
+                session["last_seen"] = now
+                session["ip_address"] = ip_address
+                session["user_agent"] = user_agent
+                if details_override:
+                    session["details"] = details_override
+
+                # Update identity only if the new one is "better" (not a segment) or we don't have one
+                # OR if the new one resolves to a channel and the current one doesn't.
+                is_better = canonical_identity and (not session.get(
+                    "identity") or self._is_segment(session.get("identity")))
+                if is_better and not self._is_segment(canonical_identity):
+                    session["identity"] = canonical_identity
+
+                if normalized_identity:
+                    rel = session.setdefault("related_identities", [])
+                    if normalized_identity not in rel:
+                        rel.append(normalized_identity)
+
+                # Enrichment (sticky)
+                if channel_id and not session.get("channel_id"):
+                    session["channel_id"] = channel_id
+                if channel_name and not session.get("channel_name"):
+                    session["channel_name"] = channel_name
+                if channel_logo_url and not session.get("channel_logo_url"):
+                    session["channel_logo_url"] = channel_logo_url
+                if resolved_stream_name and not session.get("stream_name"):
+                    session["stream_name"] = resolved_stream_name
+                if resolved_source_url and not session.get("source_url"):
+                    session["source_url"] = resolved_source_url
+                if resolved_display_url and not session.get("display_url"):
+                    session["display_url"] = resolved_display_url
+                return "touched"
+
+            # 2. Rehydrate from history
+            history_item = self.history.pop(connection_id, None)
+            if history_item:
+                session = history_item["entry"]
+                session["last_seen"] = now
+                session["ip_address"] = ip_address
+                session["user_agent"] = user_agent
+                if details_override:
+                    session["details"] = details_override
+
+                # Enrichment (sticky)
+                if channel_id and not session.get("channel_id"):
+                    session["channel_id"] = channel_id
+                if channel_name and not session.get("channel_name"):
+                    session["channel_name"] = channel_name
+                if channel_logo_url and not session.get("channel_logo_url"):
+                    session["channel_logo_url"] = channel_logo_url
+                if resolved_stream_name and not session.get("stream_name"):
+                    session["stream_name"] = resolved_stream_name
+                if resolved_source_url and not session.get("source_url"):
+                    session["source_url"] = resolved_source_url
+                if resolved_display_url and not session.get("display_url"):
+                    session["display_url"] = resolved_display_url
+
+                if canonical_identity and (not session.get("identity") or self._is_segment(session.get("identity"))):
+                    if not self._is_segment(canonical_identity):
+                        session["identity"] = canonical_identity
+                if normalized_identity:
+                    rel = session.setdefault("related_identities", [])
+                    if normalized_identity not in rel:
+                        rel.append(normalized_identity)
+
+                self.sessions[connection_id] = session
                 if perform_audit:
                     audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
                     await audit_stream_event(
                         audit_user,
                         event_type,
-                        base_endpoint,
-                        details=base_details,
+                        endpoint_override or session.get("endpoint") or "",
+                        details=session.get("details") or canonical_identity,
                     )
-                entry = self.activity[key]
-            else:
-                entry["last_seen"] = now
-                entry["ip_address"] = ip_address
-                entry["user_agent"] = user_agent
-                if connection_id and not entry.get("connection_id"):
-                    entry["connection_id"] = connection_id
-            if connection_idx_key:
-                self.connection_index[connection_idx_key] = {
-                    "activity_key": key,
-                    "last_seen": now,
-                }
-                self._store_connection_history_unlocked(connection_idx_key, entry, now, disconnected=False)
-            self._register_aliases_unlocked(actor_scope, key, decoded_url, now)
+                return "rehydrated"
 
-    async def touch(self, decoded_url, connection_id=None, user=None, ip_address=None, user_agent=None):
-        if not user:
-            user = self._request_user()
-        if is_tvh_backend_stream_user(user):
+            # 3. Create new session
+            base_endpoint = endpoint_override
+            if not base_endpoint:
+                try:
+                    base_endpoint = request.path
+                except Exception:
+                    base_endpoint = ""
+
+            session = {
+                "connection_id": connection_id,
+                "identity": canonical_identity,
+                "details": details_override or canonical_identity,
+                "started_at": now,
+                "last_seen": now,
+                "user_id": user_id,
+                "username": username,
+                "stream_key": stream_key,
+                "endpoint": base_endpoint,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
+                "related_identities": [normalized_identity] if normalized_identity else [],
+                "channel_id": channel_id,
+                "channel_name": channel_name,
+                "channel_logo_url": channel_logo_url,
+                "stream_name": resolved_stream_name,
+                "source_url": resolved_source_url,
+                "display_url": resolved_display_url,
+            }
+            self.sessions[connection_id] = session
+
+            if perform_audit:
+                audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
+                await audit_stream_event(
+                    audit_user,
+                    event_type,
+                    base_endpoint,
+                    details=session["details"],
+                )
+            return "started"
+
+    async def touch(self, connection_id, identity=None, ip_address=None, user_agent=None):
+        if not connection_id:
             return False
-        user_id = getattr(user, "id", None)
-        username = getattr(user, "username", None)
-        actor_scope = self._actor_scope(user_id, username)
-        connection_idx_key = f"{actor_scope}:{connection_id}" if connection_id else None
-        key = self._activity_key_unlocked(user_id, username, decoded_url)
-        if ip_address is None:
-            ip_address = get_request_client_ip()
-        if user_agent is None:
-            try:
-                user_agent = request.headers.get("User-Agent")
-            except Exception:
-                user_agent = None
         now = time.time()
-        async with self.activity_lock:
-            entry = None
-            if connection_idx_key:
-                existing_key = self.connection_index.get(connection_idx_key, {}).get("activity_key")
-                if existing_key and existing_key in self.activity:
-                    entry = self.activity[existing_key]
-                    key = existing_key
-            if not entry:
-                entry = self.activity.get(key)
-            if not entry:
-                for candidate_url in self._activity_url_candidates_unlocked(decoded_url):
-                    alias = self.aliases.get(self._alias_key(actor_scope, candidate_url))
-                    if not alias:
-                        continue
-                    alias_key = alias.get("activity_key")
-                    if alias_key and alias_key in self.activity:
-                        entry = self.activity[alias_key]
-                        key = alias_key
-                        break
-            if entry:
-                entry["last_seen"] = now
-                entry["ip_address"] = ip_address
-                entry["user_agent"] = user_agent
-                if connection_id and not entry.get("connection_id"):
-                    entry["connection_id"] = connection_id
-                if connection_idx_key:
-                    self.connection_index[connection_idx_key] = {
-                        "activity_key": key,
-                        "last_seen": now,
-                    }
-                    self._store_connection_history_unlocked(connection_idx_key, entry, now, disconnected=False)
-                self._register_aliases_unlocked(actor_scope, key, decoded_url, now)
+        async with self.lock:
+            if connection_id in self.sessions:
+                session = self.sessions[connection_id]
+                session["last_seen"] = now
+                if ip_address:
+                    session["ip_address"] = ip_address
+                if user_agent:
+                    session["user_agent"] = user_agent
+                if identity:
+                    rel = session.setdefault("related_identities", [])
+                    if identity not in rel:
+                        rel.append(identity)
+                    # If current identity is a segment but new one isn't, upgrade it
+                    if identity and not self._is_segment(identity) and self._is_segment(session.get("identity")):
+                        session["identity"] = identity
                 return True
         return False
 
     async def stop(
         self,
-        decoded_url,
-        connection_id=None,
+        connection_id,
         event_type="stream_stop",
         endpoint_override=None,
         user=None,
@@ -421,241 +369,118 @@ class StreamActivityTracker:
         user_agent=None,
         perform_audit=True,
     ):
-        if not user:
-            user = self._request_user()
-        if is_tvh_backend_stream_user(user):
+        if not connection_id:
             return False
 
-        user_id = getattr(user, "id", None)
-        username = getattr(user, "username", None)
-        stream_key = getattr(user, "streaming_key", None)
-        actor_scope = self._actor_scope(user_id, username)
-        connection_idx_key = f"{actor_scope}:{connection_id}" if connection_id else None
         now = time.time()
-        matched_key = None
-        matched_entry = None
-
-        async with self.activity_lock:
-            if connection_idx_key:
-                existing_key = self.connection_index.get(connection_idx_key, {}).get("activity_key")
-                if existing_key and existing_key in self.activity:
-                    matched_key = existing_key
-                    matched_entry = self.activity.get(existing_key)
-
-            if not matched_entry:
-                candidate_key = self._activity_key_unlocked(user_id, username, decoded_url)
-                if candidate_key in self.activity:
-                    matched_key = candidate_key
-                    matched_entry = self.activity.get(candidate_key)
-
-            if not matched_entry:
-                for candidate_url in self._activity_url_candidates_unlocked(decoded_url):
-                    alias = self.aliases.get(self._alias_key(actor_scope, candidate_url))
-                    if not alias:
-                        continue
-                    alias_key = alias.get("activity_key")
-                    if alias_key and alias_key in self.activity:
-                        matched_key = alias_key
-                        matched_entry = self.activity.get(alias_key)
-                        break
-
-            if not matched_entry or not matched_key:
+        async with self.lock:
+            session = self.sessions.pop(connection_id, None)
+            if not session:
                 return False
-
-            removed = self.activity.pop(matched_key, None)
-            if not removed:
-                return False
-
-            for alias_key, value in list(self.aliases.items()):
-                if value.get("activity_key") == matched_key:
-                    self.aliases.pop(alias_key, None)
-            for idx_key, value in list(self.connection_index.items()):
-                if value.get("activity_key") == matched_key:
-                    self.connection_index.pop(idx_key, None)
-
-            history_key = connection_idx_key
-            if not history_key and removed.get("connection_id"):
-                history_key = f"{actor_scope}:{removed.get('connection_id')}"
-            if history_key:
-                self._store_connection_history_unlocked(history_key, removed, now, disconnected=True)
+            self.history[connection_id] = {"last_seen": now, "entry": session}
 
         if perform_audit:
-            audit_user = user if user_id else _AuditUser(user_id, username, stream_key)
+            user_id = session.get("user_id")
+            username = session.get("username")
+            stream_key = session.get("stream_key")
+            audit_user = user if user is not None else _AuditUser(user_id, username, stream_key)
             await audit_stream_event(
                 audit_user,
                 event_type,
-                endpoint_override or removed.get("endpoint") or "",
-                details=removed.get("details") or decoded_url,
-                ip_address=ip_address or removed.get("ip_address"),
-                user_agent=user_agent or removed.get("user_agent"),
+                endpoint_override or session.get("endpoint") or "",
+                details=session.get("details") or session.get("identity"),
+                ip_address=ip_address or session.get("ip_address"),
+                user_agent=user_agent or session.get("user_agent"),
             )
         return True
 
-    async def register_playlist_parent(self, child_url: str, parent_url: str):
-        if not child_url or not parent_url or child_url == parent_url:
-            return
-        async with self.playlist_parent_lock:
-            self.playlist_parents[child_url] = {"parent": parent_url, "last_seen": time.time()}
-        await self._link_child_alias_to_parent(child_url, parent_url)
-
-    async def _link_child_alias_to_parent(self, child_url: str, parent_url: str):
-        user = self._request_user()
-        if is_tvh_backend_stream_user(user):
-            return
-        actor_scope = self._actor_scope(getattr(user, "id", None), getattr(user, "username", None))
-        now = time.time()
-        async with self.activity_lock:
-            parent_alias = self.aliases.get(self._alias_key(actor_scope, parent_url))
-            if not parent_alias:
-                return
-            activity_key = parent_alias.get("activity_key")
-            if not activity_key or activity_key not in self.activity:
-                return
-            self._register_aliases_unlocked(actor_scope, activity_key, child_url, now)
-
     async def snapshot(self):
         now = time.time()
-        async with self.activity_lock:
+        async with self.lock:
             entries = []
-            aliases_by_activity_key = {}
-            for alias_key, alias_value in self.aliases.items():
-                activity_key = alias_value.get("activity_key")
-                if not activity_key:
-                    continue
-                if activity_key not in aliases_by_activity_key:
-                    aliases_by_activity_key[activity_key] = []
-                try:
-                    _, url_value = alias_key.split(":", 1)
-                except ValueError:
-                    continue
-                aliases_by_activity_key[activity_key].append(url_value)
-
-            for activity_key, value in self.activity.items():
-                started_at = float(value.get("started_at") or value.get("last_seen") or now)
-                related_urls = []
-                seen_urls = set()
-                primary_details = value.get("details")
-                if primary_details:
-                    related_urls.append(primary_details)
-                    seen_urls.add(primary_details)
-                for url_value in aliases_by_activity_key.get(activity_key, []):
-                    if not url_value or url_value in seen_urls:
-                        continue
-                    related_urls.append(url_value)
-                    seen_urls.add(url_value)
+            for cid, s in self.sessions.items():
+                started_at = float(s.get("started_at") or now)
                 entries.append(
                     {
-                        "user_id": value.get("user_id"),
-                        "username": value.get("username"),
-                        "stream_key": value.get("stream_key"),
-                        "endpoint": value.get("endpoint"),
-                        "details": value.get("details"),
-                        "ip_address": value.get("ip_address"),
-                        "user_agent": value.get("user_agent"),
-                        "connection_id": value.get("connection_id"),
+                        "connection_id": cid,
+                        "identity": s.get("identity"),
+                        "user_id": s.get("user_id"),
+                        "username": s.get("username"),
+                        "stream_key": s.get("stream_key"),
+                        "endpoint": s.get("endpoint"),
+                        "details": s.get("details"),
+                        "ip_address": s.get("ip_address"),
+                        "user_agent": s.get("user_agent"),
                         "started_at": started_at,
-                        "last_seen": value.get("last_seen"),
+                        "last_seen": s.get("last_seen"),
                         "active_seconds": max(int(now - started_at), 0),
-                        "age_seconds": max(int(now - (value.get("last_seen") or now)), 0),
-                        "related_urls": related_urls,
+                        "age_seconds": max(int(now - (s.get("last_seen") or now)), 0),
+                        "related_urls": list(s.get("related_identities", [])),
+                        "channel_id": s.get("channel_id"),
+                        "channel_name": s.get("channel_name"),
+                        "channel_logo_url": s.get("channel_logo_url"),
+                        "stream_name": s.get("stream_name"),
+                        "source_url": s.get("source_url"),
+                        "display_url": s.get("display_url"),
                     }
                 )
-        entries.sort(
-            key=lambda item: (
-                item.get("started_at") or 0,
-                str(item.get("connection_id") or ""),
-                str(item.get("details") or ""),
-            )
-        )
+        entries.sort(key=lambda item: (item.get("started_at") or 0, str(item.get("connection_id") or "")))
         return entries
 
     async def cleanup(self):
         now = time.time()
-        expired = []
-        async with self.activity_lock:
-            for key, entry in list(self.activity.items()):
-                if now - entry["last_seen"] > self.activity_ttl:
-                    expired.append((key, entry))
-            for key, _ in expired:
-                self.activity.pop(key, None)
-            for key, value in list(self.aliases.items()):
-                if now - (value.get("last_seen") or 0) > self.alias_ttl:
-                    self.aliases.pop(key, None)
-            for key, value in list(self.connection_index.items()):
-                activity_key = value.get("activity_key")
-                if activity_key not in self.activity or now - (value.get("last_seen") or 0) > self.alias_ttl:
-                    self.connection_index.pop(key, None)
-            for key, value in list(self.connection_history.items()):
-                if now - (value.get("last_seen") or 0) > self.connection_history_ttl:
-                    self.connection_history.pop(key, None)
-            for _, entry in expired:
-                user_scope = self._actor_scope(entry.get("user_id"), entry.get("username"))
-                connection_id = entry.get("connection_id")
-                if connection_id:
-                    history_key = f"{user_scope}:{connection_id}"
-                    self._store_connection_history_unlocked(history_key, entry, now, disconnected=True)
-        for _, entry in expired:
-            audit_user = _AuditUser(entry["user_id"], entry["username"], entry.get("stream_key"))
+        expired_active = []
+        async with self.lock:
+            # Expire active sessions
+            for cid, s in list(self.sessions.items()):
+                if now - s["last_seen"] > self.activity_ttl:
+                    expired_active.append((cid, s))
+
+            for cid, s in expired_active:
+                self.sessions.pop(cid)
+                self.history[cid] = {"last_seen": now, "entry": s}
+
+            # Prune history
+            for cid, h in list(self.history.items()):
+                if now - h["last_seen"] > self.history_ttl:
+                    self.history.pop(cid)
+
+            # Prune playlist parents (simple time-based prune)
+            if len(self.playlist_parents) > 1000:
+                self.playlist_parents.clear()
+
+        # Audit stops for expired sessions
+        for cid, s in expired_active:
+            if str(cid).startswith("tvh-"):
+                # TVH sessions are explicitly audited by the poller task to avoid duplicates
+                # caused by small TTL windows or app restarts.
+                continue
+            audit_user = _AuditUser(s.get("user_id"), s.get("username"), s.get("stream_key"))
             await audit_stream_event(
                 audit_user,
                 "stream_stop",
-                entry.get("endpoint") or "",
-                details=entry.get("details"),
-                ip_address=entry.get("ip_address"),
-                user_agent=entry.get("user_agent"),
+                s.get("endpoint") or "",
+                details=s.get("details"),
+                ip_address=s.get("ip_address"),
+                user_agent=s.get("user_agent"),
             )
-        async with self.playlist_parent_lock:
-            for key, value in list(self.playlist_parents.items()):
-                if now - (value.get("last_seen") or 0) > self.parent_ttl:
-                    self.playlist_parents.pop(key, None)
+
+    async def register_playlist_parent(self, child_url: str, parent_url: str):
+        if not child_url or not parent_url or child_url == parent_url:
+            return
+        async with self.lock:
+            self.playlist_parents[child_url] = parent_url
 
     async def save_state(self, file_path: str):
         if not file_path:
             return False
-        now = time.time()
-        async with self.activity_lock:
-            activity = {}
-            for key, value in self.activity.items():
-                last_seen = float(value.get("last_seen") or 0)
-                if now - last_seen > self.activity_ttl:
-                    continue
-                activity[key] = dict(value)
-            aliases = {}
-            for key, value in self.aliases.items():
-                last_seen = float(value.get("last_seen") or 0)
-                if now - last_seen > self.alias_ttl:
-                    continue
-                aliases[key] = dict(value)
-            connection_index = {}
-            for key, value in self.connection_index.items():
-                activity_key = value.get("activity_key")
-                last_seen = float(value.get("last_seen") or 0)
-                if activity_key not in activity or now - last_seen > self.alias_ttl:
-                    continue
-                connection_index[key] = dict(value)
-            connection_history = {}
-            for key, value in self.connection_history.items():
-                last_seen = float(value.get("last_seen") or 0)
-                if now - last_seen > self.connection_history_ttl:
-                    continue
-                connection_history[key] = dict(value)
-        async with self.playlist_parent_lock:
-            playlist_parents = {}
-            for key, value in self.playlist_parents.items():
-                last_seen = float(value.get("last_seen") or 0)
-                if now - last_seen > self.parent_ttl:
-                    continue
-                playlist_parents[key] = dict(value)
-
-        payload = {
-            "version": 1,
-            "saved_at": now,
-            "activity": activity,
-            "aliases": aliases,
-            "connection_index": connection_index,
-            "connection_history": connection_history,
-            "playlist_parents": playlist_parents,
-        }
+        async with self.lock:
+            payload = {
+                "version": 3,
+                "saved_at": time.time(),
+                "sessions": self.sessions,
+                "history": self.history,
+            }
 
         directory = os.path.dirname(file_path)
         if directory:
@@ -685,67 +510,13 @@ class StreamActivityTracker:
         except Exception:
             return False
 
-        now = time.time()
-        activity = {}
-        for key, value in (payload.get("activity") or {}).items():
-            if not isinstance(value, dict):
-                continue
-            last_seen = float(value.get("last_seen") or 0)
-            if now - last_seen > self.activity_ttl:
-                continue
-            entry = dict(value)
-            entry["started_at"] = float(entry.get("started_at") or entry.get("last_seen") or now)
-            activity[key] = entry
-
-        aliases = {}
-        for key, value in (payload.get("aliases") or {}).items():
-            if not isinstance(value, dict):
-                continue
-            activity_key = value.get("activity_key")
-            last_seen = float(value.get("last_seen") or 0)
-            if activity_key not in activity or now - last_seen > self.alias_ttl:
-                continue
-            aliases[key] = dict(value)
-
-        connection_index = {}
-        for key, value in (payload.get("connection_index") or {}).items():
-            if not isinstance(value, dict):
-                continue
-            activity_key = value.get("activity_key")
-            last_seen = float(value.get("last_seen") or 0)
-            if activity_key not in activity or now - last_seen > self.alias_ttl:
-                continue
-            connection_index[key] = dict(value)
-
-        connection_history = {}
-        for key, value in (payload.get("connection_history") or {}).items():
-            if not isinstance(value, dict):
-                continue
-            last_seen = float(value.get("last_seen") or 0)
-            if now - last_seen > self.connection_history_ttl:
-                continue
-            connection_history[key] = dict(value)
-
-        playlist_parents = {}
-        for key, value in (payload.get("playlist_parents") or {}).items():
-            if not isinstance(value, dict):
-                continue
-            last_seen = float(value.get("last_seen") or 0)
-            if now - last_seen > self.parent_ttl:
-                continue
-            playlist_parents[key] = dict(value)
-
-        async with self.activity_lock:
-            self.activity = activity
-            self.aliases = aliases
-            self.connection_index = connection_index
-            self.connection_history = connection_history
-        async with self.playlist_parent_lock:
-            self.playlist_parents = playlist_parents
+        async with self.lock:
+            self.sessions = payload.get("sessions") or {}
+            self.history = payload.get("history") or {}
         return True
 
 
-_stream_activity_tracker = StreamActivityTracker(activity_ttl=60)
+_stream_activity_tracker = StreamActivityTracker(activity_ttl=20)
 
 
 async def _mark_stream_activity(decoded_url, event_type="stream_start"):
@@ -755,11 +526,19 @@ async def _mark_stream_activity(decoded_url, event_type="stream_start"):
 
 async def _touch_stream_activity(decoded_url):
     connection_id = _get_connection_id(default_new=False)
-    await _stream_activity_tracker.touch(decoded_url, connection_id=connection_id)
+    ip_address = get_request_client_ip()
+    user_agent = request.headers.get("User-Agent")
+    await _stream_activity_tracker.touch(
+        connection_id=connection_id,
+        identity=decoded_url,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
 
 
 async def _register_playlist_parent(child_url: str, parent_url: str):
-    await _stream_activity_tracker.register_playlist_parent(child_url, parent_url)
+    # This is now a no-op in the simplified tracker
+    pass
 
 
 async def _cleanup_stream_activity():
@@ -774,14 +553,19 @@ def _stream_activity_state_path() -> str | None:
     app_config = current_app.config.get("APP_CONFIG") if current_app else None
     if not app_config:
         return None
-    return os.path.join(app_config.config_path, "stream_activity_state.json")
+    return os.path.join(app_config.config_path, "cache", "stream_activity_state.json")
 
 
 async def persist_stream_activity_state():
     file_path = _stream_activity_state_path()
     if not file_path:
         return False
-    return await _stream_activity_tracker.save_state(file_path)
+    success = await _stream_activity_tracker.save_state(file_path)
+    if success:
+        proxy_logger.debug(f"Persisted stream activity state to {file_path}")
+    else:
+        proxy_logger.warning(f"Failed to persist stream activity state to {file_path}")
+    return success
 
 
 async def load_stream_activity_state():
@@ -792,7 +576,7 @@ async def load_stream_activity_state():
 
 
 async def upsert_stream_activity(
-    decoded_url: str,
+    identity: str,
     connection_id: str | None = None,
     endpoint_override: str | None = None,
     start_event_type: str = "stream_start",
@@ -801,18 +585,15 @@ async def upsert_stream_activity(
     user_agent=None,
     perform_audit=True,
     details_override: str | None = None,
+    channel_id=None,
+    channel_name=None,
+    channel_logo_url=None,
+    stream_name=None,
+    source_url=None,
+    display_url=None,
 ):
-    touched = await _stream_activity_tracker.touch(
-        decoded_url,
-        connection_id=connection_id,
-        user=user,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
-    if touched:
-        return "touched"
-    await _stream_activity_tracker.mark(
-        decoded_url,
+    return await _stream_activity_tracker.mark(
+        identity,
         event_type=start_event_type,
         connection_id=connection_id,
         endpoint_override=endpoint_override,
@@ -821,12 +602,17 @@ async def upsert_stream_activity(
         user_agent=user_agent,
         perform_audit=perform_audit,
         details_override=details_override,
+        channel_id=channel_id,
+        channel_name=channel_name,
+        channel_logo_url=channel_logo_url,
+        stream_name=stream_name,
+        source_url=source_url,
+        display_url=display_url,
     )
-    return "started"
 
 
 async def stop_stream_activity(
-    decoded_url: str,
+    identity: str,
     connection_id: str | None = None,
     event_type: str = "stream_stop",
     endpoint_override: str | None = None,
@@ -836,7 +622,6 @@ async def stop_stream_activity(
     perform_audit=True,
 ):
     return await _stream_activity_tracker.stop(
-        decoded_url,
         connection_id=connection_id,
         event_type=event_type,
         endpoint_override=endpoint_override,

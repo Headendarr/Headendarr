@@ -32,11 +32,22 @@ async def background_tasks():
         await task_broker.execute_tasks()
 
 
-@scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=15, misfire_grace_time=15)
+@scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=15, misfire_grace_time=60)
 async def every_15_seconds_hls_cleanup():
     async with app.app_context():
         await cleanup_hls_proxy_state()
         await persist_stream_activity_state()
+
+
+@scheduler.scheduled_job('interval', id='do_15_seconds', seconds=15, misfire_grace_time=15)
+async def every_15_seconds():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task({
+            'name':     'Polling TVHeadend subscription status',
+            'function': poll_tvh_subscription_status,
+            'args':     [app],
+        }, priority=5)
 
 
 @scheduler.scheduled_job('interval', id='do_30_seconds', seconds=30, misfire_grace_time=15)
@@ -48,11 +59,6 @@ async def every_30_seconds():
             'function': reconcile_dvr_recordings,
             'args':     [app],
         }, priority=20)
-        await task_broker.add_task({
-            'name':     'Polling TVHeadend subscription status',
-            'function': poll_tvh_subscription_status,
-            'args':     [app],
-        }, priority=21)
 
 
 @scheduler.scheduled_job('interval', id='audit_log_cleanup', hours=6, misfire_grace_time=300)
