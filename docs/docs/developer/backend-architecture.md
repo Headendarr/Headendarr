@@ -31,7 +31,7 @@ This page documents backend runtime behavior and integration boundaries.
 
 ## Playback Path
 
-- DVR playback endpoint: `/tic-api/recordings/<id>/hls.m3u8`.
+- DVR playback endpoint: `/tic-api/recordings/<int:recording_id>/hls.m3u8`.
 - Endpoint serves HLS wrapper output for TVHeadend recording files.
 
 ## Current Sync Caveat

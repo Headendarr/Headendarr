@@ -96,6 +96,7 @@ import {computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch}
 import {useVideoStore} from 'stores/video';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
+import { useMobile } from 'src/composables/useMobile';
 
 const videoStore = useVideoStore();
 const videoEl = ref(null);
@@ -109,7 +110,7 @@ const hlsInstances = new Set();
 const mpegtsInstances = new Set();
 const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
-const isMobile = ref(window.innerWidth < 600);
+const { isMobile } = useMobile();
 const volumeHandler = ref(null);
 const applyingPersistedVolume = ref(false);
 const videoErrorHandler = ref(null);
@@ -1000,24 +1001,46 @@ watch(
       cleanupPlayer();
       return;
     }
+    const defaultPosition = { right: 24, bottom: 24, left: null, top: null };
+    const mobilePosition = { right: 0, bottom: 0, left: 0, top: null };
+    const defaultSize = { width: 640, height: 360 }; // Default desktop size
+    const mobileSize = { width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300) };
+
+    if (isMobile.value) {
+      videoStore.setPosition(mobilePosition);
+      videoStore.setSize(mobileSize);
+    } else {
+      videoStore.setPosition(defaultPosition);
+      videoStore.setSize(defaultSize);
+    }
+
     initPlayer();
   },
 );
+
+// Watch for changes in isMobile to adjust player size and position
+watch(isMobile, (newIsMobile, oldIsMobile) => {
+  if (newIsMobile !== oldIsMobile && videoStore.isVisible) {
+    const defaultPosition = { right: 24, bottom: 24, left: null, top: null };
+    const mobilePosition = { right: 0, bottom: 0, left: 0, top: null };
+    const defaultSize = { width: 640, height: 360 };
+    const mobileSize = { width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300) };
+
+    if (newIsMobile) {
+      videoStore.setPosition(mobilePosition);
+      videoStore.setSize(mobileSize);
+    } else {
+      videoStore.setPosition(defaultPosition);
+      videoStore.setSize(defaultSize);
+    }
+  }
+});
 
 onBeforeUnmount(() => {
   cleanupPlayer();
 });
 
-function handleResizeEvent() {
-  isMobile.value = window.innerWidth < 600;
-}
-
-onMounted(() => {
-  window.addEventListener('resize', handleResizeEvent);
-});
-
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResizeEvent);
   stopPlaybackHeartbeat(true);
 });
 </script>
@@ -1177,10 +1200,6 @@ onUnmounted(() => {
     top: auto;
     width: 100% !important;
     border-radius: 12px 12px 0 0;
-  }
-
-  .floating-player__resize-handle {
-    display: none;
   }
 }
 </style>

@@ -137,7 +137,7 @@
                       <q-item-section>
                         <q-item-label>
                           TIC uses an internal sync account to apply configuration changes in the background.
-                          Only provide admin credentials here for external TVheadend instances that require
+                          Only provide admin credentials here for external TVHeadend instances that require
                           authentication.
                         </q-item-label>
                       </q-item-section>

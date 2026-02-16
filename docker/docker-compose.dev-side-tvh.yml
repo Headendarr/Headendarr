@@ -69,7 +69,7 @@ services:
       - PGID=1000
       # Timezone
       - TZ=Pacific/Auckland
-      # Additional arguments to be passed to Tvheadend (Optional)
+      # Additional arguments to be passed to TVHeadend (Optional)
       # - RUN_OPTS= #optional
 
     # VOLUMES:

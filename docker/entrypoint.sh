@@ -5,7 +5,7 @@
 # File Created: Monday, 13th May 2024 4:20:35 pm
 # Author: Josh.5 (jsunnex@gmail.com)
 # -----
-# Last Modified: Monday, 9th February 2026 11:28:51 pm
+# Last Modified: Monday, 16th February 2026 12:40:10 pm
 # Modified By: Josh.5 (jsunnex@gmail.com)
 ###
 
@@ -217,6 +217,15 @@ migrate_sqlite_to_postgres() {
     fi
 }
 
+reset_admin_password() {
+    if [ -f "/config/.reset-admin-password" ]; then
+        print_log info "Resetting admin password as '/config/.reset-admin-password' exists"
+        python3 /app/backend/scripts/reset_admin_password.py
+        rm -f "/config/.reset-admin-password"
+        print_log info "Removed '/config/.reset-admin-password'"
+    fi
+}
+
 start_nginx() {
     if command -v nginx >/dev/null 2>&1; then
         mkdir -p /tmp/nginx/logs
@@ -373,6 +382,7 @@ run_migrations
 cleanup_migrated_sqlite
 vacuum_sqlite_if_exists
 migrate_sqlite_to_postgres
+reset_admin_password
 start_nginx
 start_tvh
 start_tic

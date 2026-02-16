@@ -1,7 +1,7 @@
 {
   "name": "tvh_iptv_config",
   "version": "0.0.1",
-  "description": "A tool for simplifying IPTV configuration in TVheadend",
+  "description": "A tool for simplifying IPTV configuration in TVHeadend",
   "productName": "TVH IPTV Config",
   "author": "Josh.5 <jsunnex@gmail.com>",
   "private": true,

@@ -421,8 +421,8 @@ const linksList = [
     adminOnly: true,
   },
   {
-    title: 'TVheadend',
-    caption: 'TVheadend Settings',
+    title: 'TVHeadend',
+    caption: 'TVHeadend Settings',
     icon: 'tvh-icon',
     link: '/tvheadend',
   },

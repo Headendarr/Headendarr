@@ -29,7 +29,7 @@ def _build_user_scoped_pathname(username: str, pathname: str) -> str:
         normalized = "$t/$t-$c-%F_%R$n.$x"
     return f"{safe_username}/{normalized}"
 
-# TVheadend API URLs:
+# TVHeadend API URLs:
 api_config_save = "config/save"
 api_imagecache_config_save = "imagecache/config/save"
 api_accessentry_grid = "access/entry/grid"

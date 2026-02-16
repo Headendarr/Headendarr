@@ -134,7 +134,7 @@
             option-value="value"
             :emit-value="true"
             :map-options="true"
-            :multiple="true"
+            :multiple="false"
             :clearable="false"
             :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
           />
@@ -320,7 +320,7 @@ export default {
       form: {
         username: '',
         password: '',
-        roles: [],
+        roles: null,
         is_active: true,
         streaming_key: '',
         dvr_access_mode: 'none',
@@ -478,7 +478,7 @@ export default {
       this.form = {
         username: '',
         password: '',
-        roles: ['streamer'],
+        roles: 'streamer',
         is_active: true,
         streaming_key: '',
         dvr_access_mode: 'none',
@@ -496,7 +496,7 @@ export default {
         this.$q.notify({color: 'negative', message: 'Username and password are required'});
         return;
       }
-      const roles = Array.isArray(this.form.roles) ? this.form.roles : [];
+      const roles = this.form.roles ? [this.form.roles] : [];
       const isAdmin = roles.includes('admin');
       this.creating = true;
       try {
@@ -536,7 +536,7 @@ export default {
       if (!this.editUser) {
         return;
       }
-      const roles = Array.isArray(this.form.roles) ? this.form.roles : [];
+      const roles = this.form.roles ? [this.form.roles] : [];
       const isAdmin = roles.includes('admin');
       this.saving = true;
       try {

@@ -12,3 +12,10 @@ def is_truthy(value):
     if isinstance(value, str):
         return value.lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def convert_to_int(value, default=1):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

@@ -18,6 +18,7 @@ from backend.ffmpeg import ffprobe_file
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
+from backend.utils import convert_to_int
 
 logger = logging.getLogger("tic.playlists")
 
@@ -382,7 +383,7 @@ async def add_new_playlist(config, data):
                 account_type=account_type,
                 xc_username=data.get("xc_username"),
                 xc_password=data.get("xc_password"),
-                connections=data.get("connections"),
+                connections=convert_to_int(data.get("connections")),
                 user_agent=data.get("user_agent"),
                 use_hls_proxy=data.get("use_hls_proxy", False),
                 use_custom_hls_proxy=data.get("use_custom_hls_proxy", False),
@@ -415,7 +416,7 @@ async def update_playlist(config, playlist_id, data):
                 playlist.xc_username = data.get("xc_username")
             if data.get("xc_password"):
                 playlist.xc_password = data.get("xc_password")
-            playlist.connections = data.get("connections", playlist.connections)
+            playlist.connections = convert_to_int(data.get("connections"), playlist.connections)
             playlist.user_agent = data.get("user_agent", playlist.user_agent)
             playlist.use_hls_proxy = data.get("use_hls_proxy", playlist.use_hls_proxy)
             playlist.use_custom_hls_proxy = data.get(

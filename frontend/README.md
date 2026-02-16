@@ -1,6 +1,6 @@
 # TVH IPTV Config (tvh_iptv_config)
 
-A tool for simplifying IPTV configuration in TVheadend
+A tool for simplifying IPTV configuration in TVHeadend
 
 ## Install the dependencies
 ```bash

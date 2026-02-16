@@ -165,7 +165,7 @@ module.exports = configure(function(ctx) {
       manifest: {
         name: `TVH IPTV Config`,
         short_name: `TVH IPTV Config`,
-        description: `A tool for simplifying IPTV configuration in TVheadend`,
+        description: `A tool for simplifying IPTV configuration in TVHeadend`,
         display: 'standalone',
         orientation: 'portrait',
         background_color: '#ffffff',
