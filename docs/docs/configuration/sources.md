@@ -49,4 +49,4 @@ You can monitor the refresh progress in the "Task Manager" at the top right of t
 
 ---
 
-Once you have added and refreshed your sources, you can proceed to add [EPG Sources](./epgs.md) and then [configure your channels](../channels.md).
+Once you have added and refreshed your sources, you can proceed to add [EPG Sources](./epgs.md) and then [configure your channels](./channels.md).

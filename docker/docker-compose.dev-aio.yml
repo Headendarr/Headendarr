@@ -5,7 +5,7 @@ networks:
 services:
   # -- Headendarr --
   headendarr:
-    image: ghcr.io/Headendarr/headendarr:latest
+    image: ghcr.io/headendarr/headendarr:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -62,7 +62,7 @@ services:
     command: bash -lc "npm install && npx quasar dev --host 0.0.0.0 --port 8080 --debug"
     network_mode: host
     depends_on:
-      - tic
+      - headendarr
     environment:
       - NODE_ENV=development
       - QUASAR_DEV_PORT=8080
@@ -76,8 +76,6 @@ services:
     working_dir: /app/docs
     command: bash -lc "npm install && npm start"
     network_mode: host
-    depends_on:
-      - tic
     environment:
       - NODE_ENV=development
       - DOCUSAURUS_DEV_PORT=8030

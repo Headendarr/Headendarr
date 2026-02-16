@@ -8,42 +8,42 @@ tasks:
   all:start:
     desc: Start backend, frontend, and docs services in dev AIO stack (detached)
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} up -d tic frontend docs
+      - docker compose -f {{.COMPOSE_FILE}} up -d headendarr frontend docs
 
   all:stop:
     desc: Stop backend, frontend, and docs services in dev AIO stack
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} stop tic frontend docs
+      - docker compose -f {{.COMPOSE_FILE}} stop headendarr frontend docs
 
   backend:start:
     desc: Start backend (tic) service in dev AIO stack (detached)
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} up -d tic
+      - docker compose -f {{.COMPOSE_FILE}} up -d headendarr
 
   backend:stop:
     desc: Stop backend (tic) service in dev AIO stack
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} stop tic
+      - docker compose -f {{.COMPOSE_FILE}} stop headendarr
 
   backend:logs:
     desc: Tail backend (tic) service logs
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} tic
+      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} headendarr
 
   backend:build:
     desc: Build backend (tic) service image
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} build tic
+      - docker compose -f {{.COMPOSE_FILE}} build headendarr
 
   backend:migrate:rollback-last:
     desc: Roll back the most recent Alembic migration using a one-off backend (tic) container
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e ROLLBACK_LAST_MIGRATION=true tic
+      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e ROLLBACK_LAST_MIGRATION=true headendarr
 
   backend:migrate:current:
     desc: Print the current Alembic migration revision using a one-off backend (tic) container
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true tic
+      - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true headendarr
 
   frontend:start:
     desc: Start frontend dev server service in dev AIO stack (detached)

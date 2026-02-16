@@ -81,4 +81,4 @@ After creating channels, you can click on any of them to **edit** and refine mis
 
 Once your channels are configured, automatic background tasks will synck your config with the TVHeadend backend. This pushes all your configuration to the TVHeadend backend.
 
-Your channels are now ready! You can use the **TV Guide** to see what's on, schedule recordings, and [connect your clients](./client-connectivity).
+Your channels are now ready! You can use the **TV Guide** to see what's on, schedule recordings, and [connect your clients](./configuration/client-connectivity.md).

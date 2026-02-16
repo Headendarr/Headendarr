@@ -6,5 +6,5 @@ docker buildx build \
   --build-arg BASE_IMAGE="ghcr.io/tvheadend/tvheadend:edge-debian" \
   --file docker/Dockerfile \
   --platform linux/arm64 \
-  -t ghcr.io/Headendarr/headendarr:latest \
+  -t ghcr.io/headendarr/headendarr:latest \
   .

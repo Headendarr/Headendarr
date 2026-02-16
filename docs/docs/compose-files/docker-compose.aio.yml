@@ -5,7 +5,7 @@ networks:
 services:
   # -- Headendarr --
   headendarr:
-    image: ghcr.io/Headendarr/headendarr:latest
+    image: ghcr.io/headendarr/headendarr:latest
 
     # NETWORK:
     networks:
