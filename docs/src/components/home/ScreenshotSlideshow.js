@@ -50,7 +50,7 @@ export default function ScreenshotSlideshow() {
           {desktopImages.map((image, index) => (
             <div key={index} className={styles.desktop_wrapper}>
               <ZoomImage
-                src={useBaseUrl(image.src)}
+                src={image.src}
                 alt={image.alt}
                 className={styles.desktop_screenshot}
               />
@@ -65,7 +65,7 @@ export default function ScreenshotSlideshow() {
           {mobileImages.map((image, index) => (
             <div key={index} className={styles.mobile_wrapper}>
               <ZoomImage
-                src={useBaseUrl(image.src)}
+                src={image.src}
                 alt={image.alt}
                 className={styles.mobile_screenshot}
               />

@@ -9,7 +9,7 @@ export default function UserManagementSection() {
       <div className={styles.container}>
         <div className={styles.image_column}>
           <ZoomImage
-            src={useBaseUrl("/img/screenshots/users-page-desktop.png")}
+            src="/img/screenshots/users-page-desktop.png"
             alt="Multi-User Management Dashboard"
             className={styles.screenshot}
           />

@@ -45,7 +45,7 @@ export default function DashboardSection() {
         </div>
         <div className={styles.image_column}>
           <ZoomImage
-            src={useBaseUrl("/img/screenshots/dashboard-page-desktop.png")}
+            src="/img/screenshots/dashboard-page-desktop.png"
             alt="Headendarr Dashboard"
             className={styles.screenshot}
           />

@@ -25,9 +25,7 @@ export default function ChannelManagementSection() {
         </div>
         <div className={styles.image_column}>
           <ZoomImage
-            src={useBaseUrl(
-              "/img/screenshots/channels-page-select-from-source-desktop.png",
-            )}
+            src="/img/screenshots/channels-page-select-from-source-desktop.png"
             alt="Channel Management - Bulk Selection"
             className={styles.screenshot}
           />

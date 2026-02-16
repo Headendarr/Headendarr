@@ -37,6 +37,8 @@ After creating a channel using either method, you can click on it in the main li
 
 Headendarr allows you to add **multiple stream sources** to a single channel. This creates a powerful failover system.
 
+<ZoomImage src="/img/screenshots/channels-page-configure-channel-stream-order-desktop.png" alt="Channel Stream Priority Configuration" className="screenshot" />
+
 -   **Priority**: Inside a channel's settings, the streams are listed in order of priority (from top to bottom). The stream at the top of the list will always be tried first.
 -   **Failover**: If a client requests a channel, TVHeadend will try the highest priority stream. If that stream is unavailable, or if the connection limit for that source (as configured on the **Sources** page) has been reached, TVHeadend will automatically move to the next stream in the priority list.
 -   **Reordering**: You can drag and drop streams within the channel's settings to change their priority.
@@ -45,6 +47,8 @@ Headendarr allows you to add **multiple stream sources** to a single channel. Th
 
 -   **Channel Numbering**: The channel list is ordered by channel number.
 -   **Drag-and-Drop**: You can easily reorder your channels by dragging and dropping them within the main channel list. This will automatically update their channel numbers.
+
+<ZoomImage src="/img/screenshots/channels-page-drag-to-change-order-desktop.png" alt="Drag and Drop Channel Reordering" className="screenshot" />
 
 ## Bulk Updating Channels
 

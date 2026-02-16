@@ -21,7 +21,7 @@ export default function TvGuideSection() {
 
           <div className={styles.main_image_wrapper}>
             <ZoomImage
-              src={useBaseUrl("/img/screenshots/tvguide-responsive-web-ui.png")}
+              src="/img/screenshots/tvguide-responsive-web-ui.png"
               alt="Responsive TV Guide UI"
               className={styles.main_screenshot}
             />
