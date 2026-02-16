@@ -3,6 +3,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  background-color: var(--ifm-background-color-secondary);
 }
 
 .container {
@@ -18,11 +19,11 @@
 }
 
 .text_column h2 {
-    color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
 }
 
 .text_column p {
-    color: var(--ifm-font-color-base);
+  color: var(--ifm-font-color-base);
 }
 
 .feature_breakdown {
@@ -66,9 +67,9 @@
 }
 
 .client_item:hover {
-    border-color: var(--ifm-color-primary);
-    transform: translateY(-2px);
-    box-shadow: var(--ifm-global-shadow-lw);
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-2px);
+  box-shadow: var(--ifm-global-shadow-lw);
 }
 
 .logo_grid {

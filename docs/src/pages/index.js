@@ -13,6 +13,7 @@ import UserManagementSection from "../components/home/UserManagementSection";
 import ClientCompatibilitySection from "../components/home/ClientCompatibilitySection";
 import WhySection from "../components/home/WhySection";
 import CallToActionSection from "../components/home/CallToActionSection";
+import HlsProxySection from "../components/home/HlsProxySection";
 
 function HomepageHeader() {
   const { siteConfig } = useDocusaurusContext();
@@ -60,6 +61,7 @@ export default function Home() {
         <WhySection />
         <ChannelManagementSection />
         <TvGuideSection />
+        <HlsProxySection />
         <UserManagementSection />
         <DashboardSection />
         <ClientCompatibilitySection />
