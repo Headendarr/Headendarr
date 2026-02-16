@@ -32,7 +32,7 @@ Headendarr stores retention as a strict enum and only accepts this whitelist:
 - `maintained_space`
 - `forever`
 
-Any other value is rejected at save time and normalized to `forever`.
+Any other value is rejected at save time and normalised to `forever`.
 
 ## TVHeadend Pathname Tokens
 

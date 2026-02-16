@@ -53,7 +53,7 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
   - Mobile (`<600px`): collapses to overflow menu.
   - Mobile overflow menu uses shared `tic-dropdown-menu` class.
 - `TicButtonDropdown` (`frontend/src/components/ui/buttons/TicButtonDropdown.vue`)
-  - Standardized dropdown button style for action menus.
+  - Standardised dropdown button style for action menus.
   - Menu content uses shared `tic-dropdown-menu` class.
 
 ### Dropdown Menu Style Rules (Strict)

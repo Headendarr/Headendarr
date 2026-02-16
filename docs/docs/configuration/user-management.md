@@ -18,12 +18,12 @@ Headendarr allows you to create multiple user accounts to control access to the 
 
 ## Permissions
 
-Headendarr utilizes a role-based access control system, offering either an "Admin" or "Streamer" role.
+Headendarr utilises a role-based access control system, offering either an "Admin" or "Streamer" role.
 
 -   **Admin**: Provides full administrative access to both the Headendarr platform and the integrated TVHeadend backend. Users with this role can manage all application settings, other users, and have complete control over the system.
 -   **Streamer**: Offers a highly limited subset of permissions, primarily for accessing available streams. Users with this role cannot modify settings or manage other users.
 
-In addition to roles, you can configure granular access controls for how clients utilize Headendarr's streaming capabilities and DVR functions:
+In addition to roles, you can configure granular access controls for how clients utilise Headendarr's streaming capabilities and DVR functions:
 
 -   **DVR Access**: Controls the user's ability to interact with DVR functionalities through client applications. Options include:
     *   **No DVR access**: The user cannot access DVR features or make recordings.

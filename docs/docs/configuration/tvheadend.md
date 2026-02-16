@@ -53,7 +53,7 @@ It is recommended to let Headendarr manage the core channel, mux, and EPG config
 
 -   **Stability**: TVHeadend is exceptionally stable and designed for 24/7 operation.
 -   **Compatibility**: It supports a huge range of clients via the HTSP protocol.
--   **Performance**: It is highly optimized for streaming and recording multiple channels simultaneously.
+-   **Performance**: It is highly optimised for streaming and recording multiple channels simultaneously.
 -   **Feature-Rich**: It includes a powerful DVR, time-shifting capabilities, and detailed stream analysis tools.
 
 By leveraging the power of TVHeadend, Headendarr provides a best-in-class experience for managing and watching your IPTV content.

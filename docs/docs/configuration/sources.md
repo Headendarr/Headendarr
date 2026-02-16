@@ -31,7 +31,7 @@ title: Sources
 -   **User Agent**: Select a user agent if your provider requires a specific one.
 
 :::note Increasing XC Connection Limits
-For Xtreme Codes providers, you can configure a single source with multiple login credentials (i.e., different usernames and passwords for the same host) to effectively increase your concurrent connection limits. This is more efficient than creating separate sources for each login. Headendarr will automatically manage these connections, dynamically utilizing available credentials as needed to meet demand. This allows for flexible scaling of connections throughout the year without requiring multiple source entries.
+For Xtreme Codes providers, you can configure a single source with multiple login credentials (i.e., different usernames and passwords for the same host) to effectively increase your concurrent connection limits. This is more efficient than creating separate sources for each login. Headendarr will automatically manage these connections, dynamically utilising available credentials as needed to meet demand. This allows for flexible scaling of connections throughout the year without requiring multiple source entries.
 :::
 
 ## Refreshing Sources

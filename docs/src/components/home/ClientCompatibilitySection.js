@@ -94,7 +94,7 @@ export default function ClientCompatibilitySection() {
               <strong>Stream Stability</strong>
               <p>
                 Standardise varying IPTV source formats into stable HLS or
-                MPEG-TS streams, or utilize the high-performance{" "}
+                MPEG-TS streams, or utilise the high-performance{" "}
                 <b>HTSP protocol</b> for the best possible experience.
               </p>
             </div>
