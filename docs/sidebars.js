@@ -54,7 +54,10 @@ const sidebars = {
             title: "Advanced Setup Guides",
             description: "Deep-dive guides for complex configurations.",
           },
-          items: ["guides/external-hls-proxy"],
+          items: [
+            "guides/external-hls-proxy",
+            "guides/troubleshooting-streams",
+          ],
         },
       ],
     },

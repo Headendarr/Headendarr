@@ -7,14 +7,12 @@ import logging
 import os
 import re
 import subprocess
-import threading
 import time
 import uuid
 from collections import deque
 from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
-import time
 from quart import Response, current_app, redirect, request, stream_with_context
 
 from backend.api import blueprint
@@ -632,193 +630,314 @@ async def stop_stream_activity(
     )
 # A dictionary to keep track of active streams
 active_streams = {}
+active_streams_lock = asyncio.Lock()
 
 
-class FFmpegStream:
+class BaseStreamMultiplexer:
     def __init__(self, decoded_url):
         self.decoded_url = decoded_url
-        self.buffers = {}
-        self.process = None
-        self.running = True
-        self.thread = threading.Thread(target=self.run_ffmpeg)
-        self.connection_count = 0
-        self.lock = threading.Lock()
-        self.last_activity = time.time()  # Track last activity time
-        self.thread.start()
-
-    def run_ffmpeg(self):
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "info",
-            "-err_detect",
-            "ignore_err",
-            "-probesize",
-            "20M",
-            "-analyzeduration",
-            "0",
-            "-fpsprobesize",
-            "0",
-            "-i",
-            self.decoded_url,
-            "-c",
-            "copy",
-            "-f",
-            "mpegts",
-            "pipe:1",
-        ]
-        ffmpeg_logger.info("Executing FFmpeg with command: %s", command)
-        self.process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-
-        # Start a thread to log stderr
-        stderr_thread = threading.Thread(target=self.log_stderr)
-        stderr_thread.daemon = (
-            True  # Make this a daemon thread so it exits when main thread exits
-        )
-        stderr_thread.start()
-
-        chunk_size = 65536  # Read 64 KB at a time
-        while self.running:
-            try:
-                # Use select to avoid blocking indefinitely
-                import select
-
-                ready, _, _ = select.select([self.process.stdout], [], [], 1.0)
-                if not ready:
-                    # No data available, check if we should terminate due to inactivity
-                    if (
-                        time.time() - self.last_activity > 300
-                    ):  # 5 minutes of inactivity
-                        ffmpeg_logger.info(
-                            "No activity for 5 minutes, terminating FFmpeg stream"
-                        )
-                        self.stop()
-                        break
-                    continue
-
-                chunk = self.process.stdout.read(chunk_size)
-                if not chunk:
-                    ffmpeg_logger.warning("FFmpeg has finished streaming.")
-                    break
-
-                # Update last activity time
-                self.last_activity = time.time()
-
-                # Append the chunk to all buffers
-                with self.lock:  # Use lock when accessing buffers
-                    for buffer in self.buffers.values():
-                        buffer.append(chunk)
-            except Exception as e:
-                ffmpeg_logger.error("Error reading stdout: %s", e)
-                break
-
-        self.cleanup()
-
-    def cleanup(self):
-        """Clean up resources properly"""
+        self.queues = {}  # connection_id -> asyncio.Queue
         self.running = False
-        if self.process:
-            try:
-                # Try to terminate the process gracefully first
-                self.process.terminate()
-                # Wait a bit for it to terminate
+        self.lock = asyncio.Lock()
+        self.last_activity = time.time()
+        self.history = deque()
+        self.history_bytes = 0
+        self.max_history_bytes = 200 * 1024 * 1024  # 200MB total history cap
+
+    async def _broadcast(self, chunk):
+        if not chunk:
+            return
+        self.last_activity = time.time()
+
+        async with self.lock:
+            # Update shared history
+            self.history.append(chunk)
+            self.history_bytes += len(chunk)
+            while self.history_bytes > self.max_history_bytes:
+                old = self.history.popleft()
+                self.history_bytes -= len(old)
+
+            # Push to all subscriber queues
+            for q in list(self.queues.values()):
                 try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    # If it doesn't terminate, kill it
-                    self.process.kill()
-                    self.process.wait()
-            except Exception as e:
-                ffmpeg_logger.error("Error terminating FFmpeg process: %s", e)
+                    q.put_nowait(chunk)
+                except asyncio.QueueFull:
+                    # Leaky bucket: drop oldest chunk for this specific client
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(chunk)
+                    except Exception:
+                        pass
 
-            # Close file descriptors
-            if self.process.stdout:
-                self.process.stdout.close()
-            if self.process.stderr:
-                self.process.stderr.close()
+    async def add_queue(self, connection_id, prebuffer_bytes=0):
+        async with self.lock:
+            # 200MB cap. Use a high chunk count (100k) to handle small network packets.
+            q = asyncio.Queue(maxsize=100000)
 
-        ffmpeg_logger.info("FFmpeg process cleaned up.")
+            # Prime the new queue with history for an instant cushion
+            primed_bytes = 0
+            if prebuffer_bytes > 0 and self.history:
+                accumulated = 0
+                to_prime = []
+                # Grab the most recent data from history to fill the cushion
+                for chunk in reversed(self.history):
+                    to_prime.append(chunk)
+                    accumulated += len(chunk)
+                    if accumulated >= prebuffer_bytes:
+                        break
+                for chunk in reversed(to_prime):
+                    try:
+                        q.put_nowait(chunk)
+                        primed_bytes += len(chunk)
+                    except asyncio.QueueFull:
+                        break
 
-        # Clear buffers
-        with self.lock:
-            self.buffers.clear()
+            self.queues[connection_id] = q
+            proxy_logger.info(
+                f"Added queue {connection_id} for {self.decoded_url}, count: {len(self.queues)} (primed: {primed_bytes} bytes)"
+            )
+            return q, primed_bytes
 
-    def stop(self):
-        """Stop the FFmpeg process and clean up resources"""
-        if self.running:
-            self.running = False
-            self.cleanup()
+    async def remove_queue(self, connection_id):
+        async with self.lock:
+            self.queues.pop(connection_id, None)
+            proxy_logger.info(
+                f"Removed queue {connection_id} for {self.decoded_url}, count: {len(self.queues)}"
+            )
+            if not self.queues:
+                proxy_logger.info("No more connections for %s, stopping.", self.decoded_url)
+                asyncio.create_task(self.stop())
 
-    def log_stderr(self):
-        """Log stderr output from the FFmpeg process."""
-        while self.running and self.process and self.process.stderr:
+    async def stop(self):
+        raise NotImplementedError()
+
+
+class AsyncFFmpegStream(BaseStreamMultiplexer):
+    """
+    FFmpeg Multiplexer Mode (Legacy/Compatibility Fallback)
+
+    How it works:
+    Spawns an external FFmpeg subprocess to fetch and remux the upstream source. 
+    The raw data is piped from FFmpeg's stdout into TIC's Python buffer.
+
+    Benefits:
+    - Timestamp Correction: Smooths out jittery or resetting PTS/DTS timestamps common in low-quality IPTV.
+    - Stream Normalisation: Ensures PAT/PMT tables are regularly injected, improving player compatibility.
+    - Error Resilience: FFmpeg's internal demuxers can often handle stream corruption that raw socket reads cannot.
+
+    Costs:
+    - High CPU: Spawns a dedicated OS process per unique stream.
+    - Context Switching: High overhead due to Inter-Process Communication (IPC) between FFmpeg and Python.
+    - Scalability: System performance degrades linearly with the number of active processes.
+    """
+
+    def __init__(self, decoded_url):
+        super().__init__(decoded_url)
+        self.process = None
+        self.read_task = None
+        self.stderr_task = None
+
+    async def start(self):
+        async with self.lock:
+            if self.running:
+                return
+
+            # Optimised FFmpeg command for Live IPTV Streaming:
+            # - reconnect*: Ensures the stream automatically recovers from network hiccups or dropped connections.
+            # - probesize 5M: Small enough for fast startup, large enough to find PMT/PAT tables.
+            # - analyseduration 2M: Provides 2s of context for FFmpeg to correctly identify stream metadata.
+            # - muxdelay/muxpreload 0: Forces immediate delivery of chunks to the buffer (minimal internal buffering).
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "2",
+                "-probesize", "5M",
+                "-analyzeduration", "2000000",
+                "-i", self.decoded_url,
+                "-c", "copy",
+                "-f", "mpegts",
+                "-muxdelay", "0",
+                "-muxpreload", "0",
+                "pipe:1",
+            ]
+            ffmpeg_logger.info("Executing FFmpeg with command: %s", command)
             try:
-                line = self.process.stderr.readline()
+                self.process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                self.running = True
+                self.read_task = asyncio.create_task(self._read_loop())
+                self.stderr_task = asyncio.create_task(self._log_stderr())
+            except Exception as e:
+                ffmpeg_logger.error("Failed to start FFmpeg for %s: %s", self.decoded_url, e)
+                self.running = False
+
+    async def _read_loop(self):
+        chunk_size = 16384
+        try:
+            while self.running and self.process:
+                chunk = await self.process.stdout.read(chunk_size)
+                if not chunk:
+                    ffmpeg_logger.warning("FFmpeg has finished streaming for %s", self.decoded_url)
+                    break
+                await self._broadcast(chunk)
+        except Exception as e:
+            ffmpeg_logger.error("Error reading FFmpeg stdout for %s: %s", self.decoded_url, e)
+        finally:
+            await self.stop()
+
+    async def _log_stderr(self):
+        while self.running and self.process:
+            try:
+                line = await self.process.stderr.readline()
                 if not line:
                     break
                 ffmpeg_logger.debug(
-                    "FFmpeg: %s", line.decode("utf-8", errors="replace").strip()
+                    "FFmpeg [%s]: %s", self.decoded_url, line.decode("utf-8", errors="replace").strip()
                 )
-            except Exception as e:
-                ffmpeg_logger.error("Error reading stderr: %s", e)
+            except Exception:
                 break
 
-    def add_buffer(self, buffer_id):
-        """Add a new per-connection TimeBuffer with proper locking."""
-        with self.lock:
-            if buffer_id not in self.buffers:
-                self.buffers[buffer_id] = TimeBuffer()
-                self.connection_count += 1
-                ffmpeg_logger.info(
-                    f"Added buffer {buffer_id}, connection count: {self.connection_count}"
-                )
-            return self.buffers[buffer_id]
+    async def stop(self):
+        async with self.lock:
+            if not self.running:
+                return
+            self.running = False
+            if self.process:
+                try:
+                    self.process.terminate()
+                except Exception:
+                    pass
 
-    def remove_buffer(self, buffer_id):
-        """Remove a buffer with proper locking"""
-        with self.lock:
-            if buffer_id in self.buffers:
-                del self.buffers[buffer_id]
-                self.connection_count -= 1
-                ffmpeg_logger.info(
-                    f"Removed buffer {buffer_id}, connection count: {self.connection_count}"
-                )
-                # If no more connections, stop the stream
-                if self.connection_count <= 0:
-                    ffmpeg_logger.info("No more connections, stopping FFmpeg stream")
-                    # Schedule the stop to happen outside of the lock
-                    threading.Thread(target=self.stop).start()
+            # Wake up all waiting queues with None to signal EOF
+            for q in self.queues.values():
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            self.queues.clear()
+            self.history.clear()
+            self.history_bytes = 0
+
+            async with active_streams_lock:
+                key = (self.decoded_url, "ffmpeg")
+                if active_streams.get(key) == self:
+                    del active_streams[key]
+        ffmpeg_logger.info("FFmpeg process for %s cleaned up.", self.decoded_url)
 
 
-class TimeBuffer:
-    def __init__(self, duration=60):  # Duration in seconds
-        self.duration = duration
-        self.buffer = deque()  # Use deque to hold (timestamp, chunk) tuples
-        self.lock = threading.Lock()
+class AsyncDirectStream(BaseStreamMultiplexer):
+    """
+    Direct Multiplexer Mode (Default)
 
-    def append(self, chunk):
-        current_time = time.time()
-        with self.lock:
-            # Append the current time and chunk to the buffer
-            self.buffer.append((current_time, chunk))
-            buffer_logger.debug("[Buffer] Appending chunk at time %f", current_time)
+    How it works:
+    TIC uses its native async event loop (via aiohttp) to fetch raw bits directly from the source.
+    Data is shared among all connected clients using zero-overhead Python queues.
 
-            # Remove chunks older than the specified duration
-            while self.buffer and (current_time - self.buffer[0][0]) > self.duration:
-                buffer_logger.info(
-                    "[Buffer] Removing chunk older than %d seconds", self.duration
-                )
-                self.buffer.popleft()  # Remove oldest chunk
+    Benefits:
+    - Maximum Efficiency: Near-zero CPU usage. No external processes or pipes.
+    - Shared Connection: Only one upstream request is made regardless of the number of TIC clients.
+    - Jitter Protection: Inherits the same 200MB history buffer and configurable prebuffer cushion.
+    - Scalability: Allows TIC to handle dozens of concurrent streams without impacting system responsiveness.
 
-    def read(self):
-        with self.lock:
-            if self.buffer:
-                # Return the oldest chunk
-                return self.buffer.popleft()[1]  # Return the chunk, not the timestamp
-            return b""  # Return empty bytes if no data
+    Costs:
+    - No Stream Cleaning: Passes any source timestamp errors or missing headers directly to the player.
+    """
+
+    def __init__(self, decoded_url, headers):
+        super().__init__(decoded_url)
+        self.headers = headers
+        self.read_task = None
+
+    async def start(self):
+        async with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self.read_task = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.decoded_url, headers=self.headers) as resp:
+                    if resp.status != 200:
+                        proxy_logger.error("DirectStream upstream failed: status %s for %s",
+                                           resp.status, self.decoded_url)
+                        return
+                    async for chunk in resp.content.iter_any():
+                        if not self.running:
+                            break
+                        await self._broadcast(chunk)
+        except Exception as e:
+            proxy_logger.error("DirectStream read error for %s: %s", self.decoded_url, e)
+        finally:
+            await self.stop()
+
+    async def stop(self):
+        async with self.lock:
+            if not self.running:
+                return
+            self.running = False
+            # Signal EOF to all queues
+            for q in self.queues.values():
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            self.queues.clear()
+            self.history.clear()
+            self.history_bytes = 0
+
+            async with active_streams_lock:
+                key = (self.decoded_url, "direct")
+                if active_streams.get(key) == self:
+                    del active_streams[key]
+        proxy_logger.info("DirectStream for %s cleaned up.", self.decoded_url)
+
+
+async def direct_proxy_generator(decoded_url, headers, prebuffer_bytes=0):
+    # This is now a wrapper around AsyncDirectStream to support shared multiplexing even in "direct" mode
+    connection_id = str(uuid.uuid4())
+    key = (decoded_url, "direct")
+
+    async with active_streams_lock:
+        if key not in active_streams:
+            stream = AsyncDirectStream(decoded_url, headers)
+            active_streams[key] = stream
+            await stream.start()
+        else:
+            stream = active_streams[key]
+
+    queue, primed_bytes = await stream.add_queue(connection_id, prebuffer_bytes=prebuffer_bytes)
+
+    # Strictly enforce prebuffer: wait for remaining cushion if history was insufficient
+    cushion_remaining = prebuffer_bytes - primed_bytes
+    temp_buffer = []
+
+    try:
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+
+            if cushion_remaining > 0:
+                temp_buffer.append(chunk)
+                cushion_remaining -= len(chunk)
+                if cushion_remaining <= 0:
+                    for c in temp_buffer:
+                        yield c
+                    temp_buffer = None
+            else:
+                yield chunk
+    finally:
+        await stream.remove_queue(connection_id)
 
 
 class Cache:
@@ -835,11 +954,9 @@ class Cache:
             k for k, exp in self.expiration_times.items() if current_time > exp
         ]
         for k in expired_keys:
-            if isinstance(self.cache.get(k), FFmpegStream):
-                try:
-                    self.cache[k].stop()
-                except Exception:
-                    pass
+            val = self.cache.get(k)
+            if isinstance(val, AsyncFFmpegStream):
+                await val.stop()
             self.cache.pop(k, None)
             self.expiration_times.pop(k, None)
         return len(expired_keys)
@@ -857,11 +974,9 @@ class Cache:
             await self._cleanup_expired_items()
             if len(self.cache) >= self.max_size and self.expiration_times:
                 oldest_key = min(self.expiration_times.items(), key=lambda x: x[1])[0]
-                if isinstance(self.cache.get(oldest_key), FFmpegStream):
-                    try:
-                        self.cache[oldest_key].stop()
-                    except Exception:
-                        pass
+                val = self.cache.get(oldest_key)
+                if isinstance(val, AsyncFFmpegStream):
+                    await val.stop()
                 self.cache.pop(oldest_key, None)
                 self.expiration_times.pop(oldest_key, None)
             ttl = expiration_time if expiration_time is not None else self.ttl
@@ -987,6 +1102,21 @@ def _get_connection_id(default_new=False):
     if default_new:
         return uuid.uuid4().hex
     return None
+
+
+def _parse_size(size_str: str, default: int = 0) -> int:
+    """Parse strings like '2M', '512K' into bytes."""
+    if not size_str:
+        return default
+    size_str = size_str.upper().strip()
+    try:
+        if size_str.endswith("K"):
+            return int(float(size_str[:-1]) * 1024)
+        if size_str.endswith("M"):
+            return int(float(size_str[:-1]) * 1024 * 1024)
+        return int(size_str)
+    except (ValueError, TypeError):
+        return default
 
 
 def generate_base64_encoded_url(
@@ -1241,7 +1371,7 @@ async def proxy_m3u8(instance_id, encoded_url):
 
     proxy_logger.info(f"[MISS] Serving m3u8 URL '%s' without cache", decoded_url)
     if is_stream:
-        return Response(updated_playlist, content_type=content_type)
+        return Response(stream_with_context(updated_playlist), content_type=content_type)
     return Response(updated_playlist, content_type=content_type)
 
 
@@ -1317,12 +1447,38 @@ async def proxy_key(instance_id, encoded_url):
 @stream_key_required
 @skip_stream_connect_audit
 async def proxy_ts(instance_id, encoded_url):
+    """
+    TIC Legacy/Segment Proxy Endpoint
+
+    This endpoint serves individual .ts segments for HLS or provides a 
+    direct stream when configured.
+
+    Parameters:
+    - ffmpeg=true: (Optional) Fallback to FFmpeg remuxer for better compatibility.
+    - prebuffer=X: (Optional) Buffer size cushion (e.g. 2M, 512K). Default: 1M.
+    """
     invalid = _validate_instance_id(instance_id)
     if invalid:
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = _b64_urlsafe_decode(encoded_url)
     await _touch_stream_activity(decoded_url)
+
+    # Mode and prebuffer checks
+    use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
+    prebuffer_bytes = _parse_size(request.args.get("prebuffer"), default=1048576)
+
+    # For .ts segments in a standard HLS playlist, we usually want direct speed.
+    # However, if explicitly asked for ffmpeg mode or a prebuffer, we route
+    # through the multiplexer logic.
+    if use_ffmpeg or request.args.get("prebuffer"):
+        proxy_logger.info("Routing .ts request through multiplexer (ffmpeg=%s, prebuffer=%d)",
+                          use_ffmpeg, prebuffer_bytes)
+        # We redirect to the /stream/ endpoint to ensure we use the shared multiplexer
+        target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/stream/{encoded_url}"
+        if request.query_string:
+            target = f"{target}?{request.query_string.decode()}"
+        return redirect(target, code=302)
 
     # Check if the .ts file is already cached
     if await cache.exists(decoded_url):
@@ -1398,6 +1554,22 @@ async def proxy_vtt(instance_id, encoded_url):
 @stream_key_required
 @skip_stream_connect_audit
 async def stream_ts(instance_id, encoded_url):
+    """
+    TIC Shared Multiplexer Stream Endpoint
+
+    This endpoint provides a shared upstream connection for multiple TIC clients.
+
+    Default Mode (Direct):
+    Uses high-performance async socket reads. Best for 99% of streams.
+
+    Fallback Mode (FFmpeg):
+    Enabled by appending '?ffmpeg=true'. Uses an external FFmpeg process to 
+    remux/clean the stream. Use this ONLY if 'direct' mode has playback issues.
+
+    Parameters:
+    - ffmpeg=true: (Optional) Fallback to FFmpeg remuxer for better compatibility.
+    - prebuffer=X: (Optional) Buffer size cushion (e.g. 2M, 512K). Default: 1M.
+    """
     invalid = _validate_instance_id(instance_id)
     if invalid:
         return invalid
@@ -1405,58 +1577,60 @@ async def stream_ts(instance_id, encoded_url):
     decoded_url = _b64_urlsafe_decode(encoded_url)
     await _mark_stream_activity(decoded_url)
 
+    # Check for mode and prebuffer settings
+    use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
+    prebuffer_bytes = _parse_size(request.args.get("prebuffer"), default=1048576)
+    headers = _build_upstream_headers()
+
     # Generate a unique identifier (UUID) for the connection
-    connection_id = str(uuid.uuid4())  # Use a UUID for the connection ID
+    connection_id = str(uuid.uuid4())
+    mode = "ffmpeg" if use_ffmpeg else "direct"
+    key = (decoded_url, mode)
 
-    # Check if the stream is active and has connections
-    if (
-        decoded_url not in active_streams
-        or not active_streams[decoded_url].running
-        or active_streams[decoded_url].connection_count == 0
-    ):
-        buffer_logger.info(
-            "Creating new FFmpeg stream with connection ID %s.", connection_id
-        )
-        # Create a new stream if it does not exist or if there are no connections
-        stream = FFmpegStream(decoded_url)
-        active_streams[decoded_url] = stream
-    else:
-        buffer_logger.info(
-            "Connecting to existing FFmpeg stream with connection ID %s.", connection_id
-        )
+    async with active_streams_lock:
+        if key not in active_streams:
+            if use_ffmpeg:
+                stream = AsyncFFmpegStream(decoded_url)
+            else:
+                stream = AsyncDirectStream(decoded_url, headers)
+            active_streams[key] = stream
+            await stream.start()
+        else:
+            stream = active_streams[key]
 
-    # Get the existing stream
-    stream = active_streams[decoded_url]
-    stream.last_activity = time.time()  # Update last activity time
+    # Get the existing stream and update last activity time
+    stream.last_activity = time.time()
 
-    # Add a new buffer for this connection
-    stream.add_buffer(connection_id)
+    # Add a new queue for this connection with history priming
+    queue, primed_bytes = await stream.add_queue(connection_id, prebuffer_bytes=prebuffer_bytes)
     if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):
         await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
 
-    # Create a generator to stream data from the connection-specific buffer
+    # Strictly enforce prebuffer: wait for remaining cushion if history was insufficient
+    cushion_remaining = prebuffer_bytes - primed_bytes
+    temp_buffer = []
+
+    # Create a generator to stream data from the connection-specific queue
     @stream_with_context
     async def generate():
+        nonlocal cushion_remaining, temp_buffer
         try:
             while True:
-                # Check if the buffer exists before reading
-                if connection_id in stream.buffers:
-                    data = stream.buffers[connection_id].read()
-                    if data:
-                        yield data
-                    else:
-                        # Check if FFmpeg is still running
-                        if not stream.running:
-                            buffer_logger.info("FFmpeg has stopped, closing stream.")
-                            break
-                        # Sleep briefly if no data is available
-                        await asyncio.sleep(0.1)  # Wait before checking again
-                else:
-                    # If the buffer doesn't exist, break the loop
+                chunk = await queue.get()
+                if chunk is None:
                     break
+
+                if cushion_remaining > 0:
+                    temp_buffer.append(chunk)
+                    cushion_remaining -= len(chunk)
+                    if cushion_remaining <= 0:
+                        for c in temp_buffer:
+                            yield c
+                        temp_buffer = None
+                else:
+                    yield chunk
         finally:
-            stream.remove_buffer(connection_id)  # Remove the buffer on connection close
-            # Stop logging is handled by inactivity cleanup to avoid per-connection spam.
+            await stream.remove_queue(connection_id)
 
     # Create a response object with the correct content type and set timeout to None
     response = Response(generate(), content_type="video/mp2t")

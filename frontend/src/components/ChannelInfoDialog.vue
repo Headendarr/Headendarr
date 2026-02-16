@@ -220,6 +220,10 @@
         </template>
       </q-form>
     </div>
+    <StreamTestDialog
+      ref="streamTestDialogRef"
+      :stream-url="testStreamUrl"
+    />
   </TicDialogWindow>
 </template>
 
@@ -229,6 +233,7 @@ import {copyToClipboard} from 'quasar';
 import draggable from 'vuedraggable';
 import {useVideoStore} from 'stores/video';
 import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.vue';
+import StreamTestDialog from 'components/StreamTestDialog.vue';
 import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
 import TicConfirmDialog from 'components/ui/dialogs/TicConfirmDialog.vue';
 import TicButton from 'components/ui/buttons/TicButton.vue';
@@ -249,6 +254,7 @@ export default {
     TicTextareaInput,
     TicToggleInput,
     TicSelectInput,
+    StreamTestDialog,
   },
   props: {
     channelId: {
@@ -287,6 +293,7 @@ export default {
       refreshHint: '',
       suggestedStreams: [],
       nextSourceKey: 1,
+      testStreamUrl: '',
     };
   },
   computed: {
@@ -547,6 +554,16 @@ export default {
         },
       }).onOk(() => dismiss());
     },
+    openStreamTestDialog(stream) {
+      this.testStreamUrl = this.normalizeStreamUrl(stream?.stream_url);
+      if (!this.testStreamUrl) {
+        this.$q.notify({color: 'negative', message: 'Stream URL missing'});
+        return;
+      }
+      this.$nextTick(() => {
+        this.$refs.streamTestDialogRef.show();
+      });
+    },
     getSourceActions(stream, index) {
       const actions = [
         {
@@ -561,6 +578,13 @@ export default {
           icon: 'link',
           label: 'Copy stream URL',
           color: 'primary',
+          payload: {stream, index},
+        },
+        {
+          id: 'test',
+          icon: 'speed',
+          label: 'Test Stream',
+          color: 'secondary',
           payload: {stream, index},
         },
       ];
@@ -586,6 +610,8 @@ export default {
       const payload = action.payload || {};
       if (action.id === 'preview') {
         this.previewChannelStream(payload.stream, {useChannelSource: true});
+      } else if (action.id === 'test') {
+        this.openStreamTestDialog(payload.stream);
       } else if (action.id === 'copy-url') {
         this.copyChannelStreamUrl(payload.stream, {useChannelSource: true});
       } else if (action.id === 'refresh') {

@@ -39,14 +39,14 @@ Headendarr allows you to add **multiple stream sources** to a single channel. Th
 
 <ZoomImage src="/img/screenshots/channels-page-configure-channel-stream-order-desktop.png" alt="Channel Stream Priority Configuration" className="screenshot" />
 
--   **Priority**: Inside a channel's settings, the streams are listed in order of priority (from top to bottom). The stream at the top of the list will always be tried first.
--   **Failover**: If a client requests a channel, TVHeadend will try the highest priority stream. If that stream is unavailable, or if the connection limit for that source (as configured on the **Sources** page) has been reached, TVHeadend will automatically move to the next stream in the priority list.
--   **Reordering**: You can drag and drop streams within the channel's settings to change their priority.
+- **Priority**: Inside a channel's settings, the streams are listed in order of priority (from top to bottom). The stream at the top of the list will always be tried first.
+- **Failover**: If a client requests a channel, TVHeadend will try the highest priority stream. If that stream is unavailable, or if the connection limit for that source (as configured on the **Sources** page) has been reached, TVHeadend will automatically move to the next stream in the priority list.
+- **Reordering**: You can drag and drop streams within the channel's settings to change their priority.
 
 ## Organising and Reordering
 
--   **Channel Numbering**: The channel list is ordered by channel number.
--   **Drag-and-Drop**: You can easily reorder your channels by dragging and dropping them within the main channel list. This will automatically update their channel numbers.
+- **Channel Numbering**: The channel list is ordered by channel number.
+- **Drag-and-Drop**: You can easily reorder your channels by dragging and dropping them within the main channel list. This will automatically update their channel numbers.
 
 <ZoomImage src="/img/screenshots/channels-page-drag-to-change-order-desktop.png" alt="Drag and Drop Channel Reordering" className="screenshot" />
 
@@ -57,15 +57,55 @@ You can edit multiple channels at once to efficiently manage your lineup.
 1.  On the **Channels** page, check the boxes next to the channels you wish to modify.
 2.  A "Bulk Edit" menu will appear at the top of the list.
 3.  From here, you can:
-    -   **Add/Remove Tags**: Add or remove tags in bulk.
-    -   **Refresh Streams**: This is a powerful feature. If your IPTV provider changes the underlying stream URLs in their master source, this option will pull in the updated URLs for all selected channels without you having to edit them one by one.
-    -   **Enable/Disable**: Toggle the active status of the channels.
-    -   **Delete**: Remove the channel mappings.
+    - **Add/Remove Tags**: Add or remove tags in bulk.
+    - **Refresh Streams**: This is a powerful feature. If your IPTV provider changes the underlying stream URLs in their master source, this option will pull in the updated URLs for all selected channels without you having to edit them one by one.
+    - **Enable/Disable**: Toggle the active status of the channels.
+    - **Delete**: Remove the channel mappings.
 
 ## Syncing with TVHeadend
 
 After you have made changes to your channels, you must sync them with the TVHeadend backend.
 
--   Click the **Sync with TVH** button at the top of the Channels page.
+- Click the **Sync with TVH** button at the top of the Channels page.
 
 This action pushes your entire channel lineup, including channel numbers, tags, stream priorities, and EPG links, to TVHeadend, making them available to your clients.
+
+## Testing and Diagnostics
+
+Headendarr provides several ways to verify that your channel streams are working correctly and to diagnose performance issues like buffering.
+
+### Method 1: Built-in Web Player
+
+You can test any channel stream directly within your browser.
+
+1.  Open a channel's settings dialog.
+2.  Click the **Play** button next to a stream URL.
+3.  The floating player will appear, allowing you to watch the live stream.
+4.  The player overlay displays real-time statistics, including the current **Resolution** and **Bitrate**.
+
+### Method 2: External Player (VLC)
+
+If you suspect a browser-specific issue or want to test with a more robust player:
+
+1.  Open a channel's settings dialog.
+2.  Click the **Copy URL** button next to the stream.
+3.  Paste the URL into an external player like **VLC**.
+
+### Method 3: Stream Diagnostics
+
+For detailed performance analysis, use the built-in **Stream Diagnostics** tool. This is particularly useful if you are experiencing buffering.
+
+1.  In the channel settings dialog, click the **Test Stream** button in the header actions.
+
+<ZoomImage src="/img/screenshots/channels-page-channel-settings-streams-action-buttons-desktop.png" alt="Test Stream Action Button" className="screenshot" />
+
+2.  The diagnostic tool will run a 20-second sample of the stream.
+3.  **Bypass HLS Proxies**: If your channel is configured to use an HLS proxy, checking this box allows you to test the **original source** directly. This is an excellent way to compare performance (e.g., comparing a VPN-routed proxy against a direct local connection) to see exactly where a bottleneck is occurring.
+
+<ZoomImage src="/img/screenshots/channels-page-channel-settings-test-stream-results-desktop.png" alt="Stream Diagnostics Results" className="screenshot" />
+
+4.  Review the **Average Speed** and **Bitrate** results. A speed consistently below **1.0x** is the primary cause of buffering.
+
+:::info Interpreting results
+For a detailed guide on understanding these results and fixing buffering issues, see the [Troubleshooting Stream Stability](../guides/troubleshooting-streams) guide.
+:::

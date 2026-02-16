@@ -99,6 +99,7 @@ def register_blueprints(app):
     import_module('backend.api.routes_playlist_proxy')
     import_module('backend.api.routes_hls_proxy')
     import_module('backend.api.routes_xc')
+    import_module('backend.api.routes_diagnostics')
     app.register_blueprint(module.blueprint)
 
 
