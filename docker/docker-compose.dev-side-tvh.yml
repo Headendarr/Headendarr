@@ -3,9 +3,9 @@ networks:
   private-net:
 
 services:
-  # -- TVH IPTV CONFIG --
-  tic:
-    image: josh5/tvh-iptv-config:latest
+  # -- Headendarr --
+  headendarr:
+    image: ghcr.io/Headendarr/headendarr-lite:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile

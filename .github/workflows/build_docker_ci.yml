@@ -53,9 +53,9 @@ jobs:
           ORG=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-          SERVICE_NAME=tvh-iptv-config
+          SERVICE_NAME=headendarr-lite
           if [[ "${{ matrix.base-image }}" == *"tvheadend"* ]]; then
-            SERVICE_NAME=tvh-iptv
+            SERVICE_NAME=headendarr
           fi
           DOCKER_HUB_IMAGE=docker.io/josh5/${SERVICE_NAME:?}
           GHCR_IMAGE=ghcr.io/${ORG:?}/${SERVICE_NAME:?}
@@ -135,7 +135,7 @@ jobs:
           labels: |
             maintainer=Josh.5
             source.version=${{ steps.prepare.outputs.sha_short }}
-            source.project=TVH-IPTV-Config
+            source.project=Headendarr
             source.service=${{ steps.prepare.outputs.service_name }}
             org.opencontainers.image.title=${{ steps.prepare.outputs.service_name }}
             org.opencontainers.image.created=${{ steps.prepare.outputs.docker_build_date }}

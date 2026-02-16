@@ -18,9 +18,9 @@ networks:
     external: true
 
 services:
-  # -- TVH IPTV CONFIG --
-  tic:
-    image: ghcr.io/josh5/tvh-iptv:latest
+  # -- Headendarr --
+  headendarr:
+    image: ghcr.io/Headendarr/headendarr:latest
 
     # NETWORK:
     networks:

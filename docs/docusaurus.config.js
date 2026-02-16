@@ -27,8 +27,8 @@ const config = {
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'josh5', // Usually your GitHub org/user name.
-  projectName: 'TVH-IPTV-Config', // Usually your repo name.
+  organizationName: 'Headendarr', // Usually your GitHub org/user name.
+  projectName: 'Headendarr', // Usually your repo name.
 
   onBrokenLinks: 'throw',
 
@@ -51,7 +51,7 @@ const config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/josh5/TVH-IPTV-Config/tree/main/docs/',
+            'https://github.com/Headendarr/Headendarr/tree/main/docs/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -82,7 +82,7 @@ const config = {
             label: 'Docs',
           },
           {
-            href: 'https://github.com/josh5/TVH-IPTV-Config',
+            href: 'https://github.com/Headendarr/Headendarr',
             label: 'GitHub',
             position: 'right',
           },
@@ -105,7 +105,7 @@ const config = {
             items: [
               {
                 label: '🐙 GitHub',
-                href: 'https://github.com/josh5/TVH-IPTV-Config',
+                href: 'https://github.com/Headendarr/Headendarr',
               },
               {
                 label: '💬 Discord',
