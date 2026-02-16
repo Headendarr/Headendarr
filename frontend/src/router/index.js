@@ -18,7 +18,16 @@ export default route(function (/* { store, ssrContext } */) {
     : (process.env.VUE_ROUTER_MODE === 'history' ? createWebHistory : createWebHashHistory)
 
   const Router = createRouter({
-    scrollBehavior: () => ({ left: 0, top: 0 }),
+    scrollBehavior: (to, from, savedPosition) => {
+      if (savedPosition) {
+        return savedPosition
+      }
+      if (to.path === from.path) {
+        // Do not scroll if only query/hash/state changed (e.g. closing a dialog)
+        return false
+      }
+      return { left: 0, top: 0 }
+    },
     routes,
 
     // Leave this as is and make changes in quasar.conf.js instead!

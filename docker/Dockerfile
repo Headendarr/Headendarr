@@ -36,7 +36,8 @@ RUN \
 COPY ./frontend /build
 RUN \
     echo "** Build frontend **" \
-        && npm run build:publish \
+        && npx quasar clean \
+        && npx quasar build --publish \
     && \
     echo
 

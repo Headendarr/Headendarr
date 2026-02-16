@@ -23,22 +23,36 @@ def index():
     return redirect('/tic-web/')
 
 
-@blueprint.route('/tic-web/')
-async def serve_index():
-    response = await send_from_directory(current_app.config['ASSETS_ROOT'], 'index.html')
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
-
-
+@blueprint.route('/tic-web/', strict_slashes=False)
 @blueprint.route('/tic-web/<path:path>')
-async def serve_static(path):
-    response = await send_from_directory(current_app.config['ASSETS_ROOT'], path)
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+async def serve_frontend(path=None):
+    assets_root = current_app.config.get('ASSETS_ROOT')
+    if not assets_root or not os.path.exists(assets_root):
+        current_app.logger.error(f"ASSETS_ROOT does not exist: {assets_root}")
+        return "Frontend assets not found", 404
+
+    # If no path provided, or if it's a directory request, serve index.html
+    if not path:
+        return await _serve_file(assets_root, 'index.html')
+
+    # Check if the requested path is a real file
+    full_path = os.path.join(assets_root, path)
+    if os.path.isfile(full_path):
+        return await _serve_file(assets_root, path)
+
+    # History API fallback: serve index.html for virtual routes
+    return await _serve_file(assets_root, 'index.html')
+
+
+async def _serve_file(directory, filename):
+    try:
+        response = await send_from_directory(directory, filename)
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    except Exception:
+        return "File not found", 404
 
 
 @blueprint.route('/tic-web/epg.xml')
