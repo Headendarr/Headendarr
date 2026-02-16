@@ -137,26 +137,42 @@
             description="Enable Headendarr built-in HLS proxy and rewrite playlist URLs through Headendarr."
           />
 
-          <div v-if="useHlsProxy" class="sub-setting q-gutter-sm">
+          <div v-if="useHlsProxy" class="sub-setting q-gutter-sm q-pb-md">
             <TicToggleInput
               v-model="useCustomHlsProxy"
               label="Use a custom HLS Proxy path"
               description="If enabled, playlist URLs use the custom proxy URL below."
             />
 
-            <TicTextInput
-              v-if="useCustomHlsProxy"
-              v-model="hlsProxyPath"
-              label="HLS Proxy Path"
-              description="Use [URL] or [B64_URL] placeholder for the playlist URL."
-            />
+            <!-- Nested Sub-Settings for Custom Proxy -->
+            <div v-if="useCustomHlsProxy" class="sub-setting q-gutter-sm">
+              <TicTextInput
+                v-model="hlsProxyPath"
+                label="HLS Proxy Path"
+                description="Use [URL] or [B64_URL] placeholder for the playlist URL."
+              />
 
-            <TicToggleInput
-              v-if="useCustomHlsProxy"
-              v-model="chainCustomHlsProxy"
-              label="Proxy through both (Headendarr -> Custom External Proxy)"
-              description="Use Headendarr as entry point, then forward to custom proxy."
-            />
+              <TicToggleInput
+                v-model="chainCustomHlsProxy"
+                label="Proxy through both (Headendarr -> Custom External Proxy)"
+                description="Use Headendarr as entry point, then forward to custom proxy."
+              />
+            </div>
+
+            <!-- Nested Sub-Settings for Internal Proxy (Only shows if direct or chained) -->
+            <div v-if="!useCustomHlsProxy || chainCustomHlsProxy" class="q-gutter-sm q-pt-sm">
+              <TicToggleInput
+                v-model="hlsProxyUseFfmpeg"
+                label="Enable FFmpeg remux"
+                description="Use FFmpeg to clean up stream timestamps and metadata. Recommended for unstable streams."
+              />
+
+              <TicTextInput
+                v-model="hlsProxyPrebuffer"
+                label="Proxy Prebuffer size"
+                description="Size of the initial buffer cushion (e.g. 1M, 5M, 500k). Higher values increase startup time but improve stability."
+              />
+            </div>
           </div>
         </template>
       </q-form>
@@ -216,6 +232,8 @@ export default {
       useHlsProxy: false,
       useCustomHlsProxy: false,
       chainCustomHlsProxy: false,
+      hlsProxyUseFfmpeg: false,
+      hlsProxyPrebuffer: '1M',
       hlsProxyPath: 'https://proxy.example.com/hls/[B64_URL].m3u8',
       initialStateSignature: '',
       hasSavedInSession: false,
@@ -240,12 +258,12 @@ export default {
     dialogActions() {
       return [
         {
-        id: 'save',
-        icon: 'save',
-        label: 'Save',
-        color: 'positive',
-        unelevated: true,
-        disable: this.loading || this.saving,
+          id: 'save',
+          icon: 'save',
+          label: 'Save',
+          color: 'positive',
+          unelevated: true,
+          disable: this.loading || this.saving,
           class: this.isDirty ? 'save-action-pulse' : '',
           tooltip: this.isDirty ? 'Save changes' : 'No unsaved changes',
         },
@@ -341,6 +359,8 @@ export default {
       this.useHlsProxy = false;
       this.useCustomHlsProxy = false;
       this.chainCustomHlsProxy = false;
+      this.hlsProxyUseFfmpeg = false;
+      this.hlsProxyPrebuffer = '1M';
       this.hlsProxyPath = 'https://proxy.example.com/hls/[B64_URL].m3u8';
     },
     captureInitialState() {
@@ -366,6 +386,8 @@ export default {
         useHlsProxy: this.useHlsProxy,
         useCustomHlsProxy: this.useCustomHlsProxy,
         chainCustomHlsProxy: this.chainCustomHlsProxy,
+        hlsProxyUseFfmpeg: this.hlsProxyUseFfmpeg,
+        hlsProxyPrebuffer: this.hlsProxyPrebuffer,
         hlsProxyPath: this.hlsProxyPath,
       });
     },
@@ -408,6 +430,8 @@ export default {
         this.useHlsProxy = response.data.data.use_hls_proxy;
         this.useCustomHlsProxy = response.data.data.use_custom_hls_proxy;
         this.chainCustomHlsProxy = response.data.data.chain_custom_hls_proxy;
+        this.hlsProxyUseFfmpeg = response.data.data.hls_proxy_use_ffmpeg;
+        this.hlsProxyPrebuffer = response.data.data.hls_proxy_prebuffer || '1M';
         this.hlsProxyPath = response.data.data.hls_proxy_path;
       });
     },
@@ -478,6 +502,8 @@ export default {
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
         chain_custom_hls_proxy: this.chainCustomHlsProxy,
+        hls_proxy_use_ffmpeg: this.hlsProxyUseFfmpeg,
+        hls_proxy_prebuffer: this.hlsProxyPrebuffer,
         hls_proxy_path: this.hlsProxyPath,
       };
       if (this.accountType === 'XC') {

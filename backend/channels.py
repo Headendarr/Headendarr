@@ -70,6 +70,8 @@ def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) 
         use_custom_hls_proxy=bool(playlist_info.use_custom_hls_proxy),
         custom_hls_proxy_path=playlist_info.hls_proxy_path,
         chain_custom_hls_proxy=bool(playlist_info.chain_custom_hls_proxy),
+        ffmpeg=bool(getattr(playlist_info, "hls_proxy_use_ffmpeg", False)),
+        prebuffer=getattr(playlist_info, "hls_proxy_prebuffer", "1M"),
     )
 
 

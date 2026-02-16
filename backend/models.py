@@ -124,6 +124,8 @@ class Playlist(Base):
     use_custom_hls_proxy = Column(Boolean, nullable=False, unique=False)
     hls_proxy_path = Column(String(256), unique=False)
     chain_custom_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
+    hls_proxy_use_ffmpeg = Column(Boolean, nullable=False, unique=False, default=False)
+    hls_proxy_prebuffer = Column(String(32), nullable=True, unique=False, default="1M")
     user_agent = Column(String(255), nullable=True)
 
     # Backref to all associated linked sources

@@ -82,14 +82,16 @@ If your main Headendarr server cannot be put behind a global VPN, you can run a 
 
 **See the full guide:** [External HLS Proxy via VPN](./external-hls-proxy.md)
 
-### C. Switch to FFmpeg Fallback Mode
+### C. Adjust HLS Proxy Settings
 
-If the stream speed is fine (`speed=1.0x`) but it still stutters or has audio/video sync issues, the source data might be "messy."
-Enable FFmpeg remuxing in Headendarr by appending `?ffmpeg=true` to your stream URL. This tells Headendarr to use FFmpeg to "clean up" the timestamps and headers before sending them to your player.
+If the stream speed is borderline or the data is "messy" (causing sync issues even at 1.0x), you can adjust the HLS Proxy settings for the entire source.
 
-### D. Increase the Prebuffer Cushion
+Navigate to **Sources**, edit the problematic source, and ensure **Use HLS proxy** is enabled. You can then configure:
 
-If your network is jittery (fast, then slow), you can increase the safety net. Append `&prebuffer=5M` to your stream URL. This forces Headendarr to wait until it has captured 5MB of data before it allows the player to start, providing a larger "shock absorber" for speed drops.
+- **Enable FFmpeg remux:** Use this if the source data has timestamp or metadata issues. It tells Headendarr to "clean up" the stream before sending it to your player.
+- **Proxy Prebuffer size:** Increase this (e.g. to `5M` or `10M`) if your network is jittery. This creates a larger "shock absorber" to prevent buffering during temporary speed drops.
+
+![HLS Proxy Settings](/img/screenshots/sources-page-souce-settings-hls-proxy-settings-desktop.png)
 
 ---
 

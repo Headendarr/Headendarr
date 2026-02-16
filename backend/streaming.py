@@ -71,6 +71,8 @@ def build_local_hls_proxy_url(
     source_url: str,
     stream_key: str | None = None,
     username: str | None = None,
+    ffmpeg: bool = False,
+    prebuffer: str | None = None,
 ) -> str:
     parsed = urlparse(source_url)
     is_hls = (parsed.path or "").lower().endswith(".m3u8")
@@ -80,6 +82,18 @@ def build_local_hls_proxy_url(
         url = f"{base}/tic-hls-proxy/{instance_id}/{encoded_url}.m3u8"
     else:
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
+
+    # Build query parameters
+    query_items = []
+    if ffmpeg:
+        query_items.append(("ffmpeg", "true"))
+    if prebuffer:
+        query_items.append(("prebuffer", prebuffer))
+
+    if query_items:
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}{urlencode(query_items)}"
+
     return append_stream_key(url, stream_key=stream_key, username=username)
 
 
@@ -104,6 +118,8 @@ def build_configured_hls_proxy_url(
     use_custom_hls_proxy: bool = False,
     custom_hls_proxy_path: str | None = None,
     chain_custom_hls_proxy: bool = False,
+    ffmpeg: bool = False,
+    prebuffer: str | None = None,
 ) -> str:
     if not use_hls_proxy and not use_custom_hls_proxy:
         return source_url
@@ -120,6 +136,8 @@ def build_configured_hls_proxy_url(
                 custom_url,
                 stream_key=stream_key,
                 username=username,
+                ffmpeg=ffmpeg,
+                prebuffer=prebuffer,
             )
         if not use_custom_hls_proxy or not custom_url:
             return build_local_hls_proxy_url(
@@ -128,6 +146,8 @@ def build_configured_hls_proxy_url(
                 source_url,
                 stream_key=stream_key,
                 username=username,
+                ffmpeg=ffmpeg,
+                prebuffer=prebuffer,
             )
 
     if use_custom_hls_proxy and custom_url:

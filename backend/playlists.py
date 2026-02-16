@@ -290,6 +290,8 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "use_hls_proxy": result.use_hls_proxy,
                             "use_custom_hls_proxy": result.use_custom_hls_proxy,
                             "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
+                            "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
+                            "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
                             "hls_proxy_path": result.hls_proxy_path
                             if result.hls_proxy_path
                             else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -310,6 +312,8 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "use_hls_proxy": result.use_hls_proxy,
                         "use_custom_hls_proxy": result.use_custom_hls_proxy,
                         "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
+                        "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
+                        "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
                         "hls_proxy_path": result.hls_proxy_path
                         if result.hls_proxy_path
                         else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -364,6 +368,8 @@ async def read_config_one_playlist(config, playlist_id):
                     "use_hls_proxy": result.use_hls_proxy,
                     "use_custom_hls_proxy": result.use_custom_hls_proxy,
                     "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
+                    "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
+                    "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
                     "hls_proxy_path": result.hls_proxy_path
                     if result.hls_proxy_path
                     else "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -388,6 +394,8 @@ async def add_new_playlist(config, data):
                 use_hls_proxy=data.get("use_hls_proxy", False),
                 use_custom_hls_proxy=data.get("use_custom_hls_proxy", False),
                 chain_custom_hls_proxy=data.get("chain_custom_hls_proxy", False),
+                hls_proxy_use_ffmpeg=data.get("hls_proxy_use_ffmpeg", False),
+                hls_proxy_prebuffer=data.get("hls_proxy_prebuffer", "1M"),
                 hls_proxy_path=data.get(
                     "hls_proxy_path",
                     "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -424,6 +432,12 @@ async def update_playlist(config, playlist_id, data):
             )
             playlist.chain_custom_hls_proxy = data.get(
                 "chain_custom_hls_proxy", playlist.chain_custom_hls_proxy
+            )
+            playlist.hls_proxy_use_ffmpeg = data.get(
+                "hls_proxy_use_ffmpeg", playlist.hls_proxy_use_ffmpeg
+            )
+            playlist.hls_proxy_prebuffer = data.get(
+                "hls_proxy_prebuffer", playlist.hls_proxy_prebuffer
             )
             playlist.hls_proxy_path = data.get(
                 "hls_proxy_path", playlist.hls_proxy_path
@@ -947,6 +961,8 @@ def read_filtered_stream_details_from_all_playlists(
                 use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
                 custom_hls_proxy_path=playlist_info.hls_proxy_path,
                 chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
+                ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
+                prebuffer=playlist_info.hls_proxy_prebuffer,
             )
         results["streams"].append(
             {
@@ -1120,6 +1136,8 @@ def resolve_playlist_stream_url(
             use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
             custom_hls_proxy_path=playlist_info.hls_proxy_path,
             chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
+            ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
+            prebuffer=playlist_info.hls_proxy_prebuffer,
         )
     return stream_url
 
