@@ -14,8 +14,7 @@
           <q-avatar size="2rem" font-size="82px" class="q-mr-sm">
             <img src="~assets/icon.png">
           </q-avatar>
-          <span class="gt-xs">TIC</span>
-          <span class="gt-sm"> (<u>T</u>Vheadend <u>I</u>PTV <u>C</u>onfig)</span>
+          <span>Headendarr</span>
         </q-toolbar-title>
         <q-separator dark vertical inset />
 

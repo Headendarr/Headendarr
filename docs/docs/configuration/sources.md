@@ -31,7 +31,7 @@ title: Sources
 -   **User Agent**: Select a user agent if your provider requires a specific one.
 
 :::note Increasing XC Connection Limits
-For Xtreme Codes providers, you can configure a single source with multiple login credentials (i.e., different usernames and passwords for the same host) to effectively increase your concurrent connection limits. This is more efficient than creating separate sources for each login. TIC will automatically manage these connections, dynamically utilizing available credentials as needed to meet demand. This allows for flexible scaling of connections throughout the year without requiring multiple source entries.
+For Xtreme Codes providers, you can configure a single source with multiple login credentials (i.e., different usernames and passwords for the same host) to effectively increase your concurrent connection limits. This is more efficient than creating separate sources for each login. Headendarr will automatically manage these connections, dynamically utilizing available credentials as needed to meet demand. This allows for flexible scaling of connections throughout the year without requiring multiple source entries.
 :::
 
 ## Refreshing Sources
@@ -42,7 +42,7 @@ After adding or modifying a source, you must fetch its content to make its chann
 -   **To refresh all sources**: Click the "Refresh All" button at the top of the page.
 
 :::tip Manual Refresh Recommended
-TIC will periodically refresh your sources in the background. However, it is **highly recommended** to perform a manual refresh after adding a new source to make its channels available for mapping immediately.
+Headendarr will periodically refresh your sources in the background. However, it is **highly recommended** to perform a manual refresh after adding a new source to make its channels available for mapping immediately.
 :::
 
 You can monitor the refresh progress in the "Task Manager" at the top right of the UI. Once complete, the "Available Channels" count for the source will update.

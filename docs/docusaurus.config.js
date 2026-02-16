@@ -10,7 +10,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'TVH-IPTV-Config',
+  title: 'Headendarr',
   tagline: 'Your All-In-One IPTV Management Solution',
   favicon: 'img/icon.png',
 
@@ -69,9 +69,9 @@ const config = {
         respectPrefersColorScheme: true,
       },
       navbar: {
-        title: 'TVH-IPTV-Config',
+        title: 'Headendarr',
         logo: {
-          alt: 'TVH-IPTV-Config Logo',
+          alt: 'Headendarr Logo',
           src: 'img/icon.png',
         },
         items: [
@@ -131,7 +131,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} TVH-IPTV-Config`,
+        copyright: `Copyright © ${new Date().getFullYear()} Headendarr`,
       },
       prism: {
         theme: prismThemes.github,

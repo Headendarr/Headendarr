@@ -1,17 +1,17 @@
 # DVR Recording Profiles and Pathname Format
 
-This page describes how TIC recording profiles map to TVHeadend DVR profile naming and pathname formatting.
+This page describes how Headendarr recording profiles map to TVHeadend DVR profile naming and pathname formatting.
 
 ## Overview
 
-TIC now supports configurable recording pathname profiles in **Application Settings -> DVR Settings**.
+Headendarr now supports configurable recording pathname profiles in **Application Settings -> DVR Settings**.
 
 - One required profile always exists: `Default`.
-- Additional profiles can be added by the TIC admin (for example `Shows`, `Movies`).
-- When creating a one-time recording or recording rule, TIC prompts for which profile to use.
-- TIC stores the selected profile key with the recording/rule and uses that during TVH sync.
+- Additional profiles can be added by the Headendarr admin (for example `Shows`, `Movies`).
+- When creating a one-time recording or recording rule, Headendarr prompts for which profile to use.
+- Headendarr stores the selected profile key with the recording/rule and uses that during TVH sync.
 
-## Default TIC Profiles
+## Default Headendarr Profiles
 
 The default profile set is:
 
@@ -23,7 +23,7 @@ The default profile set is:
 
 ## Retention Policy Options
 
-TIC stores retention as a strict enum and only accepts this whitelist:
+Headendarr stores retention as a strict enum and only accepts this whitelist:
 
 - `1_day`, `3_days`, `5_days`
 - `1_week`, `2_weeks`, `3_weeks`
@@ -115,12 +115,12 @@ Possible output:
 
 `/recordings/Bones/Season 2/06-The Girl in Suite 2103.ts`
 
-## How TIC Uses These Profiles
+## How Headendarr Uses These Profiles
 
-When TIC syncs recordings to TVHeadend:
+When Headendarr syncs recordings to TVHeadend:
 
-- The selected TIC profile key is resolved to its pathname format.
-- TIC uses that format to ensure the corresponding per-user TVH recorder profile exists.
+- The selected Headendarr profile key is resolved to its pathname format.
+- Headendarr uses that format to ensure the corresponding per-user TVH recorder profile exists.
 - The recording is created in TVH using that per-user recorder profile.
 
-If no profile is selected or a profile key is invalid, TIC falls back to `default`.
+If no profile is selected or a profile key is invalid, Headendarr falls back to `default`.

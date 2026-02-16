@@ -5,11 +5,11 @@ title: Initial Setup & Workflow
 
 # Initial Setup & Core Workflow
 
-After a fresh installation, follow these steps to get your TIC instance configured and ready to serve channels.
+After a fresh installation, follow these steps to get your Headendarr instance configured and ready to serve channels.
 
 ## 1. First Login & Password Change
 
-When you first access the TIC Web UI at `http://<your-ip>:9985`, you will be presented with a login page.
+When you first access the Headendarr Web UI at `http://<your-ip>:9985`, you will be presented with a login page.
 
 Log in with these credentials:
 
@@ -26,7 +26,7 @@ Your first and most important step is to change the default password.
 The next time you log in with that admin user, you will need to use that new password. Do not forget it.
 
 :::tip Resetting the Admin Password
-If you ever forget your admin password or need to reset it for any reason, you can do so by creating a file named `.reset-admin-password` in the `/config` directory of your TIC container. The next time the container starts, the system will detect this file, reset the `admin` user's password back to `admin`, and then automatically delete the `.reset-admin-password` file.
+If you ever forget your admin password or need to reset it for any reason, you can do so by creating a file named `.reset-admin-password` in the `/config` directory of your Headendarr container. The next time the container starts, the system will detect this file, reset the `admin` user's password back to `admin`, and then automatically delete the `.reset-admin-password` file.
 :::
 
 ## 2. Review Settings
@@ -60,7 +60,7 @@ This is the core of the configuration where you build your channel lineup on the
 -   **Method 1: Bulk Import (Recommended)**
     -   Click the **IMPORT CHANNELS FROM STREAM SOURCE** button.
     -   A dialog will appear with powerful filtering and search options, allowing you to browse all available channels from all your sources.
-    -   Select the channels you want to add. TIC will automatically create them, populating the logo, source, and attempting to link the EPG data if a match is found. This is the easiest way to add many channels.
+    -   Select the channels you want to add. Headendarr will automatically create them, populating the logo, source, and attempting to link the EPG data if a match is found. This is the easiest way to add many channels.
 
 -   **Method 2: Manual Add**
     -   Click the **+ ADD CHANNEL** button.

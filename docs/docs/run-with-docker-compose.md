@@ -29,8 +29,8 @@ If you modify the path `/data/containers/tvh-iptv`, ensure you also modify the p
 Create a Docker Compose file `/data/containers/tvh-iptv/docker-compose.yml`.
 
 Populate this file with the contents of one of these Docker Compose templates:
-- [AIO Stack with TIC & TVH in a single container (Recommended)](./compose-files/docker-compose.aio.yml).
-- [Side-cart Stack with TIC & TVH in separate containers (Requires that you do some initial setup for TVH)](./compose-files/docker-compose.side-tvh.yml).
+- [AIO Stack with Headendarr & TVH in a single container (Recommended)](./compose-files/docker-compose.aio.yml).
+- [Side-cart Stack with Headendarr & TVH in separate containers (Requires that you do some initial setup for TVH)](./compose-files/docker-compose.side-tvh.yml).
 - [AIO Stack with multiple HLS Proxy side-carts](./compose-files/docker-compose.aio-with-proxies.yml).
 
 ## EXECUTE:
@@ -47,6 +47,6 @@ After container executes successfully, navigate to your docker host URL in your 
 ## Timezone Notes
 
 - Set `TZ` in your compose file for container-local logs/runtime behavior (example: `TZ=Pacific/Auckland`).
-- TIC persists application timestamps in UTC in the database.
-- TIC API returns timestamps in UTC (`...Z`) and the frontend renders them in local time for the user/device.
+- Headendarr persists application timestamps in UTC in the database.
+- Headendarr API returns timestamps in UTC (`...Z`) and the frontend renders them in local time for the user/device.
 - Keep host clock and container clock in sync (NTP) to avoid skew.

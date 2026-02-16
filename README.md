@@ -1,7 +1,7 @@
-TVHeadend IPTV Config
+Headendarr
 ===========================
 
-![TVHeadend IPTV Config](https://github.com/Josh5/TVH-IPTV-Config/raw/master/logo.png)
+![Headendarr](https://github.com/Josh5/TVH-IPTV-Config/raw/master/logo.png)
 
 <a href='https://ko-fi.com/I2I21F8E1' target='_blank'><img height='26' style='border:0px;height:26px;' src='https://cdn.ko-fi.com/cdn/kofi1.png?v=2' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
@@ -22,7 +22,7 @@ TVHeadend IPTV Config
 [![GitHub license](https://img.shields.io/github/license/Josh5/TVH-IPTV-Config?color=009dc7&style=flat-square)]()
 ---
 
-TVHeadend IPTV Config is a simple wrapper around TVHeadend with the singular goal of making it simple to configure TVHeadend for IPTV playlist.
+Headendarr is a simple wrapper around TVHeadend with the singular goal of making it simple to configure TVHeadend for IPTV playlist.
 
 TVHeadend is an extremely powerful TV streaming server and recorder with excellent support for IPTV sources. However, for most people, setting this up can be difficult and time-consuming.
 The goal of this project is to wrap around TVHeadend and, using its API, configure most of the server for you.

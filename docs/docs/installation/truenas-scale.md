@@ -9,7 +9,7 @@ This documentation for TrueNAS Scale installation is currently a work in progres
 
 # TrueNAS Scale Installation
 
-Installing TIC on TrueNAS Scale can be done by adding the TrueCharts catalog and installing the application from there.
+Installing Headendarr on TrueNAS Scale can be done by adding the TrueCharts catalog and installing the application from there.
 
 This guide assumes you have a working TrueNAS Scale installation.
 
@@ -45,7 +45,7 @@ The TrueNAS Scale installation wizard will guide you through the setup. Here are
 -   You can generally leave the default CPU and memory resources as they are unless you have specific needs.
 
 ### Networking and Services
--   **Web Port**: This will be the port for the TIC Web UI (e.g., `9985`).
+-   **Web Port**: This will be the port for the Headendarr Web UI (e.g., `9985`).
 -   **Other Ports**: You need to add and expose the other necessary ports for TVHeadend and HDHomeRun emulation.
     -   **TVHeadend UI Port**: `9981`
     -   **TVHeadend HTSP Port**: `9982`
@@ -69,7 +69,7 @@ The TrueNAS Scale installation wizard will guide you through the setup. Here are
 
 ## Accessing the Application
 
-Once the deployment is complete, the **Apps** -> **Installed Applications** page will show `tvh-iptv-config` as `ACTIVE`. Click the **Portal** button to open the TIC Web UI in a new tab.
+Once the deployment is complete, the **Apps** -> **Installed Applications** page will show `tvh-iptv-config` as `ACTIVE`. Click the **Portal** button to open the Headendarr Web UI in a new tab.
 
 :::warning Direct TVHeadend Access
 It is **not recommended** to expose the TVHeadend Web UI (`9981`) or HTSP port (`9982`) directly to the internet. These services are best accessed within your local network, or securely remotely via a VPN like [Tailscale](https://tailscale.com/).

@@ -131,7 +131,7 @@ def _build_xc_server_info(user, include_categories=False):
         "user_info": {
             "username": user.username,
             "password": user.streaming_key,
-            "message": "TIC XC API",
+            "message": "Headendarr XC API",
             "auth": 1,
             "status": "Active",
             "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),

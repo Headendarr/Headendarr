@@ -1,14 +1,14 @@
 # Run from source
 
 > [!WARNING]  
-> This is not the recommended way (or even an activly supported way) for running TIC. Please consider using Docker.
+> This is not the recommended way (or even an activly supported way) for running Headendarr. Please consider using Docker.
 
 ## Clone project
 
 Clone this project somewhere
 ```
-git clone https://github.com/Josh5/TVH-IPTV-Config.git
-cd TVH-IPTV-Config
+git clone https://github.com/Josh5/Headendarr.git
+cd Headendarr
 ```
 
 ## Run the build scripts

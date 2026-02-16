@@ -27,7 +27,7 @@ This page documents backend runtime behavior and integration boundaries.
 
 - TVHeadend HTTP proxy is served under `/tic-tvh/`.
 - TVHeadend websocket/comet proxy is served under `/tic-tvh/<path>`.
-- Proxy auth uses the internal sync user and bridges TIC auth to TVHeadend requests.
+- Proxy auth uses the internal sync user and bridges Headendarr auth to TVHeadend requests.
 
 ## Playback Path
 
@@ -41,7 +41,7 @@ This page documents backend runtime behavior and integration boundaries.
 
 ## Event Loop Constraints
 
-- TIC runs on a single Quart async loop by default.
+- Headendarr runs on a single Quart async loop by default.
 - Keep request handlers and scheduled tasks non-blocking.
 - Offload CPU-heavy or long blocking work to subprocesses/executors.
 

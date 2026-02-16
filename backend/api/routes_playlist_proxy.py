@@ -44,7 +44,7 @@ def _build_proxy_stream_url(base_url, source_url, stream_key, instance_id, usern
 async def _get_tvh_settings(include_auth=True, stream_profile='pass', stream_username=None, stream_key=None):
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
-    # Configure TVH-IPTV-Config base URL (proto/host/port)
+    # Configure Headendarr base URL (proto/host/port)
     tic_base_url = settings['settings']['app_url']
     protocol_match = re.match(r'^(https?)://', settings['settings']['app_url'])
     tic_base_url_protocol = protocol_match.group(1) if protocol_match else 'http'
@@ -104,7 +104,7 @@ async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=Non
         stream_username=stream_username,
         stream_key=stream_key,
     )
-    device_name = f'TVH-IPTV-Config-{playlist_id}'
+    device_name = f'Headendarr-{playlist_id}'
     tuner_count = await _get_playlist_connection_count(config, playlist_id)
     device_id = f'tic-12345678-{playlist_id}'
     device_auth = f'tic-{playlist_id}'

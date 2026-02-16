@@ -4,11 +4,11 @@ title: Application Settings
 
 # Application Settings
 
-The **Settings** page allows you to configure global settings for TIC.
+The **Settings** page allows you to configure global settings for Headendarr.
 
 ## UI Settings
 
-These settings control the behavior and appearance of the TIC web interface.
+These settings control the behavior and appearance of the Headendarr web interface.
 
 -   **Highlight channels with source issues**: When enabled, the UI will display a warning highlight for channels that are linked to disabled sources or have failed TVHeadend muxes. This helps in quickly identifying problematic channels.
 -   **Start page after login**: Choose the default page that users will land on immediately after signing in.
@@ -16,14 +16,14 @@ These settings control the behavior and appearance of the TIC web interface.
 
 ## Connections
 
-These settings define how TIC interacts with external services and how clients connect to TIC.
+These settings define how Headendarr interacts with external services and how clients connect to Headendarr.
 
--   **TIC Host**: This is the external host and port that client applications (like M3U players, HDHomeRun emulators, etc.) use to reach your TIC instance. It is used to generate correct URLs for playlist, XMLTV, and HDHomeRun endpoints. Ensure this is set to an address accessible by your clients.
--   **Route playlists & HDHomeRun through TVHeadend**: When this setting is enabled, all playlist and HDHomeRun streams are routed through the integrated TVHeadend server. This allows TVHeadend to enforce its own stream policies (e.g., connection limits, buffering) and can improve compatibility with certain clients. When disabled, clients connect directly to TIC for streams.
+-   **Headendarr Host**: This is the external host and port that client applications (like M3U players, HDHomeRun emulators, etc.) use to reach your Headendarr instance. It is used to generate correct URLs for playlist, XMLTV, and HDHomeRun endpoints. Ensure this is set to an address accessible by your clients.
+-   **Route playlists & HDHomeRun through TVHeadend**: When this setting is enabled, all playlist and HDHomeRun streams are routed through the integrated TVHeadend server. This allows TVHeadend to enforce its own stream policies (e.g., connection limits, buffering) and can improve compatibility with certain clients. When disabled, clients connect directly to Headendarr for streams.
 
 ## User Agents
 
-This section allows you to define and manage custom User-Agent headers. These User-Agents are used by TIC when fetching data from your IPTV sources and EPG providers. Some providers may require a specific User-Agent to prevent blocking.
+This section allows you to define and manage custom User-Agent headers. These User-Agents are used by Headendarr when fetching data from your IPTV sources and EPG providers. Some providers may require a specific User-Agent to prevent blocking.
 
 -   **Add User Agent**: Click this button to add a new custom User-Agent entry.
 -   **Name**: A descriptive name for your User-Agent (e.g., "VLC Player", "My Custom UA").
@@ -35,7 +35,7 @@ These settings control the default behavior for Digital Video Recorder (DVR) fun
 
 -   **Pre-recording padding (minutes)**: Specify the number of minutes to begin recording *before* a scheduled program's start time. This helps ensure that the beginning of a program is not missed due to scheduling inaccuracies.
 -   **Post-recording padding (minutes)**: Specify the number of minutes to continue recording *after* a scheduled program's end time. This is useful for capturing content that runs slightly over its scheduled slot.
--   **Default recording retention**: Choose how long recorded programs will be kept by default before being automatically deleted. This policy applies to TVHeadend recording profiles synced by TIC.
+-   **Default recording retention**: Choose how long recorded programs will be kept by default before being automatically deleted. This policy applies to TVHeadend recording profiles synced by Headendarr.
     *   **Options**: 1 day, 3 days, 5 days, 1 week, 2 weeks, 3 weeks, 1 month, 2 months, 3 months, 6 months, 1 year, 2 years, 3 years, Maintained space, Forever.
 -   **Recording Profiles**: These profiles define the file and folder naming conventions for your recorded content. The first profile in the list is treated as the default for users and as a fallback for scheduling.
     -   **Add Recording Profile**: Click this button to create a new recording profile.
@@ -44,6 +44,6 @@ These settings control the default behavior for Digital Video Recorder (DVR) fun
 
 ## Audit Logging
 
-These settings control the retention of audit logs within the TIC database.
+These settings control the retention of audit logs within the Headendarr database.
 
 -   **Audit log retention (days)**: Define the number of days that audit log entries will be stored in the database. Older entries will be automatically purged to manage database size.

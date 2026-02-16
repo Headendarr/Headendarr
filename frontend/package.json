@@ -1,8 +1,8 @@
 {
-  "name": "tvh_iptv_config",
+  "name": "headendarr",
   "version": "0.0.1",
   "description": "A tool for simplifying IPTV configuration in TVHeadend",
-  "productName": "TVH IPTV Config",
+  "productName": "Headendarr",
   "author": "Josh.5 <jsunnex@gmail.com>",
   "private": true,
   "scripts": {

@@ -4,7 +4,7 @@ title: Channels
 
 # Channel Configuration
 
-This is the core of TIC, where you build your final channel lineup. The **Channels** page allows you to add channels, assign streams from your sources, link EPG data, and organize everything to your liking.
+This is the core of Headendarr, where you build your final channel lineup. The **Channels** page allows you to add channels, assign streams from your sources, link EPG data, and organize everything to your liking.
 
 ## Adding and Editing Channels
 
@@ -19,7 +19,7 @@ This is the most powerful and recommended method for adding channels.
 3.  Select one or more channels from the list.
 4.  Click **Add**.
 
-TIC will automatically create new channels, populating the name, logo, and stream source. It will also attempt to intelligently link EPG data by matching the channel's name to an EPG entry, if available.
+Headendarr will automatically create new channels, populating the name, logo, and stream source. It will also attempt to intelligently link EPG data by matching the channel's name to an EPG entry, if available.
 
 ### Method 2: Manual Creation via "Add Channel"
 
@@ -35,7 +35,7 @@ After creating a channel using either method, you can click on it in the main li
 
 ## Stream Priority and Failover
 
-TIC allows you to add **multiple stream sources** to a single channel. This creates a powerful failover system.
+Headendarr allows you to add **multiple stream sources** to a single channel. This creates a powerful failover system.
 
 -   **Priority**: Inside a channel's settings, the streams are listed in order of priority (from top to bottom). The stream at the top of the list will always be tried first.
 -   **Failover**: If a client requests a channel, TVHeadend will try the highest priority stream. If that stream is unavailable, or if the connection limit for that source (as configured on the **Sources** page) has been reached, TVHeadend will automatically move to the next stream in the priority list.

@@ -1,6 +1,6 @@
 # Frontend UI Standards
 
-These standards define the default UI patterns for TIC frontend work.  
+These standards define the default UI patterns for Headendarr frontend work.  
 Use shared components first. Do not introduce ad-hoc UI patterns unless there is a documented exception.
 
 ## Scope
@@ -81,7 +81,7 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 ### Theme Awareness Rules (Strict)
 
 1. All UI work must be visually validated in both light and dark themes.
-2. Use Quasar/theme tokens (`var(--q-*)`) and shared TIC tokens from `frontend/src/css/app.scss` for colors, borders, and shadows.
+2. Use Quasar/theme tokens (`var(--q-*)`) and shared Headendarr tokens from `frontend/src/css/app.scss` for colors, borders, and shadows.
 3. Do not hardcode hex/rgb colors in feature components unless there is a documented exception.
 4. If new theme tokens are required, add them centrally in `frontend/src/css/app.scss` and document them here in the same change.
 
@@ -146,7 +146,7 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 5. Do not use `q-checkbox` for settings toggles.
 6. Keep toolbar search and filter controls on `TicSearchInput` / `TicSelectInput` unless there is a documented exception.
 7. For settings forms, inputs should provide a label and description text where guidance is needed (e.g., host fields, padding fields, routing toggles).
-8. All shared form inputs use outlined style in TIC.
+8. All shared form inputs use outlined style in Headendarr.
 9. In forms, spacing between fields must be managed at the form container level with `24px` spacing.
 10. Use `TicToggleInput` only for boolean form controls; never for selecting items in a result list.
 
@@ -295,8 +295,8 @@ If an action is not listed, choose the closest semantic icon/color and document 
 ```vue
 <TicTextInput
   v-model="ticHost"
-  label="TIC Host"
-  description="Hostname/IP used by TIC for internal and generated service URLs."
+  label="Headendarr Host"
+  description="Hostname/IP used by Headendarr for internal and generated service URLs."
 />
 <TicNumberInput
   v-model="prePaddingMinutes"

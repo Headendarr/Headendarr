@@ -530,8 +530,8 @@ async def build_custom_epg(config, throttle=False):
             await asyncio.sleep(0.001)
 
     output_root = ET.Element("tv")
-    output_root.set("generator-info-name", "TVH-IPTV-Config")
-    output_root.set("source-info-name", "TVH-IPTV-Config - v0.1")
+    output_root.set("generator-info-name", "Headendarr")
+    output_root.set("source-info-name", "Headendarr - v0.1")
 
     t0 = time.perf_counter()
     configured_channels = []

@@ -22,7 +22,7 @@ Just like sources, EPGs need to be refreshed to load their guide data.
 -   **To refresh all EPGs**: Click the "Refresh All" button at the top of the page.
 
 :::tip Manual Refresh Recommended
-TIC will periodically refresh your EPG sources in the background. However, it is **highly recommended** to perform a manual refresh after adding a new EPG source to make its data available for assignment immediately.
+Headendarr will periodically refresh your EPG sources in the background. However, it is **highly recommended** to perform a manual refresh after adding a new EPG source to make its data available for assignment immediately.
 :::
 
 After a successful refresh, the "Available Channels" and "Available Programmes" counts for the EPG will update, and the EPG data will be ready to be assigned to your mapped channels on the [Channels page](../channels.md).

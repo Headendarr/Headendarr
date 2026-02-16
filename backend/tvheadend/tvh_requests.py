@@ -67,18 +67,18 @@ api_status_subscriptions = "status/subscriptions"
 api_status_subscriptions_grid = "status/subscriptions/grid"
 
 tvh_config = {
-    "server_name":    "TVH-IPTV",
+    "server_name":    "Headendarr",
     "uilevel":        2,
     "digest":         0,
     "parser_backlog": True,  # See link above default_stream_profile_template config below
 }
 tvh_imagecache_config = {"enabled": False, "ignore_sslcert": True, "expire": 7, "ok_period": 168, "fail_period": 24}
-tvh_client_access_entry_comment = "TVH IPTV Config client access entry"
-tvh_client_password_comment = "TVH IPTV Config client password entry"
-tvh_sync_access_entry_comment = "TVH IPTV Config sync access entry"
-tvh_sync_password_comment = "TVH IPTV Config sync password entry"
-tvh_user_access_comment_prefix = "TVH IPTV Config user access entry"
-tvh_user_password_comment_prefix = "TVH IPTV Config user password entry"
+tvh_client_access_entry_comment = "Headendarr client access entry"
+tvh_client_password_comment = "Headendarr client password entry"
+tvh_sync_access_entry_comment = "Headendarr sync access entry"
+tvh_sync_password_comment = "Headendarr sync password entry"
+tvh_user_access_comment_prefix = "Headendarr user access entry"
+tvh_user_password_comment_prefix = "Headendarr user password entry"
 tvh_client_access_entry = {
     "comment":             "COMMENT",
     "enabled":             True,
@@ -116,8 +116,8 @@ tvh_client_access_entry = {
     "conn_limit":          0,
     "htsp_anonymize":      False
 }
-tvh_admin_access_entry_comment = "TVH IPTV Config admin access entry"
-tvh_admin_password_comment = "TVH IPTV Config admin password entry"
+tvh_admin_access_entry_comment = "Headendarr admin access entry"
+tvh_admin_password_comment = "Headendarr admin password entry"
 tvh_admin_access_entry = {
     "comment":             "COMMENT",
     "enabled":             True,
@@ -177,7 +177,7 @@ network_template = {
     "charset":      "", "use_libav": False, "scan_create": False, "spriority": 1, "icon_url": "",
     "idlescan":     False, "sid_chnum": False, "localtime": 0, "service_sid": 0, "remove_scrambled": True
 }
-channel_tag_comment = "TVH IPTV Config channel tag"
+channel_tag_comment = "Headendarr channel tag"
 channel_tag_template = {
     "enabled":     True,
     "name":        "TAG_NAME",
@@ -737,7 +737,7 @@ class Tvheadend:
 
             node = default_recorder_profile_template.copy()
             node["name"] = profile_name
-            node["comment"] = f"TIC user profile for {username}"
+            node["comment"] = f"Headendarr user profile for {username}"
             node["pathname"] = scoped_pathname
             node["storage"] = recordings_root
             node["pre-extra-time"] = int(pre_padding_mins or 0)

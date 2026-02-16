@@ -4,7 +4,7 @@ title: User Management
 
 # User Management
 
-TIC allows you to create multiple user accounts to control access to the web interface and streaming resources. As an administrator, you can manage users from the **Settings** -> **Users** page.
+Headendarr allows you to create multiple user accounts to control access to the web interface and streaming resources. As an administrator, you can manage users from the **Settings** -> **Users** page.
 
 ## Creating a New User
 
@@ -18,12 +18,12 @@ TIC allows you to create multiple user accounts to control access to the web int
 
 ## Permissions
 
-TIC utilizes a role-based access control system, offering either an "Admin" or "Streamer" role.
+Headendarr utilizes a role-based access control system, offering either an "Admin" or "Streamer" role.
 
--   **Admin**: Provides full administrative access to both the TIC platform and the integrated TVHeadend backend. Users with this role can manage all application settings, other users, and have complete control over the system.
+-   **Admin**: Provides full administrative access to both the Headendarr platform and the integrated TVHeadend backend. Users with this role can manage all application settings, other users, and have complete control over the system.
 -   **Streamer**: Offers a highly limited subset of permissions, primarily for accessing available streams. Users with this role cannot modify settings or manage other users.
 
-In addition to roles, you can configure granular access controls for how clients utilize TIC's streaming capabilities and DVR functions:
+In addition to roles, you can configure granular access controls for how clients utilize Headendarr's streaming capabilities and DVR functions:
 
 -   **DVR Access**: Controls the user's ability to interact with DVR functionalities through client applications. Options include:
     *   **No DVR access**: The user cannot access DVR features or make recordings.
@@ -39,22 +39,22 @@ In addition to roles, you can configure granular access controls for how clients
 
 ## The Streaming Key: Your Universal Client Password
 
-Each user in TIC is automatically assigned a unique **Streaming Key**. This key is the most important piece of information for connecting any client application.
+Each user in Headendarr is automatically assigned a unique **Streaming Key**. This key is the most important piece of information for connecting any client application.
 
 Think of it this way:
--   Your **Main Password** is only for logging into the TIC web interface.
+-   Your **Main Password** is only for logging into the Headendarr web interface.
 -   Your **Streaming Key** is the password for everything else.
 
 ### How the Streaming Key is Used
 
 The streaming key is the password for **all** client access methods:
 
--   **TVHeadend HTSP**: When your client asks for a username and password, you use your TIC username and your **Streaming Key** as the password.
--   **Xtream Codes (XC) API**: For clients like TiviMate, you use your TIC username and your **Streaming Key** as the password.
+-   **TVHeadend HTSP**: When your client asks for a username and password, you use your Headendarr username and your **Streaming Key** as the password.
+-   **Xtream Codes (XC) API**: For clients like TiviMate, you use your Headendarr username and your **Streaming Key** as the password.
 -   **M3U Playlist URLs**: The key is used as a parameter in the URL to authenticate (`...playlist.m3u?key=YOUR_STREAM_KEY`).
 -   **HDHomeRun Emulation**: The key is part of the URL used to identify the tuner to clients like Plex.
 
-This unified system means you don't need to manage separate passwords in TVHeadend or other parts of the application. Users created in TIC are automatically synced to the TVHeadend backend, with their streaming key set as their password.
+This unified system means you don't need to manage separate passwords in TVHeadend or other parts of the application. Users created in Headendarr are automatically synced to the TVHeadend backend, with their streaming key set as their password.
 
 ### Finding and Resetting Your Streaming Key
 

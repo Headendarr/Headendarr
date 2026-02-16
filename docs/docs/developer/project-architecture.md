@@ -1,6 +1,6 @@
 # Project Architecture
 
-This page is the contributor-facing overview of TIC application structure.
+This page is the contributor-facing overview of Headendarr application structure.
 
 ## Runtime Components
 
