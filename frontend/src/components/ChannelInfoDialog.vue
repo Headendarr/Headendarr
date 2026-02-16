@@ -40,13 +40,13 @@
           <TicTextInput
             v-model="name"
             label="Channel Name"
-            description="Display name for this channel across TIC and TVH."
+            description="Display name for this channel across Headendarr and TVH."
           />
 
           <TicTextareaInput
             v-model="logoUrl"
             label="Logo URL"
-            description="Remote logo URL to cache and serve from TIC."
+            description="Remote logo URL to cache and serve from Headendarr."
             :rows="2"
             :autogrow="true"
           />
@@ -150,7 +150,7 @@
                       <TicToggleInput
                         v-model="element.use_hls_proxy"
                         label="Use HLS Proxy"
-                        description="Route this stream through TIC HLS proxy."
+                        description="Route this stream through Headendarr's internal HLS proxy."
                       />
                     </div>
 

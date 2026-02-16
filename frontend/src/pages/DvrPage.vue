@@ -363,7 +363,7 @@
               </q-item>
               <q-item>
                 <q-item-section>
-                  <q-item-label> 3. Use status and sync details to verify TIC and TVHeadend are aligned.</q-item-label>
+                  <q-item-label> 3. Use status and sync details to verify Headendarr and TVHeadend are aligned.</q-item-label>
                 </q-item-section>
               </q-item>
             </q-list>
@@ -396,7 +396,7 @@
           <TicTextInput
             v-model="scheduleForm.title"
             label="Title"
-            description="Recording title shown in TIC and TVHeadend."
+            description="Recording title shown in Headendarr and TVHeadend."
           />
           <TicTextInput
             v-model="scheduleForm.start"
@@ -455,7 +455,7 @@
           <TicNumberInput
             v-model="ruleForm.lookahead_days"
             label="Lookahead Days"
-            description="How many days ahead TIC should schedule recordings."
+            description="How many days ahead Headendarr should schedule recordings."
             :min="1"
             :max="30"
           />
@@ -1053,7 +1053,7 @@ export default defineComponent({
         component: TicConfirmDialog,
         componentProps: {
           title: 'Delete recording?',
-          message: 'This removes the recording from TIC and TVHeadend where available.',
+          message: 'This removes the recording from Headendarr and TVHeadend where available.',
           icon: 'delete_forever',
           iconColor: 'negative',
           confirmLabel: 'Delete',

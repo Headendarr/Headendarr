@@ -177,7 +177,7 @@ export default {
       return [...new Set(labels)].map((label) => ({label}));
     },
     logoIssueDescription() {
-      return 'TIC could not fetch/cache this channel logo. Update the logo URL to a working image, or clear the logo field to remove this warning.';
+      return 'Headendarr could not fetch/cache this channel logo. Update the logo URL to a working image, or clear the logo field to remove this warning.';
     },
     logoIssueError() {
       return this.channel?.status?.logo_health?.error || '';

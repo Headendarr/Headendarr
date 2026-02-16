@@ -16,7 +16,7 @@
                     v-else
                     v-model="tvhHost"
                     label="TVHeadend Host"
-                    description="Set a hostname or IP reachable by TIC and all clients that connect to TVHeadend."
+                    description="Set a hostname or IP reachable by Headendarr and all clients that connect to TVHeadend."
                   />
                 </div>
 
@@ -104,7 +104,7 @@
                 <TicToggleInput
                   v-model="periodicMuxScan"
                   label="Enable Periodic Stream Health Scans"
-                  description="Every 6 hours TIC marks TVHeadend muxes as pending so TVH scans them. Failed scans disable the mux and surface channel warnings."
+                  description="Every 6 hours Headendarr marks TVHeadend muxes as pending so TVH scans them. Failed scans disable the mux and surface channel warnings."
                 />
 
                 <div>
@@ -136,7 +136,7 @@
                     <q-item>
                       <q-item-section>
                         <q-item-label>
-                          TIC uses an internal sync account to apply configuration changes in the background.
+                          Headendarr uses an internal sync account to apply configuration changes in the background.
                           Only provide admin credentials here for external TVHeadend instances that require
                           authentication.
                         </q-item-label>

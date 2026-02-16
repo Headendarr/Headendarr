@@ -24,7 +24,7 @@
           <TicTextInput
             v-model="name"
             label="Source Name"
-            description="Display name used throughout TIC for this stream source."
+            description="Display name used throughout Headendarr for this stream source."
           />
 
           <TicTextareaInput
@@ -127,14 +127,14 @@
             :emit-value="true"
             :map-options="true"
             label="User Agent"
-            description="User-Agent header used when TIC fetches this source."
+            description="User-Agent header used when Headendarr fetches this source."
             @update:model-value="onUserAgentChange"
           />
 
           <TicToggleInput
             v-model="useHlsProxy"
             label="Use HLS proxy"
-            description="Enable TIC built-in HLS proxy and rewrite playlist URLs through TIC."
+            description="Enable Headendarr built-in HLS proxy and rewrite playlist URLs through Headendarr."
           />
 
           <div v-if="useHlsProxy" class="sub-setting q-gutter-sm">
@@ -154,8 +154,8 @@
             <TicToggleInput
               v-if="useCustomHlsProxy"
               v-model="chainCustomHlsProxy"
-              label="Proxy through both (TIC -> custom)"
-              description="Use TIC as entry point, then forward to custom proxy."
+              label="Proxy through both (Headendarr -> Custom External Proxy)"
+              description="Use Headendarr as entry point, then forward to custom proxy."
             />
           </div>
         </template>

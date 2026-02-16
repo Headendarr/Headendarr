@@ -28,7 +28,7 @@
               v-model="streamingKey"
               readonly
               label="Streaming Key"
-              description="Used to authorize playlist/EPG/HDHomeRun/XC endpoints. For TVHeadend clients, use this as your TVHeadend client password (not your TIC login password)."
+              description="Used to authorize playlist/EPG/HDHomeRun/XC endpoints. For TVHeadend clients, use this as your TVHeadend client password (not your Headendarr login password)."
             >
               <template #append>
                 <TicActionButton

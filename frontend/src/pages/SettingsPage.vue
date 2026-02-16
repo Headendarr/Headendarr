@@ -34,8 +34,8 @@
                 <TicTextInput
                   v-else
                   v-model="appUrl"
-                  label="TIC Host"
-                  description="External host and port clients use to reach TIC."
+                  label="Headendarr Host"
+                  description="External host and port clients use to reach Headendarr."
                 />
 
                 <TicToggleInput
@@ -119,7 +119,7 @@
                   v-model="dvr.retention_policy"
                   :options="retentionPolicyOptions"
                   label="Default recording retention"
-                  description="Applies to TVHeadend recording profiles synced by TIC."
+                  description="Applies to TVHeadend recording profiles synced by Headendarr."
                   emit-value
                   map-options
                 />
@@ -202,7 +202,7 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    1. Set <b>TIC Host</b> to the address and port your clients should use to reach TIC.
+                    1. Set <b>Headendarr Host</b> to the address and port your clients should use to reach Headendarr.
                     This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
                   </q-item-label>
                 </q-item-section>
@@ -211,7 +211,7 @@
                 <q-item-section>
                   <q-item-label>
                     2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                    When enabled, clients connect to TVH for tuning and TVH pulls streams from TIC on their behalf.
+                    When enabled, clients connect to TVH for tuning and TVH pulls streams from Headendarr on their behalf.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -239,7 +239,7 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    TIC Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
+                    Headendarr Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
                     other devices can reach.
                   </q-item-label>
                 </q-item-section>
@@ -247,8 +247,8 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not TIC. TVH
-                    becomes the “streaming client” that fetches channels from TIC and can apply its own buffering,
+                    Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not Headendarr. TVH
+                    becomes the “streaming client” that fetches channels from Headendarr and can apply its own buffering,
                     mux handling, and DVR behavior.
                   </q-item-label>
                 </q-item-section>
@@ -257,15 +257,15 @@
                 <q-item-section>
                   <q-item-label>
                     When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
-                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach TIC.
-                    When disabled, clients connect directly to TIC for streams.
+                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach Headendarr.
+                    When disabled, clients connect directly to Headendarr for streams.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    User Agents are used when TIC fetches M3U, XC, and EPG data. Some providers block unknown
+                    User Agents are used when Headendarr fetches M3U, XC, and EPG data. Some providers block unknown
                     clients; choose a compatible agent if downloads fail.
                   </q-item-label>
                 </q-item-section>

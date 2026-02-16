@@ -116,7 +116,7 @@
             <br><br>
             Use these credentials:
             <ul>
-              <li><b>Username</b>: your TIC username</li>
+              <li><b>Username</b>: your Headendarr username</li>
               <li><b>Password</b>: your streaming key</li>
             </ul>
           </q-card-section>
@@ -131,7 +131,7 @@
             <br><br>
             Use these credentials:
             <ul>
-              <li><b>Username</b>: your TIC username</li>
+              <li><b>Username</b>: your Headendarr username</li>
               <li><b>Password</b>: your streaming key</li>
             </ul>
           </q-card-section>
@@ -145,7 +145,7 @@
             <br><br>
             Use these credentials:
             <ul>
-              <li><b>Username</b>: your TIC username</li>
+              <li><b>Username</b>: your Headendarr username</li>
               <li><b>Password</b>: your streaming key</li>
             </ul>
           </q-card-section>

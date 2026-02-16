@@ -107,7 +107,7 @@
                   <q-item>
                     <q-item-section>
                       <q-item-label>
-                        3. Optionally select a User Agent. This is used when TIC fetches M3U or XC data to avoid
+                        3. Optionally select a User Agent. This is used when Headendarr fetches M3U or XC data to avoid
                         provider blocks and improve compatibility.
                       </q-item-label>
                     </q-item-section>
@@ -116,7 +116,7 @@
                     <q-item-section>
                       <q-item-label>
                         4. Click on the kebab menu for each added source and click on the <b>Update</b> button to fetch
-                        the stream list and import it into TIC's database.
+                        the stream list and import it into Headendarr's database.
                       </q-item-label>
                     </q-item-section>
                   </q-item>

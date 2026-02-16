@@ -24,7 +24,7 @@
           <TicTextInput
             v-model="name"
             label="EPG Name"
-            description="Display name used for this EPG source in TIC."
+            description="Display name used for this EPG source in Headendarr."
           />
 
           <TicTextareaInput
@@ -44,7 +44,7 @@
             :map-options="true"
             :clearable="false"
             label="User Agent"
-            description="User-Agent header used when TIC fetches this source."
+            description="User-Agent header used when Headendarr fetches this source."
           />
         </template>
       </q-form>

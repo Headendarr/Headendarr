@@ -140,7 +140,7 @@
                     <q-item-section>
                       <q-item-label>
                         2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
-                        the EPG and import it into TIC's database.
+                        the EPG and import it into Headendarr's database.
                       </q-item-label>
                     </q-item-section>
                   </q-item>
