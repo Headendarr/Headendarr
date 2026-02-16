@@ -10,27 +10,27 @@ This functionality relies on the integrated TVHeadend server, so it is primarily
 
 ## TV Guide
 
-Navigate to the **TV Guide** page to see a familiar grid-based Electronic Program Guide.
+Navigate to the **TV Guide** page to see a familiar grid-based Electronic Programme Guide.
 
 -   **Timeline**: The guide displays channels on the vertical axis and time on the horizontal axis.
 -   **Navigation**: You can scroll vertically to browse channels and horizontally to move forward and backward in time.
--   **Program Details**: Click on any program in the grid to see more details, such as the show description, episode name, and air time.
+-   **Programme Details**: Click on any programme in the grid to see more details, such as the show description, episode name, and air time.
 
 ## DVR (Digital Video Recorder)
 
-The DVR allows you to schedule recordings for upcoming programs.
+The DVR allows you to schedule recordings for upcoming programmes.
 
 ### Scheduling a Recording
 
-1.  Find the program you want to record in the **TV Guide**.
-2.  Click on the program to open the details view.
+1.  Find the programme you want to record in the **TV Guide**.
+2.  Click on the programme to open the details view.
 3.  Click the **Record** button.
 4.  A dialog will appear with recording options:
     -   **Record Series**: If the EPG data supports it, you can choose to record only the single episode or the entire series.
     -   **Recording Profile**: Select a recording profile. These profiles control the file naming and directory structure for the recording and can be configured in the [Application Settings](./application-settings.md#dvr-settings).
 5.  Click **Save** to schedule the recording.
 
-A red "recording" icon will appear on the program in the guide to indicate that it is scheduled to be recorded.
+A red "recording" icon will appear on the programme in the guide to indicate that it is scheduled to be recorded.
 
 ### Managing Recordings
 

@@ -83,7 +83,7 @@ Character limits can also be applied to some tokens:
 
 `$q` and `$Q` support numeric variants:
 
-| Variant | Behavior |
+| Variant | Behaviour |
 |---|---|
 | `1` | Force movie formatting (`$1q`, `$1Q`) |
 | `2` | Force TV-series formatting (`$2q`, `$2Q`) |

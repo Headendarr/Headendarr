@@ -1,8 +1,7 @@
-version: '3'
+version: "3"
 
 vars:
   COMPOSE_FILE: ./docker/docker-compose.dev-aio.yml
-
 
 tasks:
   all:start:
@@ -79,11 +78,32 @@ tasks:
     desc: Stop docs dev server service in dev AIO stack
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} stop docs
+      - docker compose -f {{.COMPOSE_FILE}} stop docs-static
 
   docs:logs:
     desc: Tail docs dev server logs
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} docs
+
+  docs:build:
+    desc: Build static documentation pages
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm docs bash -lc "npm run build"
+
+  docs:static:start:
+    desc: Start docs static server service in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d docs-static
+
+  docs:static:stop:
+    desc: Stop docs static server service in dev AIO stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} stop docs-static
+
+  docs:static:logs:
+    desc: Tail docs static server logs
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} docs-static
 
   set-version:
     desc: Set the version in frontend/package.json

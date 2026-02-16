@@ -8,7 +8,7 @@ The **Settings** page allows you to configure global settings for Headendarr.
 
 ## UI Settings
 
-These settings control the behavior and appearance of the Headendarr web interface.
+These settings control the behaviour and appearance of the Headendarr web interface.
 
 -   **Highlight channels with source issues**: When enabled, the UI will display a warning highlight for channels that are linked to disabled sources or have failed TVHeadend muxes. This helps in quickly identifying problematic channels.
 -   **Start page after login**: Choose the default page that users will land on immediately after signing in.
@@ -31,16 +31,16 @@ This section allows you to define and manage custom User-Agent headers. These Us
 
 ## DVR Settings
 
-These settings control the default behavior for Digital Video Recorder (DVR) functionalities.
+These settings control the default behaviour for Digital Video Recorder (DVR) functionalities.
 
--   **Pre-recording padding (minutes)**: Specify the number of minutes to begin recording *before* a scheduled program's start time. This helps ensure that the beginning of a program is not missed due to scheduling inaccuracies.
--   **Post-recording padding (minutes)**: Specify the number of minutes to continue recording *after* a scheduled program's end time. This is useful for capturing content that runs slightly over its scheduled slot.
--   **Default recording retention**: Choose how long recorded programs will be kept by default before being automatically deleted. This policy applies to TVHeadend recording profiles synced by Headendarr.
+-   **Pre-recording padding (minutes)**: Specify the number of minutes to begin recording *before* a scheduled programme's start time. This helps ensure that the beginning of a programme is not missed due to scheduling inaccuracies.
+-   **Post-recording padding (minutes)**: Specify the number of minutes to continue recording *after* a scheduled programme's end time. This is useful for capturing content that runs slightly over its scheduled slot.
+-   **Default recording retention**: Choose how long recorded programmes will be kept by default before being automatically deleted. This policy applies to TVHeadend recording profiles synced by Headendarr.
     *   **Options**: 1 day, 3 days, 5 days, 1 week, 2 weeks, 3 weeks, 1 month, 2 months, 3 months, 6 months, 1 year, 2 years, 3 years, Maintained space, Forever.
 -   **Recording Profiles**: These profiles define the file and folder naming conventions for your recorded content. The first profile in the list is treated as the default for users and as a fallback for scheduling.
     -   **Add Recording Profile**: Click this button to create a new recording profile.
     *   **Profile Name**: A friendly name for the recording profile (e.g., "Movies", "Kids Shows").
-    *   **Pathname Format**: A format string that determines the directory and filename structure for recordings saved by this profile. Variables can be used to dynamically insert program details. (e.g., `$Q$n.$x` for `[Episode Name].[Extension]`).
+    *   **Pathname Format**: A format string that determines the directory and filename structure for recordings saved by this profile. Variables can be used to dynamically insert programme details. (e.g., `$Q$n.$x` for `[Episode Name].[Extension]`).
 
 ## Audit Logging
 

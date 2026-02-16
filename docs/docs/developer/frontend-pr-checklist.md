@@ -6,7 +6,7 @@ Use this checklist for all frontend PRs.
 
 - [ ] I used shared components from `frontend/src/components/ui/` for dialogs/buttons/inputs where applicable.
 - [ ] I did not introduce ad-hoc replacements for existing shared UI patterns.
-- [ ] Mobile behavior is verified at `<1024px` and `<600px`.
+- [ ] Mobile behaviour is verified at `<1024px` and `<600px`.
 - [ ] List/table action controls collapse appropriately on small screens.
 - [ ] Top-page toolbars (add/search/filter/actions) stack to single-item full-width rows at `<600px`.
 - [ ] Labels/tooltips/messages are clear and consistent.
@@ -18,7 +18,7 @@ Use this checklist for all frontend PRs.
 - [ ] Settings/edit dialogs use `TicDialogWindow` unless there is a documented exception.
 - [ ] Popup dialogs use `TicDialogPopup` unless there is a documented exception.
 - [ ] Confirmation dialogs use `TicConfirmDialog` (no ad-hoc confirm popups).
-- [ ] Header actions and close/back behavior follow shared dialog API.
+- [ ] Header actions and close/back behaviour follow shared dialog API.
 - [ ] Editable dialogs implement dirty-state save pattern (pulsing save action + close/discard protection).
 
 ## Inputs
@@ -29,13 +29,13 @@ Use this checklist for all frontend PRs.
 - [ ] Numeric fields use `TicNumberInput` where applicable.
 - [ ] Boolean settings use `TicToggleInput` (not `q-checkbox`).
 - [ ] Settings inputs/toggles include clear labels and description text where guidance is required.
-- [ ] Multi-select/searchable select behavior is consistent.
+- [ ] Multi-select/searchable select behaviour is consistent.
 - [ ] Settings/edit forms apply `24px` field spacing via a form-level layout class (not per-input component spacing).
 
 ## Actions
 
 - [ ] Row action icons use shared list action components.
-- [ ] Row/list action icons and colors match the standard mapping in `frontend-ui-standards.md`.
+- [ ] Row/list action icons and colours match the standard mapping in `frontend-ui-standards.md`.
 - [ ] Desktop uses inline action buttons; mobile uses overflow action menu.
 - [ ] Shared dropdown/overflow menus use `.tic-dropdown-menu` (no ad-hoc menu shadows/borders).
 - [ ] Save/apply actions use `positive`; destructive actions use `negative`.

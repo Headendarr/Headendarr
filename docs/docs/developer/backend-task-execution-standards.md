@@ -43,5 +43,5 @@ These standards define how backend work should be executed to keep the Quart eve
 
 - [ ] Any new heavy code path is offloaded out of Quart loop.
 - [ ] Logs include total duration and meaningful phase timing.
-- [ ] Behavior is validated with a representative benchmark.
+- [ ] Behaviour is validated with a representative benchmark.
 - [ ] Documentation is updated when execution pattern changes.

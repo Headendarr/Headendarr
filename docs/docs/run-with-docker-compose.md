@@ -46,7 +46,7 @@ After container executes successfully, navigate to your docker host URL in your 
 
 ## Timezone Notes
 
-- Set `TZ` in your compose file for container-local logs/runtime behavior (example: `TZ=Pacific/Auckland`).
+- Set `TZ` in your compose file for container-local logs/runtime behaviour (example: `TZ=Pacific/Auckland`).
 - Headendarr persists application timestamps in UTC in the database.
 - Headendarr API returns timestamps in UTC (`...Z`) and the frontend renders them in local time for the user/device.
 - Keep host clock and container clock in sync (NTP) to avoid skew.

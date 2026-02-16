@@ -1,6 +1,6 @@
 # Backend Architecture
 
-This page documents backend runtime behavior and integration boundaries.
+This page documents backend runtime behaviour and integration boundaries.
 
 ## Task Queue + Scheduler
 
@@ -18,7 +18,7 @@ This page documents backend runtime behavior and integration boundaries.
   - `reconcile_dvr_recordings` (frequent status reconciliation)
   - `apply_dvr_rules` (scheduled recurring rule expansion)
 
-## API + Polling Behavior
+## API + Polling Behaviour
 
 - DVR UI uses long-polling endpoint `GET /tic-api/recordings/poll` for live status updates.
 - Saving relevant settings queues TVHeadend configuration sync work.
@@ -51,4 +51,4 @@ This page documents backend runtime behavior and integration boundaries.
 - Treat model date/time fields (`created_at`, `updated_at`, audit/session timestamps) as UTC values.
 - API payloads should serialize timestamps as explicit UTC ISO-8601 (for example `2026-02-14T09:30:00Z`).
 - Frontend/UI renders timestamps in the viewer's local timezone (or configured UI timezone setting when implemented), with 12h/24h formatting applied in UI.
-- Container `TZ` controls process-local time behavior for runtime tools/logs; DB/application timestamp persistence must still remain UTC.
+- Container `TZ` controls process-local time behaviour for runtime tools/logs; DB/application timestamp persistence must still remain UTC.

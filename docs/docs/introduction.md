@@ -7,7 +7,7 @@ title: Introduction
 
 Welcome to Headendarr, a powerful and user-friendly tool designed to simplify the management of IPTV channels and EPG data for use with TVHeadend and other IPTV clients.
 
-Headendarr acts as a central hub for your IPTV sources, allowing you to map channels from multiple M3U playlists and assign Electronic Program Guide (EPG) data from various XMLTV sources. It then generates a stable, curated channel list that can be easily consumed by TVHeadend or any client that supports the M3U or HDHomeRun protocols.
+Headendarr acts as a central hub for your IPTV sources, allowing you to map channels from multiple M3U playlists and assign Electronic Programme Guide (EPG) data from various XMLTV sources. It then generates a stable, curated channel list that can be easily consumed by TVHeadend or any client that supports the M3U or HDHomeRun protocols.
 
 ## Key Features
 

@@ -1,0 +1,148 @@
+.slideshow_container {
+  position: relative;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  height: 880px;
+  display: flex;
+  justify-content: center;
+}
+
+.group {
+  position: absolute;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  transition:
+    transform 1s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.8s;
+  justify-content: center;
+  align-items: center;
+}
+
+.active {
+  transform: translateX(0);
+  opacity: 1;
+  z-index: 2;
+}
+
+.inactive_left {
+  transform: translateX(-100%);
+  opacity: 0;
+  z-index: 1;
+}
+
+.inactive_right {
+  transform: translateX(100%);
+  opacity: 0;
+  z-index: 1;
+}
+
+/* Desktop Group Layout: Stacked vertically */
+.desktop_group {
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.desktop_wrapper {
+  width: 80%;
+  max-height: 45%;
+  display: flex;
+  justify-content: center;
+}
+
+.desktop_screenshot {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  box-shadow: var(--ifm-global-shadow-md);
+}
+
+/* Mobile Group Layout: Side-by-side */
+.mobile_group {
+  flex-direction: row;
+  gap: 2rem;
+}
+
+.mobile_wrapper {
+  height: 90%;
+  display: flex;
+  align-items: center;
+}
+
+.mobile_screenshot {
+  height: 100%;
+  width: auto;
+  border-radius: 8px;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  box-shadow: var(--ifm-global-shadow-md);
+}
+
+/* Controls */
+.controls {
+  margin-top: 0.5rem;
+  display: flex;
+  gap: 1rem;
+  z-index: 3;
+}
+
+.toggle_btn {
+  background: var(--ifm-card-background-color);
+  border: 1px solid var(--ifm-color-emphasis-300);
+  color: var(--ifm-font-color-base);
+  padding: 0.5rem 1.5rem;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s;
+}
+
+.toggle_btn:hover {
+  border-color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
+}
+
+.active_btn {
+  background: var(--ifm-color-primary);
+  color: #fff;
+  border-color: var(--ifm-color-primary);
+}
+
+.active_btn:hover {
+  color: #fff;
+  opacity: 0.9;
+}
+
+@media (max-width: 1200px) {
+  .stage {
+    height: 600px;
+  }
+}
+
+@media (max-width: 768px) {
+  .stage {
+    height: 500px;
+  }
+  .mobile_group {
+    gap: 0.5rem;
+  }
+  .mobile_wrapper {
+    height: 80%;
+  }
+  .desktop_wrapper {
+    width: 100%;
+  }
+}

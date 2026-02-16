@@ -16,14 +16,14 @@
   --ifm-hero-background-color: #f7f7f7;
   --ifm-hero-text-color: var(--ifm-color-primary);
 
-  --ifm-color-secondary: #4F4789;
-  --ifm-color-accent: #FFB17A;
+  --ifm-color-secondary: #4f4789;
+  --ifm-color-accent: #ffb17a;
 
   --ifm-font-color-base: #222; /* Darker base text for readability */
 }
 
 /* Root variables for dark mode */
-[data-theme='dark'] {
+[data-theme="dark"] {
   --ifm-color-primary: #6353a4; /* Lighter primary for dark mode */
   --ifm-color-primary-dark: #4f4789;
   --ifm-color-primary-darker: #453e7a;
@@ -35,26 +35,67 @@
   --ifm-hero-background-color: #121212;
   --ifm-hero-text-color: #fff;
 
-  --ifm-color-secondary: #FFB17A;
-  --ifm-color-accent: #4F4789;
+  --ifm-color-secondary: #ffb17a;
+  --ifm-color-accent: #4f4789;
 
   --ifm-background-color: #121212;
   --ifm-font-color-base: #eee;
 }
 
 .hero--primary {
-    --ifm-hero-background-color: var(--ifm-hero-background-color) !important;
-    --ifm-hero-text-color: var(--ifm-hero-text-color) !important;
+  --ifm-hero-background-color: var(--ifm-hero-background-color) !important;
+  --ifm-hero-text-color: var(--ifm-hero-text-color) !important;
 }
 
 .button--secondary {
-    --ifm-button-background-color: var(--ifm-color-secondary);
-    --ifm-button-color: #fff;
-    --ifm-button-border-color: var(--ifm-color-secondary);
+  --ifm-button-background-color: var(--ifm-color-secondary);
+  --ifm-button-color: #fff;
+  --ifm-button-border-color: var(--ifm-color-secondary);
 }
 
 .button--secondary:hover {
-    --ifm-button-background-color: var(--ifm-color-accent);
-    --ifm-button-color: #fff;
-    --ifm-button-border-color: var(--ifm-color-accent);
+  --ifm-button-background-color: var(--ifm-color-accent);
+  --ifm-button-color: #fff;
+  --ifm-button-border-color: var(--ifm-color-accent);
+}
+
+/* Footer Customization */
+.footer {
+  --ifm-footer-background-color: #1a0f2b;
+  --ifm-footer-color: rgba(255, 255, 255, 0.7);
+  --ifm-footer-link-color: #ffffff;
+  --ifm-footer-title-color: var(--ifm-color-accent);
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.footer__link-item {
+  color: #ffffff !important;
+  opacity: 0.85;
+  transition:
+    opacity 0.2s,
+    color 0.2s;
+}
+
+.footer__link-item:hover {
+  color: var(--ifm-color-accent) !important;
+  opacity: 1;
+  text-decoration: none;
+}
+
+.footer__copyright {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.9rem;
+  margin-top: 2rem;
+}
+
+.footer img[src*="simpleicons.org/github/181717"],
+.footer img[src*="simpleicons.org/patreon/000000"] {
+  filter: brightness(0) invert(1);
+}
+
+/* Image zoom background fixes */
+[data-rmiz-modal-overlay="visible"] {
+  background-color: var(--ifm-background-color) !important;
+  opacity: 0.9;
+  backdrop-filter: blur(10px);
 }

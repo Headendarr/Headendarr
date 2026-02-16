@@ -4,7 +4,7 @@ title: EPGs
 
 # EPGs (XMLTV)
 
-EPG (Electronic Program Guide) sources provide the guide data (e.g., show titles, descriptions, and times) for your channels. This data is typically in the XMLTV format.
+EPG (Electronic Programme Guide) sources provide the guide data (e.g., show titles, descriptions, and times) for your channels. This data is typically in the XMLTV format.
 
 ## Adding a New EPG
 

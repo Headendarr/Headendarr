@@ -25,6 +25,26 @@
     color: var(--ifm-font-color-base);
 }
 
+.feature_breakdown {
+  margin-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.feature_item strong {
+  display: block;
+  font-size: 1.1rem;
+  color: var(--ifm-color-primary-darker);
+  margin-bottom: 0.25rem;
+}
+
+.feature_item p {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
 .list_column {
   flex: 1;
   display: grid;
@@ -37,6 +57,10 @@
   border: 1px solid var(--ifm-color-emphasis-300);
   border-radius: var(--ifm-card-border-radius);
   padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   transition: all 0.2s ease-in-out;
 }
@@ -47,20 +71,37 @@
     box-shadow: var(--ifm-global-shadow-lw);
 }
 
-.client_item h4 {
-  margin: 0 0 0.5rem 0;
-  color: var(--ifm-color-primary);
+.logo_grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
-.client_item p {
+.client_logo {
+  height: 40px;
+  width: auto;
+  object-fit: contain;
+  filter: grayscale(20%);
+  transition: filter 0.2s;
+}
+
+.client_item:hover .client_logo {
+  filter: grayscale(0%);
+}
+
+.client_description {
   font-size: 0.9rem;
-  color: var(--ifm-font-color-secondary);
+  color: var(--ifm-font-color-base);
   margin: 0;
+  line-height: 1.4;
 }
 
-/* For alternating rows - this section is the fourth, so it's an even row */
+/* For alternating rows - this section is the fifth, so it's an odd row (Normal order) */
 .container {
-  flex-direction: row-reverse;
+  flex-direction: row;
 }
 
 @media (max-width: 768px) {

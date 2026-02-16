@@ -4,7 +4,7 @@ title: Channels
 
 # Channel Configuration
 
-This is the core of Headendarr, where you build your final channel lineup. The **Channels** page allows you to add channels, assign streams from your sources, link EPG data, and organize everything to your liking.
+This is the core of Headendarr, where you build your final channel lineup. The **Channels** page allows you to add channels, assign streams from your sources, link EPG data, and organise everything to your liking.
 
 ## Adding and Editing Channels
 

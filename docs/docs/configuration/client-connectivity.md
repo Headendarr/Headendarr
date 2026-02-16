@@ -28,7 +28,7 @@ Connecting directly to the integrated TVHeadend server via HTSP (Home TV Streami
 
 -   **Android TV**:
     -   **Sparkle TV / PVR Live**: Excellent, modern apps that integrate directly with the Android TV "Live Channels" feature for a seamless "cable TV" experience.
-    -   **Kodi**: The classic media center with the "TVHeadend HTSP Client" addon.
+    -   **Kodi**: The classic media centre with the "TVHeadend HTSP Client" addon.
 -   **Android Mobile**:
     -   **TVHClient**: A great app for mobile devices to stream from and manage your TVHeadend server.
 -   **Desktop**:

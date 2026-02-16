@@ -20,18 +20,18 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
    - extend the shared component first, then reuse it.
    - document the new API in this file in the same change.
 7. In Vue script blocks (`<script setup>` / `<script>`), prefer single-quoted strings.
-8. Action color semantics:
+8. Action colour semantics:
    - Save/apply/confirm success actions use `positive`.
    - Destructive actions (delete/remove) use `negative`.
-   - Other actions keep existing contextual colors.
-9. Row/list action icon + color mappings must use the standard mapping table below unless a documented exception is added.
+   - Other actions keep existing contextual colours.
+9. Row/list action icon + colour mappings must use the standard mapping table below unless a documented exception is added.
 10. Settings/edit forms must use a form-level spacing rule of `24px` between fields (do not hardcode spacing inside shared input components).
-11. Dropdown menus for shared button/action components must use the shared `tic-dropdown-menu` class for consistent border/shadow/theme behavior.
+11. Dropdown menus for shared button/action components must use the shared `tic-dropdown-menu` class for consistent border/shadow/theme behaviour.
 12. Border radius must use shared radius tokens from `frontend/src/css/app.scss` (`--tic-radius-sm`, `--tic-radius-md`, `--tic-radius-lg`), not ad-hoc values.
 13. Elevated surfaces (dropdowns, popup cards) must use shared border/shadow tokens (`--tic-elevated-border`, `--tic-elevated-shadow`) so dark/light theme rendering stays consistent.
 14. For list views that already provide search/filter controls, prefer lazy loading (infinite scroll) over footer pagination controls/counters.
 15. Use checkboxes (not toggles) for multi-select list/table workflows (for example stream selectors and bulk-edit selectors). Reserve toggles for boolean settings fields in forms.
-16. Any new or updated UI must be theme-aware for both light and dark themes. Do not hardcode one-theme colors in feature components.
+16. Any new or updated UI must be theme-aware for both light and dark themes. Do not hardcode one-theme colours in feature components.
 17. Section-level toolbar controls (search/filter/sort/action rows) must use shared alignment classes:
    - `section-toolbar-field` for shared input/select controls in the toolbar row.
    - `section-toolbar-btn` for toolbar action buttons.
@@ -81,8 +81,8 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
 ### Theme Awareness Rules (Strict)
 
 1. All UI work must be visually validated in both light and dark themes.
-2. Use Quasar/theme tokens (`var(--q-*)`) and shared Headendarr tokens from `frontend/src/css/app.scss` for colors, borders, and shadows.
-3. Do not hardcode hex/rgb colors in feature components unless there is a documented exception.
+2. Use Quasar/theme tokens (`var(--q-*)`) and shared Headendarr tokens from `frontend/src/css/app.scss` for colours, borders, and shadows.
+3. Do not hardcode hex/rgb colours in feature components unless there is a documented exception.
 4. If new theme tokens are required, add them centrally in `frontend/src/css/app.scss` and document them here in the same change.
 
 ### Dialogs
@@ -108,7 +108,7 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
    - use `confirmColor='negative'`
    - use `confirmIcon='delete'` (or another documented destructive icon when delete is not semantically correct)
    - include explicit irreversible wording (e.g. "This action is final and cannot be undone.").
-4. Non-destructive confirmations should use contextual icon/colors but still use `TicConfirmDialog`.
+4. Non-destructive confirmations should use contextual icon/colours but still use `TicConfirmDialog`.
 
 ## Dialog Save/Dirty Rules (Strict)
 
@@ -274,7 +274,7 @@ Use these defaults for all list/table row actions:
 - `delete/remove`: `icon='delete'`, `color='negative'`
 - `warning/fix-attention`: `icon='warning'`, `color='warning'`
 
-If an action is not listed, choose the closest semantic icon/color and document it here in the same PR.
+If an action is not listed, choose the closest semantic icon/colour and document it here in the same PR.
 
 ### Search + Select
 
@@ -319,10 +319,10 @@ If an action is not listed, choose the closest semantic icon/color and document 
 
 - `>=1024px`: full desktop layouts and inline action groups.
 - `<1024px`: compact spacing and controls where needed.
-- `<600px`: mobile layout rules apply, including collapsed row actions and mobile dialog behavior.
+- `<600px`: mobile layout rules apply, including collapsed row actions and mobile dialog behaviour.
 - For top-page toolbars (e.g. add button + search/filter controls), use full-width single-item rows at `<600px`.
 - At `<600px`, each toolbar control should occupy one row (`col-12`) and primary actions should be full width.
-- Prefer Quasar responsive utility classes (`gt-sm`, `lt-md`, `gt-md`, etc.) for simple show/hide behavior in templates.
+- Prefer Quasar responsive utility classes (`gt-sm`, `lt-md`, `gt-md`, etc.) for simple show/hide behaviour in templates.
 - Avoid `$q.screen` in template conditionals when CSS utility classes can express the same visibility rule; keep `$q.screen` for logic/layout decisions that cannot be handled by classes alone.
 - Do not use `$q.platform.is.mobile` for responsive layout decisions; use Quasar visibility classes for template visibility and `$q.screen`/`useMobile` only when JavaScript logic is required.
 - Use `frontend/src/composables/useMobile.js` for component-level mobile/desktop logic.

@@ -3,60 +3,82 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  background-color: var(--ifm-background-color-secondary);
 }
 
 .container {
   display: flex;
+  flex-direction: column;
   align-items: center;
   max-width: 1140px;
   width: 100%;
-  gap: 4rem;
+  gap: 3rem;
 }
 
-.text_column {
-  flex: 1;
-}
-
-.text_column h2 {
-    color: var(--ifm-color-primary);
-}
-
-.text_column p, .text_column li {
-    color: var(--ifm-font-color-base);
-}
-
-.image_column {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 1rem;
-}
-
-.placeholder {
-  width: 100%;
-  height: 300px;
-  background-color: var(--ifm-hover-overlay);
-  border: 1px dashed var(--ifm-color-emphasis-400);
-  border-radius: 8px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+.text_content {
   text-align: center;
-  color: var(--ifm-font-color-secondary);
+  width: 100%;
 }
 
-/* For alternating rows - this section is the second, so it's an even row */
-.container {
-  flex-direction: row-reverse;
+.text_content h2 {
+    color: var(--ifm-color-primary);
+    margin-bottom: 1.5rem;
+}
+
+.text_content p {
+    color: var(--ifm-font-color-base);
+    max-width: 800px;
+    margin: 0 auto 2rem;
+}
+
+.feature_grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 2rem;
+  text-align: left;
+  margin-top: 2rem;
+}
+
+.feature_item strong {
+  display: block;
+  font-size: 1.1rem;
+  color: var(--ifm-color-primary-darker);
+  margin-bottom: 0.5rem;
+}
+
+.feature_item p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.main_image_wrapper {
+  width: 100%;
+  margin-bottom: 2rem;
+}
+
+.secondary_image_wrapper {
+  width: 100%;
+}
+
+.main_screenshot {
+  width: 100%;
+  height: auto;
+}
+
+.screenshot {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  box-shadow: var(--ifm-global-shadow-md);
 }
 
 @media (max-width: 768px) {
   .container {
-    flex-direction: column !important;
     gap: 2rem;
   }
-  .image_column {
-    flex-direction: column;
+  .secondary_image_wrapper {
+    width: 100%;
   }
 }

@@ -11,7 +11,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'Headendarr',
-  tagline: 'Your All-In-One IPTV Management Solution',
+  tagline: 'Self-Hosted IPTV Management & EPG Aggregator for TVHeadend',
   favicon: 'img/icon.png',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -104,12 +104,20 @@ const config = {
             title: 'Community',
             items: [
               {
-                label: '🐙 GitHub',
-                href: 'https://github.com/Headendarr/Headendarr',
+                html: `
+                  <a href="https://github.com/Headendarr/Headendarr" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                    <img src="https://cdn.simpleicons.org/github/181717" alt="GitHub" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
+                    GitHub
+                  </a>
+                `,
               },
               {
-                label: '💬 Discord',
-                href: 'https://unmanic.app/discord',
+                html: `
+                  <a href="https://unmanic.app/discord" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                    <img src="https://cdn.simpleicons.org/discord/5865F2" alt="Discord" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
+                    Discord
+                  </a>
+                `,
               },
             ],
           },
@@ -117,16 +125,28 @@ const config = {
             title: 'Support',
             items: [
               {
-                label: '❤️ Sponsor on GitHub',
-                href: 'https://github.com/sponsors/Josh5',
+                html: `
+                  <a href="https://github.com/sponsors/Josh5" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                    <img src="https://cdn.simpleicons.org/githubsponsors/EA4AAA" alt="GitHub Sponsors" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
+                    Sponsor on GitHub
+                  </a>
+                `,
               },
               {
-                label: '❤️ Sponsor on Patreon',
-                href: 'https://www.patreon.com/Josh5',
+                html: `
+                  <a href="https://www.patreon.com/Josh5" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                    <img src="https://cdn.simpleicons.org/patreon/000000" alt="Patreon" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
+                    Sponsor on Patreon
+                  </a>
+                `,
               },
               {
-                label: '☕ Buy me a Ko-fi',
-                href: 'https://ko-fi.com/josh5coffee',
+                html: `
+                  <a href="https://ko-fi.com/josh5coffee" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                    <img src="https://cdn.simpleicons.org/kofi/FF6433" alt="Ko-fi" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
+                    Buy me a Ko-fi
+                  </a>
+                `,
               },
             ],
           },

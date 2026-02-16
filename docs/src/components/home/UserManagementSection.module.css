@@ -3,7 +3,6 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  background-color: var(--ifm-background-color-secondary);
 }
 
 .container {
@@ -33,17 +32,12 @@
   align-items: center;
 }
 
-.placeholder {
+.screenshot {
   width: 100%;
-  height: 300px;
-  background-color: var(--ifm-hover-overlay);
-  border: 1px dashed var(--ifm-color-emphasis-400);
+  height: auto;
   border-radius: 8px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-  color: var(--ifm-font-color-secondary);
+  border: 1px solid var(--ifm-color-emphasis-300);
+  box-shadow: var(--ifm-global-shadow-md);
 }
 
 @media (max-width: 768px) {

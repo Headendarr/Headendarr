@@ -82,3 +82,12 @@ services:
       - DOCUSAURUS_DEV_HOST=0.0.0.0
     volumes:
       - ../:/app
+
+  # -- DOCS STATIC SERVER --
+  docs-static:
+    image: nginx:alpine
+    ports:
+      - 8030:8030
+    volumes:
+      - ../docs/build:/usr/share/nginx/html:ro
+      - ../docs/docker/nginx-docs.conf:/etc/nginx/nginx.conf:ro
