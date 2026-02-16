@@ -117,7 +117,7 @@
                 <q-item :key="`source-${element.local_key || index}`" class="q-px-none rounded-borders">
                   <q-item-section avatar class="handle q-px-sm q-mx-sm">
                     <q-avatar rounded>
-                      <q-icon name="drag_handle" style="max-width: 30px">
+                      <q-icon name="format_line_spacing" style="max-width: 30px; cursor: grab">
                         <q-tooltip class="bg-white text-primary">Drag to set stream priority</q-tooltip>
                       </q-icon>
                     </q-avatar>
