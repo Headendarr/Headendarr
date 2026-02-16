@@ -30,7 +30,7 @@ If you haven't already, you need to add the TrueCharts catalog to your TrueNAS S
 ## 2. Install the Application
 
 1.  Go to the **Apps** page and click the **Available Applications** tab.
-2.  Search for `tvh-iptv-config`.
+2.  Search for `headendarr`.
 3.  Click on the application and then click **Install**.
 4.  This will take you to the installation wizard.
 
@@ -39,7 +39,7 @@ If you haven't already, you need to add the TrueCharts catalog to your TrueNAS S
 The TrueNAS Scale installation wizard will guide you through the setup. Here are the most important sections to configure:
 
 ### Application Name
--   Choose a name for your installation, e.g., `tvh-iptv-config`.
+-   Choose a name for your installation, e.g., `headendarr`.
 
 ### Workload Settings
 -   You can generally leave the default CPU and memory resources as they are unless you have specific needs.
@@ -69,7 +69,7 @@ The TrueNAS Scale installation wizard will guide you through the setup. Here are
 
 ## Accessing the Application
 
-Once the deployment is complete, the **Apps** -> **Installed Applications** page will show `tvh-iptv-config` as `ACTIVE`. Click the **Portal** button to open the Headendarr Web UI in a new tab.
+Once the deployment is complete, the **Apps** -> **Installed Applications** page will show `headendarr` as `ACTIVE`. Click the **Portal** button to open the Headendarr Web UI in a new tab.
 
 :::warning Direct TVHeadend Access
 It is **not recommended** to expose the TVHeadend Web UI (`9981`) or HTSP port (`9982`) directly to the internet. These services are best accessed within your local network, or securely remotely via a VPN like [Tailscale](https://tailscale.com/).

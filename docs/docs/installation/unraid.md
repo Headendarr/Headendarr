@@ -17,7 +17,7 @@ This guide assumes you have the **Community Applications** plugin installed on y
 
 1.  Navigate to the **Apps** tab in your Unraid web interface.
 2.  In the search box, type `Headendarr` and press Enter.
-3.  Locate the official `tvh-iptv-config` application in the search results and click the **Install** button.
+3.  Locate the official `headendarr` application in the search results and click the **Install** button.
 
 ## Template Configuration
 
@@ -25,19 +25,19 @@ Unraid will present you with the Docker container template to configure. Here ar
 
 | Parameter               | Description                                                                                                                                                                                               |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Name**                | `tvh-iptv-config` (or your preferred name).                                                                                                                                                               |
+| **Name**                | `headendarr` (or your preferred name).                                                                                                                                                               |
 | **Repository**          | `ghcr.io/headendarr/headendarr:latest`                                                                                                                                                                    |
 | **Network Type**        | `Bridge` is the standard setting and will work for most users.                                                                                                                                            |
 | **WebUI**               | The default is `http://[IP]:[PORT:9985]`. This link will take you to the Headendarr web interface.                                                                                                                |
 | **Port: 9985 (TCP)**    | **Headendarr Web UI**: The main interface for the application.                                                                                                                                                   |
 | **Port: 9981 (TCP)**    | **TVHeadend Web UI**: The interface for the built-in TVHeadend server.                                                                                                                                    |
 | **Port: 9982 (TCP)**    | **TVHeadend HTSP**: The port for clients like Kodi to connect to.                                                                                                                            |
-| **Path: /config**       | **Required.** This is where all application data is stored. Set this to a path on your cache or array. For example: `/mnt/user/appdata/tvh-iptv-config`. **Do not lose this data.**                       |
+| **Path: /config**       | **Required.** This is where all application data is stored. Set this to a path on your cache or array. For example: `/mnt/user/appdata/headendarr`. **Do not lose this data.**                       |
 | **Path: /recordings**   | **Required.** This is the destination for DVR recordings. Set this to a path on your array where you want to store media. For example: `/mnt/user/data/recordings`.                                       |
 
 ### Example Path Mappings:
 
--   **Host Path for `/config`**: `/mnt/user/appdata/tvh-iptv-config`
+-   **Host Path for `/config`**: `/mnt/user/appdata/headendarr`
 -   **Host Path for `/recordings`**: `/mnt/user/media/dvr`
 
 After configuring the ports and paths, click **Apply** to save the settings and start the Docker container.

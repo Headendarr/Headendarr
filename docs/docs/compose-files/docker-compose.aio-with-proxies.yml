@@ -61,7 +61,7 @@ services:
   # Run Josh5/HLS-Proxy - A simple HLS proxy that uses ffmpeg to buffer video streams. Written my Josh.5.
   #   REF: https://github.com/Josh5/HLS-Proxy
   #
-  # To use this with TVH-IPTV-Config, configure the playlist with a custom HLS proxy using this URL:
+  # To use this with Headendarr, configure the playlist with a custom HLS proxy using this URL:
   #   > http://hls-proxy-1:9987/[B64_URL].m3u8
   #
   hls-proxy-1:
@@ -86,7 +86,7 @@ services:
   # Run node 'HLS-Proxy' - A feature rich HTTP Live Streaming Proxy
   #   REF: https://github.com/warren-bank/HLS-Proxy
   #
-  # To use this with TVH-IPTV-Config, configure the playlist with a custom HLS proxy using this URL:
+  # To use this with Headendarr, configure the playlist with a custom HLS proxy using this URL:
   #   > http://hls-proxy-2:9987/[B64_URL].m3u8
   #
   hls-proxy-2:

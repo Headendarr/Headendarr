@@ -18,7 +18,7 @@ Create a new file named `docker-compose.yml` and add the following content:
 
 ```yaml
 services:
-  tvh-iptv-config:
+  headendarr:
     image: ghcr.io/headendarr/headendarr:latest
     restart: unless-stopped
     ports:
