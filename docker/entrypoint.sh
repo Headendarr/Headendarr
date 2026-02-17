@@ -5,7 +5,7 @@
 # File Created: Monday, 13th May 2024 4:20:35 pm
 # Author: Josh.5 (jsunnex@gmail.com)
 # -----
-# Last Modified: Monday, 16th February 2026 12:40:10 pm
+# Last Modified: Wednesday, 18th February 2026 10:45:46 am
 # Modified By: Josh.5 (jsunnex@gmail.com)
 ###
 
@@ -13,6 +13,12 @@ set -e
 
 # Ensure HOME is always set to /config
 export HOME="/config"
+
+# Print build/version once as the first startup log line when available.
+if [[ -z "${HEADENDARR_VERSION_PRINTED:-}" ]] && [[ -f /version.txt ]]; then
+    cat /version.txt
+    export HEADENDARR_VERSION_PRINTED=1
+fi
 
 # All printed log lines from this script should be formatted with this function
 print_log() {
@@ -346,11 +352,6 @@ if [ "$(id -u)" = "0" ]; then
     configure_container_timezone
     prepare_dirs_root
     exec gosu "${PUID:-1000}" env HOME="/config" "$0" "$@"
-fi
-
-# Print the current version (if the file exists)
-if [[ -f /version.txt ]]; then
-    cat /version.txt
 fi
 
 print_log info "ENABLE_APP_DEBUGGING: ${ENABLE_APP_DEBUGGING:-ENABLE_APP_DEBUGGING variable has not been set}"

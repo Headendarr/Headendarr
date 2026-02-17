@@ -10,7 +10,19 @@ body:
         Thanks for taking the time to help improve!
 
         ---
-        **CONTRIBUTORS:** Please note that all pull requests must be targeted at the `staging` branch. Pull requests against `master` will be closed.
+        Before opening a feature request, please check the current `staging` image first to confirm the feature is not already available.
+
+        If you use Docker, switch your image tag from:
+        - `ghcr.io/headendarr/headendarr:latest`
+        to:
+        - `ghcr.io/headendarr/headendarr:staging`
+  - type: checkboxes
+    id: staging_confirm
+    attributes:
+      label: Staging verification
+      options:
+        - label: I confirm this requested feature does not already exist in the current `staging` release.
+          required: true
   - type: textarea
     id: problem
     attributes:

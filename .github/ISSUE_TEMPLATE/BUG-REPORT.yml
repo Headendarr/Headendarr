@@ -11,7 +11,19 @@ body:
         **THIS IS NOT THE PLACE TO ASK FOR SUPPORT!** Please use [Discord](https://unmanic.app/discord) for support issues.
 
         ---
-        **CONTRIBUTORS:** Please note that all pull requests must be targeted at the `staging` branch. Pull requests against `master` will be closed.
+        Before opening a bug report, please test against the current `staging` image first.
+
+        If you use Docker, switch your image tag from:
+        - `ghcr.io/headendarr/headendarr:latest`
+        to:
+        - `ghcr.io/headendarr/headendarr:staging`
+  - type: checkboxes
+    id: staging_confirm
+    attributes:
+      label: Staging verification
+      options:
+        - label: I have confirmed this bug still exists in the current `staging` release.
+          required: true
   - type: textarea
     id: description
     attributes:
