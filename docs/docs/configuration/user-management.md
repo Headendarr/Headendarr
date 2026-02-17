@@ -30,6 +30,7 @@ In addition to roles, you can configure granular access controls for how clients
     *   **Access own recordings only**: The user can access and manage their own recordings and make new recordings. (Suitable for a "Streamer" role if DVR access is desired.)
     *   **Grant access to everyone's recordings**: The user has full access to view and manage all recordings in the system.
 -   **Retention Policy**: (Available if DVR Access is granted) A dropdown to select how long recordings are retained for this user before automatic deletion.
+    See [Retention Policy Values](./application-settings#retention-policy-values) for what each option means and how it affects cleanup behaviour.
 
 ## Editing Users and Resetting Login Passwords
 
