@@ -559,15 +559,13 @@ export default {
     },
     async openStreamTestDialog(stream) {
       let testUrl = null;
-      if (this.channelId && stream?.id) {
-        try {
-          const response = await axios.get(`/tic-api/channels/${this.channelId}/sources/${stream.id}/preview`);
-          if (response.data.success) {
-            testUrl = response.data.preview_url;
-          }
-        } catch (error) {
-          console.error('Resolve stream URL for test error:', error);
+      try {
+        const preview = await this.resolvePreviewUrl(stream, {useChannelSource: true});
+        if (preview?.preview_url) {
+          testUrl = preview.preview_url;
         }
+      } catch (error) {
+        console.error('Resolve stream URL for test error:', error);
       }
       this.testStreamUrl = this.normalizeStreamUrl(testUrl || stream?.stream_url);
       if (!this.testStreamUrl) {
@@ -687,42 +685,47 @@ export default {
       }
       return streamUrl;
     },
-    async previewChannelStream(stream, options = {}) {
+    async resolvePreviewUrl(stream, options = {}) {
       if (options.usePlaylistStream && stream?.stream_id) {
-        try {
-          const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
-          if (response.data.success) {
-            this.videoStore.showPlayer({
-              url: response.data.preview_url,
-              title: stream?.stream_name || this.name || 'Stream',
-              type: response.data.stream_type || 'auto',
-            });
-            return;
-          }
-          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to load preview'});
-          return;
-        } catch (error) {
-          console.error('Preview stream error:', error);
-          this.$q.notify({color: 'negative', message: 'Failed to load preview'});
-          return;
+        const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
+        if (response.data.success) {
+          return response.data;
         }
+        throw new Error(response.data.message || 'Failed to load stream preview');
       }
-      if (options.useChannelSource && this.channelId && stream?.id) {
-        try {
+      if (options.useChannelSource && this.channelId) {
+        if (stream?.id) {
           const response = await axios.get(`/tic-api/channels/${this.channelId}/sources/${stream.id}/preview`);
           if (response.data.success) {
+            return response.data;
+          }
+          throw new Error(response.data.message || 'Failed to load stream preview');
+        }
+        if (stream?.stream_id) {
+          const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
+          if (response.data.success) {
+            return response.data;
+          }
+          throw new Error(response.data.message || 'Failed to load stream preview');
+        }
+      }
+      return null;
+    },
+    async previewChannelStream(stream, options = {}) {
+      if (options.usePlaylistStream || options.useChannelSource) {
+        try {
+          const preview = await this.resolvePreviewUrl(stream, options);
+          if (preview?.preview_url) {
             this.videoStore.showPlayer({
-              url: response.data.preview_url,
+              url: preview.preview_url,
               title: stream?.stream_name || this.name || 'Stream',
-              type: response.data.stream_type || 'auto',
+              type: preview.stream_type || 'auto',
             });
             return;
           }
-          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to load preview'});
-          return;
         } catch (error) {
           console.error('Preview stream error:', error);
-          this.$q.notify({color: 'negative', message: 'Failed to load preview'});
+          this.$q.notify({color: 'negative', message: error?.message || 'Failed to load preview'});
           return;
         }
       }
@@ -738,35 +741,17 @@ export default {
       });
     },
     async copyChannelStreamUrl(stream, options = {}) {
-      if (options.usePlaylistStream && stream?.stream_id) {
+      if (options.usePlaylistStream || options.useChannelSource) {
         try {
-          const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
-          if (response.data.success) {
-            await copyToClipboard(response.data.preview_url);
+          const preview = await this.resolvePreviewUrl(stream, options);
+          if (preview?.preview_url) {
+            await copyToClipboard(preview.preview_url);
             this.$q.notify({color: 'positive', message: 'Stream URL copied'});
             return;
           }
-          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to copy stream URL'});
-          return;
         } catch (error) {
           console.error('Copy stream URL error:', error);
-          this.$q.notify({color: 'negative', message: 'Failed to copy stream URL'});
-          return;
-        }
-      }
-      if (options.useChannelSource && this.channelId && stream?.id) {
-        try {
-          const response = await axios.get(`/tic-api/channels/${this.channelId}/sources/${stream.id}/preview`);
-          if (response.data.success) {
-            await copyToClipboard(response.data.preview_url);
-            this.$q.notify({color: 'positive', message: 'Stream URL copied'});
-            return;
-          }
-          this.$q.notify({color: 'negative', message: response.data.message || 'Failed to copy stream URL'});
-          return;
-        } catch (error) {
-          console.error('Copy stream URL error:', error);
-          this.$q.notify({color: 'negative', message: 'Failed to copy stream URL'});
+          this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});
           return;
         }
       }
