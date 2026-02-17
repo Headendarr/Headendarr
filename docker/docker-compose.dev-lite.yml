@@ -6,6 +6,13 @@ services:
   # -- Headendarr --
   headendarr:
     image: ghcr.io/headendarr/headendarr-lite:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        VERSION: "UNKNOWN"
+        BUILD_DATE: "NOW"
+        BASE_IMAGE: "python:3.12-trixie"
 
     # NETWORK:
     networks:
@@ -13,8 +20,6 @@ services:
     ports:
       # App Port (9985)
       - 9985:9985
-      # Proxy Port (9987)
-      - 9987:9987
 
     # ENVIRONMENT:
     environment:
@@ -29,14 +34,16 @@ services:
       # Executes a pip install on container startup (might be required to generate the venv)
       - RUN_PIP_INSTALL=false
       # Enables debug logging for main application
-      - ENABLE_APP_DEBUGGING=false
+      - ENABLE_APP_DEBUGGING=true
       # Enables debug logging for DB queries
       - ENABLE_SQLALCHEMY_DEBUGGING=false
 
     # VOLUMES:
     volumes:
       # Configuration files
-      - /data/containers/tvh-iptv/tic-config:/config
+      - ../dev_env/config:/config
+      # Application source passthrough
+      - ../:/app
 
     depends_on:
       - tvheadend
@@ -65,10 +72,10 @@ services:
 
     # VOLUMES:
     volumes:
-      - /data/containers/tvh-iptv/tvh-config:/config
-      - /data/containers/tvh-iptv/tvh-recordings:/recordings
-      - /data/containers/tvh-iptv/tvh-timeshift:/timeshift
+      - ../dev_env/tvheadend:/config
+      - ../dev_env/tvh-recordings:/recordings
+      - ../dev_env/tvh-timeshift:/timeshift
 
-    # DEVICES: - Uncomment if required
-    # devices:
-    #   - /dev/dri #optional
+    ## # DEVICES:
+    ## devices:
+    ##   - /dev/dri #optional

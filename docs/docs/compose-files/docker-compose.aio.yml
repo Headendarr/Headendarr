@@ -13,8 +13,6 @@ services:
     ports:
       # App Port (9985)
       - 9985:9985
-      # Proxy Port (9987)
-      - 9987:9987
       # TVH Webui
       - 9981:9981
       # TVH HTSP

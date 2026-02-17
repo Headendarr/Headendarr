@@ -35,6 +35,11 @@ services:
       - "/path/to/your/timeshift_temp_dir:/timeshift"
 ```
 
+Use image tags as follows:
+
+- `ghcr.io/headendarr/headendarr:latest` for stable releases.
+- `ghcr.io/headendarr/headendarr:staging` for pre-release/testing builds.
+
 ### 2. Configure Volumes
 
 You **must** change the volume paths to match your system's directory structure:
