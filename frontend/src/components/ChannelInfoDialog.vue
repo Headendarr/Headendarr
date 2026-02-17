@@ -141,11 +141,14 @@
                       {{ element.playlist_name }}
                     </q-item-label>
 
-                    <div v-if="element.source_type === 'manual' || !element.playlist_id" class="sub-setting q-mt-sm">
+                    <div
+                      v-if="element.source_type === 'manual' || !element.playlist_id"
+                      class="sub-setting manual-stream-form q-mt-md"
+                    >
                       <TicTextInput
                         v-model="element.stream_url"
                         label="Stream URL"
-                        description="Manual stream URL for this source."
+                        description="Manual stream URL for this source. You can also provide an external HLS proxy URL here."
                       />
                       <TicToggleInput
                         v-model="element.use_hls_proxy"
@@ -1075,6 +1078,10 @@ export default {
 }
 
 .tic-form-layout > *:not(:last-child) {
+  margin-bottom: 24px;
+}
+
+.manual-stream-form > *:not(:last-child) {
   margin-bottom: 24px;
 }
 
