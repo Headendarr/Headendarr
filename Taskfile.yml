@@ -105,16 +105,27 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} logs {{.CLI_ARGS}} docs-static
 
-  set-version:
-    desc: Set the version in frontend/package.json
+  bump-version:
+    desc: Bump frontend version (default patch, or pass major/minor/patch)
     cmds:
       - |
-        if [ -z "{{.CLI_ARGS}}" ]; then
-          echo "Error: No version provided. Usage: task set-version -- 1.0.1"
-          exit 1
+        bump_type="{{.CLI_ARGS}}"
+        if [ -z "$bump_type" ]; then
+          bump_type="patch"
         fi
-        cd frontend && npm version "{{.CLI_ARGS}}" --no-git-tag-version
-        echo "Version updated to {{.CLI_ARGS}} in frontend/package.json and package-lock.json"
+        case "$bump_type" in
+          patch|minor|major) ;;
+          *)
+            echo "Error: Invalid bump type '$bump_type'. Use: patch, minor, or major."
+            echo "Usage: task bump-version [-- patch|minor|major]"
+            exit 1
+            ;;
+        esac
+
+        npm --prefix frontend version "$bump_type" --no-git-tag-version
+        new_version=$(node -p "require('./frontend/package.json').version")
+        git add frontend/package.json frontend/package-lock.json
+        echo "Version bumped with '$bump_type' in frontend/package.json and package-lock.json"
+        echo "Staged: frontend/package.json frontend/package-lock.json"
         echo "Next run:"
-        echo "> git add ."
-        echo "> git commit -m 'Bump version to {{.CLI_ARGS}}'"
+        echo "> git commit -m 'Bump version $new_version'"
