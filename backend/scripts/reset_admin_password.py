@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-from backend.users import get_user_by_username, reset_user_password
-from backend.models import Session
-import asyncio
 import os
 import sys
+import asyncio
 
-# Add the project root to the sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+# Add the project root to the sys.path before importing backend modules.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from backend.users import get_user_by_username, reset_user_password
+from backend.models import Session
 
 
 async def main():
