@@ -10,8 +10,15 @@ from backend.api import blueprint
 
 from backend.api.tasks import TaskQueueBroker
 from backend.api.tasks import sync_all_users_to_tvh
-from backend.auth import admin_auth_required, get_user_from_token, stream_key_required, audit_stream_event
+from backend.auth import (
+    admin_auth_required,
+    get_user_from_token,
+    get_authenticated_session_expires_at,
+    stream_key_required,
+    audit_stream_event,
+)
 from backend.config import is_tvh_process_running_locally
+from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.tvheadend.tvh_requests import configure_tvh, ensure_tvh_sync_user
@@ -332,10 +339,12 @@ async def api_check_auth():
     config = current_app.config['APP_CONFIG']
     user = await get_user_from_token()
     if user:
+        session_expires_at = get_authenticated_session_expires_at()
         return jsonify(
             {
                 "success":     True,
                 "runtime_key": config.runtime_key,
+                "session_expires_at": to_utc_iso(session_expires_at),
                 "user": {
                     "id": user.id,
                     "username": user.username,

@@ -3,6 +3,7 @@
 import base64
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
 
@@ -58,6 +59,69 @@ class _StreamKeyCache:
 
 
 _stream_key_cache = _StreamKeyCache(ttl_seconds=30)
+
+
+@dataclass
+class _TokenAuthCacheEntry:
+    user: User | None
+    session_expires_at: object
+    cache_expires_at_epoch: float
+
+
+class _TokenAuthCache:
+    def __init__(self, ttl_seconds=5):
+        self.ttl_seconds = ttl_seconds
+        self._cache = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, token_hash, now_utc):
+        async with self._lock:
+            entry = self._cache.get(token_hash)
+            if not entry:
+                return None, False
+            if entry.cache_expires_at_epoch < time.time():
+                self._cache.pop(token_hash, None)
+                return None, False
+            if entry.session_expires_at is not None and entry.session_expires_at < now_utc:
+                self._cache.pop(token_hash, None)
+                return None, False
+            return entry, True
+
+    async def set(self, token_hash, user, session_expires_at):
+        async with self._lock:
+            self._cache[token_hash] = _TokenAuthCacheEntry(
+                user=user,
+                session_expires_at=session_expires_at,
+                cache_expires_at_epoch=time.time() + self.ttl_seconds,
+            )
+
+    async def invalidate(self, token_hash):
+        async with self._lock:
+            self._cache.pop(token_hash, None)
+
+
+class _SessionLastUsedThrottle:
+    def __init__(self, min_interval_seconds=60):
+        self.min_interval_seconds = min_interval_seconds
+        self._last_touches = {}
+        self._lock = asyncio.Lock()
+
+    async def should_touch(self, token_hash):
+        now = time.time()
+        async with self._lock:
+            last = self._last_touches.get(token_hash)
+            if last is not None and (now - last) < self.min_interval_seconds:
+                return False
+            self._last_touches[token_hash] = now
+            return True
+
+    async def clear(self, token_hash):
+        async with self._lock:
+            self._last_touches.pop(token_hash, None)
+
+
+_token_auth_cache = _TokenAuthCache(ttl_seconds=5)
+_session_last_used_throttle = _SessionLastUsedThrottle(min_interval_seconds=60)
 
 
 def unauthorized_response(message="Unauthorized"):
@@ -118,6 +182,12 @@ def _get_bearer_token():
     return None
 
 
+def get_authenticated_session_expires_at():
+    if not has_request_context():
+        return None
+    return getattr(request, "_current_user_session_expires_at", None)
+
+
 def _get_basic_auth_credentials():
     auth = ""
     if has_request_context():
@@ -138,10 +208,37 @@ async def get_user_from_token():
     if not token:
         return None
     token_hash = hash_session_token(token)
+    now = utc_now_naive()
+
+    # Reuse user in-request when available to avoid duplicate DB lookups.
+    if has_request_context():
+        cached_hash = getattr(request, "_current_user_token_hash", None)
+        if cached_hash == token_hash and hasattr(request, "_current_user"):
+            if not hasattr(request, "_current_user_session_expires_at"):
+                request._current_user_session_expires_at = None
+            return request._current_user
+
+    cached_entry, has_cache = await _token_auth_cache.get(token_hash, now)
+    if has_cache:
+        cached_user = cached_entry.user
+        session_expires_at = cached_entry.session_expires_at
+        if has_request_context():
+            request._current_user_token_hash = token_hash
+            request._current_user = cached_user
+            request._current_user_session_expires_at = session_expires_at
+        if cached_user and await _session_last_used_throttle.should_touch(token_hash):
+            async with Session() as session:
+                async with session.begin():
+                    await session.execute(
+                        update(UserSession)
+                        .where(UserSession.token_hash == token_hash)
+                        .values(last_used_at=now)
+                    )
+        return cached_user
+
     async with Session() as session:
-        now = utc_now_naive()
         result = await session.execute(
-            select(User)
+            select(User, UserSession.expires_at)
             .join(UserSession)
             .where(
                 UserSession.token_hash == token_hash,
@@ -150,16 +247,34 @@ async def get_user_from_token():
             )
             .options(selectinload(User.roles))
         )
-        user = result.scalars().first()
+        row = result.first()
+        user = row[0] if row else None
+        session_expires_at = row[1] if row else None
         if not user or not user.is_active:
+            await _token_auth_cache.set(token_hash, None, session_expires_at)
+            if has_request_context():
+                request._current_user_token_hash = token_hash
+                request._current_user = None
+                request._current_user_session_expires_at = session_expires_at
             return None
-        await session.execute(
-            update(UserSession)
-            .where(UserSession.token_hash == token_hash)
-            .values(last_used_at=now)
-        )
-        await session.commit()
+        if await _session_last_used_throttle.should_touch(token_hash):
+            await session.execute(
+                update(UserSession)
+                .where(UserSession.token_hash == token_hash)
+                .values(last_used_at=now)
+            )
+            await session.commit()
+        await _token_auth_cache.set(token_hash, user, session_expires_at)
+        if has_request_context():
+            request._current_user_token_hash = token_hash
+            request._current_user = user
+            request._current_user_session_expires_at = session_expires_at
         return user
+
+
+async def invalidate_auth_token_cache(token_hash: str):
+    await _token_auth_cache.invalidate(token_hash)
+    await _session_last_used_throttle.clear(token_hash)
 
 
 def user_has_role(user: User, role_name: str) -> bool:
