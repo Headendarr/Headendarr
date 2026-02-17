@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
-import base64
 import json
 import logging
 import os
-import re
-import subprocess
 import time
 import uuid
-from collections import deque
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urlparse
 
-import aiohttp
 from quart import Response, current_app, redirect, request, stream_with_context
 
 from backend.api import blueprint
@@ -23,15 +18,19 @@ from backend.auth import (
     skip_stream_connect_audit,
     stream_key_required,
 )
+from backend.hls_multiplexer import (
+    handle_m3u8_proxy,
+    handle_segment_proxy,
+    handle_multiplexed_stream,
+    b64_urlsafe_decode,
+    b64_urlsafe_encode,
+    parse_size,
+    mux_manager,
+    SegmentCache
+)
 
-# Test:
-#       > mkfifo /tmp/ffmpegpipe
-#       > ffmpeg -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i "<URL>" -c copy -y -f mpegts /tmp/ffmpegpipe
-#       > vlc /tmp/ffmpegpipe
-#
-#   Or:
-#       > ffmpeg -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i "<URL>" -c copy -y -f mpegts - | vlc -
-#
+# Global cache instance (short default TTL for HLS segments)
+hls_segment_cache = SegmentCache(ttl=120)
 
 hls_proxy_prefix = os.environ.get("HLS_PROXY_PREFIX", "/")
 if not hls_proxy_prefix.startswith("/"):
@@ -60,8 +59,6 @@ def _validate_instance_id(instance_id):
 proxy_logger = logging.getLogger("proxy")
 ffmpeg_logger = logging.getLogger("ffmpeg")
 buffer_logger = logging.getLogger("buffer")
-
-# Track active stream activity to avoid per-segment audit logging.
 
 
 class _AuditUser:
@@ -517,28 +514,6 @@ class StreamActivityTracker:
 _stream_activity_tracker = StreamActivityTracker(activity_ttl=20)
 
 
-async def _mark_stream_activity(decoded_url, event_type="stream_start"):
-    connection_id = _get_connection_id(default_new=False)
-    await _stream_activity_tracker.mark(decoded_url, event_type=event_type, connection_id=connection_id)
-
-
-async def _touch_stream_activity(decoded_url):
-    connection_id = _get_connection_id(default_new=False)
-    ip_address = get_request_client_ip()
-    user_agent = request.headers.get("User-Agent")
-    await _stream_activity_tracker.touch(
-        connection_id=connection_id,
-        identity=decoded_url,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
-
-
-async def _register_playlist_parent(child_url: str, parent_url: str):
-    # This is now a no-op in the simplified tracker
-    pass
-
-
 async def _cleanup_stream_activity():
     await _stream_activity_tracker.cleanup()
 
@@ -628,445 +603,37 @@ async def stop_stream_activity(
         user_agent=user_agent,
         perform_audit=perform_audit,
     )
-# A dictionary to keep track of active streams
-active_streams = {}
-active_streams_lock = asyncio.Lock()
-
-
-class BaseStreamMultiplexer:
-    def __init__(self, decoded_url):
-        self.decoded_url = decoded_url
-        self.queues = {}  # connection_id -> asyncio.Queue
-        self.running = False
-        self.lock = asyncio.Lock()
-        self.last_activity = time.time()
-        self.history = deque()
-        self.history_bytes = 0
-        self.max_history_bytes = 200 * 1024 * 1024  # 200MB total history cap
-
-    async def _broadcast(self, chunk):
-        if not chunk:
-            return
-        self.last_activity = time.time()
-
-        async with self.lock:
-            # Update shared history
-            self.history.append(chunk)
-            self.history_bytes += len(chunk)
-            while self.history_bytes > self.max_history_bytes:
-                old = self.history.popleft()
-                self.history_bytes -= len(old)
-
-            # Push to all subscriber queues
-            for q in list(self.queues.values()):
-                try:
-                    q.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    # Leaky bucket: drop oldest chunk for this specific client
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(chunk)
-                    except Exception:
-                        pass
-
-    async def add_queue(self, connection_id, prebuffer_bytes=0):
-        async with self.lock:
-            # 200MB cap. Use a high chunk count (100k) to handle small network packets.
-            q = asyncio.Queue(maxsize=100000)
-
-            # Prime the new queue with history for an instant cushion
-            primed_bytes = 0
-            if prebuffer_bytes > 0 and self.history:
-                accumulated = 0
-                to_prime = []
-                # Grab the most recent data from history to fill the cushion
-                for chunk in reversed(self.history):
-                    to_prime.append(chunk)
-                    accumulated += len(chunk)
-                    if accumulated >= prebuffer_bytes:
-                        break
-                for chunk in reversed(to_prime):
-                    try:
-                        q.put_nowait(chunk)
-                        primed_bytes += len(chunk)
-                    except asyncio.QueueFull:
-                        break
-
-            self.queues[connection_id] = q
-            proxy_logger.info(
-                f"Added queue {connection_id} for {self.decoded_url}, count: {len(self.queues)} (primed: {primed_bytes} bytes)"
-            )
-            return q, primed_bytes
-
-    async def remove_queue(self, connection_id):
-        async with self.lock:
-            self.queues.pop(connection_id, None)
-            proxy_logger.info(
-                f"Removed queue {connection_id} for {self.decoded_url}, count: {len(self.queues)}"
-            )
-            if not self.queues:
-                proxy_logger.info("No more connections for %s, stopping.", self.decoded_url)
-                asyncio.create_task(self.stop())
-
-    async def stop(self):
-        raise NotImplementedError()
-
-
-class AsyncFFmpegStream(BaseStreamMultiplexer):
-    """
-    FFmpeg Multiplexer Mode (Legacy/Compatibility Fallback)
-
-    How it works:
-    Spawns an external FFmpeg subprocess to fetch and remux the upstream source. 
-    The raw data is piped from FFmpeg's stdout into TIC's Python buffer.
-
-    Benefits:
-    - Timestamp Correction: Smooths out jittery or resetting PTS/DTS timestamps common in low-quality IPTV.
-    - Stream Normalisation: Ensures PAT/PMT tables are regularly injected, improving player compatibility.
-    - Error Resilience: FFmpeg's internal demuxers can often handle stream corruption that raw socket reads cannot.
-
-    Costs:
-    - High CPU: Spawns a dedicated OS process per unique stream.
-    - Context Switching: High overhead due to Inter-Process Communication (IPC) between FFmpeg and Python.
-    - Scalability: System performance degrades linearly with the number of active processes.
-    """
-
-    def __init__(self, decoded_url):
-        super().__init__(decoded_url)
-        self.process = None
-        self.read_task = None
-        self.stderr_task = None
-
-    async def start(self):
-        async with self.lock:
-            if self.running:
-                return
-
-            # Optimised FFmpeg command for Live IPTV Streaming:
-            # - reconnect*: Ensures the stream automatically recovers from network hiccups or dropped connections.
-            # - probesize 5M: Small enough for fast startup, large enough to find PMT/PAT tables.
-            # - analyseduration 2M: Provides 2s of context for FFmpeg to correctly identify stream metadata.
-            # - muxdelay/muxpreload 0: Forces immediate delivery of chunks to the buffer (minimal internal buffering).
-            command = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-reconnect", "1",
-                "-reconnect_at_eof", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "2",
-                "-probesize", "5M",
-                "-analyzeduration", "2000000",
-                "-i", self.decoded_url,
-                "-c", "copy",
-                "-f", "mpegts",
-                "-muxdelay", "0",
-                "-muxpreload", "0",
-                "pipe:1",
-            ]
-            ffmpeg_logger.info("Executing FFmpeg with command: %s", command)
-            try:
-                self.process = await asyncio.create_subprocess_exec(
-                    *command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                self.running = True
-                self.read_task = asyncio.create_task(self._read_loop())
-                self.stderr_task = asyncio.create_task(self._log_stderr())
-            except Exception as e:
-                ffmpeg_logger.error("Failed to start FFmpeg for %s: %s", self.decoded_url, e)
-                self.running = False
-
-    async def _read_loop(self):
-        chunk_size = 16384
-        try:
-            while self.running and self.process:
-                chunk = await self.process.stdout.read(chunk_size)
-                if not chunk:
-                    ffmpeg_logger.warning("FFmpeg has finished streaming for %s", self.decoded_url)
-                    break
-                await self._broadcast(chunk)
-        except Exception as e:
-            ffmpeg_logger.error("Error reading FFmpeg stdout for %s: %s", self.decoded_url, e)
-        finally:
-            await self.stop()
-
-    async def _log_stderr(self):
-        while self.running and self.process:
-            try:
-                line = await self.process.stderr.readline()
-                if not line:
-                    break
-                ffmpeg_logger.debug(
-                    "FFmpeg [%s]: %s", self.decoded_url, line.decode("utf-8", errors="replace").strip()
-                )
-            except Exception:
-                break
-
-    async def stop(self):
-        async with self.lock:
-            if not self.running:
-                return
-            self.running = False
-            if self.process:
-                try:
-                    self.process.terminate()
-                except Exception:
-                    pass
-
-            # Wake up all waiting queues with None to signal EOF
-            for q in self.queues.values():
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
-            self.queues.clear()
-            self.history.clear()
-            self.history_bytes = 0
-
-            async with active_streams_lock:
-                key = (self.decoded_url, "ffmpeg")
-                if active_streams.get(key) == self:
-                    del active_streams[key]
-        ffmpeg_logger.info("FFmpeg process for %s cleaned up.", self.decoded_url)
-
-
-class AsyncDirectStream(BaseStreamMultiplexer):
-    """
-    Direct Multiplexer Mode (Default)
-
-    How it works:
-    TIC uses its native async event loop (via aiohttp) to fetch raw bits directly from the source.
-    Data is shared among all connected clients using zero-overhead Python queues.
-
-    Benefits:
-    - Maximum Efficiency: Near-zero CPU usage. No external processes or pipes.
-    - Shared Connection: Only one upstream request is made regardless of the number of TIC clients.
-    - Jitter Protection: Inherits the same 200MB history buffer and configurable prebuffer cushion.
-    - Scalability: Allows TIC to handle dozens of concurrent streams without impacting system responsiveness.
-
-    Costs:
-    - No Stream Cleaning: Passes any source timestamp errors or missing headers directly to the player.
-    """
-
-    def __init__(self, decoded_url, headers):
-        super().__init__(decoded_url)
-        self.headers = headers
-        self.read_task = None
-
-    async def start(self):
-        async with self.lock:
-            if self.running:
-                return
-            self.running = True
-            self.read_task = asyncio.create_task(self._read_loop())
-
-    async def _read_loop(self):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.decoded_url, headers=self.headers) as resp:
-                    if resp.status != 200:
-                        proxy_logger.error("DirectStream upstream failed: status %s for %s",
-                                           resp.status, self.decoded_url)
-                        return
-                    async for chunk in resp.content.iter_any():
-                        if not self.running:
-                            break
-                        await self._broadcast(chunk)
-        except Exception as e:
-            proxy_logger.error("DirectStream read error for %s: %s", self.decoded_url, e)
-        finally:
-            await self.stop()
-
-    async def stop(self):
-        async with self.lock:
-            if not self.running:
-                return
-            self.running = False
-            # Signal EOF to all queues
-            for q in self.queues.values():
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
-            self.queues.clear()
-            self.history.clear()
-            self.history_bytes = 0
-
-            async with active_streams_lock:
-                key = (self.decoded_url, "direct")
-                if active_streams.get(key) == self:
-                    del active_streams[key]
-        proxy_logger.info("DirectStream for %s cleaned up.", self.decoded_url)
-
-
-async def direct_proxy_generator(decoded_url, headers, prebuffer_bytes=0):
-    # This is now a wrapper around AsyncDirectStream to support shared multiplexing even in "direct" mode
-    connection_id = str(uuid.uuid4())
-    key = (decoded_url, "direct")
-
-    async with active_streams_lock:
-        if key not in active_streams:
-            stream = AsyncDirectStream(decoded_url, headers)
-            active_streams[key] = stream
-            await stream.start()
-        else:
-            stream = active_streams[key]
-
-    queue, primed_bytes = await stream.add_queue(connection_id, prebuffer_bytes=prebuffer_bytes)
-
-    # Strictly enforce prebuffer: wait for remaining cushion if history was insufficient
-    cushion_remaining = prebuffer_bytes - primed_bytes
-    temp_buffer = []
-
-    try:
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-
-            if cushion_remaining > 0:
-                temp_buffer.append(chunk)
-                cushion_remaining -= len(chunk)
-                if cushion_remaining <= 0:
-                    for c in temp_buffer:
-                        yield c
-                    temp_buffer = None
-            else:
-                yield chunk
-    finally:
-        await stream.remove_queue(connection_id)
-
-
-class Cache:
-    def __init__(self, ttl=3600):
-        self.cache = {}
-        self.expiration_times = {}
-        self._lock = asyncio.Lock()
-        self.ttl = ttl
-        self.max_size = 100  # Limit cache size to prevent memory issues
-
-    async def _cleanup_expired_items(self):
-        current_time = time.time()
-        expired_keys = [
-            k for k, exp in self.expiration_times.items() if current_time > exp
-        ]
-        for k in expired_keys:
-            val = self.cache.get(k)
-            if isinstance(val, AsyncFFmpegStream):
-                await val.stop()
-            self.cache.pop(k, None)
-            self.expiration_times.pop(k, None)
-        return len(expired_keys)
-
-    async def get(self, key):
-        async with self._lock:
-            if key in self.cache and time.time() <= self.expiration_times.get(key, 0):
-                # Access refreshes TTL
-                self.expiration_times[key] = time.time() + self.ttl
-                return self.cache[key]
-            return None
-
-    async def set(self, key, value, expiration_time=None):
-        async with self._lock:
-            await self._cleanup_expired_items()
-            if len(self.cache) >= self.max_size and self.expiration_times:
-                oldest_key = min(self.expiration_times.items(), key=lambda x: x[1])[0]
-                val = self.cache.get(oldest_key)
-                if isinstance(val, AsyncFFmpegStream):
-                    await val.stop()
-                self.cache.pop(oldest_key, None)
-                self.expiration_times.pop(oldest_key, None)
-            ttl = expiration_time if expiration_time is not None else self.ttl
-            self.cache[key] = value
-            self.expiration_times[key] = time.time() + ttl
-
-    async def exists(self, key):
-        async with self._lock:
-            await self._cleanup_expired_items()
-            return key in self.cache
-
-    async def evict_expired_items(self):
-        async with self._lock:
-            return await self._cleanup_expired_items()
 
 
 async def cleanup_hls_proxy_state():
     """Cleanup expired cache entries and idle stream activity."""
     try:
-        evicted_count = await cache.evict_expired_items()
+        evicted_count = await hls_segment_cache.evict_expired_items()
         if evicted_count > 0:
-            proxy_logger.info(
-                f"Cache cleanup: evicted {evicted_count} expired items"
-            )
-
+            proxy_logger.info(f"Cache cleanup: evicted {evicted_count} expired items")
         await _cleanup_stream_activity()
-
-        # Log current memory usage (optional)
-        try:
-            import psutil
-
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            proxy_logger.debug(
-                f"Current memory usage: {memory_info.rss / (1024 * 1024):.2f} MB"
-            )
-        except Exception:
-            # Silently skip if psutil not installed or fails
-            pass
-
+        # Cleanup idle multiplexer streams
+        await mux_manager.cleanup_idle_streams(idle_timeout=300)
     except Exception as e:
         proxy_logger.error(f"Error during cache cleanup: {e}")
 
 
-# Global cache instance (short default TTL for HLS segments)
-cache = Cache(ttl=120)
+async def periodic_cache_cleanup():
+    while True:
+        try:
+            await cleanup_hls_proxy_state()
+        except Exception as e:
+            proxy_logger.error("Error during cache cleanup: %s", e)
+        await asyncio.sleep(60)
 
 
-async def prefetch_segments(segment_urls, headers=None):
-    async with aiohttp.ClientSession() as session:
-        for url in segment_urls:
-            if not await cache.exists(url):
-                proxy_logger.info("[CACHE] Saved URL '%s' to cache", url)
-                try:
-                    async with session.get(url, headers=headers) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            await cache.set(
-                                url, content, expiration_time=30
-                            )  # Cache for 30 seconds
-                except Exception as e:
-                    proxy_logger.error("Failed to prefetch URL '%s': %s", url, e)
+@blueprint.record_once
+def _register_startup(state):
+    app = state.app
 
-
-def _build_proxy_base_url():
-    instance_id = _get_instance_id()
-    base_path = hls_proxy_prefix.rstrip("/")
-    if instance_id:
-        base_path = f"{base_path}/{instance_id}"
-    if hls_proxy_host_ip:
-        host_base_url_prefix = "http"
-        host_base_url_port = ""
-        if hls_proxy_port:
-            if hls_proxy_port == "443":
-                host_base_url_prefix = "https"
-            host_base_url_port = f":{hls_proxy_port}"
-        return f"{host_base_url_prefix}://{hls_proxy_host_ip}{host_base_url_port}{base_path}"
-    return f"{request.host_url.rstrip('/')}{base_path}"
-
-
-def _infer_extension(url_value):
-    parsed = urlparse(url_value)
-    path = (parsed.path or "").lower()
-    if path.endswith(".m3u8"):
-        return "m3u8"
-    if path.endswith(".key"):
-        return "key"
-    if path.endswith(".vtt"):
-        return "vtt"
-    return "ts"
+    @app.before_serving
+    async def _start_periodic_cache_cleanup():
+        asyncio.create_task(periodic_cache_cleanup())
 
 
 def _build_upstream_headers():
@@ -1082,17 +649,19 @@ def _build_upstream_headers():
     return headers
 
 
-def _b64_urlsafe_encode(value):
-    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("utf-8")
-
-
-def _b64_urlsafe_decode(value):
-    padded = value + "=" * (-len(value) % 4)
-    try:
-        return base64.urlsafe_b64decode(padded).decode("utf-8")
-    except Exception:
-        # Fallback for older non-urlsafe tokens
-        return base64.b64decode(padded).decode("utf-8")
+def _build_proxy_base_url(instance_id=None):
+    base_path = hls_proxy_prefix.rstrip("/")
+    if instance_id:
+        base_path = f"{base_path}/{instance_id}"
+    if hls_proxy_host_ip:
+        protocol = "http"
+        host_port = ""
+        if hls_proxy_port:
+            if hls_proxy_port == "443":
+                protocol = "https"
+            host_port = f":{hls_proxy_port}"
+        return f"{protocol}://{hls_proxy_host_ip}{host_port}{base_path}"
+    return f"{request.host_url.rstrip('/')}{base_path}"
 
 
 def _get_connection_id(default_new=False):
@@ -1102,234 +671,6 @@ def _get_connection_id(default_new=False):
     if default_new:
         return uuid.uuid4().hex
     return None
-
-
-def _parse_size(size_str: str, default: int = 0) -> int:
-    """Parse strings like '2M', '512K' into bytes."""
-    if not size_str:
-        return default
-    size_str = size_str.upper().strip()
-    try:
-        if size_str.endswith("K"):
-            return int(float(size_str[:-1]) * 1024)
-        if size_str.endswith("M"):
-            return int(float(size_str[:-1]) * 1024 * 1024)
-        return int(size_str)
-    except (ValueError, TypeError):
-        return default
-
-
-def generate_base64_encoded_url(
-    url_to_encode, extension, stream_key=None, username=None, connection_id=None
-):
-    full_url_encoded = _b64_urlsafe_encode(url_to_encode)
-    base_url = _build_proxy_base_url().rstrip("/")
-    url = f"{base_url}/{full_url_encoded}.{extension}"
-    query = []
-    if username and stream_key:
-        query.append(("username", username))
-    if stream_key:
-        query.append(("stream_key", stream_key))
-    if connection_id:
-        query.append(("connection_id", connection_id))
-    if query:
-        return f"{url}?{urlencode(query)}"
-    return url
-
-
-def _rewrite_uri_value(
-    uri_value, source_url, stream_key=None, username=None, connection_id=None, forced_extension=None
-):
-    absolute_url = urljoin(source_url, uri_value)
-    extension = forced_extension or _infer_extension(absolute_url)
-    return (
-        generate_base64_encoded_url(
-            absolute_url,
-            extension,
-            stream_key=stream_key,
-            username=username,
-            connection_id=connection_id,
-        ),
-        absolute_url,
-        extension,
-    )
-
-
-async def update_child_urls(
-    playlist_content,
-    source_url,
-    stream_key=None,
-    username=None,
-    connection_id=None,
-    headers=None,
-):
-    proxy_logger.debug(f"Original Playlist Content:\n{playlist_content}")
-
-    updated_lines = []
-    lines = playlist_content.splitlines()
-    segment_urls = []
-    state = {
-        "next_is_playlist": False,
-        "next_is_segment": False,
-    }
-
-    for line in lines:
-        stripped_line = line.strip()
-        if stripped_line and not stripped_line.startswith("#"):
-            absolute_url = urljoin(source_url, stripped_line)
-            await _register_playlist_parent(absolute_url, source_url)
-        updated_line, new_segment_urls = rewrite_playlist_line(
-            line,
-            source_url,
-            state,
-            stream_key=stream_key,
-            username=username,
-            connection_id=connection_id,
-        )
-        if updated_line:
-            updated_lines.append(updated_line)
-        if new_segment_urls:
-            segment_urls.extend(new_segment_urls)
-
-    if segment_urls:
-        asyncio.create_task(prefetch_segments(segment_urls, headers=headers))
-
-    modified_playlist = "\n".join(updated_lines)
-    proxy_logger.debug(f"Modified Playlist Content:\n{modified_playlist}")
-    return modified_playlist
-
-
-def rewrite_playlist_line(line, source_url, state, stream_key=None, username=None, connection_id=None):
-    stripped_line = line.strip()
-    if not stripped_line:
-        return None, []
-
-    segment_urls = []
-    if stripped_line.startswith("#"):
-        upper_line = stripped_line.upper()
-        if upper_line.startswith("#EXT-X-STREAM-INF"):
-            state["next_is_playlist"] = True
-        elif upper_line.startswith("#EXTINF"):
-            state["next_is_segment"] = True
-
-        def replace_uri(match):
-            original_uri = match.group(1)
-            forced_extension = None
-            if "#EXT-X-KEY" in upper_line:
-                forced_extension = "key"
-            elif (
-                "#EXT-X-MEDIA" in upper_line
-                or "#EXT-X-I-FRAME-STREAM-INF" in upper_line
-            ):
-                forced_extension = "m3u8"
-            new_uri, absolute_url, extension = _rewrite_uri_value(
-                original_uri,
-                source_url,
-                stream_key=stream_key,
-                username=username,
-                connection_id=connection_id,
-                forced_extension=forced_extension,
-            )
-            if extension in ("ts", "vtt", "key"):
-                segment_urls.append(absolute_url)
-            return f'URI="{new_uri}"'
-
-        updated_line = re.sub(r'URI="([^"]+)"', replace_uri, line)
-        return updated_line, segment_urls
-
-    absolute_url = urljoin(source_url, stripped_line)
-    if state.get("next_is_playlist"):
-        extension = "m3u8"
-        state["next_is_playlist"] = False
-        state["next_is_segment"] = False
-    elif state.get("next_is_segment"):
-        extension = "ts"
-        state["next_is_segment"] = False
-    else:
-        extension = _infer_extension(absolute_url)
-    if extension in ("ts", "vtt", "key"):
-        segment_urls.append(absolute_url)
-    return generate_base64_encoded_url(
-        absolute_url,
-        extension,
-        stream_key=stream_key,
-        username=username,
-        connection_id=connection_id,
-    ), segment_urls
-
-
-async def _stream_updated_playlist(resp, response_url, stream_key=None, username=None, connection_id=None):
-    buffer = ""
-    state = {
-        "next_is_playlist": False,
-        "next_is_segment": False,
-    }
-    async for chunk in resp.content.iter_chunked(8192):
-        buffer += chunk.decode("utf-8", errors="ignore")
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            updated_line, _ = rewrite_playlist_line(
-                line,
-                response_url,
-                state,
-                stream_key=stream_key,
-                username=username,
-                connection_id=connection_id,
-            )
-            if updated_line:
-                yield updated_line + "\n"
-    if buffer:
-        updated_line, _ = rewrite_playlist_line(
-            buffer,
-            response_url,
-            state,
-            stream_key=stream_key,
-            username=username,
-            connection_id=connection_id,
-        )
-        if updated_line:
-            yield updated_line + "\n"
-
-
-async def fetch_and_update_playlist(decoded_url, stream_key=None, username=None, connection_id=None, headers=None):
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(decoded_url, headers=headers) as resp:
-                if resp.status != 200:
-                    return None, None, False
-
-                response_url = str(resp.url)
-                content_type = (
-                    resp.headers.get("Content-Type") or "application/vnd.apple.mpegurl"
-                )
-                content_length = resp.content_length or 0
-
-                if content_length and content_length > hls_proxy_max_buffer_bytes:
-                    return (
-                        _stream_updated_playlist(
-                            resp,
-                            response_url,
-                            stream_key=stream_key,
-                            username=username,
-                            connection_id=connection_id,
-                        ),
-                        content_type,
-                        True,
-                    )
-
-                playlist_content = await resp.text()
-                updated_playlist = await update_child_urls(
-                    playlist_content,
-                    response_url,
-                    stream_key=stream_key,
-                    username=username,
-                    connection_id=connection_id,
-                    headers=headers,
-                )
-                return updated_playlist, content_type, False
-        except aiohttp.ClientError as exc:
-            proxy_logger.warning("HLS proxy failed to fetch '%s': %s", decoded_url, exc)
-            return None, None, False
 
 
 @blueprint.route(
@@ -1350,29 +691,42 @@ async def proxy_m3u8(instance_id, encoded_url):
         target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded_url}.m3u8?{urlencode(params)}"
         return redirect(target, code=302)
 
-    decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _mark_stream_activity(decoded_url)
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    await upsert_stream_activity(decoded_url, connection_id=connection_id)
+
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
 
     headers = _build_upstream_headers()
-    updated_playlist, content_type, is_stream = await fetch_and_update_playlist(
+
+    body, content_type, status, res_headers = await handle_m3u8_proxy(
         decoded_url,
+        request_host_url=request.host_url,
+        hls_proxy_prefix=hls_proxy_prefix,
+        headers=headers,
+        instance_id=instance_id,
         stream_key=stream_key,
         username=username,
         connection_id=connection_id,
-        headers=headers,
+        max_buffer_bytes=hls_proxy_max_buffer_bytes,
+        proxy_base_url=_build_proxy_base_url(instance_id=instance_id),
+        segment_cache=hls_segment_cache,
+        prefetch_segments_enabled=True,
     )
-    if updated_playlist is None:
-        proxy_logger.error("Failed to fetch the original playlist '%s'", decoded_url)
-        response = Response("Failed to fetch the original playlist.", status=502)
-        response.headers["X-TIC-Proxy-Error"] = "upstream-unreachable"
-        return response
 
-    proxy_logger.info(f"[MISS] Serving m3u8 URL '%s' without cache", decoded_url)
-    if is_stream:
-        return Response(stream_with_context(updated_playlist), content_type=content_type)
-    return Response(updated_playlist, content_type=content_type)
+    if body is None:
+        resp = Response("Failed to fetch the original playlist.", status=status)
+        for k, v in res_headers.items():
+            resp.headers[k] = v
+        return resp
+
+    if hasattr(body, '__aiter__'):
+        @stream_with_context
+        async def generate_playlist():
+            async for chunk in body:
+                yield chunk
+        return Response(generate_playlist(), content_type=content_type)
+    return Response(body, content_type=content_type)
 
 
 @blueprint.route(
@@ -1388,21 +742,18 @@ async def proxy_m3u8_redirect(instance_id):
     url = request.args.get("url")
     if not url:
         return Response("Missing url parameter.", status=400)
-    encoded = _b64_urlsafe_encode(url)
+    encoded = b64_urlsafe_encode(url)
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
     connection_id = _get_connection_id(default_new=True)
     target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded}.m3u8"
-    query = []
-    if username and stream_key:
-        query.append(("username", username))
+    query = [("connection_id", connection_id)]
     if stream_key:
         query.append(("stream_key", stream_key))
-    if connection_id:
-        query.append(("connection_id", connection_id))
-    if query:
-        target = f"{target}?{urlencode(query)}"
-    return redirect(target, code=302)
+    if username:
+        query.append(("username", username))
+
+    return redirect(f"{target}?{urlencode(query)}", code=302)
 
 
 @blueprint.route(
@@ -1416,28 +767,14 @@ async def proxy_key(instance_id, encoded_url):
     if invalid:
         return invalid
     # Decode the Base64 encoded URL
-    decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _touch_stream_activity(decoded_url)
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    # Touch activity via connection_id if available
+    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
 
-    # Check if the .key file is already cached
-    if await cache.exists(decoded_url):
-        proxy_logger.info(f"[HIT] Serving key URL from cache: %s", decoded_url)
-        cached_content = await cache.get(decoded_url)
-        return Response(cached_content, content_type="application/octet-stream")
-
-    # If not cached, fetch the file and cache it
-    proxy_logger.info(f"[MISS] Serving key URL '%s' without cache", decoded_url)
-    headers = _build_upstream_headers()
-    async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url, headers=headers) as resp:
-            if resp.status != 200:
-                proxy_logger.error("Failed to fetch key file '%s'", decoded_url)
-                return Response("Failed to fetch the file.", status=404)
-            content = await resp.read()
-            await cache.set(
-                decoded_url, content, expiration_time=30
-            )  # Cache for 30 seconds
-            return Response(content, content_type="application/octet-stream")
+    content, status, _ = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    if content is None:
+        return Response("Failed to fetch.", status=status)
+    return Response(content, content_type="application/octet-stream")
 
 
 @blueprint.route(
@@ -1461,55 +798,28 @@ async def proxy_ts(instance_id, encoded_url):
     if invalid:
         return invalid
     # Decode the Base64 encoded URL
-    decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _touch_stream_activity(decoded_url)
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
 
-    # Mode and prebuffer checks
-    use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
-    prebuffer_bytes = _parse_size(request.args.get("prebuffer"), default=1048576)
-
-    # For .ts segments in a standard HLS playlist, we usually want direct speed.
-    # However, if explicitly asked for ffmpeg mode or a prebuffer, we route
-    # through the multiplexer logic.
-    if use_ffmpeg or request.args.get("prebuffer"):
-        proxy_logger.info("Routing .ts request through multiplexer (ffmpeg=%s, prebuffer=%d)",
-                          use_ffmpeg, prebuffer_bytes)
-        # We redirect to the /stream/ endpoint to ensure we use the shared multiplexer
+    # Multiplexer routing
+    if request.args.get("ffmpeg", "false").lower() == "true" or request.args.get("prebuffer"):
         target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/stream/{encoded_url}"
         if request.query_string:
             target = f"{target}?{request.query_string.decode()}"
         return redirect(target, code=302)
 
-    # Check if the .ts file is already cached
-    if await cache.exists(decoded_url):
-        proxy_logger.info(f"[HIT] Serving ts URL from cache: %s", decoded_url)
-        cached_content = await cache.get(decoded_url)
-        return Response(cached_content, content_type="video/mp2t")
+    content, status, content_type = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    if content is None:
+        return Response("Failed to fetch.", status=status)
 
-    # If not cached, fetch the file and cache it
-    proxy_logger.info(f"[MISS] Serving ts URL '%s' without cache", decoded_url)
-    headers = _build_upstream_headers()
-    async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url, headers=headers) as resp:
-            if resp.status != 200:
-                proxy_logger.error("Failed to fetch ts file '%s'", decoded_url)
-                return Response("Failed to fetch the file.", status=404)
-            content = await resp.read()
-            content_type = (resp.headers.get("Content-Type") or "").lower()
+    # Playlist detection
+    if "mpegurl" in (content_type or "") or content.lstrip().startswith(b"#EXTM3U"):
+        target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded_url}.m3u8"
+        if request.query_string:
+            target = f"{target}?{request.query_string.decode()}"
+        return redirect(target, code=302)
 
-            # If upstream is actually a playlist, redirect to the .m3u8 endpoint.
-            # This handles cases where the proxy URL was built with a .ts suffix
-            # but the upstream URL is a master/variant playlist.
-            if "mpegurl" in content_type or content.lstrip().startswith(b"#EXTM3U"):
-                target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded_url}.m3u8"
-                if request.query_string:
-                    target = f"{target}?{request.query_string.decode()}"
-                return redirect(target, code=302)
-
-            await cache.set(
-                decoded_url, content, expiration_time=30
-            )  # Cache for 30 seconds
-            return Response(content, content_type="video/mp2t")
+    return Response(content, content_type="video/mp2t")
 
 
 @blueprint.route(
@@ -1523,28 +833,13 @@ async def proxy_vtt(instance_id, encoded_url):
     if invalid:
         return invalid
     # Decode the Base64 encoded URL
-    decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _touch_stream_activity(decoded_url)
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
 
-    # Check if the .vtt file is already cached
-    if await cache.exists(decoded_url):
-        proxy_logger.info(f"[HIT] Serving vtt URL from cache: %s", decoded_url)
-        cached_content = await cache.get(decoded_url)
-        return Response(cached_content, content_type="text/vtt")
-
-    # If not cached, fetch the file and cache it
-    proxy_logger.info(f"[MISS] Serving vtt URL '%s' without cache", decoded_url)
-    headers = _build_upstream_headers()
-    async with aiohttp.ClientSession() as session:
-        async with session.get(decoded_url, headers=headers) as resp:
-            if resp.status != 200:
-                proxy_logger.error("Failed to fetch vtt file '%s'", decoded_url)
-                return Response("Failed to fetch the file.", status=404)
-            content = await resp.read()
-            await cache.set(
-                decoded_url, content, expiration_time=30
-            )  # Cache for 30 seconds
-            return Response(content, content_type="text/vtt")
+    content, status, _ = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    if content is None:
+        return Response("Failed to fetch.", status=status)
+    return Response(content, content_type="text/vtt")
 
 
 @blueprint.route(
@@ -1573,66 +868,30 @@ async def stream_ts(instance_id, encoded_url):
     invalid = _validate_instance_id(instance_id)
     if invalid:
         return invalid
-    # Decode the Base64 encoded URL
-    decoded_url = _b64_urlsafe_decode(encoded_url)
-    await _mark_stream_activity(decoded_url)
 
-    # Check for mode and prebuffer settings
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    connection_id = _get_connection_id(default_new=True)
+    await upsert_stream_activity(decoded_url, connection_id=connection_id)
+
     use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
-    prebuffer_bytes = _parse_size(request.args.get("prebuffer"), default=1048576)
-    headers = _build_upstream_headers()
-
-    # Generate a unique identifier (UUID) for the connection
-    connection_id = str(uuid.uuid4())
+    prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=1048576)
     mode = "ffmpeg" if use_ffmpeg else "direct"
-    key = (decoded_url, mode)
 
-    async with active_streams_lock:
-        if key not in active_streams:
-            if use_ffmpeg:
-                stream = AsyncFFmpegStream(decoded_url)
-            else:
-                stream = AsyncDirectStream(decoded_url, headers)
-            active_streams[key] = stream
-            await stream.start()
-        else:
-            stream = active_streams[key]
+    generator = await handle_multiplexed_stream(
+        decoded_url,
+        mode,
+        _build_upstream_headers(),
+        prebuffer_bytes,
+        connection_id
+    )
 
-    # Get the existing stream and update last activity time
-    stream.last_activity = time.time()
-
-    # Add a new queue for this connection with history priming
-    queue, primed_bytes = await stream.add_queue(connection_id, prebuffer_bytes=prebuffer_bytes)
     if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):
         await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
 
-    # Strictly enforce prebuffer: wait for remaining cushion if history was insufficient
-    cushion_remaining = prebuffer_bytes - primed_bytes
-    temp_buffer = []
-
-    # Create a generator to stream data from the connection-specific queue
     @stream_with_context
-    async def generate():
-        nonlocal cushion_remaining, temp_buffer
-        try:
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-
-                if cushion_remaining > 0:
-                    temp_buffer.append(chunk)
-                    cushion_remaining -= len(chunk)
-                    if cushion_remaining <= 0:
-                        for c in temp_buffer:
-                            yield c
-                        temp_buffer = None
-                else:
-                    yield chunk
-        finally:
-            await stream.remove_queue(connection_id)
-
-    # Create a response object with the correct content type and set timeout to None
-    response = Response(generate(), content_type="video/mp2t")
+    async def generate_stream():
+        async for chunk in generator:
+            yield chunk
+    response = Response(generate_stream(), content_type="video/mp2t")
     response.timeout = None  # Disable timeout for streaming response
     return response
