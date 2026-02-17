@@ -10,13 +10,10 @@
 [![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/Headendarr/Headendarr?color=009dc7&logo=github&logoColor=%23403d3d&style=flat-square)](https://github.com/Headendarr/Headendarr/pulls?q=is%3Aopen+is%3Apr)
 [![GitHub closed pull requests](https://img.shields.io/github/issues-pr-closed-raw/Headendarr/Headendarr?color=009dc7&logo=github&logoColor=%23403d3d&style=flat-square)](https://github.com/Headendarr/Headendarr/pulls?q=is%3Apr+is%3Aclosed)
 
-[![Docker Stars](https://img.shields.io/docker/stars/josh5/headendarr?color=009dc7&logo=docker&logoColor=%23403d3d&style=for-the-badge)](https://hub.docker.com/r/josh5/headendarr)
-[![Docker Pulls](https://img.shields.io/docker/pulls/josh5/headendarr?color=009dc7&logo=docker&logoColor=%23403d3d&style=for-the-badge)](https://hub.docker.com/r/josh5/headendarr)
-[![Docker Image Size (tag)](https://img.shields.io/docker/image-size/josh5/headendarr/latest?color=009dc7&label=docker%20image%20size&logo=docker&logoColor=%23403d3d&style=for-the-badge)](https://hub.docker.com/r/josh5/headendarr)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Headendarr/Headendarr/publish.yml?logo=github&logoColor=403d3d&style=for-the-badge)](https://github.com/Headendarr/Headendarr/actions/workflows/publish.yml)
+[![Docker Image Size (tag)](https://img.shields.io/docker/image-size/josh5/headendarr/latest?color=009dc7&label=container%20image%20size&logo=docker&logoColor=%23403d3d&style=for-the-badge)](https://github.com/Headendarr/Headendarr/pkgs/container/headendarr)
 
-![GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/Headendarr/Headendarr/build_docker_ci.yml?branch=master&logo=github&logoColor=403d3d&style=flat-square)
-
-## [![GitHub license](https://img.shields.io/github/license/Headendarr/Headendarr?color=009dc7&style=flat-square)]()
+## [![GitHub license](https://img.shields.io/github/license/Headendarr/Headendarr?color=009dc7&style=flat-square)](./LICENSE)
 
 ## Read the Documentation
 
@@ -55,6 +52,18 @@ If you want to develop this project or contribute in any way, that would be much
 Follow this document to set up a development environment and run the project locally:
 
 - [`docs/development/development-environment.md`](./docs/development/development-environment.md)
+
+## Project stats
+
+### Star History
+
+<a href="https://www.star-history.com/#Headendarr/Headendarr&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Headendarr/Headendarr&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Headendarr/Headendarr&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Headendarr/Headendarr&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
