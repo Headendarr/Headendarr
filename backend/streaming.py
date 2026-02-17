@@ -16,6 +16,25 @@ def _has_stream_auth(query_items):
     return any(key in ("stream_key", "password") for key, _ in query_items)
 
 
+def _is_hls_source_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (parsed.path or "").lower().endswith(".m3u8")
+
+
+def _coerce_custom_proxy_template_for_raw_stream(template: str) -> str:
+    """
+    For raw/non-HLS sources, prefer custom proxy stream endpoints when the
+    configured template is playlist-shaped.
+    """
+    if "[B64_URL].m3u8" in template:
+        return template.replace("[B64_URL].m3u8", "stream/[B64_URL]")
+    if "[URL].m3u8" in template:
+        return template.replace("[URL].m3u8", "stream/[URL]")
+    if "/proxy.m3u8?url=[URL]" in template:
+        return template.replace("/proxy.m3u8?url=[URL]", "/stream/[B64_URL]")
+    return template
+
+
 def append_stream_key(url: str, stream_key: str = None, username: str = None) -> str:
     if not stream_key:
         return url
@@ -100,9 +119,12 @@ def build_local_hls_proxy_url(
 def build_custom_hls_proxy_url(source_url: str, hls_proxy_path: str | None) -> str:
     if not hls_proxy_path:
         return source_url
+    template = hls_proxy_path
+    if not _is_hls_source_url(source_url):
+        template = _coerce_custom_proxy_template_for_raw_stream(template)
     encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
     return (
-        hls_proxy_path
+        template
         .replace("[URL]", source_url)
         .replace("[B64_URL]", encoded_url)
     )
