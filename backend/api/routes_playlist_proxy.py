@@ -79,9 +79,26 @@ async def _get_tvh_settings(include_auth=True, stream_profile='pass', stream_use
 async def _get_channels(playlist_id):
     return_channels = []
     from backend.channels import read_config_all_channels
-    channels_config = await read_config_all_channels(filter_playlist_ids=[int(playlist_id)])
+    playlist_id_int = int(playlist_id)
+    channels_config = await read_config_all_channels(
+        filter_playlist_ids=[playlist_id_int],
+        include_manual_sources_when_filtered=True,
+    )
     for channel in channels_config:
-        if channel['enabled']:
+        if not channel['enabled']:
+            continue
+
+        # Prefer source entries bound to this playlist; keep manual entries as fallback.
+        sources = channel.get('sources') or []
+        playlist_sources = [
+            source for source in sources if source.get('playlist_id') == playlist_id_int
+        ]
+        manual_sources = [
+            source for source in sources if source.get('playlist_id') is None
+        ]
+        ordered_sources = playlist_sources + manual_sources
+        if ordered_sources:
+            channel['sources'] = ordered_sources
             return_channels.append(channel)
     return return_channels
 

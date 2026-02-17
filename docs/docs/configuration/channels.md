@@ -6,7 +6,7 @@ title: Channels
 
 This is the core of Headendarr, where you build your final channel lineup. The **Channels** page allows you to add channels, assign streams from your sources, link EPG data, and organise everything to your liking.
 
-## Adding and Editing Channels
+## Adding Channels
 
 On the **Channels** page, there are two distinct buttons for adding channels, each with a different purpose.
 
@@ -29,11 +29,32 @@ This method is for creating a single, custom channel from scratch.
 2.  An empty channel configuration dialog will appear.
 3.  You must manually fill in all the details, including the Channel Name, Channel Number, Stream Sources, Logo URL, EPG link, and any tags.
 
-### Editing a Channel
+## Editing a Channel
 
 After creating a channel using either method, you can click on it in the main list at any time to open the edit dialog and fix up any missing information or change its configuration.
 
-## Stream Priority and Failover
+### Adding Manual Stream Sources
+
+Inside a channel's settings dialog, you can add a source that is not tied to a configured Source playlist.
+
+1. Click **Add Manual URL** in the **Channel Streams** section.
+2. Set the **Stream URL**.
+3. Optionally enable **Use HLS Proxy** to route that manual stream through Headendarr's internal HLS proxy.
+
+You can use this for:
+
+- direct provider stream URLs
+- raw MPEG-TS stream URLs
+- HLS `.m3u8` URLs
+- external HLS proxy URLs (for chained proxy setups)
+
+:::warning Connection limits for manual sources
+Manual sources are not linked to a Source playlist, so they are not governed by per-source connection limits.
+
+They still appear in generated client outputs (playlists/lineups), but they do not consume or enforce a Source playlist connection cap.
+:::
+
+### Stream Priority and Failover
 
 Headendarr allows you to add **multiple stream sources** to a single channel. This creates a powerful failover system.
 
@@ -43,7 +64,7 @@ Headendarr allows you to add **multiple stream sources** to a single channel. Th
 - **Failover**: If a client requests a channel, TVHeadend will try the highest priority stream. If that stream is unavailable, or if the connection limit for that source (as configured on the **Sources** page) has been reached, TVHeadend will automatically move to the next stream in the priority list.
 - **Reordering**: You can drag and drop streams within the channel's settings to change their priority.
 
-## Organising and Reordering
+### Organising and Reordering
 
 - **Channel Numbering**: The channel list is ordered by channel number.
 - **Drag-and-Drop**: You can easily reorder your channels by dragging and dropping them within the main channel list. This will automatically update their channel numbers.

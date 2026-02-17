@@ -192,7 +192,10 @@ def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
 
 
 async def read_config_all_channels(
-    filter_playlist_ids=None, output_for_export=False, include_status=False
+    filter_playlist_ids=None,
+    output_for_export=False,
+    include_status=False,
+    include_manual_sources_when_filtered=False,
 ):
     if filter_playlist_ids is None:
         filter_playlist_ids = []
@@ -216,11 +219,12 @@ async def read_config_all_channels(
                 sources = []
                 for source in result.sources:
                     # If filtering on playlist IDs, then only return sources from that playlist
-                    if (
-                        filter_playlist_ids
-                        and source.playlist_id not in filter_playlist_ids
-                    ):
-                        continue
+                    if filter_playlist_ids and source.playlist_id not in filter_playlist_ids:
+                        if not (
+                            include_manual_sources_when_filtered
+                            and source.playlist_id is None
+                        ):
+                            continue
                     playlist_name = (
                         source.playlist.name if source.playlist else "Manual URL"
                     )
