@@ -9,6 +9,11 @@ __pycache__
 /frontend/test_js/**
 /frontend/dist/**
 /frontend/node_modules/**
+/frontend/.quasar/**
+/frontend/.cache/**
+/frontend/.vite/**
+/frontend/coverage/**
+/frontend/.eslintcache
 
 # venv
 env

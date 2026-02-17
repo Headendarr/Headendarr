@@ -381,7 +381,6 @@ async def api_get_background_tasks():
         }
 
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.get_pending_tasks()
     wait = request.args.get('wait', '0')
     timeout = request.args.get('timeout', '0')
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import os
 from pathlib import Path
 from urllib.parse import unquote, urlparse, urlunparse
@@ -25,6 +26,9 @@ from backend.channels import (
 )
 from backend.models import Channel, ChannelSource, Session, StreamAuditLog, User
 from backend.tvheadend.tvh_requests import get_tvh
+
+_CHANNEL_ISSUE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}
+_CHANNEL_ISSUE_SUMMARY_CACHE_LOCK = asyncio.Lock()
 
 
 def _path_usage(path: str, label: str):
@@ -116,9 +120,10 @@ async def _channel_issue_summary():
     config = current_app.config["APP_CONFIG"]
     channels = await read_config_all_channels(include_status=True)
     mux_map = None
+    tvh_mux_timeout_seconds = float(os.environ.get("DASHBOARD_TVH_MUX_TIMEOUT_SECONDS", "1.5") or 1.5)
     try:
         async with await get_tvh(config) as tvh:
-            muxes = await tvh.list_all_muxes()
+            muxes = await asyncio.wait_for(tvh.list_all_muxes(), timeout=tvh_mux_timeout_seconds)
         mux_map = {mux.get("uuid"): mux for mux in muxes if mux.get("uuid")}
     except Exception:
         mux_map = None
@@ -165,10 +170,32 @@ async def _channel_issue_summary():
     }
 
 
+async def _channel_issue_summary_cached():
+    ttl_seconds = float(os.environ.get("DASHBOARD_CHANNEL_ISSUE_CACHE_TTL_SECONDS", "10") or 10)
+    loop = asyncio.get_event_loop()
+    now = loop.time()
+    cached = _CHANNEL_ISSUE_SUMMARY_CACHE.get("data")
+    expires_at = _CHANNEL_ISSUE_SUMMARY_CACHE.get("expires_at", 0.0)
+    if cached is not None and now < expires_at:
+        return cached
+    async with _CHANNEL_ISSUE_SUMMARY_CACHE_LOCK:
+        now = loop.time()
+        cached = _CHANNEL_ISSUE_SUMMARY_CACHE.get("data")
+        expires_at = _CHANNEL_ISSUE_SUMMARY_CACHE.get("expires_at", 0.0)
+        if cached is not None and now < expires_at:
+            return cached
+        data = await _channel_issue_summary()
+        _CHANNEL_ISSUE_SUMMARY_CACHE["data"] = data
+        _CHANNEL_ISSUE_SUMMARY_CACHE["expires_at"] = now + max(ttl_seconds, 0.5)
+        return data
+
+
 @blueprint.route('/tic-api/dashboard/activity', methods=['GET'])
 @streamer_or_admin_required
 async def api_dashboard_activity():
     activity_rows = await get_stream_activity_snapshot()
+    if not activity_rows:
+        return jsonify({"success": True, "data": []})
     source_index = await build_stream_source_index()
     data = []
     for row in activity_rows:
@@ -237,6 +264,6 @@ async def api_dashboard_summary():
         "version": _app_version_payload(),
         "recent_audit": await _recent_audit(limit=10),
         "storage": storage_items,
-        "channels": await _channel_issue_summary(),
+        "channels": await _channel_issue_summary_cached(),
     }
     return jsonify({"success": True, "data": summary})

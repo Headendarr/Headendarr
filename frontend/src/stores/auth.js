@@ -5,6 +5,19 @@ const AUTH_CHECK_TTL_MS = 15000;
 const AUTH_REFRESH_WINDOW_MS = 120000;
 let refreshPromise = null;
 
+function parseStoredUser() {
+  const raw = localStorage.getItem('tic_auth_user');
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    localStorage.removeItem('tic_auth_user');
+    return null;
+  }
+}
+
 function parseExpiryEpochMs(value) {
   if (!value) {
     return null;
@@ -18,20 +31,26 @@ function parseExpiryEpochMs(value) {
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    isAuthenticated: false,
+    isAuthenticated: Boolean(localStorage.getItem('tic_auth_token')),
     appRuntimeKey: null,
     loading: false,
     token: localStorage.getItem('tic_auth_token') || null,
     tokenExpiresAt: localStorage.getItem('tic_auth_expires_at') || null,
     lastAuthCheckAt: 0,
-    user: null,
+    user: parseStoredUser(),
   }),
   actions: {
+    setUser(user) {
+      this.user = user || null;
+      if (this.user) {
+        localStorage.setItem('tic_auth_user', JSON.stringify(this.user));
+      } else {
+        localStorage.removeItem('tic_auth_user');
+      }
+    },
     setSession(token, sessionExpiresAt, user = null) {
       this.setToken(token, sessionExpiresAt);
-      if (user) {
-        this.user = user;
-      }
+      this.setUser(user);
       this.isAuthenticated = Boolean(token);
       this.lastAuthCheckAt = Date.now();
     },
@@ -57,7 +76,7 @@ export const useAuthStore = defineStore('auth', {
     },
     clearAuthState() {
       this.isAuthenticated = false;
-      this.user = null;
+      this.setUser(null);
       this.lastAuthCheckAt = 0;
       this.clearToken();
     },
@@ -66,17 +85,12 @@ export const useAuthStore = defineStore('auth', {
       if (!expiryMs) {
         return true;
       }
-      return (expiryMs - Date.now()) <= windowMs;
+      return expiryMs - Date.now() <= windowMs;
     },
     async login(username, password) {
-      const response = await axios.post('/tic-api/auth/login',
-        {username, password});
+      const response = await axios.post('/tic-api/auth/login', {username, password});
       if (response.status === 200 && response.data.success) {
-        this.setSession(
-          response.data.token,
-          response.data.session_expires_at || null,
-          response.data.user || null,
-        );
+        this.setSession(response.data.token, response.data.session_expires_at || null, response.data.user || null);
       }
       return response;
     },
@@ -101,11 +115,7 @@ export const useAuthStore = defineStore('auth', {
         if (!(response.status === 200 && response.data.success && response.data.token)) {
           throw new Error('Session refresh failed');
         }
-        this.setSession(
-          response.data.token,
-          response.data.session_expires_at || null,
-          response.data.user || null,
-        );
+        this.setSession(response.data.token, response.data.session_expires_at || null, response.data.user || null);
         return true;
       })();
       try {
@@ -126,7 +136,7 @@ export const useAuthStore = defineStore('auth', {
       }
       if (!force && this.isAuthenticated && this.token && !this.isTokenNearExpiry()) {
         const now = Date.now();
-        if ((now - this.lastAuthCheckAt) < AUTH_CHECK_TTL_MS) {
+        if (now - this.lastAuthCheckAt < AUTH_CHECK_TTL_MS) {
           return true;
         }
       }
@@ -135,8 +145,7 @@ export const useAuthStore = defineStore('auth', {
         if (this.token) {
           axios.defaults.headers.common.Authorization = `Bearer ${this.token}`;
         }
-        const response = await axios.get('/tic-api/check-auth',
-          {cache: 'no-store'});
+        const response = await axios.get('/tic-api/check-auth', {cache: 'no-store'});
         this.isAuthenticated = response.status === 200;
         if (this.isAuthenticated) {
           let payload = await response.data;
@@ -153,7 +162,7 @@ export const useAuthStore = defineStore('auth', {
           } else {
             localStorage.removeItem('tic_auth_expires_at');
           }
-          this.user = payload.user || null;
+          this.setUser(payload.user || null);
         }
         return this.isAuthenticated;
       } catch (error) {

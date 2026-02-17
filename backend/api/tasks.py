@@ -35,6 +35,7 @@ class TaskQueueBroker:
             self.__task_queue = PriorityQueue()
             self.__task_names = set()
             self.__priority_counter = itertools.count()
+            self._queue_lock = Lock()
 
     @staticmethod
     def initialize(app_logger):
@@ -63,35 +64,41 @@ class TaskQueueBroker:
         return self.__status
 
     async def add_task(self, task, priority=100):
-        if task['name'] in self.__task_names:
-            self.__logger.debug("Task already queued. Ignoring.")
-            return
-        await self.__task_queue.put((priority, next(self.__priority_counter), task))
-        self.__task_names.add(task['name'])
+        async with self._queue_lock:
+            if task['name'] in self.__task_names:
+                self.__logger.debug("Task already queued. Ignoring.")
+                return
+            await self.__task_queue.put((priority, next(self.__priority_counter), task))
+            self.__task_names.add(task['name'])
 
     async def get_next_task(self):
-        # Get the next task from the queue
-        if not self.__task_queue.empty():
-            task = await self.__task_queue.get()
-            self.__task_names.remove(task['name'])
-            return task
-        else:
-            return None
+        async with self._queue_lock:
+            # Get the next task from the queue
+            if not self.__task_queue.empty():
+                priority, i, task_data = await self.__task_queue.get()
+                self.__task_names.discard(task_data['name'])
+                return priority, i, task_data
+            else:
+                return None
 
     async def execute_tasks(self):
         if self.__running_task is not None:
             self.__logger.warning("Another process is already running scheduled tasks.")
-        if self.__task_queue.empty():
-            self.__logger.debug("No pending tasks found.")
-            return
         if self.__status == "paused":
             self.__logger.debug("Pending tasks queue paused.")
             return
-        while not self.__task_queue.empty():
+        first_loop = True
+        while True:
             if self.__status == "paused":
                 break
-            priority, i, task = await self.__task_queue.get()
-            self.__task_names.remove(task['name'])
+            async with self._queue_lock:
+                if self.__task_queue.empty():
+                    if first_loop:
+                        self.__logger.debug("No pending tasks found.")
+                    break
+                priority, i, task = await self.__task_queue.get()
+                self.__task_names.discard(task['name'])
+            first_loop = False
             self.__running_task = task['name']
             # Execute task here
             try:
@@ -105,19 +112,10 @@ class TaskQueueBroker:
         return self.__running_task
 
     async def get_pending_tasks(self):
-        results = []
-        async with self.__lock:
-            # Temporarily hold tasks to restore them later
-            temp_tasks = []
-            while not self.__task_queue.empty():
-                task = await self.__task_queue.get()
-                temp_tasks.append(task)
-                priority, i, task_data = task
-                results.append(task_data['name'])
-            # Put tasks back into the queue
-            for task in temp_tasks:
-                await self.__task_queue.put(task)
-        return results
+        async with self._queue_lock:
+            # Non-destructive snapshot in execution order.
+            snapshot = sorted(list(self.__task_queue._queue), key=lambda item: (item[0], item[1]))
+        return [task_data['name'] for _, _, task_data in snapshot]
 
 
 async def configure_tvh_with_defaults(app):

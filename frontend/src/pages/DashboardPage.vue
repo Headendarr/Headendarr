@@ -435,9 +435,11 @@ export default defineComponent({
     },
   },
   async mounted() {
-    await this.loadSummary();
-    await this.loadEpgIssueSummary();
-    await this.loadActivity();
+    await Promise.all([
+      this.loadSummary(),
+      this.loadEpgIssueSummary(),
+      this.loadActivity(),
+    ]);
     this.startDashboardPoll();
   },
   beforeUnmount() {

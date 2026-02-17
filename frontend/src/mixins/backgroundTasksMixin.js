@@ -6,9 +6,14 @@ export default function pollForBackgroundTasks() {
   let timerId = null;
   let abortController = null;
   let isActive = true;
+  let unauthorized = false;
 
   async function fetchData() {
     if (!isActive) {
+      return;
+    }
+    if (unauthorized) {
+      startTimer(10000);
       return;
     }
     if (abortController) {
@@ -20,7 +25,13 @@ export default function pollForBackgroundTasks() {
         signal: abortController.signal,
         cache: 'no-store',
       });
-      if ([401, 502, 504].includes(response.status)) {
+      if (response.status === 401) {
+        unauthorized = true;
+        pendingTasks.value = [];
+        pendingTasksStatus.value = 'running';
+        return;
+      }
+      if ([502, 504].includes(response.status)) {
         return;
       }
       if (response.ok) {
@@ -51,8 +62,8 @@ export default function pollForBackgroundTasks() {
     startTimer();
   }
 
-  function startTimer() {
-    timerId = setTimeout(fetchData, 250);
+  function startTimer(delayMs = 1000) {
+    timerId = setTimeout(fetchData, delayMs);
   }
 
   function stopTimer() {

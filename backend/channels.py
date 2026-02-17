@@ -2078,34 +2078,14 @@ def priority_rank(value: str | None) -> int:
 
 
 _SOURCE_INDEX_CACHE = {"index": None, "expires": 0}
+_SOURCE_INDEX_BUILD_LOCK = asyncio.Lock()
 
 
-async def build_stream_source_index():
-    global _SOURCE_INDEX_CACHE
-    now = time.time()
-    if _SOURCE_INDEX_CACHE["index"] and now < _SOURCE_INDEX_CACHE["expires"]:
-        return _SOURCE_INDEX_CACHE["index"]
-
-    stmt = (
-        select(
-            Channel.id.label("channel_id"),
-            Channel.name.label("channel_name"),
-            Channel.logo_url.label("channel_logo_url"),
-            Channel.tvh_uuid.label("tvh_uuid"),
-            ChannelSource.playlist_stream_name.label("stream_name"),
-            ChannelSource.playlist_stream_url.label("stream_url"),
-            ChannelSource.priority.label("priority"),
-        )
-        .select_from(Channel)
-        .outerjoin(ChannelSource, Channel.id == ChannelSource.channel_id)
-    )
-    async with Session() as session:
-        result = await session.execute(stmt)
-        rows = result.mappings().all()
-
+def _build_stream_source_index_maps(rows, stream_rows):
     exact_map = {}
     tvh_uuid_map = {}
     name_map = {}
+
     for row in rows:
         stream_url = row.get("stream_url")
         stream_candidates = candidate_urls(stream_url) if stream_url else []
@@ -2138,16 +2118,6 @@ async def build_stream_source_index():
             if not existing or ranking < existing.get("_ranking", (1_000_000, 1_000_000)):
                 exact_map[candidate_url] = {**payload, "_ranking": ranking}
 
-    # Also include PlaylistStreams for anonymous lookup
-    async with Session() as session:
-        stmt_streams = select(
-            PlaylistStreams.url.label("stream_url"),
-            PlaylistStreams.name.label("stream_name"),
-            PlaylistStreams.tvg_logo.label("stream_logo"),
-        ).where(PlaylistStreams.tvg_logo != None)
-        result = await session.execute(stmt_streams)
-        stream_rows = result.mappings().all()
-
     for row in stream_rows:
         s_url = row.get("stream_url")
         if not s_url:
@@ -2164,9 +2134,51 @@ async def build_stream_source_index():
             if cand not in exact_map:
                 exact_map[cand] = payload
 
-    index = {"exact": exact_map, "tvh_uuid": tvh_uuid_map, "name": name_map}
-    _SOURCE_INDEX_CACHE = {"index": index, "expires": now + 60}
-    return index
+    return {"exact": exact_map, "tvh_uuid": tvh_uuid_map, "name": name_map}
+
+
+async def build_stream_source_index():
+    global _SOURCE_INDEX_CACHE
+    now = time.time()
+    if _SOURCE_INDEX_CACHE["index"] and now < _SOURCE_INDEX_CACHE["expires"]:
+        return _SOURCE_INDEX_CACHE["index"]
+    async with _SOURCE_INDEX_BUILD_LOCK:
+        # Recheck cache after acquiring lock to avoid duplicate rebuild work.
+        now = time.time()
+        if _SOURCE_INDEX_CACHE["index"] and now < _SOURCE_INDEX_CACHE["expires"]:
+            return _SOURCE_INDEX_CACHE["index"]
+
+        stmt = (
+            select(
+                Channel.id.label("channel_id"),
+                Channel.name.label("channel_name"),
+                Channel.logo_url.label("channel_logo_url"),
+                Channel.tvh_uuid.label("tvh_uuid"),
+                ChannelSource.playlist_stream_name.label("stream_name"),
+                ChannelSource.playlist_stream_url.label("stream_url"),
+                ChannelSource.priority.label("priority"),
+            )
+            .select_from(Channel)
+            .outerjoin(ChannelSource, Channel.id == ChannelSource.channel_id)
+        )
+        async with Session() as session:
+            result = await session.execute(stmt)
+            rows = result.mappings().all()
+
+        # Also include PlaylistStreams for anonymous lookup
+        async with Session() as session:
+            stmt_streams = select(
+                PlaylistStreams.url.label("stream_url"),
+                PlaylistStreams.name.label("stream_name"),
+                PlaylistStreams.tvg_logo.label("stream_logo"),
+            ).where(PlaylistStreams.tvg_logo != None)
+            result = await session.execute(stmt_streams)
+            stream_rows = result.mappings().all()
+
+        # Build maps in a worker thread to avoid blocking Quart's async loop.
+        index = await asyncio.to_thread(_build_stream_source_index_maps, rows, stream_rows)
+        _SOURCE_INDEX_CACHE = {"index": index, "expires": now + 60}
+        return index
 
 
 def resolve_stream_target(details: str | None, source_index: dict, related_urls: list[str] | None = None) -> dict:

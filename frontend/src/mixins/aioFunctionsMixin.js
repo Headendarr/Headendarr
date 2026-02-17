@@ -1,5 +1,5 @@
 import {ref, onBeforeUnmount} from 'vue';
-import {Notify, useQuasar} from 'quasar';
+import {useQuasar} from 'quasar';
 import axios from 'axios';
 
 let instance;
@@ -8,48 +8,108 @@ function createAioStartupTasks() {
   const $q = useQuasar();
   const firstRun = ref(null);
   const aioMode = ref(false);
+  const firstRunInitComplete = ref(false);
 
-  let pingInterval;
+  let pingInterval = null;
+  let runningCheckInterval = null;
+  let startupFinalizing = false;
+
+  const clearStartupIntervals = () => {
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      pingInterval = null;
+    }
+    if (runningCheckInterval) {
+      clearInterval(runningCheckInterval);
+      runningCheckInterval = null;
+    }
+  };
+
+  const showStartupOverlay = (message) => {
+    $q.loading.show({
+      message: message || 'Waiting for TVHeadend to start for first-run setup...',
+    });
+  };
+
+  const hideStartupOverlay = () => {
+    $q.loading.hide();
+  };
+
   const pingBackend = () => {
+    if (!firstRun.value || startupFinalizing) {
+      return;
+    }
     axios({
       method: 'GET',
       url: '/tic-tvh/ping',
       timeout: 4000,
-    }).then((response) => {
-      if (response.status === 200 && response.data.includes('PONG')) {
-        if (firstRun.value) {
-          setTimeout(saveFirstRunSettings, 10000);
-        } else {
-          $q.loading.hide();
-          clearInterval(pingInterval);
+    })
+      .then((response) => {
+        if (response.status === 200 && response.data.includes('PONG')) {
+          if (!startupFinalizing) {
+            startupFinalizing = true;
+            clearStartupIntervals();
+            showStartupOverlay('TVHeadend is healthy. Finalising first-run setup...');
+            setTimeout(saveFirstRunSettings, 1000);
+          }
         }
-      } else {
-        $q.loading.show({
-          message: `Tvheadend backend returned status code ${response.status}...`,
-        });
-      }
-    }).catch(() => {
-      $q.loading.show({
-        message: 'Waiting for Tvheadend backend to start...',
+      })
+      .catch(() => {
+        showStartupOverlay('Waiting for TVHeadend to become healthy for first-run setup...');
       });
-    });
   };
 
   const saveFirstRunSettings = () => {
     let postData = {
       settings: {
-        'first_run': true,
-        'app_url': window.location.origin,
+        first_run: true,
+        app_url: window.location.origin,
       },
     };
     axios({
       method: 'POST',
       url: '/tic-api/save-settings',
       data: postData,
-    }).then(() => {
-      // Reload page to properly trigger the auth refresh
-      location.reload();
-    });
+    })
+      .then(() => {
+        hideStartupOverlay();
+        // Reload page to properly trigger the auth refresh
+        location.reload();
+      })
+      .catch(() => {
+        startupFinalizing = false;
+        showStartupOverlay('Finalising first-run setup failed. Retrying...');
+        pingBackend();
+      });
+  };
+
+  const checkTvhRunning = () => {
+    if (!firstRun.value || startupFinalizing) {
+      return;
+    }
+    axios({
+      method: 'get',
+      url: '/tic-api/tvh-running',
+    })
+      .then((response) => {
+        aioMode.value = response.data.data.running;
+        if (response.data.data.running) {
+          showStartupOverlay('TVHeadend process detected. Waiting for health check...');
+          if (!pingInterval) {
+            pingBackend();
+            pingInterval = setInterval(pingBackend, 5000);
+          }
+          if (runningCheckInterval) {
+            clearInterval(runningCheckInterval);
+            runningCheckInterval = null;
+          }
+        } else {
+          showStartupOverlay('Waiting for TVHeadend process to start for first-run setup...');
+        }
+      })
+      .catch(() => {
+        showStartupOverlay('Checking TVHeadend startup status...');
+      });
   };
 
   const checkTvhStatus = () => {
@@ -57,31 +117,37 @@ function createAioStartupTasks() {
     axios({
       method: 'get',
       url: '/tic-api/get-settings',
-    }).then((response) => {
-      firstRun.value = response.data.data.first_run;
-      axios({
-        method: 'get',
-        url: '/tic-api/tvh-running',
-      }).then((response) => {
-        aioMode.value = response.data.data.running;
-        if (response.data.data.running) {
-          // Fetch settings
-          $q.loading.show({
-            message: 'Checking status of Tvheadend backend...',
-          });
-          pingBackend();
-          pingInterval = setInterval(pingBackend, 5000);
+    })
+      .then((response) => {
+        firstRun.value = response.data.data.first_run;
+        firstRunInitComplete.value = true;
+        if (firstRun.value) {
+          showStartupOverlay('Waiting for TVHeadend to start for first-run setup...');
+          checkTvhRunning();
+          runningCheckInterval = setInterval(checkTvhRunning, 5000);
+        } else {
+          hideStartupOverlay();
+          // After first-run, detect AIO mode once and never gate the UI on TVH health again.
+          axios({
+            method: 'get',
+            url: '/tic-api/tvh-running',
+          })
+            .then((tvhResponse) => {
+              aioMode.value = tvhResponse.data.data.running;
+            })
+            .catch(() => {});
         }
-      }).catch(() => {
-      });
-    }).catch(() => {
-    });
+      })
+      .catch(() => {});
   };
 
   checkTvhStatus();
 
   onBeforeUnmount(() => {
-    clearInterval(pingInterval);
+    clearStartupIntervals();
+    if (firstRunInitComplete.value && !firstRun.value) {
+      hideStartupOverlay();
+    }
   });
 
   return {
