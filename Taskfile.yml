@@ -115,3 +115,6 @@ tasks:
         fi
         cd frontend && npm version "{{.CLI_ARGS}}" --no-git-tag-version
         echo "Version updated to {{.CLI_ARGS}} in frontend/package.json and package-lock.json"
+        echo "Next run:"
+        echo "> git add ."
+        echo "> git commit -m 'Bump version to {{.CLI_ARGS}}'"
