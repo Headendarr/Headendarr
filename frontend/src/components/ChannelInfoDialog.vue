@@ -554,8 +554,19 @@ export default {
         },
       }).onOk(() => dismiss());
     },
-    openStreamTestDialog(stream) {
-      this.testStreamUrl = this.normalizeStreamUrl(stream?.stream_url);
+    async openStreamTestDialog(stream) {
+      let testUrl = null;
+      if (this.channelId && stream?.id) {
+        try {
+          const response = await axios.get(`/tic-api/channels/${this.channelId}/sources/${stream.id}/preview`);
+          if (response.data.success) {
+            testUrl = response.data.preview_url;
+          }
+        } catch (error) {
+          console.error('Resolve stream URL for test error:', error);
+        }
+      }
+      this.testStreamUrl = this.normalizeStreamUrl(testUrl || stream?.stream_url);
       if (!this.testStreamUrl) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;

@@ -858,7 +858,18 @@ export default {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
       }
-      await copyToClipboard(stream.url);
+      let copyUrl = stream.url;
+      if (stream?.id) {
+        try {
+          const response = await axios.get(`/tic-api/playlists/streams/${stream.id}/preview`);
+          if (response.data.success && response.data.preview_url) {
+            copyUrl = response.data.preview_url;
+          }
+        } catch (error) {
+          console.error('Copy stream URL resolve error:', error);
+        }
+      }
+      await copyToClipboard(copyUrl);
       this.$q.notify({color: 'positive', message: 'Stream URL copied'});
     },
   },

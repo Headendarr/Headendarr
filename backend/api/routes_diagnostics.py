@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-from quart import jsonify, request
+from quart import jsonify, request, current_app
 from backend.api import blueprint
 from backend.stream_diagnostics import start_probe, get_probe_status, delete_probe
 from backend.auth import admin_auth_required
+from backend.streaming import append_stream_key, is_tic_stream_url
 
 
 @blueprint.route('/tic-api/diagnostics/stream/test', methods=['POST'])
@@ -15,7 +16,18 @@ async def test_stream():
     if not stream_url:
         return jsonify({"success": False, "message": "Missing stream_url"}), 400
 
-    task_id = await start_probe(stream_url, bypass_proxies=bypass_proxies)
+    user = getattr(request, "_current_user", None)
+    stream_key = getattr(user, "streaming_key", None)
+    app_config = current_app.config.get("APP_CONFIG")
+    instance_id = app_config.ensure_instance_id() if app_config else None
+    if stream_key and is_tic_stream_url(stream_url, instance_id=instance_id):
+        stream_url = append_stream_key(stream_url, stream_key=stream_key)
+
+    task_id = await start_probe(
+        stream_url,
+        bypass_proxies=bypass_proxies,
+        request_host_url=request.host_url,
+    )
     return jsonify({"success": True, "task_id": task_id})
 
 
