@@ -4,20 +4,19 @@ import asyncio
 import logging
 import socket
 import time
-import json
 import aiohttp
 import base64
-import re
-from urllib.parse import urlparse
-from collections import deque
+from urllib.parse import urlparse, urlunparse
+from backend.config import flask_run_port
 
 logger = logging.getLogger("tic.stream_diagnostics")
 
 
 class StreamProbe:
-    def __init__(self, url, bypass_proxies=False):
+    def __init__(self, url, bypass_proxies=False, request_host_url=None):
         self.url = url
         self.bypass_proxies = bypass_proxies
+        self.request_host_url = request_host_url
         self.task_id = None
         self.status = "pending"
         self.report = {
@@ -39,6 +38,49 @@ class StreamProbe:
         timestamp = time.strftime("%H:%M:%S")
         self.report["logs"].append(f"[{timestamp}] {message}")
         logger.info(f"[{self.url}] {message}")
+
+    @staticmethod
+    def _is_localhost(hostname):
+        if not hostname:
+            return False
+        host = hostname.lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
+
+    @staticmethod
+    def _detect_container_ip():
+        # Best-effort local interface detection for containerized deployments.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                return sock.getsockname()[0]
+        except Exception:
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except Exception:
+                return None
+
+    @staticmethod
+    def _is_tic_internal_path(path: str) -> bool:
+        if not path:
+            return False
+        return "/tic-hls-proxy/" in path or path.startswith("/tic-api/")
+
+    def _normalize_localhost_proxy_url(self):
+        parsed = urlparse(self.url)
+        if not self._is_localhost(parsed.hostname):
+            return
+
+        host = self._detect_container_ip()
+        port = flask_run_port
+
+        if not host:
+            return
+
+        netloc = f"{host}:{port}" if port else host
+        normalized = parsed._replace(netloc=netloc)
+        new_url = urlunparse(normalized)
+        self.log(f"Normalised localhost URL to container-reachable URL: {new_url}")
+        self.url = new_url
 
     def _generate_summary(self):
         probe = self.report["probe"]
@@ -75,6 +117,7 @@ class StreamProbe:
         try:
             # Absolute hard limit for the entire diagnostic run (Dead-man's switch)
             async with asyncio.timeout(45):
+                self._normalize_localhost_proxy_url()
                 if self.bypass_proxies:
                     self._unwrap_proxies()
 
@@ -90,7 +133,10 @@ class StreamProbe:
 
                 self._generate_summary()
                 self.status = "finished"
-                self.log("Diagnostic test completed successfully.")
+                if self.report.get("errors"):
+                    self.log("Diagnostic test completed with errors.")
+                else:
+                    self.log("Diagnostic test completed successfully.")
         except asyncio.TimeoutError:
             self.status = "finished"
             self.report["errors"].append("Diagnostic timed out (hard limit reached).")
@@ -181,6 +227,21 @@ class StreamProbe:
         self.log("Starting hybrid FFmpeg/Python probe (20s wall-clock limit)...")
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+        # Fast preflight helps catch auth/routing issues before FFmpeg runs.
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.url,
+                    headers={"User-Agent": user_agent},
+                    timeout=aiohttp.ClientTimeout(total=6),
+                ) as preflight:
+                    if preflight.status >= 400:
+                        raise Exception(f"Preflight failed with HTTP {preflight.status}")
+        except Exception as exc:
+            self.report["errors"].append(str(exc))
+            self.log(f"Preflight request failed: {exc}")
+            return
+
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -197,7 +258,7 @@ class StreamProbe:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL
+            stderr=asyncio.subprocess.PIPE
         )
 
         start_time = time.time()
@@ -266,6 +327,21 @@ class StreamProbe:
                         await process.wait()
                 except:
                     pass
+            elif process.returncode != 0:
+                try:
+                    stderr_output = await process.stderr.read()
+                    stderr_text = stderr_output.decode("utf-8", errors="replace").strip()
+                except Exception:
+                    stderr_text = ""
+                msg = f"FFmpeg exited with code {process.returncode}"
+                if stderr_text:
+                    msg = f"{msg}: {stderr_text.splitlines()[-1]}"
+                self.report["errors"].append(msg)
+                self.log(msg)
+
+            if total_bytes == 0 and not self.report["errors"]:
+                self.report["errors"].append("No media bytes received from stream.")
+                self.log("No media bytes received from stream.")
 
             res = self.report["probe"]
             self.log(f"Probe complete. Bitrate: {res['avg_bitrate']/1000000:.2f} Mbps, Speed: {res['avg_speed']:.2f}x")
@@ -283,10 +359,14 @@ class StreamProbe:
 _active_probes = {}
 
 
-async def start_probe(url, bypass_proxies=False):
+async def start_probe(url, bypass_proxies=False, request_host_url=None):
     import uuid
     task_id = str(uuid.uuid4())
-    probe = StreamProbe(url, bypass_proxies=bypass_proxies)
+    probe = StreamProbe(
+        url,
+        bypass_proxies=bypass_proxies,
+        request_host_url=request_host_url,
+    )
     probe.task_id = task_id
     _active_probes[task_id] = probe
     asyncio.create_task(probe.run())
