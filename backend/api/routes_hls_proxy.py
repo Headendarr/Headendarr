@@ -39,6 +39,10 @@ if not hls_proxy_prefix.startswith("/"):
 hls_proxy_host_ip = os.environ.get("HLS_PROXY_HOST_IP")
 hls_proxy_port = os.environ.get("HLS_PROXY_PORT")
 hls_proxy_max_buffer_bytes = int(os.environ.get("HLS_PROXY_MAX_BUFFER_BYTES", "1048576"))
+hls_proxy_default_prebuffer = parse_size(
+    os.environ.get("HLS_PROXY_DEFAULT_PREBUFFER", "0"),
+    default=0,
+)
 
 
 def _get_instance_id():
@@ -874,7 +878,10 @@ async def stream_ts(instance_id, encoded_url):
     await upsert_stream_activity(decoded_url, connection_id=connection_id)
 
     use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
-    prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=1048576)
+    prebuffer_bytes = parse_size(
+        request.args.get("prebuffer"),
+        default=hls_proxy_default_prebuffer,
+    )
     mode = "ffmpeg" if use_ffmpeg else "direct"
 
     generator = await handle_multiplexed_stream(
