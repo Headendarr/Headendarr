@@ -421,6 +421,8 @@ async def api_get_channels_basic():
     request_base_url = request.host_url.rstrip('/')
     basic = []
     for channel in channels_config:
+        if not channel.get("enabled"):
+            continue
         basic.append({
             "id": channel.get("id"),
             "name": channel.get("name"),

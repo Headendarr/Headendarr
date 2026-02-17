@@ -1239,7 +1239,7 @@ async def publish_channel_to_tvh(
     else:
         logger.info("   - Found existing channel in TVH")
     channel_conf = {
-        "enabled": True,
+        "enabled": bool(channel.enabled),
         "uuid": channel_uuid,
         "name": channel.name,
         "number": channel.number,
@@ -1312,6 +1312,8 @@ async def batch_publish_new_channels_to_tvh(config, channels):
 
         # Publish each channel
         for ch in channels:
+            if not ch.enabled:
+                continue
             if ch.tvh_uuid:
                 continue
             existing_uuid = existing_by_name.get(ch.name)
@@ -1337,7 +1339,7 @@ async def batch_publish_new_channels_to_tvh(config, channels):
                 if tag_name and existing_tag_details.get(tag_name):
                     tag_uuids.append(existing_tag_details[tag_name])
             channel_conf = {
-                "enabled": True,
+                "enabled": bool(ch.enabled),
                 "uuid": existing_uuid,
                 "name": ch.name,
                 "number": ch.number,
@@ -1438,6 +1440,8 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
         pending_commit = False
         t_publish = time.perf_counter()
         for result in results:
+            if not result.enabled:
+                continue
             logo_proxy_url = build_channel_logo_proxy_url(
                 result.id,
                 tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,

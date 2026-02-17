@@ -23,8 +23,11 @@ async def api_guide_grid():
 
     channels = await read_config_all_channels()
     guide_channels = [
-        channel for channel in channels
-        if channel.get("guide", {}).get("epg_id") and channel.get("guide", {}).get("channel_id")
+        channel
+        for channel in channels
+        if channel.get("enabled")
+        and channel.get("guide", {}).get("epg_id")
+        and channel.get("guide", {}).get("channel_id")
     ]
 
     if not guide_channels:
