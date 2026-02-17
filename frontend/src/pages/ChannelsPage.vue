@@ -937,7 +937,12 @@ export default defineComponent({
         },
       }).onOk((payload) => {
         if (payload?.openSettings) {
-          this.openChannelSettings(channel);
+          const channelId = payload?.channelId || channel?.id;
+          const targetChannel = this.listOfChannels.find((item) => item?.id === channelId) || channel;
+          // Open on next tick so the current dialog teardown fully completes first.
+          setTimeout(() => {
+            this.openChannelSettings(targetChannel);
+          }, 0);
           return;
         }
         if (payload?.refresh) {
