@@ -6,7 +6,7 @@ import socket
 import time
 import aiohttp
 import base64
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 from backend.config import flask_run_port
 
 logger = logging.getLogger("tic.stream_diagnostics")
@@ -22,6 +22,10 @@ class StreamProbe:
         self.status = "pending"
         self.report = {
             "url": url,
+            "resolved_url": url,
+            "final_url": url,
+            "proxy_hops_count": 0,
+            "proxy_chain": [],
             "dns": {},
             "geo": {},
             "probe": {
@@ -66,22 +70,106 @@ class StreamProbe:
             return False
         return "/tic-hls-proxy/" in path or path.startswith("/tic-api/")
 
-    def _normalize_localhost_proxy_url(self):
-        parsed = urlparse(self.url)
+    @staticmethod
+    def _is_timeout_error(exc: Exception) -> bool:
+        if isinstance(exc, asyncio.TimeoutError):
+            return True
+        return exc.__class__.__name__ in {"SocketTimeoutError", "ServerTimeoutError"}
+
+    @staticmethod
+    def _is_streaming_proxy_endpoint(raw_url: str) -> bool:
+        path = (urlparse(raw_url).path or "").lower()
+        return "/tic-hls-proxy/" in path and "/stream/" in path
+
+    def _normalize_localhost_url(self, raw_url: str, log: bool = False) -> str:
+        parsed = urlparse(raw_url)
         if not self._is_localhost(parsed.hostname):
-            return
+            return raw_url
 
         host = self._detect_container_ip()
         port = flask_run_port
 
         if not host:
-            return
+            return raw_url
 
         netloc = f"{host}:{port}" if port else host
         normalized = parsed._replace(netloc=netloc)
         new_url = urlunparse(normalized)
-        self.log(f"Normalised localhost URL to container-reachable URL: {new_url}")
-        self.url = new_url
+        if log:
+            self.log(f"Normalised localhost URL to container-reachable URL: {new_url}")
+        return new_url
+
+    def _normalize_localhost_proxy_url(self):
+        self.url = self._normalize_localhost_url(self.url, log=True)
+        self.report["resolved_url"] = self.url
+
+    @staticmethod
+    def _decode_b64_url_candidate(candidate: str):
+        value = (candidate or "").strip()
+        if not value:
+            return None
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+
+        trimmed = value.rsplit(".", 1)[0] if "." in value else value
+        padded = trimmed + "=" * (-len(trimmed) % 4)
+        decoders = (base64.urlsafe_b64decode, base64.b64decode)
+        for decoder in decoders:
+            try:
+                decoded = decoder(padded).decode("utf-8")
+                if decoded.startswith("http://") or decoded.startswith("https://"):
+                    return decoded
+            except Exception:
+                continue
+        return None
+
+    def _extract_next_proxy_target(self, raw_url: str):
+        parsed = urlparse(raw_url)
+        candidates = []
+
+        for segment in reversed(parsed.path.rstrip("/").split("/")):
+            if segment:
+                candidates.append(segment)
+
+        for _, value in parse_qsl(parsed.query, keep_blank_values=False):
+            if value:
+                candidates.append(value)
+
+        for candidate in candidates:
+            decoded = self._decode_b64_url_candidate(candidate)
+            if decoded:
+                return self._normalize_localhost_url(decoded)
+        return None
+
+    def _build_proxy_chain(self):
+        chain = []
+        current = self.url
+        seen = {current}
+
+        for hop in range(1, 11):
+            decoded = self._extract_next_proxy_target(current)
+            if not decoded or decoded in seen:
+                break
+            parsed_current = urlparse(current)
+            parsed_next = urlparse(decoded)
+            chain.append(
+                {
+                    "hop": hop,
+                    "proxy_url": current,
+                    "proxy_hostname": parsed_current.hostname,
+                    "target_url": decoded,
+                    "target_hostname": parsed_next.hostname,
+                }
+            )
+            self.log(f"Detected proxy hop {hop}: {current} -> {decoded}")
+            seen.add(decoded)
+            current = decoded
+
+        self.report["proxy_chain"] = chain
+        self.report["proxy_hops_count"] = len(chain)
+        self.report["final_url"] = current
+        if chain:
+            self.log(f"Final upstream URL after unwrapping proxies: {current}")
 
     def _generate_summary(self):
         probe = self.report["probe"]
@@ -119,12 +207,19 @@ class StreamProbe:
             # Absolute hard limit for the entire diagnostic run (Dead-man's switch)
             async with asyncio.timeout(45):
                 self._normalize_localhost_proxy_url()
-                if self.bypass_proxies:
-                    self._unwrap_proxies()
+                self._build_proxy_chain()
+                if self.bypass_proxies and self.report.get("final_url"):
+                    self.url = self.report["final_url"]
+                    self.log(f"Bypassing {self.report.get('proxy_hops_count', 0)} proxy hop(s) to test upstream URL.")
+                elif self.report.get("proxy_hops_count", 0) > 0:
+                    self.log(
+                        f"Detected {self.report.get('proxy_hops_count')} proxy hop(s); network route will be resolved against final upstream endpoint."
+                    )
 
                 self.log(f"Starting diagnostics for URL: {self.url}")
                 self.status = "resolving"
-                await self._resolve_dns()
+                route_url = self.report.get("final_url") or self.url
+                await self._resolve_dns(route_url)
 
                 self.status = "geo"
                 await self._fetch_geo()
@@ -151,34 +246,9 @@ class StreamProbe:
         finally:
             self._running = False
 
-    def _unwrap_proxies(self):
-        iteration = 0
-        while iteration < 5:
-            iteration += 1
-            path = urlparse(self.url).path
-            if "/tic-hls-proxy/" not in path and "/stream/" not in path:
-                break
-            parts = path.rstrip('/').split('/')
-            found_b64 = False
-            for part in reversed(parts):
-                candidate = part.rsplit('.', 1)[0] if '.' in part else part
-                if len(candidate) > 20:
-                    try:
-                        padded = candidate + "=" * (-len(candidate) % 4)
-                        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
-                        if decoded.startswith("http"):
-                            self.log(f"Unwrapped proxy layer: {decoded}")
-                            self.url = decoded
-                            found_b64 = True
-                            break
-                    except:
-                        continue
-            if not found_b64:
-                break
-
-    async def _resolve_dns(self):
+    async def _resolve_dns(self, target_url=None):
         self.log("Resolving hostname...")
-        hostname = urlparse(self.url).hostname
+        hostname = urlparse(target_url or self.url).hostname
         if not hostname:
             raise ValueError("Invalid URL")
         try:
@@ -233,28 +303,56 @@ class StreamProbe:
         if default_user_agent not in user_agent_candidates:
             user_agent_candidates.append(default_user_agent)
 
+        if self._is_streaming_proxy_endpoint(self.url):
+            # Stream proxy endpoints may intentionally delay first-byte delivery (e.g. prebuffer),
+            # which can make HTTP preflight produce false negatives. Trust FFmpeg probe instead.
+            user_agent = user_agent_candidates[0]
+            self.log("Skipping HTTP preflight for TIC stream proxy endpoint; validating via FFmpeg probe.")
+        else:
+            user_agent = None
+
         # Fast preflight helps catch auth/routing issues before FFmpeg runs.
-        user_agent = None
         last_preflight_error = None
-        for candidate in user_agent_candidates:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        self.url,
-                        headers={"User-Agent": candidate},
-                        timeout=aiohttp.ClientTimeout(total=6),
-                    ) as preflight:
-                        if preflight.status >= 400:
-                            raise Exception(f"Preflight failed with HTTP {preflight.status}")
-                user_agent = candidate
-                break
-            except Exception as exc:
-                last_preflight_error = exc
-                self.log(f"Preflight request failed with configured user-agent candidate: {exc}")
+        if user_agent is None:
+            for candidate in user_agent_candidates:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            self.url,
+                            headers={"User-Agent": candidate},
+                            timeout=aiohttp.ClientTimeout(total=None, connect=6, sock_connect=6, sock_read=6),
+                        ) as preflight:
+                            if preflight.status >= 400:
+                                raise Exception(f"Preflight failed with HTTP {preflight.status}")
+                            # For live stream endpoints, do not wait for full body completion.
+                            # A successful status + ability to read initial bytes is enough.
+                            try:
+                                await asyncio.wait_for(preflight.content.read(1), timeout=6.0)
+                            except Exception as read_exc:
+                                if self._is_streaming_proxy_endpoint(self.url) and self._is_timeout_error(read_exc):
+                                    self.log(
+                                        "Preflight received successful response from stream proxy endpoint; "
+                                        "continuing despite delayed first media byte."
+                                    )
+                                else:
+                                    raise
+                    user_agent = candidate
+                    break
+                except Exception as exc:
+                    last_preflight_error = exc
+                    self.log(
+                        "Preflight request failed with configured user-agent candidate: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
 
         if not user_agent:
-            self.report["errors"].append(str(last_preflight_error))
-            self.log(f"Preflight request failed: {last_preflight_error}")
+            message = (
+                f"{type(last_preflight_error).__name__}: {last_preflight_error}"
+                if last_preflight_error
+                else "Unknown preflight error"
+            )
+            self.report["errors"].append(message)
+            self.log(f"Preflight request failed: {message}")
             return
 
         if self.preferred_user_agent and user_agent == self.preferred_user_agent:

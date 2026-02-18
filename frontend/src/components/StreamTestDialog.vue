@@ -111,7 +111,27 @@
                     <q-item-label>{{ report.geo?.isp || 'Unknown' }}</q-item-label>
                   </q-item-section>
                 </q-item>
+                <q-item v-if="report.proxy_hops_count > 0">
+                  <q-item-section>
+                    <q-item-label caption>Proxy Hops</q-item-label>
+                    <q-item-label>{{ report.proxy_hops_count }}</q-item-label>
+                  </q-item-section>
+                </q-item>
               </q-list>
+              <q-separator v-if="report.proxy_hops_count > 0" />
+              <q-card-section v-if="report.proxy_hops_count > 0" class="q-pt-sm q-pb-sm">
+                <div class="text-caption text-grey-8 q-mb-sm">
+                  Route resolved after unwrapping {{ report.proxy_hops_count }} proxy hop(s).
+                </div>
+                <div
+                  v-for="hop in report.proxy_chain || []"
+                  :key="`hop-${hop.hop}`"
+                  class="q-mb-xs text-caption"
+                >
+                  <span class="text-weight-medium">Hop {{ hop.hop }}:</span>
+                  {{ hop.proxy_hostname || 'Unknown proxy host' }} -> {{ hop.target_hostname || 'Unknown target host' }}
+                </div>
+              </q-card-section>
             </q-card>
           </div>
 
@@ -248,11 +268,6 @@ export default {
             icon: 'refresh',
             color: 'primary',
           },
-          {
-            id: 'close',
-            label: 'Close',
-            color: 'grey-8',
-          },
         ];
       }
       return [
@@ -296,8 +311,6 @@ export default {
     onDialogAction(action) {
       if (action.id === 'start' || action.id === 'restart') {
         this.startTest();
-      } else if (action.id === 'close') {
-        this.isOpen = false;
       }
     },
     startTest() {
