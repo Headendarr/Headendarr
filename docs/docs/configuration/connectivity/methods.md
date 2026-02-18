@@ -1,8 +1,8 @@
 ---
-title: Client Connectivity
+title: Connectivity Methods
 ---
 
-# Client Connectivity
+# Connectivity Methods
 
 :::tip Accessing Client Links
 For quick access to the URLs and connection details described below, simply click the "Show connection details" dropdown located in the header of the Headendarr frontend. This feature provides direct links you can copy and paste into your client applications.

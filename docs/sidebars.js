@@ -39,7 +39,14 @@ const sidebars = {
             "configuration/epgs",
             "configuration/channels",
             "configuration/tv-guide-dvr",
-            "configuration/client-connectivity",
+            {
+              type: "category",
+              label: "Connectivity",
+              items: [
+                "configuration/connectivity/methods",
+                "configuration/connectivity/plex",
+              ],
+            },
             "configuration/hls-proxies",
             "configuration/user-management",
             "configuration/application-settings",

@@ -13,8 +13,8 @@ When you first access the Headendarr Web UI at `http://<your-ip>:9985`, you will
 
 Log in with these credentials:
 
--   **Default Username**: `admin`
--   **Default Password**: `admin`
+- **Default Username**: `admin`
+- **Default Password**: `admin`
 
 Your first and most important step is to change the default password.
 
@@ -57,28 +57,28 @@ EPG sources provide the guide data for your channels.
 
 This is the core of the configuration where you build your channel lineup on the **Channels** page. There are two primary ways to add channels:
 
--   **Method 1: Bulk Import (Recommended)**
-    -   Click the **IMPORT CHANNELS FROM STREAM SOURCE** button.
-    -   A dialog will appear with powerful filtering and search options, allowing you to browse all available channels from all your sources.
-    -   Select the channels you want to add. Headendarr will automatically create them, populating the logo, source, and attempting to link the EPG data if a match is found. This is the easiest way to add many channels.
+- **Method 1: Bulk Import (Recommended)**
+  - Click the **IMPORT CHANNELS FROM STREAM SOURCE** button.
+  - A dialog will appear with powerful filtering and search options, allowing you to browse all available channels from all your sources.
+  - Select the channels you want to add. Headendarr will automatically create them, populating the logo, source, and attempting to link the EPG data if a match is found. This is the easiest way to add many channels.
 
--   **Method 2: Manual Add**
-    -   Click the **+ ADD CHANNEL** button.
-    -   This opens a dialog with blank fields, allowing you to create a channel from scratch by manually filling in all the details (name, number, stream sources, EPG, etc.).
+- **Method 2: Manual Add**
+  - Click the **+ ADD CHANNEL** button.
+  - This opens a dialog with blank fields, allowing you to create a channel from scratch by manually filling in all the details (name, number, stream sources, EPG, etc.).
 
 After creating channels, you can click on any of them to **edit** and refine missing information.
 
 ### Channel Priority & Failover
 
--   You can drag and drop channels in the list to change their order and channel number.
--   Within a channel's settings, you can add multiple stream sources from different sources. The stream at the top of the list has the highest priority. If a client requests a channel and the top priority stream is unavailable or has reached its connection limit (as defined on the Sources page), TVHeadend will automatically try the next stream in the list.
+- You can drag and drop channels in the list to change their order and channel number.
+- Within a channel's settings, you can add multiple stream sources from different sources. The stream at the top of the list has the highest priority. If a client requests a channel and the top priority stream is unavailable or has reached its connection limit (as defined on the Sources page), TVHeadend will automatically try the next stream in the list.
 
 ### Bulk Editing
 
--   Select multiple channels to perform bulk actions, such as adding/removing tags, deleting channels, or **refreshing the stream URLs**. This is useful if your provider has changed the stream links in their master playlist.
+- Select multiple channels to perform bulk actions, such as adding/removing tags, deleting channels, or **refreshing the stream URLs**. This is useful if your provider has changed the stream links in their master playlist.
 
 ## 6. Sync and Watch
 
 Once your channels are configured, automatic background tasks will sync your config with the TVHeadend backend. This pushes all your configuration to the TVHeadend backend.
 
-Your channels are now ready! You can use the **TV Guide** to see what's on, schedule recordings, and [connect your clients](./configuration/client-connectivity.md).
+Your channels are now ready! You can use the **TV Guide** to see what's on, schedule recordings, and [connect your clients](./configuration/connectivity/methods.md).
