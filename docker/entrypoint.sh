@@ -102,6 +102,7 @@ install_packages() {
 
 prepare_dirs_root() {
     local app_user
+    local runtime_user
     app_user="${APP_USER:-tic}"
     if ! getent group "${PGID:-1000}" >/dev/null 2>&1; then
         groupadd -g "${PGID:-1000}" "${app_user}"
@@ -109,6 +110,13 @@ prepare_dirs_root() {
     if ! id -u "${PUID:-1000}" >/dev/null 2>&1; then
         useradd -u "${PUID:-1000}" -g "${PGID:-1000}" -m -s /bin/bash "${app_user}"
     fi
+
+    runtime_user="$(getent passwd "${PUID:-1000}" | cut -d: -f1)"
+    if [ -z "${runtime_user}" ]; then
+        runtime_user="${app_user}"
+    fi
+    export RUNTIME_APP_USER="${runtime_user}"
+
     mkdir -p /config/.tvh_iptv_config
     chown "${PUID:-1000}:${PGID:-1000}" /config/.tvh_iptv_config
 
@@ -127,6 +135,54 @@ prepare_dirs_root() {
         chown -R "${PUID:-1000}:${PGID:-1000}" /timeshift
     else
         print_log warn "tvheadend binary NOT found during root setup phase (PATH=$PATH)"
+    fi
+}
+
+configure_video_device_access() {
+    local runtime_user
+    local has_devices=0
+    local added_group=0
+    local dev
+    local dev_gid
+    local group_name
+
+    runtime_user="${RUNTIME_APP_USER:-}"
+    if [ -z "${runtime_user}" ] || ! id "${runtime_user}" >/dev/null 2>&1; then
+        print_log warn "Runtime user not resolved; skipping device group setup"
+        return
+    fi
+
+    while IFS= read -r dev; do
+        [ -n "${dev}" ] || continue
+        has_devices=1
+        dev_gid="$(stat -c '%g' "${dev}")"
+
+        if id -G "${runtime_user}" | tr ' ' '\n' | grep -qx "${dev_gid}"; then
+            continue
+        fi
+
+        if [ "${dev_gid}" = "0" ]; then
+            continue
+        fi
+
+        group_name="$(getent group "${dev_gid}" | awk -F: '{print $1}')"
+        if [ -z "${group_name}" ]; then
+            group_name="video${dev_gid}"
+            if ! getent group "${group_name}" >/dev/null 2>&1; then
+                groupadd -g "${dev_gid}" "${group_name}"
+            fi
+        fi
+
+        usermod -a -G "${group_name}" "${runtime_user}"
+        added_group=1
+        print_log info "Added user '${runtime_user}' to group '${group_name}' for device ${dev}"
+    done < <(find /dev/dri /dev/dvb -type c -print 2>/dev/null | sort -u)
+
+    if [ "${has_devices}" = "1" ] && [ "${added_group}" = "0" ]; then
+        if ! id -nG "${runtime_user}" | tr ' ' '\n' | grep -qx "root"; then
+            usermod -a -G root "${runtime_user}"
+            print_log info "All video device groups already present or root-owned; added '${runtime_user}' to root group as fallback"
+        fi
     fi
 }
 
@@ -351,6 +407,7 @@ start_tic() {
 if [ "$(id -u)" = "0" ]; then
     configure_container_timezone
     prepare_dirs_root
+    configure_video_device_access
     exec gosu "${PUID:-1000}" env HOME="/config" "$0" "$@"
 fi
 
