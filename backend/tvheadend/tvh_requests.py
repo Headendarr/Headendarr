@@ -29,6 +29,7 @@ def _build_user_scoped_pathname(username: str, pathname: str) -> str:
         normalized = "$t/$t-$c-%F_%R$n.$x"
     return f"{safe_username}/{normalized}"
 
+
 # TVHeadend API URLs:
 api_config_save = "config/save"
 api_imagecache_config_save = "imagecache/config/save"
@@ -75,8 +76,6 @@ tvh_config = {
 tvh_imagecache_config = {"enabled": False, "ignore_sslcert": True, "expire": 7, "ok_period": 168, "fail_period": 24}
 tvh_client_access_entry_comment = "Headendarr client access entry"
 tvh_client_password_comment = "Headendarr client password entry"
-tvh_sync_access_entry_comment = "Headendarr sync access entry"
-tvh_sync_password_comment = "Headendarr sync password entry"
 tvh_user_access_comment_prefix = "Headendarr user access entry"
 tvh_user_password_comment_prefix = "Headendarr user password entry"
 tvh_client_access_entry = {
@@ -146,8 +145,8 @@ tvh_admin_access_entry = {
     "channel_tag":         [],
     "xmltv_output_format": 0,
     "htsp_output_format":  0,
-    "uilevel":             -1,
-    "uilevel_nochange":    -1,
+    "uilevel": -1,
+    "uilevel_nochange": -1,
     "conn_limit_type":     0,
     "conn_limit":          0,
     "htsp_anonymize":      False
@@ -637,7 +636,8 @@ class Tvheadend:
 
         password_node = tvh_u_password.copy()
         password_node["comment"] = password_comment
-        existing_password = next((entry for entry in password_entries if entry.get("comment") == password_comment), None)
+        existing_password = next(
+            (entry for entry in password_entries if entry.get("comment") == password_comment), None)
         if existing_password:
             password_node["uuid"] = existing_password["uuid"]
         if not password_node.get("uuid"):
@@ -972,8 +972,6 @@ async def configure_tvh(config):
         await tvh.save_tvh_config(tvh_config)
         # Update Image Cache Config
         await tvh.save_imagecache_config(tvh_imagecache_config)
-        # Ensure internal sync user exists
-        await ensure_tvh_sync_user(config)
         # Configure EPG Grab Config
         await tvh.save_epggrab_config(epggrab_config)
         # Disable all EPG grabbers
@@ -999,33 +997,3 @@ async def configure_tvh(config):
         await tvh.configure_default_recorder_profile(pre_padding_mins, post_padding_mins, retention_policy)
         # Configure the timeshift settings
         await tvh.configure_timeshift()
-
-
-async def ensure_tvh_sync_user(config):
-    sync_user = await asyncio.to_thread(config.get_tvh_sync_user)
-    conn = await config.tvh_connection_settings()
-    sync_username = sync_user.get("username") or conn.get("tvh_username") or "tic-admin"
-    sync_password = conn.get("tvh_password") if conn.get("tvh_local") else sync_user.get("password")
-    if not sync_username or not sync_password:
-        return
-    try:
-        async with await get_tvh(config) as tvh:
-            await tvh.upsert_user(
-                sync_username,
-                sync_password,
-                is_admin=True,
-                enabled=True,
-                access_comment=tvh_sync_access_entry_comment,
-                password_comment=tvh_sync_password_comment,
-            )
-        if (
-            sync_user.get("username") != sync_username
-            or sync_user.get("password") != sync_password
-            or not sync_user.get("provisioned")
-        ):
-            sync_user["username"] = sync_username
-            sync_user["password"] = sync_password
-            sync_user["provisioned"] = True
-            await asyncio.to_thread(config.update_tvh_sync_user, sync_user)
-    except Exception as exc:
-        logger.exception("Failed to provision TVH sync user: %s", exc)

@@ -222,7 +222,6 @@ async def sync_user_to_tvh(config, user_id):
     if not is_streamer:
         logger.info("User has no streaming roles; disabling in TVH - user_id=%s", user_id)
     from backend.tvheadend.tvh_requests import (
-        ensure_tvh_sync_user,
         get_tvh,
         tvh_user_access_comment_prefix,
         tvh_user_password_comment_prefix,
@@ -233,7 +232,6 @@ async def sync_user_to_tvh(config, user_id):
         read_recording_profiles_from_settings,
     )
     try:
-        await ensure_tvh_sync_user(config)
         settings = config.read_settings()
         dvr_settings = settings.get("settings", {}).get("dvr", {}) or {}
         pre_padding = max(0, int(dvr_settings.get("pre_padding_mins", 2) or 2))

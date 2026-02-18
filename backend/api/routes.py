@@ -21,7 +21,7 @@ from backend.config import is_tvh_process_running_locally
 from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
-from backend.tvheadend.tvh_requests import configure_tvh, ensure_tvh_sync_user
+from backend.tvheadend.tvh_requests import configure_tvh
 from backend.channels import build_channel_logo_proxy_url
 
 
@@ -189,15 +189,9 @@ def _strip_hop_by_hop_headers(headers: dict) -> dict:
 
 async def _get_tvh_proxy_base():
     config = current_app.config['APP_CONFIG']
-    await ensure_tvh_sync_user(config)
     tvh_settings = await config.tvh_connection_settings()
-    if tvh_settings.get("tvh_local"):
-        username = tvh_settings.get("tvh_username")
-        password = tvh_settings.get("tvh_password")
-    else:
-        sync_user = await asyncio.to_thread(config.get_tvh_sync_user)
-        username = sync_user.get("username") or tvh_settings.get("tvh_username")
-        password = sync_user.get("password") or tvh_settings.get("tvh_password")
+    username = tvh_settings.get("tvh_username")
+    password = tvh_settings.get("tvh_password")
     if not username or not password:
         return None, None, None
     host = tvh_settings["tvh_host"]
@@ -210,7 +204,7 @@ async def _get_tvh_proxy_base():
 async def _proxy_tvh_http(subpath: str):
     base_url, username, password = await _get_tvh_proxy_base()
     if not base_url:
-        return jsonify({"success": False, "message": "TVH sync user not configured"}), 503
+        return jsonify({"success": False, "message": "TVHeadend credentials not configured"}), 503
     path = subpath.lstrip("/")
     target = f"{base_url}/{path}" if path else f"{base_url}/"
     if request.query_string:

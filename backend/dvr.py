@@ -13,7 +13,7 @@ from backend.dvr_profiles import (
     read_recording_profiles_from_settings,
 )
 from backend.models import Session, Recording, RecordingRule, Channel, EpgChannels, EpgChannelProgrammes, User
-from backend.tvheadend.tvh_requests import get_tvh, ensure_tvh_sync_user, get_tvh_with_credentials
+from backend.tvheadend.tvh_requests import get_tvh, get_tvh_with_credentials
 
 logger = logging.getLogger('tic.dvr')
 
@@ -278,7 +278,6 @@ async def apply_recurring_rules(config):
 
 
 async def reconcile_tvh_recordings(config):
-    await ensure_tvh_sync_user(config)
     settings = config.read_settings() if hasattr(config, "read_settings") else {}
     recording_profiles = read_recording_profiles_from_settings(settings or {})
     profile_by_key = {item["key"]: item for item in recording_profiles}
@@ -411,10 +410,12 @@ async def reconcile_tvh_recordings(config):
                     create_with_tvh = tvh
                     config_name = ""
                     if owner and owner.username and owner.streaming_key:
-                        owner_retention_policy = normalize_retention_policy(getattr(owner, "dvr_retention_policy", "forever"))
+                        owner_retention_policy = normalize_retention_policy(
+                            getattr(owner, "dvr_retention_policy", "forever"))
                         owner_dvr_access_mode = str(getattr(owner, "dvr_access_mode", "none") or "none").strip().lower()
                         profile_key = get_profile_key_or_default(rec.recording_profile_key, recording_profiles)
-                        profile_template = profile_by_key.get(profile_key) or (recording_profiles[0] if recording_profiles else None)
+                        profile_template = profile_by_key.get(profile_key) or (
+                            recording_profiles[0] if recording_profiles else None)
                         if profile_template and owner_dvr_access_mode in {"read_write_own", "read_all_write_own"}:
                             config_name = build_user_profile_name(owner.username, profile_template["name"])
                             async with await get_tvh_with_credentials(config, owner.username, owner.streaming_key) as owner_tvh:

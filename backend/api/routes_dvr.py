@@ -20,7 +20,6 @@ from backend.dvr import (
     delete_rule,
     update_rule,
 )
-from backend.tvheadend.tvh_requests import ensure_tvh_sync_user
 from backend.models import Session, Recording, RecordingRule
 
 
@@ -79,16 +78,16 @@ async def api_list_recording_profiles():
 
 async def _get_tvh_proxy_base():
     config = current_app.config['APP_CONFIG']
-    await ensure_tvh_sync_user(config)
-    sync_user = await asyncio.to_thread(config.get_tvh_sync_user)
-    if not sync_user.get("username") or not sync_user.get("password"):
-        return None, None, None
     tvh_settings = await config.tvh_connection_settings()
+    username = tvh_settings.get("tvh_username")
+    password = tvh_settings.get("tvh_password")
+    if not username or not password:
+        return None, None, None
     host = tvh_settings["tvh_host"]
     port = tvh_settings["tvh_port"]
     path = tvh_settings["tvh_path"].rstrip("/")
     base_url = f"http://{host}:{port}{path}"
-    return base_url, sync_user["username"], sync_user["password"]
+    return base_url, username, password
 
 
 async def _fetch_tvh_dvr_entry(base_url, username, password, tvh_uuid):
@@ -166,7 +165,7 @@ async def api_stream_recording(recording_id):
 
     base_url, username, password = await _get_tvh_proxy_base()
     if not base_url:
-        return jsonify({"success": False, "message": "TVHeadend sync user not configured"}), 502
+        return jsonify({"success": False, "message": "TVHeadend credentials not configured"}), 502
 
     target = f"{base_url}/dvrfile/{recording.tvh_uuid}"
     headers = dict(request.headers)
@@ -224,7 +223,7 @@ async def api_stream_recording_hls(recording_id):
 
     base_url, username, password = await _get_tvh_proxy_base()
     if not base_url:
-        return jsonify({"success": False, "message": "TVHeadend sync user not configured"}), 502
+        return jsonify({"success": False, "message": "TVHeadend credentials not configured"}), 502
 
     tvh_entry = await _fetch_tvh_dvr_entry(base_url, username, password, recording.tvh_uuid)
     if tvh_entry:

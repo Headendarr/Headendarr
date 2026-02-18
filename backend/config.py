@@ -262,19 +262,6 @@ class Config:
         _prune_unknown_keys(settings, self.default_settings)
         return changed
 
-    def ensure_tvh_sync_user(self):
-        if os.path.exists(self.tvh_sync_user_file):
-            return
-        if not os.path.exists(os.path.dirname(self.tvh_sync_user_file)):
-            os.makedirs(os.path.dirname(self.tvh_sync_user_file))
-        sync_user = {
-            "username": "tic-admin",
-            "password": secrets.token_urlsafe(18),
-            "provisioned": False,
-        }
-        with open(self.tvh_sync_user_file, "w") as f:
-            json.dump(sync_user, f, indent=2)
-
     def ensure_instance_id(self):
         if os.path.exists(self.instance_id_file):
             try:
@@ -294,7 +281,6 @@ class Config:
         return instance_id
 
     def get_tvh_sync_user(self):
-        self.ensure_tvh_sync_user()
         try:
             with open(self.tvh_sync_user_file, "r") as f:
                 return json.load(f)
@@ -345,8 +331,8 @@ class Config:
 
     async def tvh_connection_settings(self):
         settings = await asyncio.to_thread(self.read_settings)
-        sync_user = await asyncio.to_thread(self.get_tvh_sync_user)
         if await is_tvh_process_running_locally():
+            sync_user = await asyncio.to_thread(self.get_tvh_sync_user)
             # Note: Host can be localhost here because the app will publish to TVH from the backend
             tvh_host = "127.0.0.1"
             tvh_port = "9981"
@@ -363,12 +349,8 @@ class Config:
                 "tvh_username": tvh_username,
                 "tvh_password": tvh_password,
             }
-        if sync_user.get("provisioned") and sync_user.get("password"):
-            tvh_username = sync_user.get("username", "tic-admin")
-            tvh_password = sync_user.get("password")
-        else:
-            tvh_username = settings["settings"]["tvheadend"]["username"]
-            tvh_password = settings["settings"]["tvheadend"]["password"]
+        tvh_username = settings["settings"]["tvheadend"]["username"]
+        tvh_password = settings["settings"]["tvheadend"]["password"]
         return {
             "tvh_local": False,
             "tvh_host": settings["settings"]["tvheadend"]["host"],
