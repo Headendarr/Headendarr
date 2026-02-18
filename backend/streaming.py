@@ -21,10 +21,10 @@ def _is_hls_source_url(url: str) -> bool:
     return (parsed.path or "").lower().endswith(".m3u8")
 
 
-def _coerce_custom_proxy_template_for_raw_stream(template: str) -> str:
+def _coerce_custom_proxy_template_for_stream_endpoint(template: str) -> str:
     """
-    For raw/non-HLS sources, prefer custom proxy stream endpoints when the
-    configured template is playlist-shaped.
+    Prefer custom proxy stream endpoints when the configured template is
+    playlist-shaped.
     """
     if "[B64_URL].m3u8" in template:
         return template.replace("[B64_URL].m3u8", "stream/[B64_URL]")
@@ -97,7 +97,9 @@ def build_local_hls_proxy_url(
     is_hls = (parsed.path or "").lower().endswith(".m3u8")
     encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
     base = base_url.rstrip("/")
-    if is_hls:
+    if ffmpeg:
+        url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
+    elif is_hls:
         url = f"{base}/tic-hls-proxy/{instance_id}/{encoded_url}.m3u8"
     else:
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
@@ -116,12 +118,16 @@ def build_local_hls_proxy_url(
     return append_stream_key(url, stream_key=stream_key, username=username)
 
 
-def build_custom_hls_proxy_url(source_url: str, hls_proxy_path: str | None) -> str:
+def build_custom_hls_proxy_url(
+    source_url: str,
+    hls_proxy_path: str | None,
+    ffmpeg: bool = False,
+) -> str:
     if not hls_proxy_path:
         return source_url
     template = hls_proxy_path
-    if not _is_hls_source_url(source_url):
-        template = _coerce_custom_proxy_template_for_raw_stream(template)
+    if ffmpeg or not _is_hls_source_url(source_url):
+        template = _coerce_custom_proxy_template_for_stream_endpoint(template)
     encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
     return (
         template
@@ -148,7 +154,11 @@ def build_configured_hls_proxy_url(
 
     custom_url = None
     if use_custom_hls_proxy and custom_hls_proxy_path:
-        custom_url = build_custom_hls_proxy_url(source_url, custom_hls_proxy_path)
+        custom_url = build_custom_hls_proxy_url(
+            source_url,
+            custom_hls_proxy_path,
+            ffmpeg=ffmpeg,
+        )
 
     if use_hls_proxy and base_url and instance_id:
         if use_custom_hls_proxy and chain_custom_hls_proxy and custom_url:
