@@ -5,7 +5,7 @@
 # File Created: Monday, 13th May 2024 4:20:35 pm
 # Author: Josh.5 (jsunnex@gmail.com)
 # -----
-# Last Modified: Wednesday, 18th February 2026 10:45:46 am
+# Last Modified: Thursday, 19th February 2026 11:56:17 am
 # Modified By: Josh.5 (jsunnex@gmail.com)
 ###
 
@@ -31,21 +31,6 @@ print_log() {
     level="$1"
     message="${*:2}"
     echo "[${timestamp}] [${pid}] [${level^^}] ${message}"
-}
-
-configure_container_timezone() {
-    local tz_name
-    tz_name="${TZ:-Etc/UTC}"
-    if [ -f "/usr/share/zoneinfo/${tz_name}" ]; then
-        ln -snf "/usr/share/zoneinfo/${tz_name}" /etc/localtime
-        echo "${tz_name}" >/etc/timezone
-        print_log info "Configured container timezone to ${tz_name}"
-    else
-        print_log warn "TZ '${tz_name}' is invalid; falling back to Etc/UTC"
-        export TZ="Etc/UTC"
-        ln -snf "/usr/share/zoneinfo/Etc/UTC" /etc/localtime
-        echo "Etc/UTC" >/etc/timezone
-    fi
 }
 
 kill_pid() {
@@ -90,49 +75,89 @@ _term() {
 }
 trap _term SIGTERM SIGINT
 
-install_packages() {
-    if [ "${RUN_PIP_INSTALL}" = "true" ]; then
-        python3 -m venv --symlinks --clear /var/venv-docker
-        source /var/venv-docker/bin/activate
-        python3 -m pip install --no-cache-dir -r /app/requirements.txt
+configure_container_timezone() {
+    local tz_name
+    tz_name="${TZ:-Etc/UTC}"
+    if [ -f "/usr/share/zoneinfo/${tz_name}" ]; then
+        ln -snf "/usr/share/zoneinfo/${tz_name}" /etc/localtime
+        echo "${tz_name}" >/etc/timezone
+        print_log info "Configured container timezone to ${tz_name}"
     else
-        source /var/venv-docker/bin/activate
+        print_log warn "TZ '${tz_name}' is invalid; falling back to Etc/UTC"
+        export TZ="Etc/UTC"
+        ln -snf "/usr/share/zoneinfo/Etc/UTC" /etc/localtime
+        echo "Etc/UTC" >/etc/timezone
     fi
 }
 
-prepare_dirs_root() {
+configure_runtime_user_identity() {
     local app_user
+    local target_uid
+    local target_gid
+    local uid_owner
     local runtime_user
+
     app_user="${APP_USER:-tic}"
-    if ! getent group "${PGID:-1000}" >/dev/null 2>&1; then
-        groupadd -g "${PGID:-1000}" "${app_user}"
-    fi
-    if ! id -u "${PUID:-1000}" >/dev/null 2>&1; then
-        useradd -u "${PUID:-1000}" -g "${PGID:-1000}" -m -s /bin/bash "${app_user}"
+    target_uid="${PUID:-1000}"
+    target_gid="${PGID:-1000}"
+
+    export RUNTIME_APP_UID="${target_uid}"
+    export RUNTIME_APP_GID="${target_gid}"
+
+    if ! getent group "${target_gid}" >/dev/null 2>&1; then
+        if getent group "${app_user}" >/dev/null 2>&1; then
+            groupmod -g "${target_gid}" "${app_user}"
+        else
+            groupadd -g "${target_gid}" "${app_user}"
+        fi
     fi
 
-    runtime_user="$(getent passwd "${PUID:-1000}" | cut -d: -f1)"
-    if [ -z "${runtime_user}" ]; then
-        runtime_user="${app_user}"
+    uid_owner="$(getent passwd "${target_uid}" | cut -d: -f1)"
+
+    if id "${app_user}" >/dev/null 2>&1; then
+        if [ -n "${uid_owner}" ] && [ "${uid_owner}" != "${app_user}" ]; then
+            runtime_user="${uid_owner}"
+            print_log warn "PUID ${target_uid} is already owned by '${uid_owner}', using that user for runtime"
+        else
+            usermod -o -u "${target_uid}" -g "${target_gid}" -s /bin/bash "${app_user}"
+            runtime_user="${app_user}"
+        fi
+    else
+        if [ -n "${uid_owner}" ]; then
+            runtime_user="${uid_owner}"
+            print_log warn "APP_USER '${app_user}' does not exist and PUID ${target_uid} belongs to '${uid_owner}', using that user for runtime"
+        else
+            useradd -u "${target_uid}" -g "${target_gid}" -m -s /bin/bash "${app_user}"
+            runtime_user="${app_user}"
+        fi
     fi
+
     export RUNTIME_APP_USER="${runtime_user}"
+    print_log info "Configured runtime user '${RUNTIME_APP_USER}' (uid=${RUNTIME_APP_UID}, gid=${RUNTIME_APP_GID})"
+}
+
+prepare_dirs_root() {
+    local runtime_uid
+    local runtime_gid
+    runtime_uid="${RUNTIME_APP_UID:-${PUID:-1000}}"
+    runtime_gid="${RUNTIME_APP_GID:-${PGID:-1000}}"
 
     mkdir -p /config/.tvh_iptv_config
-    chown "${PUID:-1000}:${PGID:-1000}" /config/.tvh_iptv_config
+    chown "${runtime_uid}:${runtime_gid}" /config/.tvh_iptv_config
 
     mkdir -p /config/.postgres
-    chown -R "${PUID:-1000}:${PGID:-1000}" /config/.postgres
+    chown -R "${runtime_uid}:${runtime_gid}" /config/.postgres
 
     mkdir -p /tmp/nginx
-    chown "${PUID:-1000}:${PGID:-1000}" /tmp/nginx
+    chown "${runtime_uid}:${runtime_gid}" /tmp/nginx
 
     if command -v tvheadend >/dev/null 2>&1; then
         mkdir -p /config/.tvheadend
-        chown "${PUID:-1000}:${PGID:-1000}" /config/.tvheadend
+        chown "${runtime_uid}:${runtime_gid}" /config/.tvheadend
         mkdir -p /recordings
-        chown -R "${PUID:-1000}:${PGID:-1000}" /recordings
+        chown -R "${runtime_uid}:${runtime_gid}" /recordings
         mkdir -p /timeshift
-        chown -R "${PUID:-1000}:${PGID:-1000}" /timeshift
+        chown -R "${runtime_uid}:${runtime_gid}" /timeshift
     else
         print_log warn "tvheadend binary NOT found during root setup phase (PATH=$PATH)"
     fi
@@ -183,6 +208,16 @@ configure_video_device_access() {
             usermod -a -G root "${runtime_user}"
             print_log info "All video device groups already present or root-owned; added '${runtime_user}' to root group as fallback"
         fi
+    fi
+}
+
+install_packages() {
+    if [ "${RUN_PIP_INSTALL}" = "true" ]; then
+        python3 -m venv --symlinks --clear /var/venv-docker
+        source /var/venv-docker/bin/activate
+        python3 -m pip install --no-cache-dir -r /app/requirements.txt
+    else
+        source /var/venv-docker/bin/activate
     fi
 }
 
@@ -406,8 +441,14 @@ start_tic() {
 # Root setup and drop privileges
 if [ "$(id -u)" = "0" ]; then
     configure_container_timezone
+    configure_runtime_user_identity
     prepare_dirs_root
     configure_video_device_access
+    if [ -n "${RUNTIME_APP_USER:-}" ]; then
+        print_log info "Dropping privileges to '${RUNTIME_APP_USER}'"
+        exec gosu "${RUNTIME_APP_USER}" env HOME="/config" "$0" "$@"
+    fi
+    print_log warn "RUNTIME_APP_USER is not set; falling back to PUID '${PUID:-1000}'"
     exec gosu "${PUID:-1000}" env HOME="/config" "$0" "$@"
 fi
 
