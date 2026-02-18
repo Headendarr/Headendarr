@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from typing import Awaitable, Callable, Iterable
 from urllib.parse import urlparse
 from operator import attrgetter
 
@@ -24,6 +25,112 @@ logger = logging.getLogger("tic.playlists")
 
 XC_ACCOUNT_TYPE = "XC"
 M3U_ACCOUNT_TYPE = "M3U"
+
+
+async def build_m3u_playlist_content(
+    channels: Iterable[dict],
+    epg_url: str,
+    stream_url_resolver: Callable[[dict], Awaitable[str | None]],
+    include_xtvg: bool = False,
+) -> str:
+    if include_xtvg:
+        header = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"'
+    else:
+        header = f'#EXTM3U url-tvg="{epg_url}"'
+
+    lines = [header]
+    for channel in channels:
+        if not channel.get("enabled"):
+            continue
+        stream_url = await stream_url_resolver(channel)
+        if not stream_url:
+            continue
+
+        channel_name = channel.get("name") or ""
+        channel_logo_url = channel.get("logo_url") or ""
+        channel_number = channel.get("number") or ""
+        channel_uuid = channel.get("tvh_uuid") or ""
+        group_title = (channel.get("tags") or ["Uncategorized"])[0]
+
+        line = (
+            f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" '
+            f'tvg-id="{channel_uuid}" tvg-chno="{channel_number}" group-title="{group_title}",{channel_name}'
+        )
+        lines.append(line)
+        lines.append(stream_url)
+
+    return "\n".join(lines)
+
+
+async def build_tic_playlist_with_epg_content(
+    config,
+    *,
+    base_url: str,
+    stream_key: str | None = None,
+    username: str | None = None,
+    include_xtvg: bool = False,
+) -> str:
+    # Local imports to avoid circular import issues.
+    from backend.channels import build_channel_logo_proxy_url, read_config_all_channels
+    from backend.streaming import append_stream_key, build_local_hls_proxy_url, normalize_local_proxy_url
+
+    settings = config.read_settings()
+    use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
+    instance_id = config.ensure_instance_id()
+    base_url = (base_url or "").rstrip("/") or settings["settings"].get("app_url") or ""
+
+    epg_url = f"{base_url}/xmltv.php"
+    if stream_key:
+        if username:
+            epg_url = f"{epg_url}?username={username}&password={stream_key}"
+        else:
+            epg_url = f"{epg_url}?stream_key={stream_key}"
+
+    channels = await read_config_all_channels()
+    for channel in channels:
+        channel["logo_url"] = build_channel_logo_proxy_url(
+            channel.get("id"),
+            base_url,
+            channel.get("logo_url") or "",
+        )
+
+    async def _resolve_stream_url(channel):
+        channel_url = None
+        channel_uuid = channel.get("tvh_uuid")
+        if use_tvh_source and channel_uuid:
+            channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}?profile=pass&weight=300"
+            if stream_key:
+                channel_url = append_stream_key(channel_url, stream_key=stream_key)
+        else:
+            source = channel["sources"][0] if channel.get("sources") else None
+            source_url = source.get("stream_url") if source else None
+            if source_url:
+                is_manual = source.get("source_type") == "manual"
+                use_hls_proxy = bool(source.get("use_hls_proxy", False))
+                if is_manual and use_hls_proxy:
+                    channel_url = build_local_hls_proxy_url(
+                        base_url,
+                        instance_id,
+                        source_url,
+                        stream_key=stream_key,
+                        username=username,
+                    )
+                else:
+                    channel_url = normalize_local_proxy_url(
+                        source_url,
+                        base_url=base_url,
+                        instance_id=instance_id,
+                        stream_key=stream_key,
+                        username=username,
+                    )
+        return channel_url
+
+    return await build_m3u_playlist_content(
+        channels=channels,
+        epg_url=epg_url,
+        stream_url_resolver=_resolve_stream_url,
+        include_xtvg=include_xtvg,
+    )
 
 
 def _playlist_health_state_path(config):

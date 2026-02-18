@@ -9,7 +9,7 @@ from backend.api import blueprint
 from backend.auth import audit_stream_event
 from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
 from backend.epgs import render_xmltv_payload
-from backend.playlists import read_config_all_playlists
+from backend.playlists import build_tic_playlist_with_epg_content, read_config_all_playlists
 from backend.streaming import (
     append_stream_key,
     build_local_hls_proxy_url,
@@ -154,11 +154,6 @@ def _build_xc_server_info(user, include_categories=False):
     return info
 
 
-def _xc_stream_url(username: str, password: str, stream_id: str) -> str:
-    base_url = _build_base_url()
-    return f"{base_url}/live/{username}/{password}/{stream_id}.ts"
-
-
 def _resolve_channel_stream_url(
     channel: Dict[str, Any],
     stream_key: str,
@@ -209,25 +204,15 @@ async def xc_get():
         return Response(cached, mimetype="application/vnd.apple.mpegurl")
 
     channels = await _get_enabled_channels()
-    categories, name_to_id = _build_category_map(channels)
+    categories, _ = _build_category_map(channels)
     _xc_cache.set("xc_categories", categories, ttl_seconds=60)
-
-    epg_url = f"{_build_base_url()}/xmltv.php?username={user.username}&password={user.streaming_key}"
-    playlist = [f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"']
-    for channel in channels:
-        channel_name = channel.get("name") or ""
-        channel_logo_url = channel.get("logo_url") or ""
-        channel_number = channel.get("number") or ""
-        channel_uuid = channel.get("tvh_uuid") or ""
-        group_title = (channel.get("tags") or ["Uncategorized"])[0]
-        line = (
-            f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" '
-            f'tvg-id="{channel_uuid}" tvg-chno="{channel_number}" group-title="{group_title}",{channel_name}'
-        )
-        playlist.append(line)
-        playlist.append(_xc_stream_url(user.username, user.streaming_key, str(channel["id"])))
-
-    content = "\n".join(playlist)
+    content = await build_tic_playlist_with_epg_content(
+        current_app.config["APP_CONFIG"],
+        base_url=request.url_root.rstrip('/'),
+        stream_key=user.streaming_key,
+        username=user.username,
+        include_xtvg=True,
+    )
     _xc_cache.set(cache_key, content, ttl_seconds=30)
     return Response(content, mimetype="application/vnd.apple.mpegurl")
 
