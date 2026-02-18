@@ -176,7 +176,7 @@
               <TicToggleInput
                 v-model="hlsProxyUseFfmpeg"
                 label="Enable FFmpeg remux"
-                description="Use FFmpeg to clean up stream timestamps and metadata. Recommended for unstable streams."
+                description="Use FFmpeg to clean up stream timestamps and metadata. Recommended for unstable streams and clients that do not support HLS."
               />
 
               <TicTextInput

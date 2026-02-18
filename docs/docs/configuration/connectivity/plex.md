@@ -7,16 +7,19 @@ title: Plex
 Use this guide to connect Plex Live TV & DVR to Headendarr using HDHomeRun tuner emulation and XMLTV guide data.
 
 :::warning HLS Proxy Remux Limitation
-Headendarr's HLS proxy currently does not remux `.m3u8` streams to MPEG-TS (`.ts`). This will change in the future.
+Plex Live TV/DVR can have playback issues with HLS (`.m3u8`) channel streams.
+For best compatibility, make sure Plex receives MPEG-TS (`.ts`) streams for those channels.
 
-For Plex, the most reliable workaround is:
+For Plex, the recommended workarounds are:
 
-1. Enable **Route playlists & HDHomeRun through TVHeadend** in **Application Settings**.
-2. Ensure **TVHeadend Settings** has an FFmpeg stream buffer enabled, for example:
+1. **Option #1 (most reliable):** Enable **Route playlists & HDHomeRun through TVHeadend** in **Application Settings**.
+   Ensure **TVHeadend Settings** has an FFmpeg stream buffer enabled, for example:
 
 ```bash
 -hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1
 ```
+
+2. **Option #2:** Enable **Use HLS Proxy** and **Enable FFmpeg remux** on the source in **Stream Source Settings** so HLS sources are remuxed to MPEG-TS.
 
 :::
 
