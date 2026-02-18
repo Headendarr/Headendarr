@@ -211,7 +211,8 @@
                 <q-item-section>
                   <q-item-label>
                     2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                    When enabled, clients connect to TVH for tuning and TVH pulls streams from Headendarr on their behalf.
+                    When enabled, clients connect to TVH for tuning and TVH pulls streams from Headendarr on their
+                    behalf.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -239,7 +240,8 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    Headendarr Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an address
+                    Headendarr Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an
+                    address
                     other devices can reach.
                   </q-item-label>
                 </q-item-section>
@@ -248,7 +250,8 @@
                 <q-item-section>
                   <q-item-label>
                     Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not Headendarr. TVH
-                    becomes the “streaming client” that fetches channels from Headendarr and can apply its own buffering,
+                    becomes the “streaming client” that fetches channels from Headendarr and can apply its own
+                    buffering,
                     mux handling, and DVR behavior.
                   </q-item-label>
                 </q-item-section>
@@ -257,7 +260,8 @@
                 <q-item-section>
                   <q-item-label>
                     When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
-                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach Headendarr.
+                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach
+                    Headendarr.
                     When disabled, clients connect directly to Headendarr for streams.
                   </q-item-label>
                 </q-item-section>
@@ -421,28 +425,25 @@ export default defineComponent({
     normalizeRecordingProfiles(list) {
       const safeList = Array.isArray(list) ? list : [];
       const seenKeys = new Set();
-      const normalized = safeList
-        .map((item, index) => {
-          const rawKey = String(item.key || item.name || `profile_${index + 1}`)
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9_-]+/g, '_');
-          return {
-            id: item.id || `rp-${index}-${Date.now()}`,
-            key: rawKey === 'events' ? 'default' : rawKey,
-            name: String(item.name || '').trim(),
-            pathname: String(item.pathname || '').trim(),
-          };
-        })
-        .filter((item) => item.pathname)
-        .map((item, index) => {
-          let nextKey = item.key || `profile_${index + 1}`;
-          while (seenKeys.has(nextKey)) {
-            nextKey = `${nextKey}_${index + 1}`;
-          }
-          seenKeys.add(nextKey);
-          return {...item, key: nextKey};
-        });
+      const normalized = safeList.map((item, index) => {
+        const rawKey = String(item.key || item.name || `profile_${index + 1}`).
+          trim().
+          toLowerCase().
+          replace(/[^a-z0-9_-]+/g, '_');
+        return {
+          id: item.id || `rp-${index}-${Date.now()}`,
+          key: rawKey === 'events' ? 'default' : rawKey,
+          name: String(item.name || '').trim(),
+          pathname: String(item.pathname || '').trim(),
+        };
+      }).filter((item) => item.pathname).map((item, index) => {
+        let nextKey = item.key || `profile_${index + 1}`;
+        while (seenKeys.has(nextKey)) {
+          nextKey = `${nextKey}_${index + 1}`;
+        }
+        seenKeys.add(nextKey);
+        return {...item, key: nextKey};
+      });
       if (!normalized.length) {
         normalized.push({
           id: `rp-default-${Date.now()}`,
@@ -460,11 +461,8 @@ export default defineComponent({
       }));
     },
     makeRecordingProfileKey(name) {
-      return String(name || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, '_')
-        .replace(/^_+|_+$/g, '') || `profile_${Date.now()}`;
+      return String(name || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') ||
+        `profile_${Date.now()}`;
     },
     addUserAgent() {
       this.userAgents.push({
@@ -494,7 +492,13 @@ export default defineComponent({
           color: 'secondary',
           disabled: index >= this.recordingProfiles.length - 1,
         },
-        {id: 'delete', icon: 'delete', label: 'Delete', color: 'negative', disabled: this.recordingProfiles.length <= 1},
+        {
+          id: 'delete',
+          icon: 'delete',
+          label: 'Delete',
+          color: 'negative',
+          disabled: this.recordingProfiles.length <= 1,
+        },
       ];
     },
     handleRecordingProfileAction(action, index) {

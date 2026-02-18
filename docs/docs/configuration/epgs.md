@@ -26,3 +26,23 @@ Headendarr will periodically refresh your EPG sources in the background. However
 :::
 
 After a successful refresh, the "Available Channels" and "Available Programmes" counts for the EPG will update, and the EPG data will be ready to be assigned to your mapped channels on the [Channels page](./channels.md).
+
+## Reviewing Imported Guide Coverage
+
+Use the EPG **Review** action (from the row actions menu) to validate imported guide coverage without opening a full TV guide.
+
+- The **Review** action is only enabled after that EPG has:
+  - completed at least one successful update/import, and
+  - imported channel/programme data into the database.
+- The dialog is designed for very large guides:
+  - lazy-loaded channel list (infinite scroll),
+  - channel search,
+  - coverage filter (**All**, **With guide data**, **Without guide data**).
+- For each channel, you can quickly see:
+  - programme count from now into the future,
+  - total imported programme count,
+  - what is on now,
+  - what is coming up next,
+  - approximate future coverage horizon.
+
+This helps identify channels that currently have no guide data and need source/mapping checks.

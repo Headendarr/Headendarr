@@ -3,7 +3,7 @@
 from backend.api.tasks import TaskQueueBroker
 from backend.auth import admin_auth_required
 from backend.epgs import read_config_all_epgs, add_new_epg, read_config_one_epg, update_epg, delete_epg, \
-    import_epg_data, read_channels_from_all_epgs
+    import_epg_data, read_channels_from_all_epgs, read_epg_review_channels
 from backend.api import blueprint
 from quart import request, jsonify, current_app
 
@@ -122,3 +122,32 @@ async def api_get_all_epg_channels():
             "data":    epgs_channels
         }
     )
+
+
+@blueprint.route('/tic-api/epgs/review/<epg_id>/channels', methods=['GET'])
+@admin_auth_required
+async def api_get_epg_review_channels(epg_id):
+    try:
+        epg_id = int(epg_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg id"}), 400
+
+    search_query = request.args.get('search', '')
+    has_data = request.args.get('has_data', 'any')
+    try:
+        limit = int(request.args.get('limit', 100))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        offset = int(request.args.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+
+    payload = await read_epg_review_channels(
+        epg_id=epg_id,
+        search_query=search_query,
+        has_data=has_data,
+        limit=limit,
+        offset=offset,
+    )
+    return jsonify({"success": True, "data": payload})

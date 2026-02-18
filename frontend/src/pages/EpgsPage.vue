@@ -2,7 +2,8 @@
   <q-page>
     <div class="q-pa-md">
       <div class="row">
-        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <div
+          :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <div class="row items-center q-col-gutter-sm justify-between">
@@ -42,12 +43,27 @@
                       <q-item-label class="row items-center no-wrap q-gutter-sm">
                         <span class="text-weight-medium">{{ epg.name }}</span>
                         <q-chip
+                          v-if="epgLastUpdatedAgo(epg)"
+                          dense
+                          color="blue-7"
+                          text-color="white"
+                        >
+                          <q-icon name="schedule" class="q-mr-xs" />
+                          {{ epgLastUpdatedAgo(epg) }}
+                          <q-tooltip>
+                            EPG was last updated {{ epgLastUpdatedAgo(epg, false) }}
+                          </q-tooltip>
+                        </q-chip>
+                        <q-chip
                           v-if="epgHasIssue(epg)"
                           dense
                           color="orange-6"
                           text-color="white">
                           <q-icon name="warning" :class="$q.screen.gt.lg ? 'q-mr-xs' : ''" />
                           <span v-if="$q.screen.gt.lg">Needs attention</span>
+                          <q-tooltip>
+                            There was an issue with the last update.
+                          </q-tooltip>
                         </q-chip>
                       </q-item-label>
                       <q-item-label lines="1">
@@ -123,77 +139,77 @@
         </div>
         <TicResponsiveHelp v-model="uiStore.showHelp">
           <q-card-section>
-                <div class="text-h5 q-mb-none">Setup Steps:</div>
-                <q-list>
+            <div class="text-h5 q-mb-none">Setup Steps:</div>
+            <q-list>
 
-                  <q-separator inset spaced />
+              <q-separator inset spaced />
 
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        1. Add one or more program guides. Configure EPG sources with a name and URL.
-                        URLs can be gzip compressed (.xml.gz) or uncompressed (.xml).
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
-                        the EPG and import it into Headendarr's database.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    1. Add one or more program guides. Configure EPG sources with a name and URL.
+                    URLs can be gzip compressed (.xml.gz) or uncompressed (.xml).
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
+                    the EPG and import it into Headendarr's database.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
 
             </q-list>
           </q-card-section>
           <q-card-section>
-                <div class="text-h5 q-mb-none">Notes:</div>
-                <q-list>
+            <div class="text-h5 q-mb-none">Notes:</div>
+            <q-list>
 
-                  <q-separator inset spaced />
+              <q-separator inset spaced />
 
-                  <q-item-label class="text-primary">
-                    Fetch missing data from TMDB:
+              <q-item-label class="text-primary">
+                Fetch missing data from TMDB:
+              </q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    Configuring the background EPG builder to fetch missing data from TMDB will add significant time
+                    to the process.
+                    Everytime the programme guide is updated, this background EPG builder process will have to
+                    re-fetch any images.
                   </q-item-label>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        Configuring the background EPG builder to fetch missing data from TMDB will add significant time
-                        to the process.
-                        Everytime the programme guide is updated, this background EPG builder process will have to
-                        re-fetch any images.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+                </q-item-section>
+              </q-item>
 
-                  <q-separator inset spaced />
+              <q-separator inset spaced />
 
-                  <q-item-label class="text-primary">
-                    Attempt to fetch missing programme images from Google Image Search:
+              <q-item-label class="text-primary">
+                Attempt to fetch missing programme images from Google Image Search:
+              </q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    This will cause a lot of google image searches.
+                    It is highly likely that you will flag your IP as a bot source with google if you enable this.
                   </q-item-label>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        This will cause a lot of google image searches.
-                        It is highly likely that you will flag your IP as a bot source with google if you enable this.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+                </q-item-section>
+              </q-item>
 
-                  <q-separator inset spaced />
+              <q-separator inset spaced />
 
-                  <q-item-label class="text-primary">
-                    Initial update is manual:
+              <q-item-label class="text-primary">
+                Initial update is manual:
+              </q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    Adding an EPG source does not download it immediately. Use the kebab menu and click
+                    <b>Update</b> to fetch and import the guide data.
                   </q-item-label>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        Adding an EPG source does not download it immediately. Use the kebab menu and click
-                        <b>Update</b> to fetch and import the guide data.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
+                </q-item-section>
+              </q-item>
 
             </q-list>
           </q-card-section>
@@ -208,7 +224,16 @@ import {defineComponent} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
 import EpgInfoDialog from 'components/EpgInfoDialog.vue';
-import {TicButton, TicConfirmDialog, TicListActions, TicResponsiveHelp, TicSearchInput, TicTextInput, TicToggleInput} from 'components/ui';
+import EpgReviewDialog from 'components/EpgReviewDialog.vue';
+import {
+  TicButton,
+  TicConfirmDialog,
+  TicListActions,
+  TicResponsiveHelp,
+  TicSearchInput,
+  TicTextInput,
+  TicToggleInput,
+} from 'components/ui';
 
 export default defineComponent({
   name: 'EpgsPage',
@@ -233,6 +258,8 @@ export default defineComponent({
       enableTmdbMetadata: null,
       tmdbApiKey: null,
       enableGoogleImageSearchMetadata: null,
+      epgStatusPollTimer: null,
+      epgStatusPollInFlight: false,
     };
   },
   computed: {
@@ -271,9 +298,41 @@ export default defineComponent({
         return '';
       }
     },
-    fetchSettings: function() {
-      // Fetch current settings
-      axios({
+    epgLastUpdatedAgo(epg, compactOverride = null) {
+      const ts = Number(epg?.health?.last_success_at || 0);
+      if (!ts) {
+        return '';
+      }
+      const secondsAgo = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+      const compact = compactOverride === null ? this.$q.screen.lt.md : Boolean(compactOverride);
+      if (secondsAgo < 60) {
+        return compact ? 'now' : 'just now';
+      }
+      const minutes = Math.floor(secondsAgo / 60);
+      if (minutes < 60) {
+        return compact ? `${minutes}m` : `${minutes}m ago`;
+      }
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) {
+        return compact ? `${hours}h` : `${hours}h ago`;
+      }
+      const days = Math.floor(hours / 24);
+      if (days < 7) {
+        return compact ? `${days}d` : `${days}d ago`;
+      }
+      const weeks = Math.floor(days / 7);
+      if (weeks < 5) {
+        return compact ? `${weeks}w` : `${weeks}w ago`;
+      }
+      const months = Math.floor(days / 30);
+      if (months < 12) {
+        return compact ? `${months}mo` : `${months}mo ago`;
+      }
+      const years = Math.floor(days / 365);
+      return compact ? `${years}y` : `${years}y ago`;
+    },
+    fetchEpgList: function({silent = false} = {}) {
+      return axios({
         method: 'get',
         url: '/tic-api/epgs/get',
       }).then((response) => {
@@ -281,15 +340,19 @@ export default defineComponent({
         epgs.sort((a, b) => (a?.name ?? '').localeCompare(b?.name ?? '', undefined, {numeric: true}));
         this.listOfEpgs = epgs;
       }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to fetch settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
+        if (!silent) {
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Failed to fetch EPG list',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+        }
       });
-      axios({
+    },
+    fetchEpgMetadataSettings: function({silent = false} = {}) {
+      return axios({
         method: 'get',
         url: '/tic-api/get-settings',
       }).then((response) => {
@@ -297,17 +360,59 @@ export default defineComponent({
         this.tmdbApiKey = response.data.data.epgs.tmdb_api_key;
         this.enableGoogleImageSearchMetadata = response.data.data.epgs.enable_google_image_search_metadata;
       }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to fetch settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
+        if (!silent) {
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Failed to fetch settings',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+        }
       });
     },
+    fetchSettings: function({silent = false} = {}) {
+      return Promise.all([
+        this.fetchEpgList({silent}),
+        this.fetchEpgMetadataSettings({silent}),
+      ]);
+    },
+    startEpgStatusPolling() {
+      this.stopEpgStatusPolling();
+      this.epgStatusPollTimer = setInterval(() => {
+        this.refreshEpgStatusInBackground();
+      }, 30000);
+    },
+    stopEpgStatusPolling() {
+      if (this.epgStatusPollTimer) {
+        clearInterval(this.epgStatusPollTimer);
+        this.epgStatusPollTimer = null;
+      }
+    },
+    refreshEpgStatusInBackground: async function() {
+      if (this.epgStatusPollInFlight) {
+        return;
+      }
+      this.epgStatusPollInFlight = true;
+      try {
+        await this.fetchEpgList({silent: true});
+      } finally {
+        this.epgStatusPollInFlight = false;
+      }
+    },
     epgActions: function(epg) {
+      const canReview = this.epgCanReview(epg);
       return [
+        {
+          id: 'review',
+          icon: 'fact_check',
+          label: 'Review',
+          color: 'primary',
+          disable: !canReview,
+          tooltip: canReview
+            ? `Review imported guide coverage for ${epg.name || 'EPG'}`
+            : 'Review available after a successful update with imported guide data',
+        },
         {id: 'update', icon: 'update', label: 'Update', color: 'info', tooltip: `Update ${epg.name || 'EPG'}`},
         {
           id: 'configure',
@@ -320,6 +425,10 @@ export default defineComponent({
       ];
     },
     handleEpgAction: function(action, epg) {
+      if (action.id === 'review') {
+        this.openEpgReview(epg);
+        return;
+      }
       if (action.id === 'update') {
         this.updateEpg(epg.id);
         return;
@@ -331,6 +440,19 @@ export default defineComponent({
       if (action.id === 'delete') {
         this.deleteEpg(epg.id);
       }
+    },
+    epgCanReview(epg) {
+      const review = epg?.review || {};
+      return Boolean(review.can_review);
+    },
+    openEpgReview(epg) {
+      this.$q.dialog({
+        component: EpgReviewDialog,
+        componentProps: {
+          epgId: epg.id,
+          epgName: epg.name || '',
+        },
+      });
     },
     openEpgSettings: function(epgId) {
       if (!epgId) {
@@ -450,7 +572,12 @@ export default defineComponent({
     },
   },
   created() {
-    this.fetchSettings();
+    this.fetchSettings().finally(() => {
+      this.startEpgStatusPolling();
+    });
+  },
+  beforeUnmount() {
+    this.stopEpgStatusPolling();
   },
 });
 </script>

@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
-from sqlalchemy import and_, delete, insert, select, text
+from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger
 from backend.channels import read_base46_image_string
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
 from backend.tvheadend.tvh_requests import get_tvh
@@ -83,6 +83,8 @@ async def read_config_all_epgs(output_for_export=False, config=None):
         async with session.begin():
             query = await session.execute(select(Epg))
             results = query.scalars().all()
+            epg_ids = [result.id for result in results]
+            review_stats_map = await _read_epg_review_stats_map(epg_ids)
             for result in results:
                 if output_for_export:
                     return_list.append({
@@ -99,6 +101,10 @@ async def read_config_all_epgs(output_for_export=False, config=None):
                     'url':     result.url,
                     'user_agent': result.user_agent,
                     'health': epg_health_map.get(str(result.id), {}),
+                    'review': _build_epg_review_payload(
+                        review_stats_map.get(result.id, {}),
+                        epg_health_map.get(str(result.id), {}),
+                    ),
                 })
     return return_list
 
@@ -107,6 +113,7 @@ async def read_config_one_epg(epg_id, config=None):
     epg_id = normalize_id(epg_id, "epg")
     return_item = {}
     epg_health_map = _read_epg_health_map(config) if config else {}
+    review_stats_map = await _read_epg_review_stats_map([epg_id])
     async with Session() as session:
         async with session.begin():
             query = await session.execute(select(Epg).where(Epg.id == epg_id))
@@ -119,8 +126,62 @@ async def read_config_one_epg(epg_id, config=None):
                     'url':     results.url,
                     'user_agent': results.user_agent,
                     'health': epg_health_map.get(str(results.id), {}),
+                    'review': _build_epg_review_payload(
+                        review_stats_map.get(results.id, {}),
+                        epg_health_map.get(str(results.id), {}),
+                    ),
                 }
     return return_item
+
+
+def _build_epg_review_payload(stats, health):
+    channel_count = int(stats.get('channel_count') or 0)
+    programme_count = int(stats.get('programme_count') or 0)
+    has_successful_update = bool((health or {}).get('last_success_at'))
+    has_data = channel_count > 0 and programme_count > 0
+    return {
+        'channel_count': channel_count,
+        'programme_count': programme_count,
+        'has_successful_update': has_successful_update,
+        'has_data': has_data,
+        'can_review': has_successful_update and has_data,
+    }
+
+
+async def _read_epg_review_stats_map(epg_ids):
+    normalized_ids = [normalize_id(epg_id, "epg") for epg_id in (epg_ids or []) if epg_id is not None]
+    if not normalized_ids:
+        return {}
+
+    stats_map = {epg_id: {'channel_count': 0, 'programme_count': 0} for epg_id in normalized_ids}
+
+    async with Session() as session:
+        async with session.begin():
+            channel_rows = await session.execute(
+                select(
+                    EpgChannels.epg_id,
+                    func.count(EpgChannels.id).label('channel_count'),
+                )
+                .where(EpgChannels.epg_id.in_(normalized_ids))
+                .group_by(EpgChannels.epg_id)
+            )
+            for row in channel_rows.all():
+                stats_map[row.epg_id]['channel_count'] = int(row.channel_count or 0)
+
+            programme_rows = await session.execute(
+                select(
+                    EpgChannels.epg_id,
+                    func.count(EpgChannelProgrammes.id).label('programme_count'),
+                )
+                .select_from(EpgChannels)
+                .join(EpgChannelProgrammes, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+                .where(EpgChannels.epg_id.in_(normalized_ids))
+                .group_by(EpgChannels.epg_id)
+            )
+            for row in programme_rows.all():
+                stats_map[row.epg_id]['programme_count'] = int(row.programme_count or 0)
+
+    return stats_map
 
 
 async def add_new_epg(data):
@@ -486,6 +547,209 @@ async def read_channels_from_all_epgs(config):
                 "icon":         epg_channel.icon_url,
             })
     return epgs_channels
+
+
+async def read_epg_review_channels(epg_id, search_query="", has_data="any", limit=100, offset=0, now_ts=None):
+    epg_id = normalize_id(epg_id, "epg")
+    limit = max(1, min(int(limit or 100), 250))
+    offset = max(0, int(offset or 0))
+    now_ts = int(now_ts or time.time())
+    has_data = (has_data or "any").strip().lower()
+    if has_data not in {"any", "with_data", "without_data"}:
+        has_data = "any"
+
+    search_query = (search_query or "").strip()
+    search_like = f"%{search_query.lower()}%"
+    start_ts_expr = cast(func.nullif(EpgChannelProgrammes.start_timestamp, ""), BigInteger)
+    stop_ts_expr = cast(func.nullif(EpgChannelProgrammes.stop_timestamp, ""), BigInteger)
+
+    future_programme_exists = (
+        select(EpgChannelProgrammes.id)
+        .where(
+            and_(
+                EpgChannelProgrammes.epg_channel_id == EpgChannels.id,
+                stop_ts_expr >= now_ts,
+            )
+        )
+        .limit(1)
+        .exists()
+    )
+
+    filters = [EpgChannels.epg_id == epg_id]
+    if search_query:
+        filters.append(
+            or_(
+                func.lower(EpgChannels.name).like(search_like),
+                func.lower(EpgChannels.channel_id).like(search_like),
+            )
+        )
+    if has_data == "with_data":
+        filters.append(future_programme_exists)
+    elif has_data == "without_data":
+        filters.append(~future_programme_exists)
+
+    async with Session() as session:
+        async with session.begin():
+            total_count_result = await session.execute(
+                select(func.count(EpgChannels.id)).where(*filters)
+            )
+            total_count = int(total_count_result.scalar() or 0)
+
+            channel_rows_result = await session.execute(
+                select(
+                    EpgChannels.id,
+                    EpgChannels.channel_id,
+                    EpgChannels.name,
+                    EpgChannels.icon_url,
+                )
+                .where(*filters)
+                .order_by(EpgChannels.name.asc(), EpgChannels.channel_id.asc())
+                .offset(offset)
+                .limit(limit)
+            )
+            channel_rows = channel_rows_result.all()
+
+            epg_total_channels_result = await session.execute(
+                select(func.count(EpgChannels.id)).where(EpgChannels.epg_id == epg_id)
+            )
+            epg_total_channels = int(epg_total_channels_result.scalar() or 0)
+
+            epg_channels_with_data_result = await session.execute(
+                select(func.count(EpgChannels.id))
+                .where(EpgChannels.epg_id == epg_id, future_programme_exists)
+            )
+            epg_channels_with_data = int(epg_channels_with_data_result.scalar() or 0)
+
+            epg_programme_count_result = await session.execute(
+                select(func.count(EpgChannelProgrammes.id))
+                .select_from(EpgChannels)
+                .join(EpgChannelProgrammes, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+                .where(EpgChannels.epg_id == epg_id)
+            )
+            epg_programme_count = int(epg_programme_count_result.scalar() or 0)
+
+            row_ids = [row.id for row in channel_rows]
+            stats_map = {}
+            upcoming_map = {}
+
+            if row_ids:
+                per_channel_stats_result = await session.execute(
+                    select(
+                        EpgChannelProgrammes.epg_channel_id.label("epg_channel_id"),
+                        func.count(EpgChannelProgrammes.id).label("total_programmes"),
+                        func.count(EpgChannelProgrammes.id)
+                        .filter(stop_ts_expr >= now_ts)
+                        .label("future_programmes"),
+                        func.max(stop_ts_expr).label("max_stop_ts"),
+                    )
+                    .where(EpgChannelProgrammes.epg_channel_id.in_(row_ids))
+                    .group_by(EpgChannelProgrammes.epg_channel_id)
+                )
+                stats_map = {
+                    int(row.epg_channel_id): {
+                        "total_programmes": int(row.total_programmes or 0),
+                        "future_programmes": int(row.future_programmes or 0),
+                        "max_stop_ts": int(row.max_stop_ts or 0) if row.max_stop_ts else None,
+                    }
+                    for row in per_channel_stats_result.all()
+                }
+
+                ranked_upcoming_subquery = (
+                    select(
+                        EpgChannelProgrammes.epg_channel_id.label("epg_channel_id"),
+                        EpgChannelProgrammes.title.label("title"),
+                        start_ts_expr.label("start_ts"),
+                        stop_ts_expr.label("stop_ts"),
+                        func.row_number()
+                        .over(
+                            partition_by=EpgChannelProgrammes.epg_channel_id,
+                            order_by=start_ts_expr.asc(),
+                        )
+                        .label("row_num"),
+                    )
+                    .where(
+                        EpgChannelProgrammes.epg_channel_id.in_(row_ids),
+                        stop_ts_expr >= now_ts,
+                    )
+                    .subquery()
+                )
+                upcoming_rows_result = await session.execute(
+                    select(
+                        ranked_upcoming_subquery.c.epg_channel_id,
+                        ranked_upcoming_subquery.c.title,
+                        ranked_upcoming_subquery.c.start_ts,
+                        ranked_upcoming_subquery.c.stop_ts,
+                        ranked_upcoming_subquery.c.row_num,
+                    )
+                    .where(ranked_upcoming_subquery.c.row_num <= 4)
+                    .order_by(
+                        ranked_upcoming_subquery.c.epg_channel_id.asc(),
+                        ranked_upcoming_subquery.c.start_ts.asc(),
+                    )
+                )
+                for row in upcoming_rows_result.all():
+                    channel_items = upcoming_map.setdefault(int(row.epg_channel_id), [])
+                    channel_items.append(
+                        {
+                            "title": row.title or "(Untitled)",
+                            "start_ts": int(row.start_ts) if row.start_ts is not None else None,
+                            "stop_ts": int(row.stop_ts) if row.stop_ts is not None else None,
+                        }
+                    )
+
+    items = []
+    for channel_row in channel_rows:
+        channel_stats = stats_map.get(int(channel_row.id), {})
+        channel_upcoming = upcoming_map.get(int(channel_row.id), [])
+        now_programme = None
+        next_programmes = []
+        for programme in channel_upcoming:
+            start_ts = programme.get("start_ts")
+            stop_ts = programme.get("stop_ts")
+            if (
+                now_programme is None
+                and start_ts is not None
+                and stop_ts is not None
+                and start_ts <= now_ts < stop_ts
+            ):
+                now_programme = programme
+                continue
+            if len(next_programmes) < 3:
+                next_programmes.append(programme)
+
+        max_stop_ts = channel_stats.get("max_stop_ts")
+        horizon_hours = None
+        if max_stop_ts and max_stop_ts >= now_ts:
+            horizon_hours = round((max_stop_ts - now_ts) / 3600, 1)
+
+        items.append(
+            {
+                "epg_channel_row_id": int(channel_row.id),
+                "channel_id": channel_row.channel_id,
+                "name": channel_row.name,
+                "icon_url": channel_row.icon_url,
+                "total_programmes": int(channel_stats.get("total_programmes") or 0),
+                "programmes_now_to_future": int(channel_stats.get("future_programmes") or 0),
+                "has_future_data": int(channel_stats.get("future_programmes") or 0) > 0,
+                "future_horizon_hours": horizon_hours,
+                "now_programme": now_programme,
+                "next_programmes": next_programmes,
+            }
+        )
+
+    return {
+        "rows": items,
+        "total_count": total_count,
+        "offset": offset,
+        "limit": limit,
+        "summary": {
+            "total_channels": epg_total_channels,
+            "channels_with_future_data": epg_channels_with_data,
+            "channels_without_future_data": max(0, epg_total_channels - epg_channels_with_data),
+            "total_programmes": epg_programme_count,
+        },
+        "now_ts": now_ts,
+    }
 
 
 # --- Cache ---
