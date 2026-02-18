@@ -127,6 +127,7 @@ class Playlist(Base):
     hls_proxy_use_ffmpeg = Column(Boolean, nullable=False, unique=False, default=False)
     hls_proxy_prebuffer = Column(String(32), nullable=True, unique=False, default="1M")
     user_agent = Column(String(255), nullable=True)
+    xc_live_stream_format = Column(String(8), nullable=False, unique=False, default="ts")
 
     # Backref to all associated linked sources
     channel_sources = relationship('ChannelSource', backref='playlist', lazy=True, cascade="all, delete-orphan")

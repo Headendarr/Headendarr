@@ -131,6 +131,18 @@
             @update:model-value="onUserAgentChange"
           />
 
+          <TicSelectInput
+            v-if="accountType === 'XC'"
+            v-model="xcLiveStreamFormat"
+            :options="xcLiveStreamFormatOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            label="XC Stream Format"
+            description="Live stream URL format used for this Xtream source."
+          />
+
           <TicToggleInput
             v-model="useHlsProxy"
             label="Use HLS proxy"
@@ -224,6 +236,11 @@ export default {
         {label: 'M3U', value: 'M3U'},
         {label: 'Xtream Codes', value: 'XC'},
       ],
+      xcLiveStreamFormatOptions: [
+        {label: 'MPEG-TS (.ts)', value: 'ts'},
+        {label: 'HLS (.m3u8)', value: 'm3u8'},
+      ],
+      xcLiveStreamFormat: 'ts',
       xcAccounts: [],
       connections: 1,
       userAgent: null,
@@ -352,6 +369,7 @@ export default {
       this.name = '';
       this.url = '';
       this.accountType = 'M3U';
+      this.xcLiveStreamFormat = 'ts';
       this.xcAccounts = [];
       this.connections = 1;
       this.userAgent = this.getPreferredUserAgent('VLC');
@@ -381,6 +399,7 @@ export default {
           connection_limit: account.connection_limit || 1,
           label: account.label || '',
         })),
+        xcLiveStreamFormat: this.xcLiveStreamFormat,
         connections: this.connections,
         userAgent: this.userAgent,
         useHlsProxy: this.useHlsProxy,
@@ -424,6 +443,7 @@ export default {
             },
           ];
         }
+        this.xcLiveStreamFormat = response.data.data.xc_live_stream_format || 'ts';
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
         this.userAgentTouched = false;
@@ -497,6 +517,7 @@ export default {
         name: this.name,
         url: this.url,
         account_type: this.accountType,
+        xc_live_stream_format: this.accountType === 'XC' ? this.xcLiveStreamFormat : undefined,
         connections: this.accountType === 'XC' ? this.totalXcConnections : this.connections,
         user_agent: this.userAgent,
         use_hls_proxy: this.useHlsProxy,

@@ -37,11 +37,9 @@ from backend.models import (
 )
 from backend.playlists import (
     XC_ACCOUNT_TYPE,
-    _build_xc_url_template,
-    _extract_xc_suffix,
+    _build_xc_live_stream_url,
     _get_enabled_xc_accounts_sync,
     _normalize_xc_host,
-    _render_xc_url,
     fetch_playlist_streams,
 )
 from backend.config import flask_run_port
@@ -516,14 +514,15 @@ async def add_new_channel(config, data, commit=True, publish=True):
             for account in accounts:
                 template = playlist_stream.get("url")
                 if playlist_stream.get("xc_stream_id"):
-                    template = _build_xc_url_template(
+                    stream_url = _build_xc_live_stream_url(
                         _normalize_xc_host(playlist_info.url),
                         playlist_stream["xc_stream_id"],
-                        _extract_xc_suffix(playlist_stream.get("url")),
+                        playlist_stream.get("url"),
+                        account,
+                        preferred_extension=playlist_info.xc_live_stream_format,
                     )
-                stream_url = _render_xc_url(
-                    template, account.username, account.password
-                )
+                else:
+                    stream_url = template
                 stream_url = _apply_playlist_hls_proxy(
                     playlist_info,
                     stream_url,
@@ -755,14 +754,15 @@ async def update_channel(config, channel_id, data):
                         for account in accounts:
                             template = playlist_stream.get("url")
                             if playlist_stream.get("xc_stream_id"):
-                                template = _build_xc_url_template(
+                                stream_url = _build_xc_live_stream_url(
                                     _normalize_xc_host(playlist_info.url),
                                     playlist_stream["xc_stream_id"],
-                                    _extract_xc_suffix(playlist_stream.get("url")),
+                                    playlist_stream.get("url"),
+                                    account,
+                                    preferred_extension=playlist_info.xc_live_stream_format,
                                 )
-                            stream_url = _render_xc_url(
-                                template, account.username, account.password
-                            )
+                            else:
+                                stream_url = template
                             stream_url = _apply_playlist_hls_proxy(
                                 playlist_info,
                                 stream_url,
@@ -853,14 +853,15 @@ async def update_channel(config, channel_id, data):
                             if account:
                                 template = playlist_stream.get("url")
                                 if playlist_stream.get("xc_stream_id"):
-                                    template = _build_xc_url_template(
+                                    playlist_stream["url"] = _build_xc_live_stream_url(
                                         _normalize_xc_host(playlist_info.url),
                                         playlist_stream["xc_stream_id"],
-                                        _extract_xc_suffix(playlist_stream.get("url")),
+                                        playlist_stream.get("url"),
+                                        account,
+                                        preferred_extension=playlist_info.xc_live_stream_format,
                                     )
-                                playlist_stream["url"] = _render_xc_url(
-                                    template, account.username, account.password
-                                )
+                                else:
+                                    playlist_stream["url"] = template
                         playlist_stream["url"] = _apply_playlist_hls_proxy(
                             playlist_info,
                             playlist_stream["url"],
@@ -924,18 +925,15 @@ async def update_channel(config, channel_id, data):
                                     if account:
                                         template = playlist_stream.get("url")
                                         if playlist_stream.get("xc_stream_id"):
-                                            template = _build_xc_url_template(
+                                            playlist_stream["url"] = _build_xc_live_stream_url(
                                                 _normalize_xc_host(playlist_info.url),
                                                 playlist_stream["xc_stream_id"],
-                                                _extract_xc_suffix(
-                                                    playlist_stream.get("url")
-                                                ),
+                                                playlist_stream.get("url"),
+                                                account,
+                                                preferred_extension=playlist_info.xc_live_stream_format,
                                             )
-                                        playlist_stream["url"] = _render_xc_url(
-                                            template,
-                                            account.username,
-                                            account.password,
-                                        )
+                                        else:
+                                            playlist_stream["url"] = template
                                 playlist_stream["url"] = _apply_playlist_hls_proxy(
                                     playlist_info,
                                     playlist_stream["url"],

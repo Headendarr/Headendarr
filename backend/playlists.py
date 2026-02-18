@@ -25,6 +25,9 @@ logger = logging.getLogger("tic.playlists")
 
 XC_ACCOUNT_TYPE = "XC"
 M3U_ACCOUNT_TYPE = "M3U"
+XC_LIVE_EXT_TS = "ts"
+XC_LIVE_EXT_M3U8 = "m3u8"
+XC_ALLOWED_LIVE_EXTENSIONS = {XC_LIVE_EXT_TS, XC_LIVE_EXT_M3U8}
 
 
 async def build_m3u_playlist_content(
@@ -209,7 +212,27 @@ def _extract_xc_suffix(url):
     if "." not in path:
         return ""
     ext = path.rsplit(".", 1)[1]
-    return f".{ext}" if ext else ""
+    ext = (ext or "").strip().lower().lstrip(".")
+    if ext in XC_ALLOWED_LIVE_EXTENSIONS:
+        return f".{ext}"
+    return ""
+
+
+def _normalize_xc_live_extension(extension):
+    value = (extension or "").strip().lower().lstrip(".")
+    if value in XC_ALLOWED_LIVE_EXTENSIONS:
+        return value
+    return XC_LIVE_EXT_TS
+
+
+def _resolve_xc_live_suffix(stream_url, preferred_extension=None):
+    selected_ext = _normalize_xc_live_extension(preferred_extension)
+    if selected_ext:
+        return f".{selected_ext}"
+    suffix = _extract_xc_suffix(stream_url)
+    if suffix:
+        return suffix
+    return ".ts"
 
 
 def _build_xc_url_template(host_url, stream_id, suffix):
@@ -222,6 +245,14 @@ def _render_xc_url(template, username, password):
     if "{username}" in template or "{password}" in template:
         return template.format(username=username, password=password)
     return template
+
+
+def _build_xc_live_stream_url(
+    host_url, stream_id, stream_url, account, preferred_extension=None
+):
+    suffix = _resolve_xc_live_suffix(stream_url, preferred_extension=preferred_extension)
+    template = _build_xc_url_template(host_url, stream_id, suffix)
+    return _render_xc_url(template, account.username, account.password)
 
 
 def _get_primary_xc_account_sync(playlist_id):
@@ -341,8 +372,8 @@ async def _import_xc_playlist_streams(settings, playlist):
             tvg_chno = None
 
         # I'm not sure yet if this is required. I need to test more XC sources to know
-        container_ext = (stream.get("container_extension") or "").strip().lstrip(".")
-        suffix = f".{container_ext}" if container_ext else ""
+        container_ext = (stream.get("container_extension") or "").strip().lower().lstrip(".")
+        suffix = f".{container_ext}" if container_ext in XC_ALLOWED_LIVE_EXTENSIONS else ".ts"
         template_url = _build_xc_url_template(host_url, stream_id, suffix)
         items.append(
             {
@@ -468,6 +499,9 @@ async def read_config_one_playlist(config, playlist_id):
                     "url": result.url,
                     "connections": result.connections,
                     "account_type": result.account_type,
+                    "xc_live_stream_format": _normalize_xc_live_extension(
+                        result.xc_live_stream_format
+                    ),
                     "xc_username": result.xc_username,
                     "xc_password_set": bool(result.xc_password),
                     "xc_accounts": xc_accounts,
@@ -494,6 +528,9 @@ async def add_new_playlist(config, data):
                 name=data.get("name"),
                 url=data.get("url"),
                 account_type=account_type,
+                xc_live_stream_format=_normalize_xc_live_extension(
+                    data.get("xc_live_stream_format")
+                ),
                 xc_username=data.get("xc_username"),
                 xc_password=data.get("xc_password"),
                 connections=convert_to_int(data.get("connections")),
@@ -527,6 +564,9 @@ async def update_playlist(config, playlist_id, data):
             playlist.name = data.get("name", playlist.name)
             playlist.url = data.get("url", playlist.url)
             playlist.account_type = data.get("account_type", playlist.account_type)
+            playlist.xc_live_stream_format = _normalize_xc_live_extension(
+                data.get("xc_live_stream_format", playlist.xc_live_stream_format)
+            )
             if "xc_username" in data:
                 playlist.xc_username = data.get("xc_username")
             if data.get("xc_password"):
@@ -937,14 +977,12 @@ async def read_stream_details_from_all_playlists():
         if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
             account = primary_accounts.get(result.playlist_id)
             if account:
-                stream_url = _render_xc_url(
-                    _build_xc_url_template(
-                        _normalize_xc_host(result.playlist.url),
-                        result.xc_stream_id,
-                        _extract_xc_suffix(result.url),
-                    ),
-                    account.username,
-                    account.password,
+                stream_url = _build_xc_live_stream_url(
+                    _normalize_xc_host(result.playlist.url),
+                    result.xc_stream_id,
+                    result.url,
+                    account,
+                    preferred_extension=result.playlist.xc_live_stream_format,
                 )
         playlist_streams["streams"].append(
             {
@@ -1048,14 +1086,12 @@ def read_filtered_stream_details_from_all_playlists(
         if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
             account = primary_accounts.get(result.playlist_id)
             if account:
-                stream_url = _render_xc_url(
-                    _build_xc_url_template(
-                        _normalize_xc_host(result.playlist.url),
-                        result.xc_stream_id,
-                        _extract_xc_suffix(result.url),
-                    ),
-                    account.username,
-                    account.password,
+                stream_url = _build_xc_live_stream_url(
+                    _normalize_xc_host(result.playlist.url),
+                    result.xc_stream_id,
+                    result.url,
+                    account,
+                    preferred_extension=result.playlist.xc_live_stream_format,
                 )
         playlist_info = result.playlist
         if playlist_info:
@@ -1200,14 +1236,12 @@ async def probe_playlist_stream(playlist_stream_id):
     if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
         account = _get_primary_xc_account_sync(playlist_stream.playlist_id)
         if account:
-            stream_url = _render_xc_url(
-                _build_xc_url_template(
-                    _normalize_xc_host(playlist_stream.playlist.url),
-                    playlist_stream.xc_stream_id,
-                    _extract_xc_suffix(playlist_stream.url),
-                ),
-                account.username,
-                account.password,
+            stream_url = _build_xc_live_stream_url(
+                _normalize_xc_host(playlist_stream.playlist.url),
+                playlist_stream.xc_stream_id,
+                playlist_stream.url,
+                account,
+                preferred_extension=playlist_stream.playlist.xc_live_stream_format,
             )
     probe_data = await ffprobe_file(stream_url)
     return probe_data
@@ -1223,14 +1257,12 @@ def resolve_playlist_stream_url(
     if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
         account = _get_primary_xc_account_sync(playlist_stream.playlist_id)
         if account:
-            stream_url = _render_xc_url(
-                _build_xc_url_template(
-                    _normalize_xc_host(playlist_stream.playlist.url),
-                    playlist_stream.xc_stream_id,
-                    _extract_xc_suffix(playlist_stream.url),
-                ),
-                account.username,
-                account.password,
+            stream_url = _build_xc_live_stream_url(
+                _normalize_xc_host(playlist_stream.playlist.url),
+                playlist_stream.xc_stream_id,
+                playlist_stream.url,
+                account,
+                preferred_extension=playlist_stream.playlist.xc_live_stream_format,
             )
     playlist_info = playlist_stream.playlist
     if playlist_info:
