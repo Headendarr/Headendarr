@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import base64
 import json
 import os
@@ -11,6 +12,7 @@ import yaml
 from mergedeep import merge
 
 from backend.security import generate_stream_key
+
 
 def get_home_dir():
     home_dir = os.environ.get("HOME_DIR")
@@ -233,8 +235,32 @@ class Config:
         yaml_settings = {}
         if self.settings is None:
             yaml_settings = self.read_config_yaml()
-        self.settings = recursive_dict_update(self.default_settings, yaml_settings)
+        self.settings = recursive_dict_update(
+            copy.deepcopy(self.default_settings), yaml_settings
+        )
         return self.settings
+
+    def _normalize_settings(self, settings):
+        """
+        Drop unknown settings keys so removed/renamed options do not persist.
+        Returns True when any cleanup was applied.
+        """
+        changed = False
+
+        def _prune_unknown_keys(data, schema):
+            nonlocal changed
+            if not isinstance(data, dict) or not isinstance(schema, dict):
+                return
+            for key in list(data.keys()):
+                if key not in schema:
+                    data.pop(key, None)
+                    changed = True
+                    continue
+                if isinstance(data.get(key), dict) and isinstance(schema.get(key), dict):
+                    _prune_unknown_keys(data[key], schema[key])
+
+        _prune_unknown_keys(settings, self.default_settings)
+        return changed
 
     def ensure_tvh_sync_user(self):
         if os.path.exists(self.tvh_sync_user_file):
@@ -312,7 +338,10 @@ class Config:
     def update_settings(self, updated_settings):
         if self.settings is None:
             self.read_settings()
-        self.settings = recursive_dict_update(self.default_settings, updated_settings)
+        self.settings = recursive_dict_update(
+            copy.deepcopy(self.default_settings), updated_settings
+        )
+        self._normalize_settings(self.settings)
 
     async def tvh_connection_settings(self):
         settings = await asyncio.to_thread(self.read_settings)

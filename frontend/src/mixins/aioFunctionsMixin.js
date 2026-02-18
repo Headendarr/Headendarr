@@ -13,6 +13,22 @@ function createAioStartupTasks() {
   let pingInterval = null;
   let runningCheckInterval = null;
   let startupFinalizing = false;
+  let startupFlowComplete = false;
+  let showFirstRunOverlay = false;
+
+  const overlaySeenKeyForRuntime = (runtimeKey) => `tic_first_run_overlay_seen:${runtimeKey}`;
+
+  const shouldShowOverlayForRuntime = (runtimeKey) => {
+    if (!runtimeKey) {
+      return true;
+    }
+    const storageKey = overlaySeenKeyForRuntime(runtimeKey);
+    if (localStorage.getItem(storageKey) === '1') {
+      return false;
+    }
+    localStorage.setItem(storageKey, '1');
+    return true;
+  };
 
   const clearStartupIntervals = () => {
     if (pingInterval) {
@@ -26,6 +42,9 @@ function createAioStartupTasks() {
   };
 
   const showStartupOverlay = (message) => {
+    if (!showFirstRunOverlay) {
+      return;
+    }
     $q.loading.show({
       message: message || 'Waiting for TVHeadend to start for first-run setup...',
     });
@@ -36,7 +55,7 @@ function createAioStartupTasks() {
   };
 
   const pingBackend = () => {
-    if (!firstRun.value || startupFinalizing) {
+    if (!firstRun.value || startupFinalizing || startupFlowComplete) {
       return;
     }
     axios({
@@ -72,9 +91,20 @@ function createAioStartupTasks() {
       data: postData,
     })
       .then(() => {
+        // Finalized for this session; avoid full reload loops on stale cached responses.
+        firstRun.value = false;
+        startupFinalizing = false;
+        startupFlowComplete = true;
+        clearStartupIntervals();
         hideStartupOverlay();
-        // Reload page to properly trigger the auth refresh
-        location.reload();
+        axios({
+          method: 'get',
+          url: '/tic-api/tvh-running',
+        })
+          .then((tvhResponse) => {
+            aioMode.value = tvhResponse.data.data.running;
+          })
+          .catch(() => {});
       })
       .catch(() => {
         startupFinalizing = false;
@@ -84,7 +114,7 @@ function createAioStartupTasks() {
   };
 
   const checkTvhRunning = () => {
-    if (!firstRun.value || startupFinalizing) {
+    if (!firstRun.value || startupFinalizing || startupFlowComplete) {
       return;
     }
     axios({
@@ -113,19 +143,28 @@ function createAioStartupTasks() {
   };
 
   const checkTvhStatus = () => {
+    if (startupFlowComplete) {
+      hideStartupOverlay();
+      return;
+    }
     // Fetch current settings
     axios({
       method: 'get',
       url: '/tic-api/get-settings',
+      params: {_ts: Date.now()},
+      headers: {'Cache-Control': 'no-cache'},
     })
       .then((response) => {
         firstRun.value = response.data.data.first_run;
         firstRunInitComplete.value = true;
         if (firstRun.value) {
+          showFirstRunOverlay = shouldShowOverlayForRuntime(response.data.runtime_key);
           showStartupOverlay('Waiting for TVHeadend to start for first-run setup...');
           checkTvhRunning();
           runningCheckInterval = setInterval(checkTvhRunning, 5000);
         } else {
+          startupFlowComplete = true;
+          clearStartupIntervals();
           hideStartupOverlay();
           // After first-run, detect AIO mode once and never gate the UI on TVH health again.
           axios({

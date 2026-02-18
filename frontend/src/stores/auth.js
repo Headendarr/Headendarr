@@ -153,8 +153,10 @@ export const useAuthStore = defineStore('auth', {
           if (this.appRuntimeKey === null) {
             this.appRuntimeKey = payload.runtime_key;
           } else if (this.appRuntimeKey !== payload.runtime_key) {
-            console.log('Reload window as backed was restarted');
-            location.reload();
+            // Avoid hard reload loops (e.g. multi-worker runtime key mismatch).
+            // Keep session valid and accept the latest runtime key.
+            console.log('Backend runtime key changed; updating client runtime key');
+            this.appRuntimeKey = payload.runtime_key;
           }
           this.tokenExpiresAt = payload.session_expires_at || this.tokenExpiresAt;
           if (this.tokenExpiresAt) {

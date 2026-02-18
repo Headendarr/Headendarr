@@ -498,6 +498,7 @@ async def api_get_config_tvheadend():
     return jsonify(
         {
             "success": True,
+            "runtime_key": config.runtime_key,
             "data":    return_data
         }
     ), 200
