@@ -30,6 +30,23 @@ device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
     </device>
 </root>"""
 
+# TVH built-in stream profile IDs supported by HTTP stream URLs via ?profile=<id>.
+# TVH defaults that can't be deleted:
+# - pass
+# - matroska
+# - webtv-h264-aac-mpegts
+# - webtv-h264-aac-matroska
+# - webtv-h264-aac-mp4
+# - webtv-vp8-vorbis-webm
+SUPPORTED_TVH_STREAM_PROFILES = {
+    'pass',
+    'matroska',
+    'webtv-h264-aac-mpegts',
+    'webtv-h264-aac-matroska',
+    'webtv-h264-aac-mp4',
+    'webtv-vp8-vorbis-webm',
+}
+
 
 def _build_proxy_stream_url(base_url, source_url, stream_key, instance_id, username=None):
     return normalize_local_proxy_url(
@@ -339,7 +356,13 @@ async def tvh_playlist_m3u(playlist_id):
     await audit_stream_event(request._stream_user, "playlist_m3u", request.path)
     # Check for 'include_auth' GET argument
     include_auth = request.args.get('include_auth') != 'false'
-    stream_profile = request.args.get('profile', 'pass')
+    requested_profile = (request.args.get('profile') or 'pass').strip().lower()
+    stream_profile = requested_profile if requested_profile in SUPPORTED_TVH_STREAM_PROFILES else 'pass'
+    if stream_profile != requested_profile:
+        current_app.logger.warning(
+            "Invalid TVH stream profile '%s' requested on channels.m3u; falling back to 'pass'.",
+            requested_profile,
+        )
     stream_key = request.args.get('stream_key') or request.args.get('password') or request._stream_key
     username = None
     if stream_key and request._stream_user:
