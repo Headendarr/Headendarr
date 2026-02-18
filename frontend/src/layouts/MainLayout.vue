@@ -76,7 +76,7 @@
             content-class="connection-details-dropdown tic-dropdown-menu"
           >
             <ConnectionDetailsPanel
-              :enabled-playlists="enabledPlaylists"
+              :enabled-playlists="enabledPlaylistsForConnectionDetails"
               :connection-base-url="connectionBaseUrl"
               :current-streaming-key="currentStreamingKey"
               :epg-url="epgUrl"
@@ -103,7 +103,7 @@
             position="left"
           >
             <ConnectionDetailsPanel
-              :enabled-playlists="enabledPlaylists"
+              :enabled-playlists="enabledPlaylistsForConnectionDetails"
               :connection-base-url="connectionBaseUrl"
               :current-streaming-key="currentStreamingKey"
               :epg-url="epgUrl"
@@ -569,6 +569,9 @@ export default defineComponent({
     const roles = computed(() => authStore.user?.roles || []);
     const isAdmin = computed(() => roles.value.includes('admin'));
     const isStreamer = computed(() => roles.value.includes('streamer'));
+    const enabledPlaylistsForConnectionDetails = computed(() => (
+      (enabledPlaylists.value || []).filter((playlist) => playlist?.enabled !== false)
+    ));
     const filteredLinks = computed(() => linksList.filter((link) => {
       if (link.adminOnly && !isAdmin.value) {
         return false;
@@ -606,6 +609,7 @@ export default defineComponent({
       loadTvheadendAdmin,
       showTvheadendAdmin,
       enabledPlaylists,
+      enabledPlaylistsForConnectionDetails,
       appUrl,
       connectionBaseUrl,
       epgUrl,
