@@ -226,6 +226,7 @@
     <StreamTestDialog
       ref="streamTestDialogRef"
       :stream-url="testStreamUrl"
+      :user-agent="testStreamUserAgent"
     />
   </TicDialogWindow>
 </template>
@@ -297,6 +298,7 @@ export default {
       suggestedStreams: [],
       nextSourceKey: 1,
       testStreamUrl: '',
+      testStreamUserAgent: '',
     };
   },
   computed: {
@@ -568,6 +570,7 @@ export default {
         console.error('Resolve stream URL for test error:', error);
       }
       this.testStreamUrl = this.normalizeStreamUrl(testUrl || stream?.stream_url);
+      this.testStreamUserAgent = (stream?.playlist_user_agent || '').trim();
       if (!this.testStreamUrl) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;

@@ -8,29 +8,37 @@
     @hide="onDialogHide"
   >
     <div class="q-pa-md">
-      <div class="q-mb-md">
-        <q-input
+      <q-form class="tic-form-layout q-mb-md">
+        <TicTextInput
           v-model="localStreamUrl"
           label="Stream URL to Test"
-          outlined
-          dense
           :disable="loading"
           placeholder="http://..."
         >
           <template #prepend>
             <q-icon name="link" />
           </template>
-        </q-input>
-      </div>
+        </TicTextInput>
 
-      <div class="q-mb-md">
+        <TicTextInput
+          v-model="localUserAgent"
+          label="User-Agent"
+          :disable="loading"
+          placeholder="Optional"
+          description="If left empty, diagnostics will use the default browser user-agent."
+        >
+          <template #prepend>
+            <q-icon name="smart_toy" />
+          </template>
+        </TicTextInput>
+
         <TicToggleInput
           v-model="bypassProxies"
           label="Bypass HLS Proxies"
           description="Automatically unwrap and test the original upstream source URL."
           :disable="loading"
         />
-      </div>
+      </q-form>
 
       <div v-if="loading" class="column items-center justify-center q-pa-xl diagnostic-loading-container">
         <div class="relative-position q-mb-xl">
@@ -178,18 +186,24 @@
 <script>
 import axios from 'axios';
 import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
+import TicTextInput from 'components/ui/inputs/TicTextInput.vue';
 import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 
 export default {
   name: 'StreamTestDialog',
   components: {
     TicDialogWindow,
+    TicTextInput,
     TicToggleInput,
   },
   props: {
     streamUrl: {
       type: String,
       required: true,
+    },
+    userAgent: {
+      type: String,
+      default: '',
     },
   },
   emits: ['hide'],
@@ -201,6 +215,7 @@ export default {
       pollInterval: null,
       report: null,
       localStreamUrl: '',
+      localUserAgent: '',
       testProgress: 0,
       progressInterval: null,
       bypassProxies: false,
@@ -210,6 +225,12 @@ export default {
     streamUrl: {
       handler(val) {
         this.localStreamUrl = val;
+      },
+      immediate: true,
+    },
+    userAgent: {
+      handler(val) {
+        this.localUserAgent = (val || '').trim();
       },
       immediate: true,
     },
@@ -291,6 +312,7 @@ export default {
       axios.post('/tic-api/diagnostics/stream/test', {
         stream_url: this.localStreamUrl,
         bypass_proxies: this.bypassProxies,
+        user_agent: this.localUserAgent,
       }).then(response => {
         if (response.data.success) {
           this.taskId = response.data.task_id;

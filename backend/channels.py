@@ -323,6 +323,7 @@ def read_config_one_channel(channel_id):
                     "id": source.id,
                     "playlist_id": source.playlist_id,
                     "playlist_name": playlist_name,
+                    "playlist_user_agent": source.playlist.user_agent if source.playlist else None,
                     "priority": source.priority,
                     "stream_name": source.playlist_stream_name,
                     "stream_url": source.playlist_stream_url,

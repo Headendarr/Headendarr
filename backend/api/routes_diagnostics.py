@@ -13,6 +13,7 @@ async def test_stream():
     data = await request.get_json()
     stream_url = data.get('stream_url')
     bypass_proxies = data.get('bypass_proxies', False)
+    preferred_user_agent = (data.get('user_agent') or "").strip() or None
     if not stream_url:
         return jsonify({"success": False, "message": "Missing stream_url"}), 400
 
@@ -27,6 +28,7 @@ async def test_stream():
         stream_url,
         bypass_proxies=bypass_proxies,
         request_host_url=request.host_url,
+        preferred_user_agent=preferred_user_agent,
     )
     return jsonify({"success": True, "task_id": task_id})
 

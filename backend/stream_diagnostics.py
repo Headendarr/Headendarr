@@ -13,10 +13,11 @@ logger = logging.getLogger("tic.stream_diagnostics")
 
 
 class StreamProbe:
-    def __init__(self, url, bypass_proxies=False, request_host_url=None):
+    def __init__(self, url, bypass_proxies=False, request_host_url=None, preferred_user_agent=None):
         self.url = url
         self.bypass_proxies = bypass_proxies
         self.request_host_url = request_host_url
+        self.preferred_user_agent = (preferred_user_agent or "").strip() or None
         self.task_id = None
         self.status = "pending"
         self.report = {
@@ -225,22 +226,41 @@ class StreamProbe:
 
     async def _run_hybrid_probe(self):
         self.log("Starting hybrid FFmpeg/Python probe (20s wall-clock limit)...")
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        user_agent_candidates = []
+        if self.preferred_user_agent:
+            user_agent_candidates.append(self.preferred_user_agent)
+        if default_user_agent not in user_agent_candidates:
+            user_agent_candidates.append(default_user_agent)
 
         # Fast preflight helps catch auth/routing issues before FFmpeg runs.
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.url,
-                    headers={"User-Agent": user_agent},
-                    timeout=aiohttp.ClientTimeout(total=6),
-                ) as preflight:
-                    if preflight.status >= 400:
-                        raise Exception(f"Preflight failed with HTTP {preflight.status}")
-        except Exception as exc:
-            self.report["errors"].append(str(exc))
-            self.log(f"Preflight request failed: {exc}")
+        user_agent = None
+        last_preflight_error = None
+        for candidate in user_agent_candidates:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        self.url,
+                        headers={"User-Agent": candidate},
+                        timeout=aiohttp.ClientTimeout(total=6),
+                    ) as preflight:
+                        if preflight.status >= 400:
+                            raise Exception(f"Preflight failed with HTTP {preflight.status}")
+                user_agent = candidate
+                break
+            except Exception as exc:
+                last_preflight_error = exc
+                self.log(f"Preflight request failed with configured user-agent candidate: {exc}")
+
+        if not user_agent:
+            self.report["errors"].append(str(last_preflight_error))
+            self.log(f"Preflight request failed: {last_preflight_error}")
             return
+
+        if self.preferred_user_agent and user_agent == self.preferred_user_agent:
+            self.log("Preflight succeeded using source-configured user-agent.")
+        elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
+            self.log("Preflight succeeded using fallback browser user-agent.")
 
         cmd = [
             "ffmpeg",
@@ -359,13 +379,14 @@ class StreamProbe:
 _active_probes = {}
 
 
-async def start_probe(url, bypass_proxies=False, request_host_url=None):
+async def start_probe(url, bypass_proxies=False, request_host_url=None, preferred_user_agent=None):
     import uuid
     task_id = str(uuid.uuid4())
     probe = StreamProbe(
         url,
         bypass_proxies=bypass_proxies,
         request_host_url=request_host_url,
+        preferred_user_agent=preferred_user_agent,
     )
     probe.task_id = task_id
     _active_probes[task_id] = probe
