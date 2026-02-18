@@ -232,9 +232,7 @@ class Config:
         return read_yaml(self.config_file)
 
     def read_settings(self):
-        yaml_settings = {}
-        if self.settings is None:
-            yaml_settings = self.read_config_yaml()
+        yaml_settings = self.read_config_yaml()
         self.settings = recursive_dict_update(
             copy.deepcopy(self.default_settings), yaml_settings
         )
@@ -322,10 +320,9 @@ class Config:
         self.write_settings_yaml(self.settings)
 
     def update_settings(self, updated_settings):
-        if self.settings is None:
-            self.read_settings()
+        current_settings = copy.deepcopy(self.read_settings() or self.default_settings)
         self.settings = recursive_dict_update(
-            copy.deepcopy(self.default_settings), updated_settings
+            current_settings, updated_settings
         )
         self._normalize_settings(self.settings)
 
