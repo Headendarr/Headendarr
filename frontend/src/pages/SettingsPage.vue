@@ -41,8 +41,20 @@
                 <TicToggleInput
                   v-model="routePlaylistsThroughTvh"
                   label="Route playlists & HDHomeRun through TVHeadend"
-                  description="When enabled, all playlist and HDHomeRun streams are routed through TVHeadend so TVH can enforce stream policies."
+                  description="When enabled, playlist and HDHomeRun stream URLs are routed through TVHeadend so TVH can enforce stream profiles and stream policies."
                 />
+                <q-banner
+                  dense
+                  rounded
+                  class="bg-orange-1 text-orange-10 q-mb-md"
+                  inline-actions
+                >
+                  <template #avatar>
+                    <q-icon name="warning_amber" />
+                  </template>
+                  Enabling this can temporarily break M3U/HDHomeRun playback until channels are mapped and validated
+                  in TVHeadend. On large channel lists this catch-up can take some time.
+                </q-banner>
 
                 <q-separator />
 

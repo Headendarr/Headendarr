@@ -45,6 +45,7 @@ const sidebars = {
               items: [
                 "configuration/connectivity/methods",
                 "configuration/connectivity/plex",
+                "configuration/connectivity/jellyfin",
               ],
             },
             "configuration/hls-proxies",
