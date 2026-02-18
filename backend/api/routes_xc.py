@@ -3,11 +3,12 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from quart import request, jsonify, Response, current_app, redirect, send_from_directory
+from quart import request, jsonify, Response, current_app, redirect
 
 from backend.api import blueprint
 from backend.auth import audit_stream_event
 from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
+from backend.epgs import render_xmltv_payload
 from backend.playlists import read_config_all_playlists
 from backend.streaming import (
     append_stream_key,
@@ -236,9 +237,11 @@ async def xc_xmltv():
     user, error = await _xc_auth_user()
     if error:
         return jsonify({"error": error[0]}), error[1]
-    await audit_stream_event(user, "xc_xmltv", request.path)
-    config = current_app.config["APP_CONFIG"]
-    return await send_from_directory(config.config_path, "epg.xml")
+    await audit_stream_event(user, 'xc_xmltv', request.path)
+    config = current_app.config['APP_CONFIG']
+    base_url = request.url_root.rstrip('/')
+    payload = render_xmltv_payload(config, base_url)
+    return Response(payload, mimetype='application/xml')
 
 
 @blueprint.route("/player_api.php", methods=["GET"])

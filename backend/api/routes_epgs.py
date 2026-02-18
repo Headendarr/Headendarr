@@ -2,8 +2,17 @@
 # -*- coding:utf-8 -*-
 from backend.api.tasks import TaskQueueBroker
 from backend.auth import admin_auth_required
-from backend.epgs import read_config_all_epgs, add_new_epg, read_config_one_epg, update_epg, delete_epg, \
-    import_epg_data, read_channels_from_all_epgs, read_epg_review_channels
+from backend.epgs import (
+    add_new_epg,
+    build_custom_epg_subprocess,
+    delete_epg,
+    import_epg_data,
+    read_channels_from_all_epgs,
+    read_config_all_epgs,
+    read_config_one_epg,
+    read_epg_review_channels,
+    update_epg,
+)
 from backend.api import blueprint
 from quart import request, jsonify, current_app
 
@@ -104,6 +113,14 @@ async def api_update_epg(epg_id):
         'function': import_epg_data,
         'args':     [config, epg_id],
     }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": "Recreating static XMLTV file",
+            "function": build_custom_epg_subprocess,
+            "args": [config],
+        },
+        priority=21,
+    )
     return jsonify(
         {
             "success": True,

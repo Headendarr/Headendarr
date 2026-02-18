@@ -23,6 +23,7 @@ from backend.dvr_profiles import normalize_recording_profiles, normalize_retenti
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.tvheadend.tvh_requests import configure_tvh
 from backend.channels import build_channel_logo_proxy_url
+from backend.epgs import render_xmltv_payload
 
 
 @blueprint.route('/')
@@ -65,16 +66,10 @@ async def _serve_file(directory, filename):
 @blueprint.route('/tic-web/epg.xml')
 @stream_key_required
 async def serve_epg_static():
-    await audit_stream_event(request._stream_user, "epg_xml", request.path)
+    await audit_stream_event(request._stream_user, 'epg_xml', request.path)
     config = current_app.config['APP_CONFIG']
-    settings = config.read_settings()
-    base_url = request.url_root.rstrip("/")
-    file_path = os.path.join(config.config_path, 'epg.xml')
-    with open(file_path, "r", encoding="utf-8") as epg_file:
-        payload = epg_file.read()
-    from backend.epgs import XMLTV_HOST_PLACEHOLDER
-    if base_url and XMLTV_HOST_PLACEHOLDER in payload:
-        payload = payload.replace(XMLTV_HOST_PLACEHOLDER, base_url)
+    base_url = request.url_root.rstrip('/')
+    payload = render_xmltv_payload(config, base_url)
     return Response(payload, mimetype='application/xml')
 
 

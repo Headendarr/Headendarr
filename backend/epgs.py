@@ -756,6 +756,15 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
 XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
 
 
+def render_xmltv_payload(config, base_url: str) -> str:
+    file_path = os.path.join(config.config_path, "epg.xml")
+    with open(file_path, "r", encoding="utf-8") as epg_file:
+        payload = epg_file.read()
+    if base_url and XMLTV_HOST_PLACEHOLDER in payload:
+        payload = payload.replace(XMLTV_HOST_PLACEHOLDER, base_url.rstrip("/"))
+    return payload
+
+
 async def build_custom_epg_subprocess(config):
     project_root = Path(__file__).resolve().parents[1]
     proc = await asyncio.create_subprocess_exec(
