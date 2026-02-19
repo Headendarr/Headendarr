@@ -660,36 +660,40 @@ async def update_channel(config, channel_id, data):
                     "xc_stream_id": row.xc_stream_id,
                 }
 
-            def _get_playlist_stream(playlist_info, source_info):
+            async def _get_playlist_stream(playlist_info, source_info):
                 stream_id = source_info.get("stream_id")
                 stream_url = source_info.get("stream_url")
                 stream_name = source_info.get("stream_name")
                 if stream_id:
-                    row = (
-                        db.session.query(PlaylistStreams)
-                        .filter(
+                    query = await session.execute(
+                        select(PlaylistStreams).where(
                             PlaylistStreams.playlist_id == playlist_info.id,
                             PlaylistStreams.id == stream_id,
                         )
-                        .one_or_none()
                     )
+                    row = query.scalar_one_or_none()
                     if row:
                         return _playlist_stream_from_model(row)
                 if stream_url:
-                    row = (
-                        db.session.query(PlaylistStreams)
-                        .filter(
+                    query = await session.execute(
+                        select(PlaylistStreams).where(
                             PlaylistStreams.playlist_id == playlist_info.id,
                             PlaylistStreams.url == stream_url,
                         )
-                        .one_or_none()
                     )
+                    row = query.scalar_one_or_none()
                     if row:
                         return _playlist_stream_from_model(row)
                 if playlist_info.id not in playlist_stream_cache:
-                    playlist_stream_cache[playlist_info.id] = fetch_playlist_streams(
-                        playlist_info.id
+                    query = await session.execute(
+                        select(PlaylistStreams).where(
+                            PlaylistStreams.playlist_id == playlist_info.id
+                        )
                     )
+                    playlist_stream_cache[playlist_info.id] = {
+                        row.name: _playlist_stream_from_model(row)
+                        for row in query.scalars().all()
+                    }
                 return playlist_stream_cache[playlist_info.id].get(stream_name)
             for source_info in data.get("sources", []):
                 source_id = source_info.get("id")
@@ -737,7 +741,15 @@ async def update_channel(config, channel_id, data):
                         select(Playlist).filter(Playlist.id == source_info["playlist_id"])
                     )
                     playlist_info = query.scalar_one()
-                    playlist_stream = _get_playlist_stream(playlist_info, source_info)
+                    playlist_stream = await _get_playlist_stream(playlist_info, source_info)
+                    if not playlist_stream:
+                        logger.warning(
+                            "Missing playlist stream for channel %s source playlist=%s stream='%s'; skipping source",
+                            channel.name,
+                            source_info.get("playlist_id"),
+                            source_info.get("stream_name"),
+                        )
+                        continue
                     if playlist_info.account_type == XC_ACCOUNT_TYPE and not source_info.get(
                         "xc_account_id"
                     ):
@@ -838,18 +850,19 @@ async def update_channel(config, channel_id, data):
                                 )
                             )
                             playlist_info = query.scalar_one()
-                            playlist_stream = _get_playlist_stream(
+                            playlist_stream = await _get_playlist_stream(
                                 playlist_info, source_info
                             )
                         if (
                             playlist_info.account_type == XC_ACCOUNT_TYPE
                             and source_info.get("xc_account_id")
                         ):
-                            account = (
-                                db.session.query(XcAccount)
-                                .filter(XcAccount.id == source_info["xc_account_id"])
-                                .one_or_none()
+                            query = await session.execute(
+                                select(XcAccount).where(
+                                    XcAccount.id == source_info["xc_account_id"]
+                                )
                             )
+                            account = query.scalar_one_or_none()
                             if account:
                                 template = playlist_stream.get("url")
                                 if playlist_stream.get("xc_stream_id"):
@@ -901,7 +914,7 @@ async def update_channel(config, channel_id, data):
                                         )
                                     )
                                     playlist_info = query.scalar_one()
-                                    playlist_stream = _get_playlist_stream(
+                                    playlist_stream = await _get_playlist_stream(
                                         playlist_info, source_info
                                     )
                                 if not playlist_stream:
@@ -915,13 +928,12 @@ async def update_channel(config, channel_id, data):
                                     playlist_info.account_type == XC_ACCOUNT_TYPE
                                     and source_info.get("xc_account_id")
                                 ):
-                                    account = (
-                                        db.session.query(XcAccount)
-                                        .filter(
+                                    query = await session.execute(
+                                        select(XcAccount).where(
                                             XcAccount.id == source_info["xc_account_id"]
                                         )
-                                        .one_or_none()
                                     )
+                                    account = query.scalar_one_or_none()
                                     if account:
                                         template = playlist_stream.get("url")
                                         if playlist_stream.get("xc_stream_id"):
