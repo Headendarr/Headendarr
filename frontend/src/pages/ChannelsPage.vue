@@ -229,7 +229,8 @@
                               caption
                               lines="1"
                               style="text-decoration: underline"
-                              class="text-left text-primary q-ml-sm"
+                              class="text-left q-ml-sm"
+                              :class="channelNumberTextClass(element)"
                             >
                               {{ element.number }}
                             </q-item-label>
@@ -243,7 +244,10 @@
                                 <q-avatar rounded size="35px">
                                   <q-img :src="element.logo_url" style="max-width: 30px" />
                                 </q-avatar>
-                                <span class="text-weight-medium text-primary q-ml-sm channel-name-label">
+                                <span
+                                  class="text-weight-medium q-ml-sm channel-name-label"
+                                  :class="channelTitleTextClass(element)"
+                                >
                                   {{ element.name }}
                                 </span>
                                 <q-space />
@@ -363,9 +367,10 @@
                                   <q-img :src="element.logo_url" />
                                 </q-avatar>
                                 <div class="col">
-                                  <div class="text-weight-medium text-primary">{{ element.name }}</div>
+                                  <div class="text-weight-medium" :class="channelTitleTextClass(element)">{{ element.name }}</div>
                                   <div
-                                    class="text-caption text-grey-7 channel-number-link"
+                                    class="text-caption channel-number-link"
+                                    :class="channelNumberTextClass(element)"
                                     @click="
                                       bulkEditMode
                                         ? (element.selected = !element.selected)
@@ -840,15 +845,21 @@ export default defineComponent({
     },
     channelRowClass: function(channel) {
       if (!this.enableChannelHealthHighlight) {
-        return channel.enabled ? '' : 'bg-grey-3';
+        return channel.enabled ? '' : 'channel-disabled';
       }
       if (!channel.enabled) {
-        return 'bg-grey-3';
+        return 'channel-disabled';
       }
       if (channel.status && channel.status.state === 'warning') {
         return 'channel-needs-attention';
       }
       return '';
+    },
+    channelTitleTextClass(channel) {
+      return channel?.enabled ? 'text-primary' : 'text-grey-8';
+    },
+    channelNumberTextClass(channel) {
+      return channel?.enabled ? 'text-primary' : 'text-grey-8';
     },
     channelCardProps: function(channel) {
       if (!this.enableChannelHealthHighlight) {
@@ -859,6 +870,7 @@ export default defineComponent({
           accentColor: 'var(--tic-list-card-disabled-border)',
           surfaceColor: 'var(--tic-list-card-disabled-bg)',
           headerColor: 'var(--tic-list-card-disabled-header)',
+          textColor: 'var(--q-grey-8, #616161)',
         };
       }
       if (!channel.enabled) {
@@ -866,6 +878,7 @@ export default defineComponent({
           accentColor: 'var(--tic-list-card-disabled-border)',
           surfaceColor: 'var(--tic-list-card-disabled-bg)',
           headerColor: 'var(--tic-list-card-disabled-header)',
+          textColor: 'var(--q-grey-8, #616161)',
         };
       }
       if (channel.status && channel.status.state === 'warning') {
@@ -1375,6 +1388,12 @@ export default defineComponent({
 .channel-needs-attention {
   background: var(--tic-list-card-issues-bg);
   border-left: 4px solid var(--tic-list-card-issues-border);
+}
+
+.channel-disabled {
+  background: var(--tic-list-card-disabled-bg);
+  border-left: 4px solid var(--tic-list-card-disabled-border);
+  color: var(--q-grey-8, #616161);
 }
 
 .tic-form-layout > *:not(:last-child) {

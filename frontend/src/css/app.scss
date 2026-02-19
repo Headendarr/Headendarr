@@ -187,17 +187,13 @@
 }
 
 .disabled-item {
-  background: #eef2f6;
-  color: #6b7280;
-  border-left: 3px solid #9ca3af;
-  opacity: 0.78;
+  background: var(--tic-list-card-disabled-bg);
+  color: var(--q-grey-8, #616161);
+  border-left: 4px solid var(--tic-list-card-disabled-border);
 }
 
 .body--dark .disabled-item {
-  background: #0f172a;
-  color: #94a3b8;
-  border-left: 3px solid #475569;
-  opacity: 0.72;
+  color: var(--q-grey-5, #9e9e9e);
 }
 
 .body--dark .q-header,
