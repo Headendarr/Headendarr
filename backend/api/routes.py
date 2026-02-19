@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import json
 import os
+from pathlib import Path
 import aiohttp
 
 from quart import request, jsonify, send_from_directory, current_app, Response, websocket, redirect
@@ -15,6 +17,7 @@ from backend.auth import (
     get_user_from_token,
     get_authenticated_session_expires_at,
     stream_key_required,
+    user_auth_required,
     audit_stream_event,
 )
 from backend.config import is_tvh_process_running_locally
@@ -102,6 +105,41 @@ async def ping_tvh_alias():
     This is just a convenience alias. Some clients are probing /tic-tvh/ping (tvheadend http_root); return same pong
     """
     return await ping()
+
+
+def _app_version_payload():
+    version = os.environ.get("APP_VERSION")
+    git_sha = os.environ.get("GIT_SHA")
+    if version:
+        return {"version": version, "git_sha": git_sha}
+    package_path = Path(__file__).resolve().parents[2] / "frontend" / "package.json"
+    try:
+        with package_path.open("r", encoding="utf-8") as fh:
+            package = json.load(fh)
+        return {"version": package.get("version"), "git_sha": git_sha}
+    except Exception:
+        return {"version": None, "git_sha": git_sha}
+
+
+def _build_version_payload():
+    # Container builds write this file and the entrypoint prints it on startup.
+    version_file = Path("/version.txt")
+    if version_file.exists():
+        try:
+            raw = version_file.read_text(encoding="utf-8").strip()
+            if raw:
+                return raw.splitlines()[0].strip()
+        except Exception:
+            pass
+    return os.environ.get("BUILD_VERSION") or os.environ.get("BUILD_REF")
+
+
+@blueprint.route('/tic-api/version', methods=['GET'])
+@user_auth_required
+async def api_version():
+    payload = _app_version_payload()
+    payload["build"] = _build_version_payload()
+    return jsonify({"success": True, "data": payload})
 
 
 def _strip_hop_by_hop_headers(headers: dict) -> dict:

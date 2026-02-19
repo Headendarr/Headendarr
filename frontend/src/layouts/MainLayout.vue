@@ -256,6 +256,17 @@
                 </q-btn>
               </q-item-section>
             </q-item>
+            <q-separator class="q-mx-md q-my-xs" />
+            <q-item dense class="drawer-version-row">
+              <q-item-section>
+                <q-item-label caption class="drawer-version-text">
+                  Version: {{ appVersionDisplay }}
+                </q-item-label>
+                <q-item-label v-if="buildVersionDisplay" caption class="drawer-version-text">
+                  Build: {{ buildVersionDisplay }}
+                </q-item-label>
+              </q-item-section>
+            </q-item>
           </q-list>
         </div>
       </div>
@@ -350,6 +361,16 @@
 
 .drawer-footer--mini .q-item {
   justify-content: center;
+}
+
+.drawer-version-row {
+  min-height: 24px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.drawer-version-text {
+  letter-spacing: 0.01em;
 }
 </style>
 
@@ -481,6 +502,9 @@ export default defineComponent({
     const loadTvheadendAdmin = ref(true);
     const showTvheadendAdmin = ref(false);
     const appUrl = ref(window.location.origin);
+    const appVersion = ref(null);
+    const appGitSha = ref(null);
+    const appBuild = ref(null);
     const connectionBaseUrl = computed(() => window.location.origin);
 
     const enabledPlaylists = ref([]);
@@ -582,6 +606,18 @@ export default defineComponent({
         }).catch(() => {
         });
       }
+      axios({
+        method: 'get',
+        url: '/tic-api/version',
+      }).then((response) => {
+        appVersion.value = response.data?.data?.version || null;
+        appGitSha.value = response.data?.data?.git_sha || null;
+        appBuild.value = response.data?.data?.build || null;
+      }).catch(() => {
+        appVersion.value = null;
+        appGitSha.value = null;
+        appBuild.value = null;
+      });
     });
 
     watch([isMobileDrawer, isCompactDrawer], () => {
@@ -614,6 +650,25 @@ export default defineComponent({
     }));
     const currentUsername = computed(() => authStore.user?.username || 'User');
     const currentStreamingKey = computed(() => authStore.user?.streaming_key || 'STREAM_KEY');
+    const appVersionDisplay = computed(() => {
+      if (appVersion.value && appGitSha.value) {
+        return `${appVersion.value} (${String(appGitSha.value).slice(0, 7)})`;
+      }
+      if (appVersion.value) {
+        return appVersion.value;
+      }
+      if (appGitSha.value) {
+        return String(appGitSha.value).slice(0, 7);
+      }
+      return 'unknown';
+    });
+    const buildVersionDisplay = computed(() => {
+      const build = String(appBuild.value || '').trim();
+      if (!build) {
+        return '';
+      }
+      return build.replace(/^build:\s*/i, '').trim();
+    });
 
     const logout = async () => {
       await authStore.logout();
@@ -642,6 +697,8 @@ export default defineComponent({
       enabledPlaylists,
       enabledPlaylistsForConnectionDetails,
       appUrl,
+      appVersionDisplay,
+      buildVersionDisplay,
       connectionBaseUrl,
       epgUrl,
       xcPlaylistUrl,
