@@ -38,9 +38,8 @@ from backend.models import (
 from backend.playlists import (
     XC_ACCOUNT_TYPE,
     _build_xc_live_stream_url,
-    _get_enabled_xc_accounts_sync,
+    _get_enabled_xc_accounts_async,
     _normalize_xc_host,
-    fetch_playlist_streams,
 )
 from backend.config import flask_run_port
 from backend.streaming import (
@@ -295,19 +294,20 @@ async def read_config_all_channels(
     return return_list
 
 
-def read_config_one_channel(channel_id):
+async def read_config_one_channel(channel_id):
     return_item = {}
     channel_id = normalize_id(channel_id, "channel")
-    result = (
-        db.session.query(Channel)
-        .options(
-            joinedload(Channel.tags),
-            joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+    async with Session() as session:
+        result_query = await session.execute(
+            select(Channel)
+            .options(
+                joinedload(Channel.tags),
+                joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+            )
+            .where(Channel.id == channel_id)
+            .order_by(Channel.id)
         )
-        .filter(Channel.id == channel_id)
-        .order_by(Channel.id)
-        .one()
-    )
+        result = result_query.scalars().unique().one()
     if result:
         tags = []
         for tag in result.tags:
@@ -434,7 +434,9 @@ async def read_base46_image_string(base64_string):
 
 
 async def read_channel_logo(channel_id):
-    channel = db.session.query(Channel).where(Channel.id == channel_id).one()
+    async with Session() as session:
+        query = await session.execute(select(Channel).where(Channel.id == channel_id))
+        channel = query.scalar_one()
     base64_string = channel.logo_base64
     if not base64_string:
         # Never force clients to fetch internet logos at request time.
@@ -455,127 +457,149 @@ async def add_new_channel(config, data, commit=True, publish=True):
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
     app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
-    channel = Channel(
-        enabled=data.get("enabled"),
-        name=data.get("name"),
-        logo_url=data.get("logo_url"),
-        number=data.get("number"),
-    )
-    # Tags
-    for tag_name in data.get("tags", []):
-        channel_tag = (
-            db.session.query(ChannelTag)
-            .filter(ChannelTag.name == tag_name)
-            .one_or_none()
+    async with Session() as session:
+        channel = Channel(
+            enabled=data.get("enabled"),
+            name=data.get("name"),
+            logo_url=data.get("logo_url"),
+            number=data.get("number"),
         )
-        if not channel_tag:
-            channel_tag = ChannelTag(name=tag_name)
-            db.session.add(channel_tag)
-        channel.tags.append(channel_tag)
 
-    # Programme Guide
-    guide_info = data.get("guide", {})
-    if guide_info.get("epg_id"):
-        channel_guide_source = (
-            db.session.query(Epg).filter(Epg.id == guide_info["epg_id"]).one()
-        )
-        channel.guide_id = channel_guide_source.id
-        channel.guide_name = channel_guide_source.name
-        channel.guide_channel_id = guide_info["channel_id"]
-
-    # Sources
-    new_sources = []
-    for source_info in data.get("sources", []):
-        is_manual = source_info.get("source_type") == "manual" or not source_info.get(
-            "playlist_id"
-        )
-        if is_manual:
-            stream_url = (source_info.get("stream_url") or "").strip()
-            if not stream_url:
-                continue
-            channel_source = ChannelSource(
-                playlist_id=None,
-                playlist_stream_name=source_info.get("stream_name") or "Manual URL",
-                playlist_stream_url=stream_url,
-                use_hls_proxy=bool(source_info.get("use_hls_proxy", False)),
+        for tag_name in data.get("tags", []):
+            query = await session.execute(
+                select(ChannelTag).where(ChannelTag.name == tag_name)
             )
-            new_sources.append(channel_source)
-            continue
+            channel_tag = query.scalar_one_or_none()
+            if not channel_tag:
+                channel_tag = ChannelTag(name=tag_name)
+                session.add(channel_tag)
+            channel.tags.append(channel_tag)
 
-        playlist_info = (
-            db.session.query(Playlist)
-            .filter(Playlist.id == source_info["playlist_id"])
-            .one()
-        )
-        playlist_streams = fetch_playlist_streams(playlist_info.id)
-        playlist_stream = playlist_streams.get(source_info["stream_name"])
-        if playlist_info.account_type == XC_ACCOUNT_TYPE:
-            accounts = _get_enabled_xc_accounts_sync(playlist_info.id)
-            for account in accounts:
-                template = playlist_stream.get("url")
-                if playlist_stream.get("xc_stream_id"):
-                    stream_url = _build_xc_live_stream_url(
-                        _normalize_xc_host(playlist_info.url),
-                        playlist_stream["xc_stream_id"],
-                        playlist_stream.get("url"),
-                        account,
-                        preferred_extension=playlist_info.xc_live_stream_format,
+        guide_info = data.get("guide", {})
+        if guide_info.get("epg_id"):
+            query = await session.execute(
+                select(Epg).where(Epg.id == guide_info["epg_id"])
+            )
+            channel_guide_source = query.scalar_one()
+            channel.guide_id = channel_guide_source.id
+            channel.guide_name = channel_guide_source.name
+            channel.guide_channel_id = guide_info["channel_id"]
+
+        new_sources = []
+        playlist_stream_cache = {}
+        for source_info in data.get("sources", []):
+            is_manual = source_info.get("source_type") == "manual" or not source_info.get(
+                "playlist_id"
+            )
+            if is_manual:
+                stream_url = (source_info.get("stream_url") or "").strip()
+                if not stream_url:
+                    continue
+                new_sources.append(
+                    ChannelSource(
+                        playlist_id=None,
+                        playlist_stream_name=source_info.get("stream_name") or "Manual URL",
+                        playlist_stream_url=stream_url,
+                        use_hls_proxy=bool(source_info.get("use_hls_proxy", False)),
                     )
-                else:
-                    stream_url = template
+                )
+                continue
+
+            query = await session.execute(
+                select(Playlist).where(Playlist.id == source_info["playlist_id"])
+            )
+            playlist_info = query.scalar_one()
+            if playlist_info.id not in playlist_stream_cache:
+                streams_query = await session.execute(
+                    select(PlaylistStreams).where(
+                        PlaylistStreams.playlist_id == playlist_info.id
+                    )
+                )
+                playlist_stream_cache[playlist_info.id] = {
+                    row.name: {
+                        "url": row.url,
+                        "xc_stream_id": row.xc_stream_id,
+                    }
+                    for row in streams_query.scalars().all()
+                }
+            playlist_stream = playlist_stream_cache[playlist_info.id].get(
+                source_info["stream_name"]
+            )
+            if not playlist_stream:
+                continue
+
+            if playlist_info.account_type == XC_ACCOUNT_TYPE:
+                accounts = await _get_enabled_xc_accounts_async(playlist_info.id)
+                for account in accounts:
+                    template = playlist_stream.get("url")
+                    if playlist_stream.get("xc_stream_id"):
+                        stream_url = _build_xc_live_stream_url(
+                            _normalize_xc_host(playlist_info.url),
+                            playlist_stream["xc_stream_id"],
+                            playlist_stream.get("url"),
+                            account,
+                            preferred_extension=playlist_info.xc_live_stream_format,
+                        )
+                    else:
+                        stream_url = template
+                    stream_url = _apply_playlist_hls_proxy(
+                        playlist_info,
+                        stream_url,
+                        instance_id,
+                    )
+                    new_sources.append(
+                        ChannelSource(
+                            playlist_id=playlist_info.id,
+                            xc_account_id=account.id,
+                            playlist_stream_name=source_info["stream_name"],
+                            playlist_stream_url=stream_url,
+                        )
+                    )
+            else:
                 stream_url = _apply_playlist_hls_proxy(
                     playlist_info,
-                    stream_url,
+                    playlist_stream["url"],
                     instance_id,
                 )
-                channel_source = ChannelSource(
-                    playlist_id=playlist_info.id,
-                    xc_account_id=account.id,
-                    playlist_stream_name=source_info["stream_name"],
-                    playlist_stream_url=stream_url,
+                new_sources.append(
+                    ChannelSource(
+                        playlist_id=playlist_info.id,
+                        playlist_stream_name=source_info["stream_name"],
+                        playlist_stream_url=stream_url,
+                    )
                 )
-                new_sources.append(channel_source)
+
+        if new_sources:
+            channel.sources = new_sources
+
+        session.add(channel)
+        if publish:
+            await session.flush()
+
+        if publish:
+            try:
+                async with await get_tvh(config) as tvh:
+                    logo_proxy_url = build_channel_logo_proxy_url(
+                        channel.id if channel.id else "new",
+                        app_url,
+                        channel.logo_url or "",
+                    )
+                    channel_uuid = await publish_channel_to_tvh(
+                        tvh,
+                        channel,
+                        icon_url=logo_proxy_url,
+                    )
+                    channel.tvh_uuid = channel_uuid
+            except Exception as e:
+                logger.error(
+                    "Immediate publish failed for channel '%s': %s", channel.name, e
+                )
+
+        if commit:
+            await session.commit()
         else:
-            playlist_stream["url"] = _apply_playlist_hls_proxy(
-                playlist_info,
-                playlist_stream["url"],
-                instance_id,
-            )
-            channel_source = ChannelSource(
-                playlist_id=playlist_info.id,
-                playlist_stream_name=source_info["stream_name"],
-                playlist_stream_url=playlist_stream["url"],
-            )
-            new_sources.append(channel_source)
-    if new_sources:
-        channel.sources = new_sources
-
-    db.session.add(channel)
-    if publish:
-        db.session.flush()
-
-    if publish:
-        try:
-            async with await get_tvh(config) as tvh:
-                logo_proxy_url = build_channel_logo_proxy_url(
-                    channel.id if channel.id else "new",
-                    app_url,
-                    channel.logo_url or "",
-                )
-                channel_uuid = await publish_channel_to_tvh(
-                    tvh,
-                    channel,
-                    icon_url=logo_proxy_url,
-                )
-                channel.tvh_uuid = channel_uuid
-        except Exception as e:
-            logger.error(
-                "Immediate publish failed for channel '%s': %s", channel.name, e
-            )
-
-    if commit:
-        db.session.commit()
-    return channel
+            await session.flush()
+        return channel
 
 
 async def update_channel(config, channel_id, data):
@@ -762,7 +786,7 @@ async def update_channel(config, channel_id, data):
                         if stream_key in seen_xc_streams:
                             continue
                         seen_xc_streams.add(stream_key)
-                        accounts = _get_enabled_xc_accounts_sync(playlist_info.id)
+                        accounts = await _get_enabled_xc_accounts_async(playlist_info.id)
                         for account in accounts:
                             template = playlist_stream.get("url")
                             if playlist_stream.get("xc_stream_id"):
@@ -1034,7 +1058,8 @@ async def update_channel(config, channel_id, data):
 
 
 async def add_bulk_channels(config, data):
-    channel_number = db.session.query(func.max(Channel.number)).scalar()
+    async with Session() as session:
+        channel_number = await session.scalar(select(func.max(Channel.number)))
     if channel_number is None:
         channel_number = 999
 
@@ -1044,18 +1069,20 @@ async def add_bulk_channels(config, data):
     new_channels = []
     for channel in data:
         # Fetch the playlist channel by ID
-        playlist_stream = (
-            db.session.query(PlaylistStreams)
-            .where(PlaylistStreams.id == channel["stream_id"])
-            .one()
-        )
+        async with Session() as session:
+            stream_query = await session.execute(
+                select(PlaylistStreams)
+                .options(joinedload(PlaylistStreams.playlist))
+                .where(PlaylistStreams.id == channel["stream_id"])
+            )
+            playlist_stream = stream_query.scalar_one()
 
         # Check if Channel with this name already exists
-        existing_channel = (
-            db.session.query(Channel)
-            .filter(Channel.name == playlist_stream.name.strip())
-            .first()
-        )
+        async with Session() as session:
+            existing_query = await session.execute(
+                select(Channel).where(Channel.name == playlist_stream.name.strip())
+            )
+            existing_channel = existing_query.scalars().first()
 
         if existing_channel:
             logger.info(f"Channel '{playlist_stream.name}' already exists, skipping")
@@ -1082,11 +1109,11 @@ async def add_bulk_channels(config, data):
             new_channel_data["tags"].append(playlist_stream.group_title.strip())
 
         # Find the best match for an EPG
-        epg_match = (
-            db.session.query(EpgChannels)
-            .filter(EpgChannels.channel_id == playlist_stream.tvg_id)
-            .first()
-        )
+        async with Session() as session:
+            epg_query = await session.execute(
+                select(EpgChannels).where(EpgChannels.channel_id == playlist_stream.tvg_id)
+            )
+            epg_match = epg_query.scalars().first()
         if epg_match is not None:
             new_channel_data["guide"] = {
                 "channel_id": epg_match.channel_id,
@@ -1102,13 +1129,10 @@ async def add_bulk_channels(config, data):
             }
         )
         channel_obj = await add_new_channel(
-            config, new_channel_data, commit=False, publish=False
+            config, new_channel_data, commit=True, publish=False
         )
         new_channels.append(channel_obj)
         added_channel_count += 1
-
-    # Commit all new channels
-    db.session.commit()
 
     # Batch publish
     try:
@@ -1370,7 +1394,14 @@ async def batch_publish_new_channels_to_tvh(config, channels):
                 ch.tvh_uuid = existing_uuid
             except Exception as e:
                 logger.error("Failed saving channel '%s': %s", ch.name, e)
-        db.session.commit()
+        async with Session() as session:
+            async with session.begin():
+                for ch in channels:
+                    if not ch.id:
+                        continue
+                    channel_row = await session.get(Channel, ch.id)
+                    if channel_row and ch.tvh_uuid:
+                        channel_row.tvh_uuid = ch.tvh_uuid
         logger.info("Batch publish completed")
 
 
@@ -1391,16 +1422,17 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
 
     t0 = time.perf_counter()
     managed_uuids = []
-    results = (
-        db.session.query(Channel)
-        .options(
-            joinedload(Channel.tags),
-            joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
-            joinedload(Channel.sources).subqueryload(ChannelSource.xc_account),
+    async with Session() as session:
+        query = await session.execute(
+            select(Channel)
+            .options(
+                joinedload(Channel.tags),
+                joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+                joinedload(Channel.sources).subqueryload(ChannelSource.xc_account),
+            )
+            .order_by(Channel.id, Channel.number.asc())
         )
-        .order_by(Channel.id, Channel.number.asc())
-        .all()
-    )
+        results = query.scalars().unique().all()
     phase_seconds["load_channels"] = time.perf_counter() - t0
 
     current_signature = _build_channel_sync_signature(results, tic_base_url)
@@ -1513,11 +1545,16 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
 
         t_commit = time.perf_counter()
         if pending_commit:
-            try:
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
-                raise
+            async with Session() as session:
+                async with session.begin():
+                    for result in results:
+                        if not result.id:
+                            continue
+                        channel_row = await session.get(Channel, result.id)
+                        if not channel_row:
+                            continue
+                        channel_row.tvh_uuid = result.tvh_uuid
+                        channel_row.logo_base64 = result.logo_base64
         phase_seconds["db_commit"] = time.perf_counter() - t_commit
 
         # Write playlist file
@@ -1589,15 +1626,22 @@ async def publish_channel_muxes(config):
         tic_base_url = settings["settings"].get("app_url") or ""
     async with await get_tvh(config) as tvh:
         # Fetch results with relationships
-        results = (
-            db.session.query(Channel)
-            .options(
-                joinedload(Channel.tags),
-                joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+        async with Session() as session:
+            query = await session.execute(
+                select(Channel)
+                .options(
+                    joinedload(Channel.tags),
+                    joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+                )
+                .order_by(Channel.id, Channel.number.asc())
             )
-            .order_by(Channel.id, Channel.number.asc())
-            .all()
-        )
+            results = query.scalars().unique().all()
+            account_query = await session.execute(select(XcAccount))
+            xc_accounts = account_query.scalars().all()
+        xc_by_playlist_and_username = {
+            (account.playlist_id, account.username): account for account in xc_accounts
+        }
+        xc_by_id = {account.id: account for account in xc_accounts}
 
         # Cache existing mux list (LRU) to avoid repeat heavy calls within TTL
         cached_muxes = _list_cache.get("existing_muxes")
@@ -1615,8 +1659,8 @@ async def publish_channel_muxes(config):
             async with sem:
                 net_uuid = source_obj.playlist.tvh_uuid
                 if source_obj.playlist and source_obj.playlist.account_type == XC_ACCOUNT_TYPE:
-                    if source_obj.xc_account_id and source_obj.xc_account:
-                        net_uuid = source_obj.xc_account.tvh_uuid
+                    if source_obj.xc_account_id and xc_by_id.get(source_obj.xc_account_id):
+                        net_uuid = xc_by_id[source_obj.xc_account_id].tvh_uuid
                     else:
                         try:
                             parsed = urlparse(source_obj.playlist_stream_url or "")
@@ -1625,14 +1669,8 @@ async def publish_channel_muxes(config):
                                 idx = parts.index("live")
                                 username = parts[idx + 1] if len(parts) > idx + 1 else None
                                 if username:
-                                    account = (
-                                        db.session.query(XcAccount)
-                                        .filter(
-                                            XcAccount.playlist_id
-                                            == source_obj.playlist_id,
-                                            XcAccount.username == username,
-                                        )
-                                        .one_or_none()
+                                    account = xc_by_playlist_and_username.get(
+                                        (source_obj.playlist_id, username)
                                     )
                                     if account:
                                         net_uuid = account.tvh_uuid
@@ -1742,7 +1780,17 @@ async def publish_channel_muxes(config):
         # Await all
         if mux_tasks:
             await asyncio.gather(*mux_tasks)
-            db.session.commit()
+            async with Session() as session:
+                async with session.begin():
+                    for channel_obj in results:
+                        for source_obj in channel_obj.sources or []:
+                            if not source_obj.id:
+                                continue
+                            source_row = await session.get(ChannelSource, source_obj.id)
+                            if not source_row:
+                                continue
+                            source_row.tvh_uuid = source_obj.tvh_uuid
+                            source_row.xc_account_id = source_obj.xc_account_id
 
         # Cleanup unused muxes
         logger.info("Running cleanup task on current TVH muxes")
@@ -1888,12 +1936,12 @@ async def add_channels_from_groups(config, groups):
     as add_new_channel to ensure full compatibility with TVHeadend
     """
     logger.info(f"Adding channels from {len(groups)} groups")
-    settings = config.read_settings()
     added_channel_count = 0
     group_new_channels = []
 
     # First determine the starting channel number for the whole operation
-    channel_number = db.session.query(func.max(Channel.number)).scalar()
+    async with Session() as session:
+        channel_number = await session.scalar(select(func.max(Channel.number)))
     if channel_number is None:
         channel_number = 999
 
@@ -1908,12 +1956,15 @@ async def add_channels_from_groups(config, groups):
             continue
 
         # Get all streams from this group
-        playlist_streams_query = (
-            db.session.query(PlaylistStreams)
-            .filter(PlaylistStreams.playlist_id == playlist_id)
-            .filter(PlaylistStreams.group_title == group_name)
-            .all()
-        )
+        async with Session() as session:
+            stream_query = await session.execute(
+                select(PlaylistStreams)
+                .where(
+                    PlaylistStreams.playlist_id == playlist_id,
+                    PlaylistStreams.group_title == group_name,
+                )
+            )
+            playlist_streams_query = stream_query.scalars().all()
 
         logger.info(
             f"Found {len(playlist_streams_query)} streams in group '{group_name}' to add"
@@ -1922,11 +1973,11 @@ async def add_channels_from_groups(config, groups):
         for stream in playlist_streams_query:
             try:
                 # Check if Channel with this name already exists
-                existing_channel = (
-                    db.session.query(Channel)
-                    .filter(Channel.name == stream.name.strip())
-                    .first()
-                )
+                async with Session() as session:
+                    existing_query = await session.execute(
+                        select(Channel).where(Channel.name == stream.name.strip())
+                    )
+                    existing_channel = existing_query.scalars().first()
 
                 if existing_channel:
                     logger.info(f"Channel '{stream.name}' already exists, skipping")
@@ -1946,11 +1997,11 @@ async def add_channels_from_groups(config, groups):
                 }
 
                 # Find the best match for an EPG
-                epg_match = (
-                    db.session.query(EpgChannels)
-                    .filter(EpgChannels.channel_id == stream.tvg_id)
-                    .first()
-                )
+                async with Session() as session:
+                    epg_query = await session.execute(
+                        select(EpgChannels).where(EpgChannels.channel_id == stream.tvg_id)
+                    )
+                    epg_match = epg_query.scalars().first()
                 if epg_match is not None:
                     new_channel_data["guide"] = {
                         "channel_id": epg_match.channel_id,
@@ -1959,9 +2010,11 @@ async def add_channels_from_groups(config, groups):
                     }
 
                 # Get the playlist info
-                playlist_info = (
-                    db.session.query(Playlist).filter(Playlist.id == playlist_id).one()
-                )
+                async with Session() as session:
+                    playlist_query = await session.execute(
+                        select(Playlist).where(Playlist.id == playlist_id)
+                    )
+                    playlist_info = playlist_query.scalar_one()
 
                 # Add source information
                 new_channel_data["sources"].append(
@@ -1973,7 +2026,7 @@ async def add_channels_from_groups(config, groups):
                 )
 
                 channel_obj = await add_new_channel(
-                    config, new_channel_data, commit=False, publish=False
+                    config, new_channel_data, commit=True, publish=False
                 )
                 group_new_channels.append(channel_obj)
                 added_channel_count += 1
@@ -1985,9 +2038,6 @@ async def add_channels_from_groups(config, groups):
                 import traceback
 
                 logger.error(traceback.format_exc())
-
-    # Commit all new channels in one transaction
-    db.session.commit()
 
     try:
         await batch_publish_new_channels_to_tvh(config, group_new_channels)

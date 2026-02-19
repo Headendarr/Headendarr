@@ -371,11 +371,10 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
             db.session.execute(insert(EpgChannels), channel_rows)
             db.session.commit()
             channel_rows = []
-        channel_map = dict(
-            db.session.query(EpgChannels.channel_id, EpgChannels.id)
-            .filter(EpgChannels.epg_id == epg_id)
-            .all()
-        )
+        channel_rows_result = db.session.execute(
+            select(EpgChannels.channel_id, EpgChannels.id).where(EpgChannels.epg_id == epg_id)
+        ).all()
+        channel_map = dict(channel_rows_result)
 
     def flush_programmes():
         nonlocal programme_rows
@@ -532,13 +531,21 @@ async def import_epg_data(config, epg_id):
 
 
 async def import_epg_data_for_all_epgs(config):
-    for epg in db.session.query(Epg).all():
-        await import_epg_data(config, epg.id)
+    async with Session() as session:
+        result = await session.execute(select(Epg.id))
+        epg_ids = [row[0] for row in result.all()]
+    for epg_id in epg_ids:
+        await import_epg_data(config, epg_id)
 
 
 async def read_channels_from_all_epgs(config):
     epgs_channels = {}
-    for result in db.session.query(Epg).options(joinedload(Epg.epg_channels)).all():
+    async with Session() as session:
+        query = await session.execute(
+            select(Epg).options(joinedload(Epg.epg_channels))
+        )
+        epg_rows = query.scalars().unique().all()
+    for result in epg_rows:
         epgs_channels[result.id] = []
         for epg_channel in result.epg_channels:
             epgs_channels[result.id].append({
@@ -810,12 +817,14 @@ async def build_custom_epg(config, throttle=False):
     configured_channels = []
     source_key_to_output_channels = defaultdict(list)
     logger.info("   - Loading configured channels and guide mappings.")
-    for result in (
-        db.session.query(Channel)
-        .options(joinedload(Channel.tags))
-        .order_by(Channel.number.asc())
-        .all()
-    ):
+    async with Session() as session:
+        query = await session.execute(
+            select(Channel)
+            .options(joinedload(Channel.tags))
+            .order_by(Channel.number.asc())
+        )
+        channel_rows = query.scalars().unique().all()
+    for result in channel_rows:
         if not result.enabled:
             continue
         channel_id = generate_epg_channel_id(result.number, result.name)
@@ -845,16 +854,21 @@ async def build_custom_epg(config, throttle=False):
         guide_ids = {key[0] for key in source_key_to_output_channels}
         guide_channel_ids = {key[1] for key in source_key_to_output_channels}
         logger.info("   - Loading programme rows for mapped guide channels.")
-        rows = (
-            db.session.query(EpgChannelProgrammes, EpgChannels.epg_id, EpgChannels.channel_id)
-            .join(EpgChannels, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
-            .filter(
-                EpgChannels.epg_id.in_(guide_ids),
-                EpgChannels.channel_id.in_(guide_channel_ids),
+        async with Session() as session:
+            query = await session.execute(
+                select(EpgChannelProgrammes, EpgChannels.epg_id, EpgChannels.channel_id)
+                .join(EpgChannels, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+                .where(
+                    EpgChannels.epg_id.in_(guide_ids),
+                    EpgChannels.channel_id.in_(guide_channel_ids),
+                )
+                .order_by(
+                    EpgChannels.epg_id.asc(),
+                    EpgChannels.channel_id.asc(),
+                    EpgChannelProgrammes.start.asc(),
+                )
             )
-            .order_by(EpgChannels.epg_id.asc(), EpgChannels.channel_id.asc(), EpgChannelProgrammes.start.asc())
-            .all()
-        )
+            rows = query.all()
         for programme, guide_id, guide_channel_id in rows:
             output_channels = source_key_to_output_channels.get((guide_id, guide_channel_id))
             if not output_channels:
@@ -1184,22 +1198,36 @@ async def update_channel_epg_with_online_data(config):
     cache = {}
     lock = asyncio.Lock()
     logger.info("Update EPG with missing data from online sources for each configured channel.")
-    for result in db.session.query(Channel).order_by(Channel.number.asc()).all():
-        if result.enabled:
-            channel_id = generate_epg_channel_id(result.number, result.name)
-            db_programmes_query = db.session.query(EpgChannelProgrammes) \
-                .options(joinedload(EpgChannelProgrammes.channel)) \
-                .filter(and_(EpgChannelProgrammes.channel.has(epg_id=result.guide_id),
-                             EpgChannelProgrammes.channel.has(channel_id=result.guide_channel_id)
-                             )) \
-                .order_by(EpgChannelProgrammes.channel_id.asc(), EpgChannelProgrammes.start.asc())
-            db_programmes = db_programmes_query.all()
-            logger.info("   - Updating programme list for %s - %s.", channel_id, result.name)
-            programmes = await update_programmes_concurrently(settings, db_programmes, cache, lock)
-            # Save all new
-            db.session.bulk_save_objects(programmes)
-            # Commit all updates to channel programmes
-            db.session.commit()
+    async with Session() as session:
+        channels_query = await session.execute(
+            select(Channel).order_by(Channel.number.asc())
+        )
+        channels = channels_query.scalars().all()
+        for result in channels:
+            if result.enabled:
+                channel_id = generate_epg_channel_id(result.number, result.name)
+                db_programmes_query = await session.execute(
+                    select(EpgChannelProgrammes)
+                    .options(joinedload(EpgChannelProgrammes.channel))
+                    .where(
+                        and_(
+                            EpgChannelProgrammes.channel.has(epg_id=result.guide_id),
+                            EpgChannelProgrammes.channel.has(
+                                channel_id=result.guide_channel_id
+                            ),
+                        )
+                    )
+                    .order_by(
+                        EpgChannelProgrammes.channel_id.asc(),
+                        EpgChannelProgrammes.start.asc(),
+                    )
+                )
+                db_programmes = db_programmes_query.scalars().all()
+                logger.info("   - Updating programme list for %s - %s.", channel_id, result.name)
+                programmes = await update_programmes_concurrently(settings, db_programmes, cache, lock)
+                for programme in programmes:
+                    session.add(programme)
+                await session.commit()
     execution_time = time.time() - start_time
     logger.info("Updating online EPG data for configured channels took '%s' seconds", int(execution_time))
 

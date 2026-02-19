@@ -255,15 +255,6 @@ def _build_xc_live_stream_url(
     return _render_xc_url(template, account.username, account.password)
 
 
-def _get_primary_xc_account_sync(playlist_id):
-    return (
-        db.session.query(XcAccount)
-        .filter(XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True))
-        .order_by(XcAccount.id.asc())
-        .first()
-    )
-
-
 async def _get_primary_xc_account_async(playlist_id):
     async with Session() as session:
         async with session.begin():
@@ -275,15 +266,6 @@ async def _get_primary_xc_account_async(playlist_id):
                 .order_by(XcAccount.id.asc())
             )
             return result.scalars().first()
-
-
-def _get_enabled_xc_accounts_sync(playlist_id):
-    return (
-        db.session.query(XcAccount)
-        .filter(XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True))
-        .order_by(XcAccount.id.asc())
-        .all()
-    )
 
 
 async def _get_enabled_xc_accounts_async(playlist_id):
@@ -835,27 +817,6 @@ async def store_playlist_streams(config, playlist_id):
             )
 
 
-def fetch_playlist_streams(playlist_id):
-    return_list = {}
-    for result in (
-        db.session.query(PlaylistStreams)
-        .where(PlaylistStreams.playlist_id == playlist_id)
-        .all()
-    ):
-        return_list[result.name] = {
-            "name": result.name,
-            "url": result.url,
-            "channel_id": result.channel_id,
-            "group_title": result.group_title,
-            "tvg_chno": result.tvg_chno,
-            "tvg_id": result.tvg_id,
-            "tvg_logo": result.tvg_logo,
-            "source_type": result.source_type,
-            "xc_stream_id": result.xc_stream_id,
-        }
-    return return_list
-
-
 async def import_playlist_data(config, playlist_id):
     try:
         playlist_id = int(playlist_id)
@@ -880,7 +841,7 @@ async def import_playlist_data(config, playlist_id):
             if not ok:
                 raise RuntimeError("Failed to import Xtream Codes source")
             from backend.channel_suggestions import update_channel_suggestions_for_playlist
-            update_channel_suggestions_for_playlist(playlist_id)
+            await update_channel_suggestions_for_playlist(playlist_id)
             _set_playlist_health(
                 config,
                 playlist_id,
@@ -925,7 +886,7 @@ async def import_playlist_data(config, playlist_id):
             int(execution_time),
         )
         from backend.channel_suggestions import update_channel_suggestions_for_playlist
-        update_channel_suggestions_for_playlist(playlist_id)
+        await update_channel_suggestions_for_playlist(playlist_id)
         # Publish changes to TVH
         await publish_playlist_networks(config)
         _set_playlist_health(
@@ -957,22 +918,32 @@ async def import_playlist_data(config, playlist_id):
 
 
 async def import_playlist_data_for_all_playlists(config):
-    for playlist in db.session.query(Playlist).all():
-        await import_playlist_data(config, playlist.id)
+    async with Session() as session:
+        result = await session.execute(select(Playlist.id))
+        playlist_ids = [row[0] for row in result.all()]
+    for playlist_id in playlist_ids:
+        await import_playlist_data(config, playlist_id)
 
 
 async def read_stream_details_from_all_playlists():
     playlist_streams = {"streams": []}
     primary_accounts = {}
-    for account in (
-        db.session.query(XcAccount)
-        .filter(XcAccount.enabled.is_(True))
-        .order_by(XcAccount.playlist_id.asc(), XcAccount.id.asc())
-        .all()
-    ):
+    async with Session() as session:
+        accounts_result = await session.execute(
+            select(XcAccount)
+            .where(XcAccount.enabled.is_(True))
+            .order_by(XcAccount.playlist_id.asc(), XcAccount.id.asc())
+        )
+        accounts = accounts_result.scalars().all()
+    for account in accounts:
         if account.playlist_id not in primary_accounts:
             primary_accounts[account.playlist_id] = account
-    for result in db.session.query(PlaylistStreams).all():
+    async with Session() as session:
+        streams_result = await session.execute(
+            select(PlaylistStreams).options(joinedload(PlaylistStreams.playlist))
+        )
+        stream_rows = streams_result.scalars().all()
+    for result in stream_rows:
         stream_url = result.url
         if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
             account = primary_accounts.get(result.playlist_id)
@@ -1002,7 +973,7 @@ async def read_stream_details_from_all_playlists():
     return playlist_streams
 
 
-def read_filtered_stream_details_from_all_playlists(
+async def read_filtered_stream_details_from_all_playlists(
     request_json,
     *,
     base_url: str | None = None,
@@ -1014,50 +985,47 @@ def read_filtered_stream_details_from_all_playlists(
         "records_total": 0,
         "records_filtered": 0,
     }
-    primary_accounts = {}
-    for account in (
-        db.session.query(XcAccount)
-        .filter(XcAccount.enabled.is_(True))
-        .order_by(XcAccount.playlist_id.asc(), XcAccount.id.asc())
-        .all()
-    ):
-        if account.playlist_id not in primary_accounts:
-            primary_accounts[account.playlist_id] = account
-    base_query = db.session.query(PlaylistStreams).options(joinedload(PlaylistStreams.playlist))
-    # Get total records count
-    results["records_total"] = base_query.count()
-    # Build filters
-    filters = []
-    playlist_id = request_json.get("playlist_id")
-    if playlist_id:
-        filters.append(PlaylistStreams.playlist_id == playlist_id)
-    group_title = request_json.get("group_title")
-    if group_title:
-        filters.append(PlaylistStreams.group_title == group_title)
-    search_value = request_json.get("search_value")
-    if search_value:
-        playlist_rows = (
-            db.session.query(Playlist)
-            .where(Playlist.name.ilike(f"%{search_value}%"))
-            .all()
+    async with Session() as session:
+        primary_accounts = {}
+        accounts_result = await session.execute(
+            select(XcAccount)
+            .where(XcAccount.enabled.is_(True))
+            .order_by(XcAccount.playlist_id.asc(), XcAccount.id.asc())
         )
-        filters.append(
-            or_(
-                PlaylistStreams.name.ilike(f"%{search_value}%"),
-                PlaylistStreams.playlist_id.in_([p.id for p in playlist_rows]),
+        for account in accounts_result.scalars().all():
+            if account.playlist_id not in primary_accounts:
+                primary_accounts[account.playlist_id] = account
+
+        filters = []
+        playlist_id = request_json.get("playlist_id")
+        if playlist_id:
+            filters.append(PlaylistStreams.playlist_id == playlist_id)
+        group_title = request_json.get("group_title")
+        if group_title:
+            filters.append(PlaylistStreams.group_title == group_title)
+        search_value = request_json.get("search_value")
+        if search_value:
+            playlist_rows = await session.execute(
+                select(Playlist.id).where(Playlist.name.ilike(f"%{search_value}%"))
             )
+            filters.append(
+                or_(
+                    PlaylistStreams.name.ilike(f"%{search_value}%"),
+                    PlaylistStreams.playlist_id.in_([p[0] for p in playlist_rows.all()]),
+                )
+            )
+
+        total_stmt = select(func.count()).select_from(PlaylistStreams)
+        results["records_total"] = int((await session.scalar(total_stmt)) or 0)
+
+        filtered_ids_query = (
+            select(func.min(PlaylistStreams.id).label("id"))
+            .where(*filters)
+            .group_by(PlaylistStreams.playlist_id, PlaylistStreams.url)
+            .subquery()
         )
-    query = base_query.filter(*filters)
-    # Record filtered records count (distinct by playlist+URL)
-    filtered_ids_query = (
-        db.session.query(func.min(PlaylistStreams.id).label("id"))
-        .filter(*filters)
-        .group_by(PlaylistStreams.playlist_id, PlaylistStreams.url)
-        .subquery()
-    )
-    results["records_filtered"] = (
-        db.session.query(func.count()).select_from(filtered_ids_query).scalar()
-    )
+        filtered_count_stmt = select(func.count()).select_from(filtered_ids_query)
+        results["records_filtered"] = int((await session.scalar(filtered_count_stmt)) or 0)
 
     # Get order by
     order_by_column = request_json.get("order_by")
@@ -1069,59 +1037,60 @@ def read_filtered_stream_details_from_all_playlists(
         order_by = attrgetter(order_by_column)(PlaylistStreams).desc()
 
     # Apply distinct-by-URL selection before pagination
-    query = (
-        db.session.query(PlaylistStreams)
-        .join(filtered_ids_query, PlaylistStreams.id == filtered_ids_query.c.id)
-        .order_by(order_by)
-    )
-
-    # Limit query results
-    length = request_json.get("length", 0)
-    start = request_json.get("start", 0)
-    if length:
-        query = query.limit(length).offset(start)
-    # Fetch filtered results (already deduped by URL and playlist)
-    for result in query.all():
-        stream_url = result.url
-        if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
-            account = primary_accounts.get(result.playlist_id)
-            if account:
-                stream_url = _build_xc_live_stream_url(
-                    _normalize_xc_host(result.playlist.url),
-                    result.xc_stream_id,
-                    result.url,
-                    account,
-                    preferred_extension=result.playlist.xc_live_stream_format,
-                )
-        playlist_info = result.playlist
-        if playlist_info:
-            stream_url = build_configured_hls_proxy_url(
-                stream_url,
-                base_url=base_url,
-                instance_id=instance_id,
-                stream_key=stream_key,
-                use_hls_proxy=playlist_info.use_hls_proxy,
-                use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
-                custom_hls_proxy_path=playlist_info.hls_proxy_path,
-                chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
-                ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
-                prebuffer=playlist_info.hls_proxy_prebuffer,
-            )
-        results["streams"].append(
-            {
-                "id": result.id,
-                "playlist_id": result.playlist_id,
-                "playlist_name": result.playlist.name,
-                "name": result.name,
-                "url": stream_url,
-                "channel_id": result.channel_id,
-                "group_title": result.group_title,
-                "tvg_chno": result.tvg_chno,
-                "tvg_id": result.tvg_id,
-                "tvg_logo": result.tvg_logo,
-                "source_type": result.source_type,
-            }
+        query_stmt = (
+            select(PlaylistStreams)
+            .options(joinedload(PlaylistStreams.playlist))
+            .join(filtered_ids_query, PlaylistStreams.id == filtered_ids_query.c.id)
+            .order_by(order_by)
         )
+
+        length = request_json.get("length", 0)
+        start = request_json.get("start", 0)
+        if length:
+            query_stmt = query_stmt.limit(length).offset(start)
+
+        rows = await session.execute(query_stmt)
+        for result in rows.scalars().all():
+            stream_url = result.url
+            if result.source_type == XC_ACCOUNT_TYPE and result.xc_stream_id:
+                account = primary_accounts.get(result.playlist_id)
+                if account:
+                    stream_url = _build_xc_live_stream_url(
+                        _normalize_xc_host(result.playlist.url),
+                        result.xc_stream_id,
+                        result.url,
+                        account,
+                        preferred_extension=result.playlist.xc_live_stream_format,
+                    )
+            playlist_info = result.playlist
+            if playlist_info:
+                stream_url = build_configured_hls_proxy_url(
+                    stream_url,
+                    base_url=base_url,
+                    instance_id=instance_id,
+                    stream_key=stream_key,
+                    use_hls_proxy=playlist_info.use_hls_proxy,
+                    use_custom_hls_proxy=playlist_info.use_custom_hls_proxy,
+                    custom_hls_proxy_path=playlist_info.hls_proxy_path,
+                    chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
+                    ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
+                    prebuffer=playlist_info.hls_proxy_prebuffer,
+                )
+            results["streams"].append(
+                {
+                    "id": result.id,
+                    "playlist_id": result.playlist_id,
+                    "playlist_name": result.playlist.name,
+                    "name": result.name,
+                    "url": stream_url,
+                    "channel_id": result.channel_id,
+                    "group_title": result.group_title,
+                    "tvg_chno": result.tvg_chno,
+                    "tvg_id": result.tvg_id,
+                    "tvg_logo": result.tvg_logo,
+                    "source_type": result.source_type,
+                }
+            )
     return results
 
 
@@ -1133,17 +1102,21 @@ async def delete_playlist_network_in_tvh(config, net_uuid):
 async def publish_playlist_networks(config):
     logger.info("Publishing all playlist networks to TVH")
     async with await get_tvh(config) as tvh:
+        async with Session() as session:
+            playlist_result = await session.execute(select(Playlist))
+            playlists = playlist_result.scalars().all()
         # Loop over configured playlists
         existing_uuids = []
         net_priority = 0
-        for result in db.session.query(Playlist).all():
+        for result in playlists:
             if result.account_type == XC_ACCOUNT_TYPE:
-                accounts = (
-                    db.session.query(XcAccount)
-                    .filter(XcAccount.playlist_id == result.id)
-                    .order_by(XcAccount.id.asc())
-                    .all()
-                )
+                async with Session() as session:
+                    accounts_result = await session.execute(
+                        select(XcAccount)
+                        .where(XcAccount.playlist_id == result.id)
+                        .order_by(XcAccount.id.asc())
+                    )
+                    accounts = accounts_result.scalars().all()
                 for account in accounts:
                     net_priority += 1
                     net_uuid = account.tvh_uuid
@@ -1178,8 +1151,11 @@ async def publish_playlist_networks(config):
                     net_conf["max_streams"] = max_streams
                     net_conf["priority"] = net_priority
                     await tvh.idnode_save(net_conf)
-                    account.tvh_uuid = net_uuid
-                    db.session.commit()
+                    async with Session() as session:
+                        async with session.begin():
+                            account_row = await session.get(XcAccount, account.id)
+                            if account_row:
+                                account_row.tvh_uuid = net_uuid
                     existing_uuids.append(net_uuid)
                 continue
             net_priority += 1
@@ -1218,8 +1194,11 @@ async def publish_playlist_networks(config):
             net_conf["priority"] = net_priority
             await tvh.idnode_save(net_conf)
             # Save network UUID against playlist in settings
-            result.tvh_uuid = net_uuid
-            db.session.commit()
+            async with Session() as session:
+                async with session.begin():
+                    playlist_row = await session.get(Playlist, result.id)
+                    if playlist_row:
+                        playlist_row.tvh_uuid = net_uuid
             # Append to list of current network UUIDs
             existing_uuids.append(net_uuid)
 
@@ -1227,14 +1206,16 @@ async def publish_playlist_networks(config):
 
 
 async def probe_playlist_stream(playlist_stream_id):
-    playlist_stream = (
-        db.session.query(PlaylistStreams)
-        .where(PlaylistStreams.id == playlist_stream_id)
-        .one()
-    )
+    async with Session() as session:
+        result = await session.execute(
+            select(PlaylistStreams)
+            .options(joinedload(PlaylistStreams.playlist))
+            .where(PlaylistStreams.id == playlist_stream_id)
+        )
+        playlist_stream = result.scalar_one()
     stream_url = playlist_stream.url
     if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
-        account = _get_primary_xc_account_sync(playlist_stream.playlist_id)
+        account = await _get_primary_xc_account_async(playlist_stream.playlist_id)
         if account:
             stream_url = _build_xc_live_stream_url(
                 _normalize_xc_host(playlist_stream.playlist.url),
@@ -1247,7 +1228,7 @@ async def probe_playlist_stream(playlist_stream_id):
     return probe_data
 
 
-def resolve_playlist_stream_url(
+async def resolve_playlist_stream_url(
     playlist_stream: PlaylistStreams,
     base_url: str,
     instance_id: str,
@@ -1255,7 +1236,7 @@ def resolve_playlist_stream_url(
 ) -> str:
     stream_url = playlist_stream.url
     if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
-        account = _get_primary_xc_account_sync(playlist_stream.playlist_id)
+        account = await _get_primary_xc_account_async(playlist_stream.playlist_id)
         if account:
             stream_url = _build_xc_live_stream_url(
                 _normalize_xc_host(playlist_stream.playlist.url),

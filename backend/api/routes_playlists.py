@@ -10,7 +10,9 @@ from backend.playlists import read_config_all_playlists, add_new_playlist, read_
     delete_playlist, import_playlist_data, read_stream_details_from_all_playlists, probe_playlist_stream, \
     read_filtered_stream_details_from_all_playlists, get_playlist_groups, publish_playlist_networks, \
     delete_playlist_network_in_tvh, resolve_playlist_stream_url
-from backend.models import PlaylistStreams, db
+from backend.models import PlaylistStreams, Session
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from backend.api import blueprint
 from quart import request, jsonify, current_app
@@ -186,7 +188,7 @@ async def api_get_filtered_playlist_streams():
     config = current_app.config['APP_CONFIG']
     instance_id = config.ensure_instance_id()
     base_url = request.host_url.rstrip("/")
-    results = read_filtered_stream_details_from_all_playlists(
+    results = await read_filtered_stream_details_from_all_playlists(
         json_data,
         base_url=base_url,
         instance_id=instance_id,
@@ -240,18 +242,20 @@ def _infer_stream_type(url):
 async def api_get_playlist_stream_preview(playlist_stream_id):
     user = getattr(request, "_current_user", None)
     stream_key = user.streaming_key if user else None
-    playlist_stream = (
-        db.session.query(PlaylistStreams)
-        .filter(PlaylistStreams.id == playlist_stream_id)
-        .one_or_none()
-    )
+    async with Session() as session:
+        result = await session.execute(
+            select(PlaylistStreams)
+            .options(joinedload(PlaylistStreams.playlist))
+            .where(PlaylistStreams.id == playlist_stream_id)
+        )
+        playlist_stream = result.scalar_one_or_none()
     if not playlist_stream:
         return jsonify({"success": False, "message": "Stream not found"}), 404
 
     config = current_app.config['APP_CONFIG']
     instance_id = config.ensure_instance_id()
     base_url = request.host_url.rstrip("/")
-    preview_url = resolve_playlist_stream_url(
+    preview_url = await resolve_playlist_stream_url(
         playlist_stream,
         base_url=base_url,
         instance_id=instance_id,

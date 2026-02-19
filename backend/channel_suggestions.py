@@ -3,10 +3,10 @@
 import re
 import unicodedata
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import joinedload
 
-from backend.models import Channel, ChannelSuggestion, PlaylistStreams, db
+from backend.models import Channel, ChannelSuggestion, PlaylistStreams, Session
 
 
 NOISE_TOKENS = {
@@ -110,107 +110,111 @@ def _regions_match(channel_regions, stream_regions):
     return bool(channel_regions.intersection(stream_regions))
 
 
-def update_channel_suggestions_for_playlist(playlist_id, *, score_threshold=0.70, limit_per_channel=5):
-    streams = (
-        db.session.query(PlaylistStreams)
-        .filter(PlaylistStreams.playlist_id == playlist_id)
-        .all()
-    )
-    if not streams:
-        return
-
-    channels = (
-        db.session.query(Channel)
-        .options(joinedload(Channel.tags), joinedload(Channel.sources))
-        .all()
-    )
-
-    stream_tokens_map = {}
-    stream_regions_map = {}
-    group_tokens_map = {}
-    for stream in streams:
-        stream_tokens_map[stream.id] = _tokenize(stream.name)
-        group_tokens_map[stream.id] = _tokenize(stream.group_title)
-        stream_regions = _extract_region_tokens(stream.name)
-        stream_regions.update(_extract_region_tokens(stream.group_title))
-        stream_regions_map[stream.id] = stream_regions
-
-    matched_stream_ids = set()
-
-    for channel in channels:
-        channel_tokens = _tokenize(channel.name)
-        category_tokens = set()
-        channel_regions = _extract_region_tokens(channel.name)
-        for tag in channel.tags or []:
-            category_tokens |= _tokenize(tag.name)
-            channel_regions |= _extract_region_tokens(tag.name)
-
-        existing_tokens_list = []
-        existing_source_name_pairs = set()
-        existing_source_url_pairs = set()
-        for source in channel.sources or []:
-            if source.playlist_id and source.playlist_stream_url:
-                existing_source_url_pairs.add((source.playlist_id, source.playlist_stream_url))
-            elif source.playlist_id and source.playlist_stream_name:
-                existing_source_name_pairs.add((source.playlist_id, source.playlist_stream_name))
-            if source.playlist_stream_name:
-                existing_tokens_list.append(_tokenize(source.playlist_stream_name))
-
-        scored = []
-        for stream in streams:
-            if stream.url and (stream.playlist_id, stream.url) in existing_source_url_pairs:
-                continue
-            if not stream.url and (stream.playlist_id, stream.name) in existing_source_name_pairs:
-                continue
-            if not _regions_match(channel_regions, stream_regions_map.get(stream.id, set())):
-                continue
-            score = _compute_score(
-                channel_tokens,
-                stream_tokens_map.get(stream.id, set()),
-                category_tokens,
-                group_tokens_map.get(stream.id, set()),
-                existing_tokens_list,
+async def update_channel_suggestions_for_playlist(playlist_id, *, score_threshold=0.70, limit_per_channel=5):
+    async with Session() as session:
+        async with session.begin():
+            streams_result = await session.execute(
+                select(PlaylistStreams)
+                .options(joinedload(PlaylistStreams.playlist))
+                .where(PlaylistStreams.playlist_id == playlist_id)
             )
-            if score < score_threshold:
-                continue
-            scored.append((score, stream))
+            streams = streams_result.scalars().all()
+            if not streams:
+                return
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        for score, stream in scored[:limit_per_channel]:
-            matched_stream_ids.add(stream.id)
-            existing = (
-                db.session.query(ChannelSuggestion)
-                .filter(
-                    ChannelSuggestion.channel_id == channel.id,
-                    ChannelSuggestion.playlist_id == stream.playlist_id,
-                    ChannelSuggestion.stream_id == stream.id,
-                )
-                .one_or_none()
+            channels_result = await session.execute(
+                select(Channel).options(joinedload(Channel.tags), joinedload(Channel.sources))
             )
-            if existing:
-                existing.stream_name = stream.name
-                existing.stream_url = stream.url
-                existing.group_title = stream.group_title
-                existing.playlist_name = stream.playlist.name if stream.playlist else None
-                existing.source_type = stream.source_type
-                existing.score = score
-            else:
-                db.session.add(ChannelSuggestion(
-                    channel_id=channel.id,
-                    playlist_id=stream.playlist_id,
-                    stream_id=stream.id,
-                    stream_name=stream.name,
-                    stream_url=stream.url,
-                    group_title=stream.group_title,
-                    playlist_name=stream.playlist.name if stream.playlist else None,
-                    source_type=stream.source_type,
-                    score=score,
-                    dismissed=False,
-                ))
+            channels = channels_result.scalars().unique().all()
 
-    delete_query = delete(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist_id)
-    if matched_stream_ids:
-        delete_query = delete_query.where(ChannelSuggestion.stream_id.notin_(matched_stream_ids))
-    delete_query = delete_query.where(ChannelSuggestion.dismissed.is_(False))
-    db.session.execute(delete_query)
-    db.session.commit()
+            existing_result = await session.execute(
+                select(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist_id)
+            )
+            existing_suggestions = {
+                (row.channel_id, row.playlist_id, row.stream_id): row
+                for row in existing_result.scalars().all()
+            }
+
+            stream_tokens_map = {}
+            stream_regions_map = {}
+            group_tokens_map = {}
+            for stream in streams:
+                stream_tokens_map[stream.id] = _tokenize(stream.name)
+                group_tokens_map[stream.id] = _tokenize(stream.group_title)
+                stream_regions = _extract_region_tokens(stream.name)
+                stream_regions.update(_extract_region_tokens(stream.group_title))
+                stream_regions_map[stream.id] = stream_regions
+
+            matched_stream_ids = set()
+
+            for channel in channels:
+                channel_tokens = _tokenize(channel.name)
+                category_tokens = set()
+                channel_regions = _extract_region_tokens(channel.name)
+                for tag in channel.tags or []:
+                    category_tokens |= _tokenize(tag.name)
+                    channel_regions |= _extract_region_tokens(tag.name)
+
+                existing_tokens_list = []
+                existing_source_name_pairs = set()
+                existing_source_url_pairs = set()
+                for source in channel.sources or []:
+                    if source.playlist_id and source.playlist_stream_url:
+                        existing_source_url_pairs.add((source.playlist_id, source.playlist_stream_url))
+                    elif source.playlist_id and source.playlist_stream_name:
+                        existing_source_name_pairs.add((source.playlist_id, source.playlist_stream_name))
+                    if source.playlist_stream_name:
+                        existing_tokens_list.append(_tokenize(source.playlist_stream_name))
+
+                scored = []
+                for stream in streams:
+                    if stream.url and (stream.playlist_id, stream.url) in existing_source_url_pairs:
+                        continue
+                    if not stream.url and (stream.playlist_id, stream.name) in existing_source_name_pairs:
+                        continue
+                    if not _regions_match(channel_regions, stream_regions_map.get(stream.id, set())):
+                        continue
+                    score = _compute_score(
+                        channel_tokens,
+                        stream_tokens_map.get(stream.id, set()),
+                        category_tokens,
+                        group_tokens_map.get(stream.id, set()),
+                        existing_tokens_list,
+                    )
+                    if score < score_threshold:
+                        continue
+                    scored.append((score, stream))
+
+                scored.sort(key=lambda item: item[0], reverse=True)
+                for score, stream in scored[:limit_per_channel]:
+                    matched_stream_ids.add(stream.id)
+                    key = (channel.id, stream.playlist_id, stream.id)
+                    existing = existing_suggestions.get(key)
+                    if existing:
+                        existing.stream_name = stream.name
+                        existing.stream_url = stream.url
+                        existing.group_title = stream.group_title
+                        existing.playlist_name = stream.playlist.name if stream.playlist else None
+                        existing.source_type = stream.source_type
+                        existing.score = score
+                    else:
+                        row = ChannelSuggestion(
+                            channel_id=channel.id,
+                            playlist_id=stream.playlist_id,
+                            stream_id=stream.id,
+                            stream_name=stream.name,
+                            stream_url=stream.url,
+                            group_title=stream.group_title,
+                            playlist_name=stream.playlist.name if stream.playlist else None,
+                            source_type=stream.source_type,
+                            score=score,
+                            dismissed=False,
+                        )
+                        session.add(row)
+                        existing_suggestions[key] = row
+
+            delete_query = delete(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist_id)
+            if matched_stream_ids:
+                delete_query = delete_query.where(ChannelSuggestion.stream_id.notin_(matched_stream_ids))
+            delete_query = delete_query.where(ChannelSuggestion.dismissed.is_(False))
+            await session.execute(delete_query)

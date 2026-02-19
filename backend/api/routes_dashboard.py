@@ -129,7 +129,7 @@ async def _channel_issue_summary():
         mux_map = None
 
     logo_health_map = read_logo_health_map(config)
-    suggestion_counts = _fetch_channel_suggestion_counts()
+    suggestion_counts = await _fetch_channel_suggestion_counts()
     issue_counts = {}
     warning_channels = 0
     for channel in channels:

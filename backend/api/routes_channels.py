@@ -13,7 +13,7 @@ from backend.channels import read_config_all_channels, add_new_channel, read_con
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, db
+from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
 
@@ -128,16 +128,17 @@ def _build_backend_logo_url(request_base_url, channel_id, source_logo_url):
     return f"{request_base_url}/tic-api/channels/{channel_id}/logo/{token}.png"
 
 
-def _fetch_channel_suggestion_counts():
-    rows = (
-        db.session.query(
-            ChannelSuggestion.channel_id,
-            func.count(ChannelSuggestion.id),
+async def _fetch_channel_suggestion_counts():
+    async with Session() as session:
+        result = await session.execute(
+            select(
+                ChannelSuggestion.channel_id,
+                func.count(ChannelSuggestion.id),
+            )
+            .where(ChannelSuggestion.dismissed.is_(False))
+            .group_by(ChannelSuggestion.channel_id)
         )
-        .filter(ChannelSuggestion.dismissed.is_(False))
-        .group_by(ChannelSuggestion.channel_id)
-        .all()
-    )
+        rows = result.all()
     return {row[0]: row[1] for row in rows}
 
 
@@ -158,7 +159,7 @@ async def api_get_channels():
     if include_status:
         config = current_app.config['APP_CONFIG']
         mux_map = await _fetch_tvh_mux_map(config)
-        suggestion_counts = _fetch_channel_suggestion_counts()
+        suggestion_counts = await _fetch_channel_suggestion_counts()
         logo_health_map = read_logo_health_map(config)
         for channel in channels_config:
             suggestion_count = suggestion_counts.get(channel.get("id"), 0)
@@ -176,15 +177,16 @@ async def api_get_channels():
 @admin_auth_required
 async def api_get_channel_stream_suggestions(channel_id):
     channel_id = normalize_id(channel_id, "channel")
-    suggestions = (
-        db.session.query(ChannelSuggestion)
-        .filter(
-            ChannelSuggestion.channel_id == channel_id,
-            ChannelSuggestion.dismissed.is_(False),
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSuggestion)
+            .where(
+                ChannelSuggestion.channel_id == channel_id,
+                ChannelSuggestion.dismissed.is_(False),
+            )
+            .order_by(ChannelSuggestion.score.desc())
         )
-        .order_by(ChannelSuggestion.score.desc())
-        .all()
-    )
+        suggestions = result.scalars().all()
     return jsonify({
         "success": True,
         "data": [
@@ -209,12 +211,13 @@ async def api_get_channel_stream_suggestions(channel_id):
 @admin_auth_required
 async def api_get_channel_logo_suggestions(channel_id):
     channel_id = normalize_id(channel_id, "channel")
-    channel = (
-        db.session.query(Channel)
-        .options(joinedload(Channel.sources).joinedload(ChannelSource.playlist))
-        .filter(Channel.id == channel_id)
-        .one_or_none()
-    )
+    async with Session() as session:
+        result = await session.execute(
+            select(Channel)
+            .options(joinedload(Channel.sources).joinedload(ChannelSource.playlist))
+            .where(Channel.id == channel_id)
+        )
+        channel = result.scalars().unique().one_or_none()
     if not channel:
         return jsonify({"success": False, "message": "Channel not found"}), 404
 
@@ -240,23 +243,25 @@ async def api_get_channel_logo_suggestions(channel_id):
             continue
         stream = None
         if source.playlist_stream_name:
-            stream = (
-                db.session.query(PlaylistStreams)
-                .filter(
-                    PlaylistStreams.playlist_id == source.playlist_id,
-                    PlaylistStreams.name == source.playlist_stream_name,
+            async with Session() as session:
+                result = await session.execute(
+                    select(PlaylistStreams)
+                    .where(
+                        PlaylistStreams.playlist_id == source.playlist_id,
+                        PlaylistStreams.name == source.playlist_stream_name,
+                    )
                 )
-                .first()
-            )
+                stream = result.scalars().first()
         if not stream and source.playlist_stream_url:
-            stream = (
-                db.session.query(PlaylistStreams)
-                .filter(
-                    PlaylistStreams.playlist_id == source.playlist_id,
-                    PlaylistStreams.url == source.playlist_stream_url,
+            async with Session() as session:
+                result = await session.execute(
+                    select(PlaylistStreams)
+                    .where(
+                        PlaylistStreams.playlist_id == source.playlist_id,
+                        PlaylistStreams.url == source.playlist_stream_url,
+                    )
                 )
-                .first()
-            )
+                stream = result.scalars().first()
         if stream and stream.tvg_logo:
             playlist_name = (
                 source.playlist.name if getattr(source, "playlist", None) else "playlist"
@@ -269,14 +274,14 @@ async def api_get_channel_logo_suggestions(channel_id):
 
     # 2) EPG icon for mapped guide channel.
     if channel.guide_id and channel.guide_channel_id:
-        epg_channel = (
-            db.session.query(EpgChannels)
-            .filter(
-                EpgChannels.epg_id == channel.guide_id,
-                EpgChannels.channel_id == channel.guide_channel_id,
+        async with Session() as session:
+            result = await session.execute(
+                select(EpgChannels).where(
+                    EpgChannels.epg_id == channel.guide_id,
+                    EpgChannels.channel_id == channel.guide_channel_id,
+                )
             )
-            .first()
-        )
+            epg_channel = result.scalars().first()
         if epg_channel and epg_channel.icon_url:
             _add(
                 epg_channel.icon_url,
@@ -295,98 +300,96 @@ async def api_get_channel_logo_suggestions(channel_id):
 @admin_auth_required
 async def api_apply_channel_logo_suggestion(channel_id):
     channel_id = normalize_id(channel_id, "channel")
-    channel = (
-        db.session.query(Channel)
-        .options(joinedload(Channel.sources).joinedload(ChannelSource.playlist))
-        .filter(Channel.id == channel_id)
-        .one_or_none()
-    )
-    if not channel:
-        return jsonify({"success": False, "message": "Channel not found"}), 404
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(
+                select(Channel)
+                .options(joinedload(Channel.sources).joinedload(ChannelSource.playlist))
+                .where(Channel.id == channel_id)
+            )
+            channel = result.scalars().unique().one_or_none()
+            if not channel:
+                return jsonify({"success": False, "message": "Channel not found"}), 404
 
-    # Reuse existing suggestion endpoint logic by generating the same candidate list inline.
-    suggestions = []
-    seen = set()
+            # Reuse existing suggestion endpoint logic by generating the same candidate list inline.
+            suggestions = []
+            seen = set()
 
-    def _add(url):
-        if not url:
-            return
-        url = url.strip()
-        if not url or url in seen:
-            return
-        seen.add(url)
-        suggestions.append(url)
+            def _add(url):
+                if not url:
+                    return
+                url = url.strip()
+                if not url or url in seen:
+                    return
+                seen.add(url)
+                suggestions.append(url)
 
-    for source in (channel.sources or []):
-        if not source.playlist_id:
-            continue
-        stream = None
-        if source.playlist_stream_name:
-            stream = (
-                db.session.query(PlaylistStreams)
-                .filter(
-                    PlaylistStreams.playlist_id == source.playlist_id,
-                    PlaylistStreams.name == source.playlist_stream_name,
+            for source in (channel.sources or []):
+                if not source.playlist_id:
+                    continue
+                stream = None
+                if source.playlist_stream_name:
+                    stream_result = await session.execute(
+                        select(PlaylistStreams).where(
+                            PlaylistStreams.playlist_id == source.playlist_id,
+                            PlaylistStreams.name == source.playlist_stream_name,
+                        )
+                    )
+                    stream = stream_result.scalars().first()
+                if not stream and source.playlist_stream_url:
+                    stream_result = await session.execute(
+                        select(PlaylistStreams).where(
+                            PlaylistStreams.playlist_id == source.playlist_id,
+                            PlaylistStreams.url == source.playlist_stream_url,
+                        )
+                    )
+                    stream = stream_result.scalars().first()
+                if stream and stream.tvg_logo:
+                    _add(stream.tvg_logo)
+
+            if channel.guide_id and channel.guide_channel_id:
+                epg_result = await session.execute(
+                    select(EpgChannels).where(
+                        EpgChannels.epg_id == channel.guide_id,
+                        EpgChannels.channel_id == channel.guide_channel_id,
+                    )
                 )
-                .first()
-            )
-        if not stream and source.playlist_stream_url:
-            stream = (
-                db.session.query(PlaylistStreams)
-                .filter(
-                    PlaylistStreams.playlist_id == source.playlist_id,
-                    PlaylistStreams.url == source.playlist_stream_url,
+                epg_channel = epg_result.scalars().first()
+                if epg_channel and epg_channel.icon_url:
+                    _add(epg_channel.icon_url)
+
+            payload = await request.get_json(silent=True) or {}
+            requested_url = (payload.get("url") or "").strip()
+            current_logo = (channel.logo_url or "").strip()
+            normalized_current_logo = unquote(current_logo)
+
+            def _find_matching_suggestion(url):
+                if not url:
+                    return None
+                normalized_url = unquote(url.strip())
+                return next(
+                    (candidate for candidate in suggestions if unquote((candidate or "").strip()) == normalized_url),
+                    None,
                 )
-                .first()
-            )
-        if stream and stream.tvg_logo:
-            _add(stream.tvg_logo)
 
-    if channel.guide_id and channel.guide_channel_id:
-        epg_channel = (
-            db.session.query(EpgChannels)
-            .filter(
-                EpgChannels.epg_id == channel.guide_id,
-                EpgChannels.channel_id == channel.guide_channel_id,
-            )
-            .first()
-        )
-        if epg_channel and epg_channel.icon_url:
-            _add(epg_channel.icon_url)
+            chosen = None
+            if requested_url:
+                chosen = _find_matching_suggestion(requested_url)
+                if not chosen:
+                    return jsonify({"success": False, "message": "Requested logo URL is not a valid suggestion"}), 400
+            else:
+                chosen = next(
+                    (url for url in suggestions if unquote((url or "").strip()) != normalized_current_logo),
+                    None,
+                )
+                if not chosen and suggestions:
+                    # Fallback: re-apply current suggestion URL to force a cache refresh.
+                    chosen = suggestions[0]
+            if not chosen:
+                return jsonify({"success": False, "message": "No alternative logo suggestion found"}), 404
 
-    payload = await request.get_json(silent=True) or {}
-    requested_url = (payload.get("url") or "").strip()
-    current_logo = (channel.logo_url or "").strip()
-    normalized_current_logo = unquote(current_logo)
-
-    def _find_matching_suggestion(url):
-        if not url:
-            return None
-        normalized_url = unquote(url.strip())
-        return next(
-            (candidate for candidate in suggestions if unquote((candidate or "").strip()) == normalized_url),
-            None,
-        )
-
-    chosen = None
-    if requested_url:
-        chosen = _find_matching_suggestion(requested_url)
-        if not chosen:
-            return jsonify({"success": False, "message": "Requested logo URL is not a valid suggestion"}), 400
-    else:
-        chosen = next(
-            (url for url in suggestions if unquote((url or "").strip()) != normalized_current_logo),
-            None,
-        )
-        if not chosen and suggestions:
-            # Fallback: re-apply current suggestion URL to force a cache refresh.
-            chosen = suggestions[0]
-    if not chosen:
-        return jsonify({"success": False, "message": "No alternative logo suggestion found"}), 404
-
-    channel.logo_url = chosen
-    channel.logo_base64 = None
-    db.session.commit()
+            channel.logo_url = chosen
+            channel.logo_base64 = None
 
     config = current_app.config['APP_CONFIG']
     await queue_background_channel_update_tasks(config)
@@ -399,18 +402,19 @@ async def api_apply_channel_logo_suggestion(channel_id):
 async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
     channel_id = normalize_id(channel_id, "channel")
     suggestion_id = normalize_id(suggestion_id, "suggestion")
-    suggestion = (
-        db.session.query(ChannelSuggestion)
-        .filter(
-            ChannelSuggestion.id == suggestion_id,
-            ChannelSuggestion.channel_id == channel_id,
-        )
-        .one_or_none()
-    )
-    if not suggestion:
-        return jsonify({"success": False, "message": "Suggestion not found"}), 404
-    suggestion.dismissed = True
-    db.session.commit()
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(
+                select(ChannelSuggestion).where(
+                    ChannelSuggestion.id == suggestion_id,
+                    ChannelSuggestion.channel_id == channel_id,
+                )
+            )
+            suggestion = result.scalar_one_or_none()
+            if not suggestion:
+                return jsonify({"success": False, "message": "Suggestion not found"}), 404
+            suggestion.dismissed = True
+            await session.commit()
     return jsonify({"success": True})
 
 
@@ -565,7 +569,7 @@ async def api_get_channel_config(channel_id):
         channel_id = int(channel_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
-    channel_config = read_config_one_channel(channel_id)
+    channel_config = await read_config_one_channel(channel_id)
     return jsonify(
         {
             "success": True,
