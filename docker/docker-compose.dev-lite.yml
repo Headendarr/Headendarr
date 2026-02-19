@@ -79,3 +79,4 @@ services:
     ## # DEVICES:
     ## devices:
     ##   - /dev/dri #optional
+    ##   - /dev/dvb #optional

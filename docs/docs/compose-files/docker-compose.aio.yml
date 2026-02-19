@@ -39,3 +39,8 @@ services:
     volumes:
       # Configuration files
       - /data/containers/tvh-iptv/tic-config:/config
+
+    ## # DEVICES:
+    ## devices:
+    ##   - /dev/dri #optional
+    ##   - /dev/dvb #optional

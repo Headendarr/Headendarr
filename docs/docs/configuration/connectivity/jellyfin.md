@@ -61,5 +61,5 @@ The plugin does not provide a per-request stream-profile selector, so use a TVHe
 
 Plugin source/reference links:
 
-- Jellyfin TVHeadend plugin source: <https://github.com/jellyfin/jellyfin-plugin-tvheadend>
-- Jellyfin TVHeadend plugin docs: <https://jellyfin.org/docs/general/server/plugins/tvheadend/>
+- Jellyfin TVHeadend plugin source: [github.com/jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend)
+- Jellyfin TVHeadend plugin docs: [jellyfin.org/docs/general/server/plugins/tvheadend](https://jellyfin.org/docs/general/server/plugins/tvheadend/)

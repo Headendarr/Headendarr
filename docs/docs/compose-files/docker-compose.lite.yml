@@ -67,6 +67,7 @@ services:
       - /data/containers/tvh-iptv/tvh-recordings:/recordings
       - /data/containers/tvh-iptv/tvh-timeshift:/timeshift
 
-    # DEVICES: - Uncomment if required
-    # devices:
-    #   - /dev/dri #optional
+    ## # DEVICES:
+    ## devices:
+    ##   - /dev/dri #optional
+    ##   - /dev/dvb #optional

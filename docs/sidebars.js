@@ -65,6 +65,7 @@ const sidebars = {
           items: [
             "guides/external-hls-proxy",
             "guides/troubleshooting-streams",
+            "guides/dvbt-tuner-setup",
           ],
         },
       ],

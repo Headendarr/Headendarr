@@ -53,6 +53,11 @@ services:
       # Application source passthrough
       - ../:/app
 
+    # DEVICES:
+    devices:
+      - /dev/dri #optional
+      - /dev/dvb #optional
+
   # -- FRONTEND DEV SERVER --
   frontend:
     image: node:22-trixie
