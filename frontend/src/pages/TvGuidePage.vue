@@ -1156,17 +1156,53 @@ export default defineComponent({
       return nowTs.value >= visibleStart && nowTs.value <= visibleEnd;
     });
 
-    let pollingActive = true;
+    const pollingActive = ref(false);
+    const recordingsPollAbortController = ref(null);
+    const recordingsPollPromise = ref(null);
     const pollRecordings = async () => {
-      while (pollingActive) {
-        try {
-          const response = await axios.get('/tic-api/recordings/poll', {
-            params: {wait: 1, timeout: 25},
-          });
-          recordings.value = response.data.data || [];
-        } catch (error) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (recordingsPollPromise.value) {
+        return recordingsPollPromise.value;
+      }
+      pollingActive.value = true;
+      recordingsPollPromise.value = (async () => {
+        while (pollingActive.value) {
+          const controller = new AbortController();
+          recordingsPollAbortController.value = controller;
+          try {
+            const response = await axios.get('/tic-api/recordings/poll', {
+              params: {wait: 1, timeout: 25},
+              signal: controller.signal,
+            });
+            if (!pollingActive.value) {
+              break;
+            }
+            recordings.value = response.data.data || [];
+          } catch (error) {
+            const aborted = error?.code === 'ERR_CANCELED'
+              || error?.name === 'CanceledError'
+              || error?.name === 'AbortError';
+            if (!pollingActive.value || aborted) {
+              continue;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          } finally {
+            if (recordingsPollAbortController.value === controller) {
+              recordingsPollAbortController.value = null;
+            }
+          }
         }
+      })().finally(() => {
+        recordingsPollPromise.value = null;
+        recordingsPollAbortController.value = null;
+      });
+      return recordingsPollPromise.value;
+    };
+
+    const stopPollingRecordings = () => {
+      pollingActive.value = false;
+      if (recordingsPollAbortController.value) {
+        recordingsPollAbortController.value.abort();
+        recordingsPollAbortController.value = null;
       }
     };
 
@@ -1196,7 +1232,7 @@ export default defineComponent({
       pollRecordings();
     });
     onBeforeUnmount(() => {
-      pollingActive = false;
+      stopPollingRecordings();
       stopHeaderScrollSync();
       window.removeEventListener('resize', updateGuideStickyTop);
       if (nowTimerId.value) {

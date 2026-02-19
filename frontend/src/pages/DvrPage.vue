@@ -587,6 +587,8 @@ export default defineComponent({
         recording_profile_key: null,
       },
       pollingActive: false,
+      pollAbortController: null,
+      pollLoopPromise: null,
       dvrRefreshTimerId: null,
     };
   },
@@ -1201,19 +1203,45 @@ export default defineComponent({
       this.rulesSortDialogOpen = false;
     },
     async pollRecordings() {
+      if (this.pollLoopPromise) {
+        return this.pollLoopPromise;
+      }
+      this.pollingActive = true;
+      this.pollLoopPromise = (async () => {
       while (this.pollingActive) {
+        const controller = new AbortController();
+        this.pollAbortController = controller;
         try {
           const response = await axios.get('/tic-api/recordings/poll', {
             params: {
               wait: 1,
               timeout: 25,
             },
+            signal: controller.signal,
           });
+          if (!this.pollingActive) {
+            break;
+          }
           this.recordings = response.data.data || [];
-        } catch {
+        } catch (error) {
+          const aborted = error?.code === 'ERR_CANCELED'
+            || error?.name === 'CanceledError'
+            || error?.name === 'AbortError';
+          if (!this.pollingActive || aborted) {
+            continue;
+          }
           await new Promise((resolve) => setTimeout(resolve, 1000));
+        } finally {
+          if (this.pollAbortController === controller) {
+            this.pollAbortController = null;
+          }
         }
       }
+      })().finally(() => {
+        this.pollLoopPromise = null;
+        this.pollAbortController = null;
+      });
+      return this.pollLoopPromise;
     },
   },
   async mounted() {
@@ -1222,11 +1250,14 @@ export default defineComponent({
     this.rulesSortDraft = {...this.rulesSort};
     await this.refreshAll();
     this.startDvrAutoRefreshTimer();
-    this.pollingActive = true;
     this.pollRecordings();
   },
   beforeUnmount() {
     this.pollingActive = false;
+    if (this.pollAbortController) {
+      this.pollAbortController.abort();
+      this.pollAbortController = null;
+    }
     if (this.dvrRefreshTimerId) {
       clearInterval(this.dvrRefreshTimerId);
       this.dvrRefreshTimerId = null;
