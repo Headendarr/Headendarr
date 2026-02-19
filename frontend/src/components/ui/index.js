@@ -8,6 +8,7 @@ export {default as TicDialogWindow} from './dialogs/TicDialogWindow.vue';
 export {default as TicConfirmDialog} from './dialogs/TicConfirmDialog.vue';
 export {default as TicResponsiveHelp} from './dialogs/TicResponsiveHelp.vue';
 export {default as TicListItemCard} from './lists/TicListItemCard.vue';
+export {default as AdmonitionBanner} from './AdmonitionBanner.vue';
 
 export {default as TicSearchInput} from './inputs/TicSearchInput.vue';
 export {default as TicSelectInput} from './inputs/TicSelectInput.vue';

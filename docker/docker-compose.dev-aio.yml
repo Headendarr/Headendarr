@@ -53,10 +53,10 @@ services:
       # Application source passthrough
       - ../:/app
 
-    # DEVICES:
-    devices:
-      - /dev/dri #optional
-      - /dev/dvb #optional
+    ## # DEVICES:
+    ## devices:
+    ##   - /dev/dri #optional
+    ##   - /dev/dvb #optional
 
   # -- FRONTEND DEV SERVER --
   frontend:
