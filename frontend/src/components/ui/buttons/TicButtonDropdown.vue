@@ -1,8 +1,9 @@
 <template>
   <q-btn-dropdown
     v-bind="$attrs"
-    outline
-    color="secondary"
+    :outline="isOutline"
+    :flat="isFlat"
+    :color="color"
     content-class="tic-dropdown-menu"
     :icon="icon || undefined"
     :icon-right="iconRight || undefined"
@@ -16,11 +17,8 @@
 
 <script setup>
 import {computed} from 'vue';
-import {useQuasar} from 'quasar';
 
-const $q = useQuasar();
-
-defineProps({
+const props = defineProps({
   label: {
     type: String,
     default: '',
@@ -33,6 +31,15 @@ defineProps({
     type: String,
     default: '',
   },
+  variant: {
+    type: String,
+    default: 'filled',
+    validator: (value) => ['filled', 'outline', 'flat'].includes(value),
+  },
+  color: {
+    type: String,
+    default: 'primary',
+  },
   dense: {
     type: Boolean,
     default: false,
@@ -42,6 +49,9 @@ defineProps({
     default: false,
   },
 });
+
+const isOutline = computed(() => props.variant === 'outline');
+const isFlat = computed(() => props.variant === 'flat');
 </script>
 
 <style scoped>

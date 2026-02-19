@@ -2,7 +2,7 @@
   <TicDialogWindow
     v-model="isOpen"
     title="Channel Settings"
-    width="900px"
+    width="1023px"
     :persistent="isDirty"
     :prevent-close="isDirty"
     :close-tooltip="closeTooltip"

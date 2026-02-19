@@ -3,29 +3,15 @@
     <div :class="$q.screen.lt.sm ? 'q-pa-none' : 'q-pa-md'">
       <q-card flat>
         <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-          <div class="row q-col-gutter-sm items-end q-mb-sm">
-            <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
-              <TicSearchInput
-                v-model="search"
-                class="section-toolbar-field"
-                label="Search audit logs"
-                placeholder="User, endpoint, event, details..."
-              />
-            </div>
-            <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-4 col-md-3'">
-              <TicSelectInput
-                v-model="eventType"
-                class="section-toolbar-field"
-                label="Event"
-                :options="eventTypeOptions"
-                option-label="label"
-                option-value="value"
-                emit-value
-                map-options
-                clearable
-              />
-            </div>
-          </div>
+          <TicListToolbar
+            class="q-mb-sm"
+            :search="{label: 'Search audit logs', placeholder: 'User, endpoint, event, details...'}"
+            :search-value="search"
+            :filters="auditToolbarFilters"
+            :collapse-filters-on-mobile="false"
+            @update:search-value="search = $event"
+            @filter-change="onAuditToolbarFilterChange"
+          />
 
           <q-list bordered separator class="rounded-borders audit-list">
             <q-item v-for="entry in entries" :key="entry.id" class="audit-list-item" top>
@@ -117,7 +103,7 @@
 import axios from 'axios';
 import {defineComponent} from 'vue';
 import {useUiStore} from 'stores/ui';
-import {TicListItemCard, TicSearchInput, TicSelectInput} from 'components/ui';
+import {TicListItemCard, TicListToolbar} from 'components/ui';
 
 const PAGE_SIZE = 50;
 
@@ -125,8 +111,7 @@ export default defineComponent({
   name: 'AuditPage',
   components: {
     TicListItemCard,
-    TicSearchInput,
-    TicSelectInput,
+    TicListToolbar,
   },
   setup() {
     return {
@@ -154,7 +139,31 @@ export default defineComponent({
       this.scheduleRefresh();
     },
   },
+  computed: {
+    auditToolbarFilters() {
+      return [
+        {
+          key: 'event',
+          modelValue: this.eventType,
+          label: 'Event',
+          options: this.eventTypeOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: true,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+      ];
+    },
+  },
   methods: {
+    onAuditToolbarFilterChange({key, value}) {
+      if (key === 'event') {
+        this.eventType = value ?? null;
+      }
+    },
     fallbackDeviceLabel(userAgent) {
       const ua = String(userAgent || '').trim();
       return ua || 'Unknown';

@@ -11,30 +11,24 @@
               v-if="!isPhoneLayout"
               :class="$q.platform.is.mobile ? 'q-px-none' : ''"
             >
-              <div class="row items-center q-col-gutter-sm justify-between tv-guide-toolbar">
-                <div v-if="!isPhoneLayout" class="col-12 col-sm-4 col-md-3">
-                  <TicSearchInput
-                    v-model="searchQuery"
-                    label="Search Channels"
-                    placeholder="Channel name"
-                  />
-                </div>
-                <div v-if="!isPhoneLayout" class="col-12 col-sm-4 col-md-3">
-                  <TicSelectInput
-                    v-model="selectedGroup"
-                    label="Channel Group"
-                    :options="groupOptions"
-                    option-label="label"
-                    option-value="value"
-                    :emit-value="true"
-                    :map-options="true"
-                    :clearable="false"
-                    :dense="true"
-                    :behavior="isMobileLayout ? 'dialog' : 'menu'"
-                    class="tv-guide-filter-select"
-                  />
-                </div>
-              </div>
+              <TicListToolbar
+                :search="{label: 'Search Channels', placeholder: 'Channel name'}"
+                :search-value="searchQuery"
+                :filters="[
+                  {
+                    key: 'group',
+                    modelValue: selectedGroup,
+                    label: 'Channel Group',
+                    options: groupOptions,
+                    clearable: false,
+                    dense: true,
+                    behavior: isMobileLayout ? 'dialog' : 'menu',
+                  },
+                ]"
+                @update:search-value="searchQuery = $event"
+                @filter-change="onToolbarFilterChange"
+                @filters="openFilterDialog"
+              />
             </q-card-section>
 
             <q-separator v-if="!isPhoneLayout" />
@@ -64,29 +58,25 @@
                       />
                     </div>
                     <q-slide-transition>
-                      <div v-show="mobileActionsExpanded" class="row q-col-gutter-sm q-pt-xs">
-                        <div class="col-12">
-                          <TicSearchInput
-                            v-model="searchQuery"
-                            label="Search Channels"
-                            placeholder="Channel name"
-                          />
-                        </div>
-                        <div class="col-12">
-                          <TicSelectInput
-                            v-model="selectedGroup"
-                            label="Channel Group"
-                            :options="groupOptions"
-                            option-label="label"
-                            option-value="value"
-                            :emit-value="true"
-                            :map-options="true"
-                            :clearable="false"
-                            :dense="true"
-                            behavior="dialog"
-                            class="tv-guide-filter-select"
-                          />
-                        </div>
+                      <div v-show="mobileActionsExpanded" class="q-pt-xs">
+                        <TicListToolbar
+                          :search="{label: 'Search Channels', placeholder: 'Channel name'}"
+                          :search-value="searchQuery"
+                          :filters="[
+                            {
+                              key: 'group',
+                              modelValue: selectedGroup,
+                              label: 'Channel Group',
+                              options: groupOptions,
+                              clearable: false,
+                              dense: true,
+                              behavior: 'dialog',
+                            },
+                          ]"
+                          @update:search-value="searchQuery = $event"
+                          @filter-change="onToolbarFilterChange"
+                          @filters="openFilterDialog"
+                        />
                       </div>
                     </q-slide-transition>
                   </div>
@@ -363,6 +353,27 @@
       </template>
     </TicDialogPopup>
 
+    <TicDialogPopup v-model="filterDialogOpen" title="Filter Channels" width="560px" max-width="95vw">
+      <div class="tic-form-layout">
+        <TicSelectInput
+          v-model="filterDraft.group"
+          label="Channel Group"
+          description="Filter channels by group."
+          :options="groupOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+      </div>
+      <template #actions>
+        <TicButton label="Clear" variant="flat" color="grey-7" @click="clearFilterDraft" />
+        <TicButton label="Apply" icon="check" color="positive" @click="applyFilterDraft" />
+      </template>
+    </TicDialogPopup>
+
   </q-page>
 </template>
 
@@ -373,7 +384,7 @@ import {useVideoStore} from 'stores/video';
 import {useUiStore} from 'stores/ui';
 import {useQuasar} from 'quasar';
 import {useMobile} from 'src/composables/useMobile';
-import {TicActionButton, TicButton, TicDialogPopup, TicSearchInput, TicSelectInput} from 'components/ui';
+import {TicActionButton, TicButton, TicDialogPopup, TicListToolbar, TicSelectInput} from 'components/ui';
 
 export default defineComponent({
   name: 'TvGuidePage',
@@ -381,7 +392,7 @@ export default defineComponent({
     TicActionButton,
     TicButton,
     TicDialogPopup,
-    TicSearchInput,
+    TicListToolbar,
     TicSelectInput,
   },
   setup() {
@@ -392,6 +403,8 @@ export default defineComponent({
     const loading = ref(false);
     const searchQuery = ref('');
     const selectedGroup = ref('all');
+    const filterDialogOpen = ref(false);
+    const filterDraft = ref({group: 'all'});
     const channels = ref([]);
     const programmes = ref([]);
     const recordings = ref([]);
@@ -532,9 +545,29 @@ export default defineComponent({
         if (aHas && bHas && aNum !== bNum) return aNum - bNum;
         if (aHas && !bHas) return -1;
         if (!aHas && bHas) return 1;
-        return a.name.localeCompare(b.name);
+        return String(a.name || '').localeCompare(String(b.name || ''));
       });
     });
+
+    const onToolbarFilterChange = ({key, value}) => {
+      if (key === 'group') {
+        selectedGroup.value = value || 'all';
+      }
+    };
+
+    const openFilterDialog = () => {
+      filterDraft.value = {group: selectedGroup.value || 'all'};
+      filterDialogOpen.value = true;
+    };
+
+    const clearFilterDraft = () => {
+      filterDraft.value = {group: 'all'};
+    };
+
+    const applyFilterDraft = () => {
+      selectedGroup.value = filterDraft.value.group || 'all';
+      filterDialogOpen.value = false;
+    };
 
     const programmeStyle = (programme) => {
       const left = ((programme.start_ts - startTs.value) / 60) * pxPerMinute;
@@ -731,9 +764,10 @@ export default defineComponent({
             label: 'Continue',
             color: 'positive',
           },
-        }).onOk((value) => resolve(value || options[0].value))
-          .onCancel(() => resolve(null))
-          .onDismiss(() => resolve(null));
+        }).
+          onOk((value) => resolve(value || options[0].value)).
+          onCancel(() => resolve(null)).
+          onDismiss(() => resolve(null));
       });
     };
 
@@ -1336,6 +1370,8 @@ export default defineComponent({
       loading,
       searchQuery,
       selectedGroup,
+      filterDialogOpen,
+      filterDraft,
       groupOptions,
       channels,
       programmes,
@@ -1377,6 +1413,10 @@ export default defineComponent({
       toggleChannelRail,
       isLive,
       rowHeight,
+      onToolbarFilterChange,
+      openFilterDialog,
+      clearFilterDraft,
+      applyFilterDraft,
       isCompactLayout,
       isMobileLayout,
       isPhoneLayout,

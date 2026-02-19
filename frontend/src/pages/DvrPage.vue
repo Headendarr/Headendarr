@@ -24,67 +24,19 @@
 
             <q-tab-panels v-model="tab" animated class="dvr-tab-panels">
               <q-tab-panel name="recordings">
-                <div class="row q-col-gutter-sm items-end q-mb-sm dvr-toolbar">
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                    <TicButton
-                      label="Schedule Recording"
-                      icon="add"
-                      color="primary"
-                      class="section-toolbar-btn"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
-                      @click="showScheduleDialog = true"
-                    />
-                  </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
-                    <TicSearchInput
-                      v-model="recordingsSearch"
-                      class="section-toolbar-field"
-                      label="Search recordings"
-                      placeholder="Title, channel, status..."
-                    />
-                  </div>
-
-                  <template v-if="!$q.screen.lt.md">
-                    <div class="col-12 col-sm-6 col-md-3">
-                      <TicSelectInput
-                        v-model="statusFilter"
-                        class="section-toolbar-field"
-                        label="Status"
-                        :options="statusOptions"
-                        option-label="label"
-                        option-value="value"
-                        :emit-value="true"
-                        :map-options="true"
-                        :clearable="false"
-                        :dense="true"
-                        :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                      />
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-left' : 'col-auto'">
-                      <TicButton
-                        label="Filters"
-                        icon="filter_list"
-                        color="secondary"
-                        :dense="$q.screen.lt.sm"
-                        class="section-toolbar-btn section-toolbar-btn--compact"
-                        @click="recordingsFilterDialogOpen = true"
-                      />
-                    </div>
-                  </template>
-
-                  <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-right' : 'col-auto'">
-                    <TicButton
-                      :label="$q.screen.lt.md ? 'Sort' : recordingsSortLabel"
-                      icon="sort"
-                      color="secondary"
-                      :dense="$q.screen.lt.sm"
-                      class="section-toolbar-btn section-toolbar-btn--compact"
-                      @click="recordingsSortDialogOpen = true"
-                    />
-                  </div>
-                </div>
+                <TicListToolbar
+                  class="q-mb-sm dvr-toolbar"
+                  :add-action="{label: 'Schedule Recording', icon: 'add'}"
+                  :search="{label: 'Search recordings', placeholder: 'Title, channel, status...'}"
+                  :search-value="recordingsSearch"
+                  :filters="recordingsToolbarFilters"
+                  :sort-action="{label: recordingsSortLabel}"
+                  @add="showScheduleDialog = true"
+                  @update:search-value="recordingsSearch = $event"
+                  @filter-change="onRecordingsToolbarFilterChange"
+                  @filters="recordingsFilterDialogOpen = true"
+                  @sort="recordingsSortDialogOpen = true"
+                />
 
                 <q-list class="dvr-list">
                   <q-item
@@ -175,37 +127,16 @@
               </q-tab-panel>
 
               <q-tab-panel name="rules">
-                <div class="row q-col-gutter-sm items-end q-mb-sm dvr-toolbar">
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                    <TicButton
-                      label="Add Rule"
-                      icon="add"
-                      color="primary"
-                      class="section-toolbar-btn"
-                      :class="$q.screen.lt.sm ? 'full-width' : ''"
-                      @click="openRuleDialog()"
-                    />
-                  </div>
-                  <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
-                    <TicSearchInput
-                      v-model="rulesSearch"
-                      class="section-toolbar-field"
-                      label="Search rules"
-                      placeholder="Title match or channel..."
-                    />
-                  </div>
-
-                  <div :class="$q.screen.lt.sm ? 'col-12 section-toolbar-split-right' : 'col-auto'">
-                    <TicButton
-                      :label="$q.screen.lt.md ? 'Sort' : rulesSortLabel"
-                      icon="sort"
-                      color="secondary"
-                      :dense="$q.screen.lt.sm"
-                      class="section-toolbar-btn section-toolbar-btn--compact"
-                      @click="rulesSortDialogOpen = true"
-                    />
-                  </div>
-                </div>
+                <TicListToolbar
+                  class="q-mb-sm dvr-toolbar"
+                  :add-action="{label: 'Add Rule', icon: 'add'}"
+                  :search="{label: 'Search rules', placeholder: 'Title match or channel...'}"
+                  :search-value="rulesSearch"
+                  :sort-action="{label: rulesSortLabel}"
+                  @add="openRuleDialog()"
+                  @update:search-value="rulesSearch = $event"
+                  @sort="rulesSortDialogOpen = true"
+                />
 
                 <q-list class="dvr-list">
                   <q-item v-for="rule in visibleRules" :key="rule.id" class="dvr-list-item">
@@ -287,7 +218,8 @@
               </q-item>
               <q-item>
                 <q-item-section>
-                  <q-item-label> 3. Use status and sync details to verify Headendarr and TVHeadend are aligned.</q-item-label>
+                  <q-item-label> 3. Use status and sync details to verify Headendarr and TVHeadend are aligned.
+                  </q-item-label>
                 </q-item-section>
               </q-item>
             </q-list>
@@ -496,9 +428,9 @@ import {
   TicDialogPopup,
   TicDialogWindow,
   TicListItemCard,
+  TicListToolbar,
   TicNumberInput,
   TicResponsiveHelp,
-  TicSearchInput,
   TicSelectInput,
   TicTextInput,
 } from 'components/ui';
@@ -513,9 +445,9 @@ export default defineComponent({
     TicDialogPopup,
     TicDialogWindow,
     TicListItemCard,
+    TicListToolbar,
     TicNumberInput,
     TicResponsiveHelp,
-    TicSearchInput,
     TicSelectInput,
     TicTextInput,
   },
@@ -602,6 +534,19 @@ export default defineComponent({
         {label: 'Canceled', value: 'canceled'},
         {label: 'Deleted', value: 'deleted'},
         {label: 'Failed', value: 'failed'},
+      ];
+    },
+    recordingsToolbarFilters() {
+      return [
+        {
+          key: 'status',
+          modelValue: this.statusFilter,
+          label: 'Status',
+          options: this.statusOptions,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
       ];
     },
     sortDirectionOptions() {
@@ -880,10 +825,12 @@ export default defineComponent({
       } catch {
         this.recordingProfiles = [{key: 'default', name: 'Default', pathname: '%F_%R $u$n.$x'}];
       }
-      if (!this.scheduleForm.recording_profile_key || !this.recordingProfileOptions.some((item) => item.value === this.scheduleForm.recording_profile_key)) {
+      if (!this.scheduleForm.recording_profile_key ||
+        !this.recordingProfileOptions.some((item) => item.value === this.scheduleForm.recording_profile_key)) {
         this.scheduleForm.recording_profile_key = this.defaultRecordingProfileKey;
       }
-      if (!this.ruleForm.recording_profile_key || !this.recordingProfileOptions.some((item) => item.value === this.ruleForm.recording_profile_key)) {
+      if (!this.ruleForm.recording_profile_key ||
+        !this.recordingProfileOptions.some((item) => item.value === this.ruleForm.recording_profile_key)) {
         this.ruleForm.recording_profile_key = this.defaultRecordingProfileKey;
       }
     },
@@ -1202,41 +1149,46 @@ export default defineComponent({
       this.rulesSort = {...this.rulesSortDraft};
       this.rulesSortDialogOpen = false;
     },
+    onRecordingsToolbarFilterChange({key, value}) {
+      if (key === 'status') {
+        this.statusFilter = value;
+      }
+    },
     async pollRecordings() {
       if (this.pollLoopPromise) {
         return this.pollLoopPromise;
       }
       this.pollingActive = true;
       this.pollLoopPromise = (async () => {
-      while (this.pollingActive) {
-        const controller = new AbortController();
-        this.pollAbortController = controller;
-        try {
-          const response = await axios.get('/tic-api/recordings/poll', {
-            params: {
-              wait: 1,
-              timeout: 25,
-            },
-            signal: controller.signal,
-          });
-          if (!this.pollingActive) {
-            break;
-          }
-          this.recordings = response.data.data || [];
-        } catch (error) {
-          const aborted = error?.code === 'ERR_CANCELED'
-            || error?.name === 'CanceledError'
-            || error?.name === 'AbortError';
-          if (!this.pollingActive || aborted) {
-            continue;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        } finally {
-          if (this.pollAbortController === controller) {
-            this.pollAbortController = null;
+        while (this.pollingActive) {
+          const controller = new AbortController();
+          this.pollAbortController = controller;
+          try {
+            const response = await axios.get('/tic-api/recordings/poll', {
+              params: {
+                wait: 1,
+                timeout: 25,
+              },
+              signal: controller.signal,
+            });
+            if (!this.pollingActive) {
+              break;
+            }
+            this.recordings = response.data.data || [];
+          } catch (error) {
+            const aborted = error?.code === 'ERR_CANCELED'
+              || error?.name === 'CanceledError'
+              || error?.name === 'AbortError';
+            if (!this.pollingActive || aborted) {
+              continue;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          } finally {
+            if (this.pollAbortController === controller) {
+              this.pollAbortController = null;
+            }
           }
         }
-      }
       })().finally(() => {
         this.pollLoopPromise = null;
         this.pollAbortController = null;

@@ -49,6 +49,8 @@
               dense
               icon="menu"
               label="Options"
+              variant="outline"
+              color="secondary"
               auto-close
               :class="[
                 { 'dialog-attention': attentionActive },
@@ -118,6 +120,8 @@
               dense
               icon="menu"
               label="Options"
+              variant="outline"
+              color="secondary"
               auto-close
               :class="[{ 'dialog-attention': attentionActive }, 'q-mr-sm']"
             >

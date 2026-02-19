@@ -5,38 +5,18 @@
         <div class="col-12 help-main help-main--full">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-col-gutter-sm justify-between">
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                  <TicButton
-                    label="Add User"
-                    icon="person_add"
-                    color="primary"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
-                    @click="openCreateDialog"
-                  />
-                </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-4'">
-                  <TicSearchInput
-                    v-model="searchQuery"
-                    label="Search users"
-                    placeholder="Username, role, streaming key..."
-                  />
-                </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-3'">
-                  <TicSelectInput
-                    v-model="roleFilter"
-                    label="Role"
-                    :options="roleFilterOptions"
-                    option-label="label"
-                    option-value="value"
-                    :emit-value="true"
-                    :map-options="true"
-                    :clearable="false"
-                    :dense="true"
-                    :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                  />
-                </div>
-              </div>
+              <TicListToolbar
+                :add-action="{label: 'Add User', icon: 'person_add'}"
+                :search="{label: 'Search users', placeholder: 'Username, role, streaming key...'}"
+                :search-value="searchQuery"
+                :filters="usersToolbarFilters"
+                :collapse-filters-on-mobile="false"
+                :sort-action="{label: usersSortLabel}"
+                @add="openCreateDialog"
+                @update:search-value="searchQuery = $event"
+                @filter-change="onUsersToolbarFilterChange"
+                @sort="usersSortDialogOpen = true"
+              />
             </q-card-section>
 
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
@@ -274,6 +254,37 @@
         </q-form>
       </div>
     </TicDialogWindow>
+
+    <TicDialogPopup v-model="usersSortDialogOpen" title="Sort Users" width="560px" max-width="95vw">
+      <div class="tic-form-layout">
+        <TicSelectInput
+          v-model="usersSortDraft.sortBy"
+          label="Sort By"
+          :options="userSortOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+        <TicSelectInput
+          v-model="usersSortDraft.sortDirection"
+          label="Direction"
+          :options="sortDirectionOptions"
+          option-label="label"
+          option-value="value"
+          :emit-value="true"
+          :map-options="true"
+          :clearable="false"
+          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+        />
+      </div>
+      <template #actions>
+        <TicButton label="Clear" variant="flat" color="grey-7" @click="clearUserSortDraft" />
+        <TicButton label="Apply" icon="check" color="positive" @click="applyUserSortDraft" />
+      </template>
+    </TicDialogPopup>
   </q-page>
 </template>
 
@@ -283,9 +294,10 @@ import {copyToClipboard} from 'quasar';
 import {
   TicActionButton,
   TicButton,
+  TicDialogPopup,
   TicDialogWindow,
   TicListActions,
-  TicSearchInput,
+  TicListToolbar,
   TicSelectInput,
   TicTextInput,
   TicToggleInput,
@@ -298,9 +310,10 @@ export default {
   components: {
     TicActionButton,
     TicButton,
+    TicDialogPopup,
     TicDialogWindow,
     TicListActions,
-    TicSearchInput,
+    TicListToolbar,
     TicSelectInput,
     TicTextInput,
     TicToggleInput,
@@ -313,6 +326,15 @@ export default {
       users: [],
       searchQuery: '',
       roleFilter: null,
+      usersSortDialogOpen: false,
+      usersSort: {
+        sortBy: 'username',
+        sortDirection: 'asc',
+      },
+      usersSortDraft: {
+        sortBy: 'username',
+        sortDirection: 'asc',
+      },
       showCreate: false,
       showEdit: false,
       editUser: null,
@@ -333,7 +355,7 @@ export default {
       dvrAccessOptions: [
         {label: 'No DVR access', value: 'none'},
         {label: 'Access own recordings only', value: 'read_write_own'},
-        {label: "Grant access to everyone's recordings", value: 'read_all_write_own'},
+        {label: 'Grant access to everyone\'s recordings', value: 'read_all_write_own'},
       ],
       retentionPolicyOptions: [
         {label: '1 day', value: '1_day'},
@@ -358,10 +380,40 @@ export default {
     roleFilterOptions() {
       return [{label: 'All', value: null}, ...this.roleOptions];
     },
+    usersToolbarFilters() {
+      return [
+        {
+          key: 'role',
+          modelValue: this.roleFilter,
+          label: 'Role',
+          options: this.roleFilterOptions,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+      ];
+    },
+    userSortOptions() {
+      return [
+        {label: 'Username', value: 'username'},
+        {label: 'Role', value: 'role'},
+        {label: 'Status', value: 'status'},
+      ];
+    },
+    sortDirectionOptions() {
+      return [
+        {label: 'Ascending', value: 'asc'},
+        {label: 'Descending', value: 'desc'},
+      ];
+    },
+    usersSortLabel() {
+      const sort = this.userSortOptions.find((item) => item.value === this.usersSort.sortBy);
+      return sort ? `Sort: ${sort.label}` : 'Sort';
+    },
     filteredUsers() {
       const query = String(this.searchQuery || '').trim().toLowerCase();
       const role = this.roleFilter;
-      return (this.users || []).filter((user) => {
+      const filtered = (this.users || []).filter((user) => {
         const roles = Array.isArray(user.roles) ? user.roles : [];
         if (role && !roles.includes(role)) {
           return false;
@@ -373,7 +425,8 @@ export default {
         return values.some((value) =>
           String(value || '').toLowerCase().includes(query),
         );
-      }).sort((a, b) => String(a.username || '').localeCompare(String(b.username || '')));
+      });
+      return this.sortUsers(filtered);
     },
     visibleUsers() {
       return this.filteredUsers.slice(0, this.visibleUsersCount);
@@ -411,6 +464,12 @@ export default {
     roleFilter() {
       this.resetVisibleUsers();
     },
+    usersSort: {
+      deep: true,
+      handler() {
+        this.resetVisibleUsers();
+      },
+    },
     'form.roles': {
       deep: true,
       handler(nextRoles) {
@@ -447,6 +506,39 @@ export default {
       }
       this.visibleUsersCount += USERS_PAGE_SIZE;
       done(this.visibleUsersCount >= this.filteredUsers.length);
+    },
+    onUsersToolbarFilterChange({key, value}) {
+      if (key === 'role') {
+        this.roleFilter = value;
+      }
+    },
+    sortUsers(users) {
+      const direction = this.usersSort?.sortDirection === 'desc' ? -1 : 1;
+      const sortBy = this.usersSort?.sortBy || 'username';
+      const sorted = [...users];
+      sorted.sort((a, b) => {
+        if (sortBy === 'status') {
+          const aValue = a?.is_active ? 'active' : 'disabled';
+          const bValue = b?.is_active ? 'active' : 'disabled';
+          return aValue.localeCompare(bValue) * direction;
+        }
+        if (sortBy === 'role') {
+          const aValue = String((a?.roles || [])[0] || '');
+          const bValue = String((b?.roles || [])[0] || '');
+          return aValue.localeCompare(bValue) * direction;
+        }
+        const aValue = String(a?.username || '');
+        const bValue = String(b?.username || '');
+        return aValue.localeCompare(bValue) * direction;
+      });
+      return sorted;
+    },
+    clearUserSortDraft() {
+      this.usersSortDraft = {sortBy: 'username', sortDirection: 'asc'};
+    },
+    applyUserSortDraft() {
+      this.usersSort = {...this.usersSortDraft};
+      this.usersSortDialogOpen = false;
     },
     userActions(user) {
       return [
@@ -612,6 +704,7 @@ export default {
     },
   },
   mounted() {
+    this.usersSortDraft = {...this.usersSort};
     this.loadUsers();
   },
 };

@@ -23,55 +23,23 @@
 
           <q-slide-transition>
             <div v-show="actionsExpanded" class="col-12">
-              <div class="row q-col-gutter-sm items-end">
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-6 col-md-4'">
-                  <TicSearchInput
-                    class="section-toolbar-field"
-                    v-model="searchValue"
-                    label="Search groups"
-                    placeholder="Search by group name"
-                    :debounce="300"
-                    :clearable="true"
+              <div>
+                <TicListToolbar
+                  :search="{label: 'Search groups', placeholder: 'Search by group name', debounce: 300, clearable: true}"
+                  :search-value="searchValue"
+                  :filters="groupToolbarFilters"
+                  :sort-action="{label: sortButtonLabel, mobileLabel: 'Sort'}"
+                  @update:search-value="searchValue = $event"
+                  @filter-change="onToolbarFilterChange"
+                  @sort="openSortDialog"
+                />
+                <div class="selector-select-page-row">
+                  <q-checkbox
+                    color="primary"
+                    :model-value="allPageSelected"
+                    label="Select page"
+                    @update:model-value="toggleSelectPage"
                   />
-                </div>
-
-                <div class="col-6 col-md-3">
-                  <TicSelectInput
-                    class="section-toolbar-field"
-                    v-model="appliedFilters.playlistId"
-                    label="Source"
-                    :options="playlistOptions"
-                    option-label="label"
-                    option-value="value"
-                    :emit-value="true"
-                    :map-options="true"
-                    :clearable="false"
-                    :dense="true"
-                    :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                    @update:model-value="onInlineSourceFilterChange"
-                  />
-                </div>
-
-                <div :class="$q.screen.lt.sm ? 'col-6' : 'col-auto'">
-                  <TicButton
-                    :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
-                    icon="sort"
-                    color="secondary"
-                    class="section-toolbar-btn"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
-                    @click="openSortDialog"
-                  />
-                </div>
-
-                <div class="col-12">
-                  <div class="selector-select-page-row">
-                    <q-checkbox
-                      color="primary"
-                      :model-value="allPageSelected"
-                      label="Select page"
-                      @update:model-value="toggleSelectPage"
-                    />
-                  </div>
                 </div>
               </div>
             </div>
@@ -181,12 +149,14 @@
 
 <script>
 import axios from 'axios';
-import TicActionButton from 'components/ui/buttons/TicActionButton.vue';
-import TicButton from 'components/ui/buttons/TicButton.vue';
-import TicDialogPopup from 'components/ui/dialogs/TicDialogPopup.vue';
-import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
-import TicSearchInput from 'components/ui/inputs/TicSearchInput.vue';
-import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
+import {
+  TicActionButton,
+  TicButton,
+  TicDialogPopup,
+  TicDialogWindow,
+  TicListToolbar,
+  TicSelectInput,
+} from 'components/ui';
 
 const GROUP_PAGE_SIZE = 100;
 
@@ -197,7 +167,7 @@ export default {
     TicButton,
     TicDialogPopup,
     TicDialogWindow,
-    TicSearchInput,
+    TicListToolbar,
     TicSelectInput,
   },
   emits: ['ok', 'hide'],
@@ -289,6 +259,23 @@ export default {
         {label: 'Descending', value: 'desc'},
       ];
     },
+    groupToolbarFilters() {
+      return [
+        {
+          key: 'playlistId',
+          modelValue: this.appliedFilters.playlistId,
+          label: 'Source',
+          options: this.playlistOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+      ];
+    },
   },
   watch: {
     searchValue() {
@@ -358,6 +345,12 @@ export default {
     async onInlineSourceFilterChange() {
       this.clearSelection();
       await this.resetAndReload();
+    },
+    onToolbarFilterChange({key, value}) {
+      if (key === 'playlistId') {
+        this.appliedFilters.playlistId = value || null;
+        this.onInlineSourceFilterChange();
+      }
     },
     async resetAndReload() {
       this.rows = [];

@@ -245,6 +245,40 @@
 }
 
 /* Shared toolbar control alignment (DVR + selector dialogs + similar pages) */
+.section-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.section-toolbar-left,
+.section-toolbar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.section-toolbar-search-wrap {
+  flex: 0 0 320px;
+  width: 320px;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.section-toolbar-filter-wrap {
+  flex: 0 1 220px;
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.section-toolbar-sort-wrap {
+  display: flex;
+  align-items: flex-end;
+}
+
 .section-toolbar-btn {
   min-height: 40px;
 }
@@ -271,6 +305,24 @@
 }
 
 @media (max-width: 599px) {
+  .section-toolbar-left,
+  .section-toolbar-right {
+    width: 100%;
+  }
+
+  .section-toolbar-search-wrap,
+  .section-toolbar-filter-wrap,
+  .section-toolbar-sort-wrap {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .section-toolbar-sort-wrap .section-toolbar-btn {
+    width: 100%;
+  }
+
   .section-toolbar-btn--compact.q-btn,
   .section-toolbar-btn--compact .q-btn {
     min-height: 34px;

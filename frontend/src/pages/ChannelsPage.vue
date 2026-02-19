@@ -6,104 +6,13 @@
           :class="uiStore.showHelp ? 'col-12 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-col-gutter-sm justify-between">
-                <template v-if="bulkEditMode !== true">
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Add Channel"
-                      icon="add"
-                      color="primary"
-                      class="channels-toolbar-btn"
-                      @click="openChannelSettings(null)"
-                    />
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Import Channels from stream source"
-                      icon="dvr"
-                      color="primary"
-                      class="channels-toolbar-btn"
-                      @click="openChannelsImport()"
-                    />
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Import Channels by Group"
-                      icon="group_work"
-                      color="primary"
-                      class="channels-toolbar-btn"
-                      @click="openChannelsGroupImport()"
-                    />
-                  </div>
-                </template>
-
-                <template v-else>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Edit Categories"
-                      color="primary"
-                      :disable="!anyChannelsSelectedInBulkEdit"
-                      class="channels-toolbar-btn"
-                      @click="showBulkEditCategoriesDialog()"
-                    />
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      :label="allChannelsSelected ? 'Deselect All' : 'Select All'"
-                      color="primary"
-                      class="channels-toolbar-btn"
-                      @click="selectAllChannels()"
-                    />
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButtonDropdown
-                      label="Select by Category"
-                      color="primary"
-                      class="channels-toolbar-btn"
-                    >
-                      <q-list>
-                        <q-item
-                          v-for="category in availableCategories"
-                          :key="category"
-                          clickable
-                          v-close-popup
-                          @click="selectChannelsByCategory(category)"
-                        >
-                          <q-item-section>{{ category }}</q-item-section>
-                        </q-item>
-                      </q-list>
-                    </TicButtonDropdown>
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Refresh Channel Streams"
-                      color="info"
-                      :disable="!anyChannelsSelectedInBulkEdit"
-                      class="channels-toolbar-btn"
-                      @click="triggerRefreshChannelSources()"
-                    />
-                  </div>
-                  <div class="col-12 col-sm-auto">
-                    <TicButton
-                      label="Delete Channels"
-                      color="negative"
-                      :disable="!anyChannelsSelectedInBulkEdit"
-                      class="channels-toolbar-btn"
-                      @click="confirmBulkDeleteChannels()"
-                    />
-                  </div>
-                </template>
-
-                <div class="col-12 col-sm-auto">
-                  <TicButton
-                    :label="bulkEditMode ? 'Exit Bulk Edit' : 'Bulk Edit'"
-                    :icon="bulkEditMode ? 'format_line_spacing' : 'fact_check'"
-                    color="primary"
-                    class="channels-toolbar-btn"
-                    @click="bulkEditMode = !bulkEditMode"
-                  />
-                </div>
-              </div>
+              <TicListToolbar
+                :actions="channelsToolbarActions"
+                :filters="channelsToolbarFilters"
+                :collapse-filters-on-mobile="false"
+                @action="handleChannelsToolbarAction"
+                @filter-change="onChannelsToolbarFilterChange"
+              />
             </q-card-section>
 
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
@@ -183,6 +92,39 @@
                     <TicButton label="Save" icon="save" color="positive" @click="submitBulkCategoriesChange" />
                   </template>
                 </TicDialogPopup>
+
+                <div v-if="bulkEditMode" class="bulk-mode-controls">
+                  <TicButtonDropdown
+                    label="Bulk Actions"
+                    icon="tune"
+                    color="primary"
+                    class="bulk-actions-dropdown"
+                  >
+                    <q-list>
+                      <q-item
+                        v-for="action in bulkEditDropdownActions"
+                        :key="action.id"
+                        :clickable="!action.disable"
+                        :disable="action.disable"
+                        v-close-popup
+                        @click="handleBulkDropdownAction(action)"
+                      >
+                        <q-item-section avatar>
+                          <q-icon :name="action.icon" :color="action.color || 'primary'" />
+                        </q-item-section>
+                        <q-item-section>{{ action.label }}</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </TicButtonDropdown>
+                </div>
+                <div v-if="bulkEditMode" class="bulk-select-all-row">
+                  <q-checkbox
+                    color="primary"
+                    :model-value="allChannelsSelected"
+                    label="Select all channels"
+                    @update:model-value="setAllChannelsSelected"
+                  />
+                </div>
 
                 <q-list bordered separator class="channels-list rounded-borders q-pl-none">
                   <draggable
@@ -367,7 +309,9 @@
                                   <q-img :src="element.logo_url" />
                                 </q-avatar>
                                 <div class="col">
-                                  <div class="text-weight-medium" :class="channelTitleTextClass(element)">{{ element.name }}</div>
+                                  <div class="text-weight-medium" :class="channelTitleTextClass(element)">
+                                    {{ element.name }}
+                                  </div>
                                   <div
                                     class="text-caption channel-number-link"
                                     :class="channelNumberTextClass(element)"
@@ -533,6 +477,7 @@ import {
   TicDialogPopup,
   TicListItemCard,
   TicListActions,
+  TicListToolbar,
   TicNumberInput,
   TicResponsiveHelp,
   TicSelectInput,
@@ -548,6 +493,7 @@ export default defineComponent({
     TicDialogPopup,
     TicListItemCard,
     TicListActions,
+    TicListToolbar,
     TicNumberInput,
     TicResponsiveHelp,
     TicSelectInput,
@@ -573,6 +519,7 @@ export default defineComponent({
       listOfChannels: [],
       enableChannelHealthHighlight: true,
       selectedChannels: [],
+      selectedBulkCategory: null,
 
       channelNumberEditDialogVisible: false,
       bulkEditCategoriesDialogVisible: false,
@@ -615,8 +562,120 @@ export default defineComponent({
       });
       return Array.from(allCategories).sort();
     },
+    channelsToolbarActions() {
+      if (this.bulkEditMode) {
+        return [{id: 'toggle-bulk-edit', label: 'Exit Bulk Edit', icon: 'close', color: 'primary'}];
+      }
+      return [
+        {id: 'add-channel', label: 'Add Channel', icon: 'add', color: 'primary'},
+        {id: 'import-stream-source', label: 'Import Channels from stream source', icon: 'dvr', color: 'primary'},
+        {id: 'import-group', label: 'Import Channels by Group', icon: 'group_work', color: 'primary'},
+        {id: 'toggle-bulk-edit', label: 'Bulk Edit', icon: 'fact_check', color: 'primary'},
+      ];
+    },
+    channelsToolbarFilters() {
+      if (!this.bulkEditMode) {
+        return [];
+      }
+      return [
+        {
+          key: 'selectByCategory',
+          modelValue: this.selectedBulkCategory,
+          label: 'Select by Category',
+          options: this.availableCategories.map((category) => ({label: category, value: category})),
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+      ];
+    },
+    bulkEditDropdownActions() {
+      return [
+        {
+          id: 'bulk-edit-categories',
+          label: 'Edit Categories',
+          icon: 'sell',
+          color: 'primary',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+        {
+          id: 'bulk-refresh-streams',
+          label: 'Refresh Channel Streams',
+          icon: 'refresh',
+          color: 'info',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+        {
+          id: 'bulk-delete',
+          label: 'Delete Channels',
+          icon: 'delete',
+          color: 'negative',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+      ];
+    },
   },
   methods: {
+    handleChannelsToolbarAction(action) {
+      switch (action?.id) {
+        case 'add-channel':
+          this.openChannelSettings(null);
+          break;
+        case 'import-stream-source':
+          this.openChannelsImport();
+          break;
+        case 'import-group':
+          this.openChannelsGroupImport();
+          break;
+        case 'bulk-edit-categories':
+          this.showBulkEditCategoriesDialog();
+          break;
+        case 'bulk-refresh-streams':
+          this.triggerRefreshChannelSources();
+          break;
+        case 'bulk-delete':
+          this.confirmBulkDeleteChannels();
+          break;
+        case 'toggle-bulk-edit':
+          if (this.bulkEditMode) {
+            this.exitBulkEdit();
+          } else {
+            this.bulkEditMode = true;
+          }
+          break;
+        default:
+          break;
+      }
+    },
+    exitBulkEdit() {
+      this.bulkEditMode = false;
+      this.selectedBulkCategory = null;
+    },
+    onChannelsToolbarFilterChange({key, value}) {
+      if (key !== 'selectByCategory') {
+        return;
+      }
+      this.selectedBulkCategory = value || null;
+      if (value) {
+        this.selectChannelsByCategory(value);
+      }
+    },
+    handleBulkDropdownAction(action) {
+      if (!action || action.disable) {
+        return;
+      }
+      this.handleChannelsToolbarAction(action);
+    },
+    setAllChannelsSelected(value) {
+      this.listOfChannels.forEach((channel) => {
+        channel.selected = Boolean(value);
+      });
+      this.selectedChannels = value ? this.listOfChannels.map((channel) => channel.id) : [];
+    },
     generateNewChannel: function(range, usedValues) {
       for (let i = range[0]; i <= range[1]; i++) {
         if (!usedValues.includes(i)) {
@@ -624,30 +683,6 @@ export default defineComponent({
         }
       }
       return null;
-    },
-    selectAllChannels() {
-      const shouldSelect = !this.allChannelsSelected;
-
-      // Toggle selection on all channels
-      this.listOfChannels.forEach((channel) => {
-        channel.selected = shouldSelect;
-
-        if (shouldSelect) {
-          if (!this.selectedChannels.includes(channel.id)) {
-            this.selectedChannels.push(channel.id);
-          }
-        } else {
-          this.selectedChannels = this.selectedChannels.filter((id) => id !== channel.id);
-        }
-      });
-
-      // Show notification
-      this.$q.notify({
-        color: 'positive',
-        message: shouldSelect ? `Selected all ${this.listOfChannels.length} channels` : 'Deselected all channels',
-        icon: shouldSelect ? 'select_all' : 'deselect',
-        timeout: 2000,
-      });
     },
     selectChannelsByCategory(category) {
       let count = 0;
@@ -662,6 +697,7 @@ export default defineComponent({
           count++;
         }
       });
+      this.selectedChannels = this.listOfChannels.filter((channel) => channel.selected).map((channel) => channel.id);
 
       // Show notification
       this.$q.notify({
@@ -1412,6 +1448,21 @@ export default defineComponent({
   justify-content: center;
 }
 
+.bulk-mode-controls {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.bulk-actions-dropdown {
+  min-width: 170px;
+}
+
+.bulk-select-all-row {
+  padding-left: 17px;
+  display: flex;
+  justify-content: flex-start;
+}
+
 .channel-number-link {
   text-decoration: underline;
   cursor: pointer;
@@ -1480,10 +1531,6 @@ export default defineComponent({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.channels-toolbar-btn {
-  width: 100%;
 }
 
 .channel-card-avatar {

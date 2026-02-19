@@ -6,24 +6,13 @@
           :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="row items-center q-col-gutter-sm justify-between">
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-auto'">
-                  <TicButton
-                    label="Add EPG"
-                    icon="add"
-                    color="primary"
-                    :class="$q.screen.lt.sm ? 'full-width' : ''"
-                    @click="openEpgSettings(null)"
-                  />
-                </div>
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-12 col-sm-6 col-md-5'">
-                  <TicSearchInput
-                    v-model="searchQuery"
-                    label="Search EPG sources"
-                    placeholder="Name, URL, description..."
-                  />
-                </div>
-              </div>
+              <TicListToolbar
+                :add-action="{label: 'Add EPG', icon: 'add'}"
+                :search="{label: 'Search EPG sources', placeholder: 'Name, URL, description...'}"
+                :search-value="searchQuery"
+                @add="openEpgSettings(null)"
+                @update:search-value="searchQuery = $event"
+              />
             </q-card-section>
 
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
@@ -229,8 +218,8 @@ import {
   TicButton,
   TicConfirmDialog,
   TicListActions,
+  TicListToolbar,
   TicResponsiveHelp,
-  TicSearchInput,
   TicTextInput,
   TicToggleInput,
 } from 'components/ui';
@@ -240,8 +229,8 @@ export default defineComponent({
   components: {
     TicButton,
     TicListActions,
+    TicListToolbar,
     TicResponsiveHelp,
-    TicSearchInput,
     TicTextInput,
     TicToggleInput,
   },

@@ -23,86 +23,25 @@
 
           <q-slide-transition>
             <div v-show="actionsExpanded" class="col-12">
-              <div class="row q-col-gutter-sm items-end">
-                <div :class="$q.screen.lt.sm ? 'col-12' : 'col-6 col-md-4'">
-                  <TicSearchInput
-                    class="section-toolbar-field"
-                    v-model="searchValue"
-                    label="Search streams"
-                    placeholder="Search by stream name"
-                    :debounce="300"
-                    :clearable="true"
+              <div>
+                <TicListToolbar
+                  :search="{label: 'Search streams', placeholder: 'Search by stream name', debounce: 300, clearable: true}"
+                  :search-value="searchValue"
+                  :filters="streamToolbarFilters"
+                  :sort-action="{label: sortButtonLabel, mobileLabel: 'Sort'}"
+                  @update:search-value="searchValue = $event"
+                  @filter-change="onToolbarFilterChange"
+                  @filters="openFilterDialog"
+                  @sort="openSortDialog"
+                />
+
+                <div class="selector-select-page-row">
+                  <q-checkbox
+                    color="primary"
+                    :model-value="allPageSelected"
+                    label="Select page"
+                    @update:model-value="toggleSelectPage"
                   />
-                </div>
-
-                <template v-if="$q.screen.gt.sm">
-                  <div class="col-6 col-md-3">
-                    <TicSelectInput
-                      class="section-toolbar-field"
-                      v-model="appliedFilters.playlistId"
-                      label="Source"
-                      :options="playlistOptions"
-                      option-label="label"
-                      option-value="value"
-                      :emit-value="true"
-                      :map-options="true"
-                      :clearable="false"
-                      :dense="true"
-                      :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                      @update:model-value="onInlinePlaylistFilterChange"
-                    />
-                  </div>
-
-                  <div class="col-6 col-md-3">
-                    <TicSelectInput
-                      class="section-toolbar-field"
-                      v-model="appliedFilters.groupTitle"
-                      label="Group"
-                      :options="inlineGroupOptions"
-                      option-label="label"
-                      option-value="value"
-                      :emit-value="true"
-                      :map-options="true"
-                      :clearable="false"
-                      :dense="true"
-                      :disable="!appliedFilters.playlistId"
-                      :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                      @update:model-value="onInlineGroupFilterChange"
-                    />
-                  </div>
-                </template>
-
-                <div v-else :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-left' : 'col-auto'">
-                  <TicButton
-                    label="Filters"
-                    icon="filter_list"
-                    color="secondary"
-                    :dense="$q.screen.lt.sm"
-                    class="section-toolbar-btn section-toolbar-btn--compact"
-                    @click="openFilterDialog"
-                  />
-                </div>
-
-                <div :class="$q.screen.lt.sm ? 'col-6 section-toolbar-split-right' : 'col-auto'">
-                  <TicButton
-                    :label="$q.screen.lt.sm ? 'Sort' : sortButtonLabel"
-                    icon="sort"
-                    color="secondary"
-                    :dense="$q.screen.lt.sm"
-                    class="section-toolbar-btn section-toolbar-btn--compact"
-                    @click="openSortDialog"
-                  />
-                </div>
-
-                <div class="col-12">
-                  <div class="selector-select-page-row">
-                    <q-checkbox
-                      color="primary"
-                      :model-value="allPageSelected"
-                      label="Select page"
-                      @update:model-value="toggleSelectPage"
-                    />
-                  </div>
                 </div>
               </div>
             </div>
@@ -278,12 +217,14 @@
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
-import TicActionButton from 'components/ui/buttons/TicActionButton.vue';
-import TicButton from 'components/ui/buttons/TicButton.vue';
-import TicDialogPopup from 'components/ui/dialogs/TicDialogPopup.vue';
-import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
-import TicSearchInput from 'components/ui/inputs/TicSearchInput.vue';
-import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
+import {
+  TicActionButton,
+  TicButton,
+  TicDialogPopup,
+  TicDialogWindow,
+  TicListToolbar,
+  TicSelectInput,
+} from 'components/ui';
 
 const STREAM_PAGE_SIZE = 100;
 
@@ -294,7 +235,7 @@ export default {
     TicButton,
     TicDialogPopup,
     TicDialogWindow,
-    TicSearchInput,
+    TicListToolbar,
     TicSelectInput,
   },
   props: {
@@ -407,6 +348,37 @@ export default {
         {label: 'Descending', value: 'desc'},
       ];
     },
+    streamToolbarFilters() {
+      return [
+        {
+          key: 'playlistId',
+          modelValue: this.appliedFilters.playlistId,
+          label: 'Source',
+          options: this.playlistOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+        {
+          key: 'groupTitle',
+          modelValue: this.appliedFilters.groupTitle,
+          label: 'Group',
+          options: this.inlineGroupOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          disable: !this.appliedFilters.playlistId,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+      ];
+    },
   },
   watch: {
     searchValue() {
@@ -475,6 +447,17 @@ export default {
     onInlineGroupFilterChange() {
       this.clearSelection();
       this.resetAndReload();
+    },
+    onToolbarFilterChange({key, value}) {
+      if (key === 'playlistId') {
+        this.appliedFilters.playlistId = value || null;
+        this.onInlinePlaylistFilterChange();
+        return;
+      }
+      if (key === 'groupTitle') {
+        this.appliedFilters.groupTitle = value || null;
+        this.onInlineGroupFilterChange();
+      }
     },
     toggleActionsExpanded() {
       this.actionsExpanded = !this.actionsExpanded;

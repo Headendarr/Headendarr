@@ -2,6 +2,7 @@
   <TicDialogWindow
     v-model="isOpen"
     title="Stream Source Settings"
+    width="1023px"
     :persistent="isDirty"
     :prevent-close="isDirty"
     :close-tooltip="closeTooltip"
