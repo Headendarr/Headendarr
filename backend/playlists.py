@@ -8,7 +8,6 @@ import os
 import time
 from typing import Awaitable, Callable, Iterable
 from urllib.parse import urlparse
-from operator import attrgetter
 
 import aiofiles
 import aiohttp
@@ -1028,27 +1027,32 @@ async def read_filtered_stream_details_from_all_playlists(
         results["records_filtered"] = int((await session.scalar(filtered_count_stmt)) or 0)
 
     # Get order by
-    order_by_column = request_json.get("order_by")
-    if not order_by_column:
-        order_by_column = "name"
+    order_by_column = request_json.get("order_by") or "name"
+    order_by_map = {
+        "name": PlaylistStreams.name,
+        "playlist_name": Playlist.name,
+    }
+    order_by_expr = order_by_map.get(order_by_column, PlaylistStreams.name)
     if request_json.get("order_direction", "desc") == "asc":
-        order_by = attrgetter(order_by_column)(PlaylistStreams).asc()
+        order_by = order_by_expr.asc()
     else:
-        order_by = attrgetter(order_by_column)(PlaylistStreams).desc()
+        order_by = order_by_expr.desc()
 
     # Apply distinct-by-URL selection before pagination
-        query_stmt = (
-            select(PlaylistStreams)
-            .options(joinedload(PlaylistStreams.playlist))
-            .join(filtered_ids_query, PlaylistStreams.id == filtered_ids_query.c.id)
-            .order_by(order_by)
-        )
+    query_stmt = (
+        select(PlaylistStreams)
+        .options(joinedload(PlaylistStreams.playlist))
+        .join(filtered_ids_query, PlaylistStreams.id == filtered_ids_query.c.id)
+        .join(Playlist, Playlist.id == PlaylistStreams.playlist_id)
+        .order_by(order_by)
+    )
 
-        length = request_json.get("length", 0)
-        start = request_json.get("start", 0)
-        if length:
-            query_stmt = query_stmt.limit(length).offset(start)
+    length = request_json.get("length", 0)
+    start = request_json.get("start", 0)
+    if length:
+        query_stmt = query_stmt.limit(length).offset(start)
 
+    async with Session() as session:
         rows = await session.execute(query_stmt)
         for result in rows.scalars().all():
             stream_url = result.url
