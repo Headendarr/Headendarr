@@ -14,7 +14,7 @@ from backend.dvr import (
     list_recordings,
     list_rules,
     create_recording,
-    cancel_recording,
+    stop_recording,
     delete_recording,
     create_rule,
     delete_rule,
@@ -42,6 +42,11 @@ def _can_read_all_dvr(user) -> bool:
     if _is_admin(user):
         return True
     return _dvr_access_mode(user) == "read_all_write_own"
+
+
+def _is_running_status(status: str | None) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized == "recording" or "running" in normalized or "in_progress" in normalized
 
 
 async def _get_recording(recording_id: int):
@@ -380,7 +385,33 @@ async def api_cancel_recording(recording_id):
         return jsonify({"success": False, "message": "Recording not found"}), 404
     if user and not _is_admin(user) and recording.owner_user_id != user.id:
         return jsonify({"success": False, "message": "Forbidden"}), 403
-    ok = await cancel_recording(recording_id)
+    if _is_running_status(recording.status):
+        ok = await stop_recording(recording_id)
+    else:
+        ok = await delete_recording(recording_id)
+    if not ok:
+        return jsonify({"success": False, "message": "Recording not found"}), 404
+    task_broker = await TaskQueueBroker.get_instance()
+    await task_broker.add_task({
+        'name': f'Reconcile DVR recordings',
+        'function': reconcile_dvr_recordings,
+        'args': [current_app],
+    }, priority=20)
+    return jsonify({"success": True})
+
+
+@blueprint.route('/tic-api/recordings/<int:recording_id>/stop', methods=['POST'])
+@streamer_or_admin_required
+async def api_stop_recording(recording_id):
+    user = getattr(request, "_current_user", None)
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+    recording = await _get_recording(recording_id)
+    if not recording:
+        return jsonify({"success": False, "message": "Recording not found"}), 404
+    if user and not _is_admin(user) and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
+    ok = await stop_recording(recording_id)
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
     task_broker = await TaskQueueBroker.get_instance()

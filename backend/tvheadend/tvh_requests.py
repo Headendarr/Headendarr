@@ -63,6 +63,7 @@ api_epggrab_list = "epggrab/module/list"
 api_dvr_entry_grid = "dvr/entry/grid"
 api_dvr_entry_create = "dvr/entry/create"
 api_dvr_entry_cancel = "dvr/entry/cancel"
+api_dvr_entry_stop = "dvr/entry/stop"
 api_dvr_config_create = "dvr/config/create"
 api_status_subscriptions = "status/subscriptions"
 api_status_subscriptions_grid = "status/subscriptions/grid"
@@ -294,7 +295,7 @@ class Tvheadend:
 
     async def __get(self, url, payload=None, rformat='content'):
         headers = self.default_headers
-        async with self.session.get(url, headers=headers, params=payload, allow_redirects=False,
+        async with self.session.get(url, headers=headers, params=payload, allow_redirects=True,
                                     timeout=self.timeout) as r:
             if r.status == 200:
                 if rformat == 'json':
@@ -304,7 +305,7 @@ class Tvheadend:
 
     async def __post(self, url, payload=None, rformat='content'):
         headers = self.default_headers
-        async with self.session.post(url, headers=headers, data=payload, allow_redirects=False,
+        async with self.session.post(url, headers=headers, data=payload, allow_redirects=True,
                                      timeout=self.timeout) as r:
             if r.status == 200:
                 if rformat == 'json':
@@ -315,7 +316,7 @@ class Tvheadend:
     async def __json(self, url, payload=None):
         headers = self.default_headers
         headers['Content-Type'] = 'application/json'
-        async with self.session.post(url, headers=headers, json=payload, allow_redirects=False,
+        async with self.session.post(url, headers=headers, json=payload, allow_redirects=True,
                                      timeout=self.timeout) as r:
             if r.status == 200:
                 return await r.json(content_type=None)
@@ -352,6 +353,8 @@ class Tvheadend:
                 "channelname": entry.get("channelname"),
                 "start": entry.get("start"),
                 "stop": entry.get("stop"),
+                "start_real": entry.get("start_real"),
+                "stop_real": entry.get("stop_real"),
                 "state": entry.get("status") or entry.get("state"),
                 "title": entry.get("disp_title") or title,
                 "description": entry.get("disp_description") or entry.get("disp_summary"),
@@ -419,6 +422,42 @@ class Tvheadend:
             pass
         # Final fallback: JSON object payload with uuid list
         await self.__json(url, payload={"uuid": [uuid]})
+
+    async def cancel_dvr_entry(self, uuid):
+        url = f"{self.api_url}/{api_dvr_entry_cancel}"
+        payloads = (
+            {"uuid": uuid},
+            {"uuid": json.dumps([uuid])},
+            {"uuid": [uuid]},
+        )
+        last_exc = None
+        for payload in payloads:
+            try:
+                await self.__post(url, payload=payload)
+                return
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+
+    async def stop_dvr_entry(self, uuid):
+        url = f"{self.api_url}/{api_dvr_entry_stop}"
+        payloads = (
+            {"uuid": uuid},
+            {"uuid": json.dumps([uuid])},
+            {"uuid": [uuid]},
+        )
+        last_exc = None
+        for payload in payloads:
+            try:
+                await self.__post(url, payload=payload)
+                return
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
 
     async def idnode_delete(self, node_uuid):
         url = f"{self.api_url}/{api_idnode_delete}"
@@ -612,7 +651,12 @@ class Tvheadend:
         access_node["comment"] = access_comment
         existing_access = next((entry for entry in access_entries if entry.get("comment") == access_comment), None)
         if existing_access:
-            access_node["uuid"] = existing_access["uuid"]
+            # Recreate managed access entries to avoid stale permission bits lingering
+            # across updates (TVH may preserve old flag state on in-place saves).
+            try:
+                await self.idnode_delete(existing_access["uuid"])
+            except Exception:
+                pass
 
         if not access_node.get("uuid"):
             post_data = {"conf": json.dumps(access_node)}
@@ -627,9 +671,12 @@ class Tvheadend:
         access_node["username"] = username
         access_node["enabled"] = enabled
         access_node["admin"] = True if is_admin else False
-        access_node["webui"] = True if is_admin else False
+        access_node["webui"] = True if (is_admin or (dvr_permissions and len(dvr_permissions) > 0)) else False
         if dvr_config is not None:
-            access_node["dvr_config"] = dvr_config
+            if isinstance(dvr_config, str):
+                access_node["dvr_config"] = [dvr_config] if dvr_config else []
+            else:
+                access_node["dvr_config"] = list(dvr_config)
         if dvr_permissions is not None:
             access_node["dvr"] = dvr_permissions
         await self.idnode_save(access_node)
@@ -758,7 +805,7 @@ class Tvheadend:
             if profile_uuid:
                 node["uuid"] = profile_uuid
                 await self.idnode_save(node)
-                return profile_name
+                return profile_uuid
         except Exception as exc:
             logger.warning("Failed to ensure user recorder profile '%s': %s", profile_name, exc)
         return ""
@@ -956,6 +1003,10 @@ async def get_tvh_with_credentials(config, username, password):
     tvh_host = conn.get('tvh_host')
     tvh_port = conn.get('tvh_port')
     tvh_path = conn.get('tvh_path')
+    # For local TVH, '/tic-tvh' is the Headendarr proxy path.
+    # User-scoped TVH auth must call TVH directly.
+    if tvh_local and str(tvh_path or "").strip() == "/tic-tvh":
+        tvh_path = ""
     return Tvheadend(tvh_host, tvh_port, tvh_path, username, password, tvh_local)
 
 

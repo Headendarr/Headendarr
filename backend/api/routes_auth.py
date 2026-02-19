@@ -25,16 +25,21 @@ from backend.users import ensure_default_admin, verify_user_password_for_login
 
 
 def _serialize_user(user: User):
+    role_names = [role.name for role in user.roles] if user.roles else []
+    is_admin = "admin" in role_names
+    dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
     return {
         "id": user.id,
         "username": user.username,
-        "roles": [role.name for role in user.roles] if user.roles else [],
+        "roles": role_names,
         "is_active": user.is_active,
         "streaming_key": user.streaming_key,
         "streaming_key_created_at": to_utc_iso(user.streaming_key_created_at),
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
         "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
+        "dvr_access_mode": dvr_access_mode,
+        "dvr_retention_policy": user.dvr_retention_policy or "forever",
     }
 
 

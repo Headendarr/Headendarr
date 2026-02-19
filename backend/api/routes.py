@@ -265,6 +265,9 @@ async def api_check_auth():
     user = await get_user_from_token()
     if user:
         session_expires_at = get_authenticated_session_expires_at()
+        role_names = [role.name for role in user.roles] if user.roles else []
+        is_admin = "admin" in role_names
+        dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
         return jsonify(
             {
                 "success":     True,
@@ -273,8 +276,10 @@ async def api_check_auth():
                 "user": {
                     "id": user.id,
                     "username": user.username,
-                    "roles": [role.name for role in user.roles] if user.roles else [],
+                    "roles": role_names,
                     "streaming_key": user.streaming_key,
+                    "dvr_access_mode": dvr_access_mode,
+                    "dvr_retention_policy": user.dvr_retention_policy or "forever",
                 },
             }
         ), 200

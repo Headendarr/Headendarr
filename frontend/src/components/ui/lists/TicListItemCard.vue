@@ -1,5 +1,5 @@
 <template>
-  <div class="tic-list-item-card">
+  <div class="tic-list-item-card" :style="cardStyle">
     <div class="tic-list-item-card__header row items-start justify-between no-wrap">
       <div class="tic-list-item-card__header-left">
         <slot name="header-left" />
@@ -19,19 +19,59 @@ import {defineComponent} from 'vue';
 
 export default defineComponent({
   name: 'TicListItemCard',
+  props: {
+    accentColor: {
+      type: String,
+      default: '',
+    },
+    surfaceColor: {
+      type: String,
+      default: '',
+    },
+    headerColor: {
+      type: String,
+      default: '',
+    },
+    textColor: {
+      type: String,
+      default: '',
+    },
+  },
+  computed: {
+    cardStyle() {
+      const style = {};
+      if (this.accentColor) {
+        style['--tic-list-card-accent'] = this.accentColor;
+      }
+      if (this.surfaceColor) {
+        style['--tic-list-card-surface'] = this.surfaceColor;
+      }
+      if (this.headerColor) {
+        style['--tic-list-card-header'] = this.headerColor;
+      }
+      if (this.textColor) {
+        style['--tic-list-card-text'] = this.textColor;
+      }
+      return style;
+    },
+  },
 });
 </script>
 
 <style scoped>
 .tic-list-item-card {
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--tic-list-card-surface, var(--tic-list-card-default-bg));
   padding: 0;
+  border-radius: var(--tic-radius-md);
+  overflow: hidden;
+  border-left: 4px solid var(--tic-list-card-accent, transparent);
+  color: var(--tic-list-card-text, inherit);
 }
 
 .tic-list-item-card__header {
   margin: 0;
   padding: 8px;
-  background: rgba(127, 127, 127, 0.12);
+  background: var(--tic-list-card-header, var(--tic-list-card-default-header-bg));
   border-bottom: 1px solid var(--q-separator-color);
 }
 

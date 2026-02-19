@@ -86,18 +86,33 @@
                   </div>
                 </div>
 
-                <q-list bordered separator class="rounded-borders dvr-list">
-                  <q-item v-for="recording in visibleRecordings" :key="recording.id" class="dvr-list-item">
-                    <template v-if="!$q.screen.lt.md">
-                      <q-item-section top>
-                        <q-item-label class="text-weight-medium">
-                          {{ recording.title || 'Untitled Recording' }}
-                        </q-item-label>
-                        <q-item-label caption>
-                          {{ recording.channel_name || 'Unknown channel' }}
-                        </q-item-label>
-
-                        <div class="dvr-meta-grid">
+                <q-list class="dvr-list">
+                  <q-item
+                    v-for="recording in visibleRecordings"
+                    :key="recording.id"
+                    class="dvr-list-item"
+                  >
+                    <q-item-section>
+                      <TicListItemCard v-bind="recordingCardProps(recording)">
+                        <template #header-left>
+                          <div class="dvr-card-title text-weight-medium">
+                            {{ recording.title || 'Untitled Recording' }}
+                          </div>
+                          <div class="text-caption text-grey-7">
+                            {{ recording.channel_name || 'Unknown channel' }}
+                          </div>
+                        </template>
+                        <template #header-actions>
+                          <TicActionButton
+                            v-for="action in recordingActions(recording)"
+                            :key="`recording-${recording.id}-${action.id}`"
+                            :icon="action.icon"
+                            :color="action.color || 'grey-8'"
+                            :tooltip="action.label || ''"
+                            @click="handleRecordingAction(action, recording)"
+                          />
+                        </template>
+                        <div class="dvr-meta-grid q-mt-sm">
                           <div class="dvr-meta-field">
                             <span class="text-caption text-grey-7">Start</span>
                             <span>{{ formatTs(recording.start_ts) }}</span>
@@ -129,72 +144,8 @@
                             </q-chip>
                           </div>
                         </div>
-                      </q-item-section>
-
-                      <q-item-section side top>
-                        <TicListActions
-                          :actions="recordingActions(recording)"
-                          @action="(action) => handleRecordingAction(action, recording)"
-                        />
-                      </q-item-section>
-                    </template>
-
-                    <template v-else>
-                      <q-item-section>
-                        <TicListItemCard>
-                          <template #header-left>
-                            <div class="dvr-card-title text-weight-medium">
-                              {{ recording.title || 'Untitled Recording' }}
-                            </div>
-                            <div class="text-caption text-grey-7">
-                              {{ recording.channel_name || 'Unknown channel' }}
-                            </div>
-                          </template>
-                          <template #header-actions>
-                            <TicActionButton
-                              v-for="action in recordingActions(recording)"
-                              :key="`recording-${recording.id}-${action.id}`"
-                              :icon="action.icon"
-                              :color="action.color || 'grey-8'"
-                              :tooltip="action.label || ''"
-                              @click="handleRecordingAction(action, recording)"
-                            />
-                          </template>
-                          <div class="dvr-meta-grid q-mt-sm">
-                            <div class="dvr-meta-field">
-                              <span class="text-caption text-grey-7">Start</span>
-                              <span>{{ formatTs(recording.start_ts) }}</span>
-                            </div>
-                            <div class="dvr-meta-field">
-                              <span class="text-caption text-grey-7">Stop</span>
-                              <span>{{ formatTs(recording.stop_ts) }}</span>
-                            </div>
-                            <div class="dvr-meta-field">
-                              <span class="text-caption text-grey-7">Status</span>
-                              <q-chip
-                                dense
-                                class="dvr-status-chip"
-                                :color="recordingStatusColor(recording.status)"
-                                text-color="white"
-                              >
-                                {{ recording.status || '-' }}
-                              </q-chip>
-                            </div>
-                            <div class="dvr-meta-field">
-                              <span class="text-caption text-grey-7">TVHeadend Sync</span>
-                              <q-chip
-                                dense
-                                class="dvr-status-chip"
-                                :color="syncStatusColor(recording.sync_status)"
-                                text-color="white"
-                              >
-                                {{ recording.sync_status || '-' }}
-                              </q-chip>
-                            </div>
-                          </div>
-                        </TicListItemCard>
-                      </q-item-section>
-                    </template>
+                      </TicListItemCard>
+                    </q-item-section>
                   </q-item>
 
                   <q-item v-if="!loadingRecordings && !visibleRecordings.length">
@@ -256,63 +207,36 @@
                   </div>
                 </div>
 
-                <q-list bordered separator class="rounded-borders dvr-list">
+                <q-list class="dvr-list">
                   <q-item v-for="rule in visibleRules" :key="rule.id" class="dvr-list-item">
-                    <template v-if="!$q.screen.lt.md">
-                      <q-item-section top>
-                        <q-item-label class="text-weight-medium">
-                          {{ rule.title_match || 'Untitled Rule' }}
-                        </q-item-label>
-                        <q-item-label caption>
-                          {{ rule.channel_name || 'All channels' }}
-                        </q-item-label>
-
-                        <div class="dvr-meta-grid">
+                    <q-item-section>
+                      <TicListItemCard>
+                        <template #header-left>
+                          <div class="dvr-card-title text-weight-medium">
+                            {{ rule.title_match || 'Untitled Rule' }}
+                          </div>
+                          <div class="text-caption text-grey-7">
+                            {{ rule.channel_name || 'All channels' }}
+                          </div>
+                        </template>
+                        <template #header-actions>
+                          <TicActionButton
+                            v-for="action in ruleActions(rule)"
+                            :key="`rule-${rule.id}-${action.id}`"
+                            :icon="action.icon"
+                            :color="action.color || 'grey-8'"
+                            :tooltip="action.label || ''"
+                            @click="handleRuleAction(action, rule)"
+                          />
+                        </template>
+                        <div class="dvr-meta-grid q-mt-sm">
                           <div class="dvr-meta-field">
                             <span class="text-caption text-grey-7">Lookahead</span>
                             <span>{{ rule.lookahead_days || 7 }} days</span>
                           </div>
                         </div>
-                      </q-item-section>
-
-                      <q-item-section side top>
-                        <TicListActions
-                          :actions="ruleActions(rule)"
-                          @action="(action) => handleRuleAction(action, rule)"
-                        />
-                      </q-item-section>
-                    </template>
-
-                    <template v-else>
-                      <q-item-section>
-                        <TicListItemCard>
-                          <template #header-left>
-                            <div class="dvr-card-title text-weight-medium">
-                              {{ rule.title_match || 'Untitled Rule' }}
-                            </div>
-                            <div class="text-caption text-grey-7">
-                              {{ rule.channel_name || 'All channels' }}
-                            </div>
-                          </template>
-                          <template #header-actions>
-                            <TicActionButton
-                              v-for="action in ruleActions(rule)"
-                              :key="`rule-${rule.id}-${action.id}`"
-                              :icon="action.icon"
-                              :color="action.color || 'grey-8'"
-                              :tooltip="action.label || ''"
-                              @click="handleRuleAction(action, rule)"
-                            />
-                          </template>
-                          <div class="dvr-meta-grid q-mt-sm">
-                            <div class="dvr-meta-field">
-                              <span class="text-caption text-grey-7">Lookahead</span>
-                              <span>{{ rule.lookahead_days || 7 }} days</span>
-                            </div>
-                          </div>
-                        </TicListItemCard>
-                      </q-item-section>
-                    </template>
+                      </TicListItemCard>
+                    </q-item-section>
                   </q-item>
 
                   <q-item v-if="!loadingRules && !visibleRules.length">
@@ -572,7 +496,6 @@ import {
   TicDialogPopup,
   TicDialogWindow,
   TicListItemCard,
-  TicListActions,
   TicNumberInput,
   TicResponsiveHelp,
   TicSearchInput,
@@ -590,7 +513,6 @@ export default defineComponent({
     TicDialogPopup,
     TicDialogWindow,
     TicListItemCard,
-    TicListActions,
     TicNumberInput,
     TicResponsiveHelp,
     TicSearchInput,
@@ -978,21 +900,81 @@ export default defineComponent({
     },
     recordingActions(recording) {
       const actions = [];
-      if (this.isRecordingPlayable(recording)) {
-        actions.push({id: 'play', icon: 'play_arrow', label: 'Play recording', color: 'primary'});
-      }
-      if (this.canCancelRecording(recording)) {
+      if (this.canStopRecording(recording)) {
+        actions.push({id: 'stop', icon: 'stop', label: 'Stop recording', color: 'warning'});
+      } else if (this.canCancelRecording(recording)) {
         actions.push({id: 'cancel', icon: 'cancel', label: 'Cancel recording', color: 'warning'});
       }
       actions.push({id: 'delete', icon: 'delete', label: 'Delete recording', color: 'negative'});
+      if (this.isRecordingPlayable(recording)) {
+        actions.push({id: 'play', icon: 'play_arrow', label: 'Play recording', color: 'primary'});
+      }
       return actions;
+    },
+    recordingCardColors(recording) {
+      const group = this.recordingStatusGroup(recording?.status);
+      if (group === 'successful') {
+        return {
+          accent: 'var(--tic-list-card-healthy-border)',
+          surface: 'var(--tic-list-card-healthy-bg)',
+          header: 'var(--tic-list-card-healthy-header)',
+        };
+      }
+      if (group === 'failed') {
+        return {
+          accent: 'var(--tic-list-card-error-border)',
+          surface: 'var(--tic-list-card-error-bg)',
+          header: 'var(--tic-list-card-error-header)',
+        };
+      }
+      return {};
+    },
+    recordingCardProps(recording) {
+      const colors = this.recordingCardColors(recording);
+      const props = {};
+      if (colors.accent) props.accentColor = colors.accent;
+      if (colors.surface) props.surfaceColor = colors.surface;
+      if (colors.header) props.headerColor = colors.header;
+      return props;
+    },
+    recordingStatusGroup(status) {
+      const normalized = String(status || '').toLowerCase();
+      if (normalized.includes('recording') || normalized.includes('running') || normalized.includes('in_progress')) {
+        return 'upcoming';
+      }
+      if (normalized.includes('scheduled') || normalized.includes('queued') || normalized.includes('upcoming')) {
+        return 'upcoming';
+      }
+      if (
+        normalized.includes('failed') ||
+        normalized.includes('error') ||
+        normalized.includes('missing') ||
+        normalized.includes('abort') ||
+        normalized.includes('cancel')
+      ) {
+        return 'failed';
+      }
+      if (
+        normalized.includes('completed') ||
+        normalized.includes('finished') ||
+        normalized.includes('done') ||
+        normalized.includes('success') ||
+        normalized.includes('recorded') ||
+        normalized.includes('ok')
+      ) {
+        return 'successful';
+      }
+      return 'upcoming';
     },
     handleRecordingAction(action, recording) {
       if (action.id === 'play') {
         this.playRecording(recording);
       }
+      if (action.id === 'stop') {
+        this.stopRecording(recording.id);
+      }
       if (action.id === 'cancel') {
-        this.cancelRecording(recording.id);
+        this.cancelScheduledRecording(recording.id);
       }
       if (action.id === 'delete') {
         this.confirmDeleteRecording(recording);
@@ -1018,9 +1000,11 @@ export default defineComponent({
     },
     canCancelRecording(recording) {
       const status = String(recording?.status || '').toLowerCase();
-      return (
-        status === 'scheduled' || status === 'recording' || status.includes('running') || status.includes('in_progress')
-      );
+      return status === 'scheduled' || status.includes('scheduled');
+    },
+    canStopRecording(recording) {
+      const status = String(recording?.status || '').toLowerCase();
+      return status === 'recording' || status.includes('running') || status.includes('in_progress');
     },
     playRecording(recording) {
       if (!recording?.id) return;
@@ -1030,13 +1014,22 @@ export default defineComponent({
         type: 'application/x-mpegURL',
       });
     },
-    async cancelRecording(id) {
+    async cancelScheduledRecording(id) {
       try {
-        await axios.post(`/tic-api/recordings/${id}/cancel`);
+        await axios.delete(`/tic-api/recordings/${id}`);
         this.$q.notify({color: 'positive', message: 'Recording canceled'});
         await this.loadRecordings();
       } catch {
         this.$q.notify({color: 'negative', message: 'Failed to cancel recording'});
+      }
+    },
+    async stopRecording(id) {
+      try {
+        await axios.post(`/tic-api/recordings/${id}/stop`);
+        this.$q.notify({color: 'positive', message: 'Recording stopped'});
+        await this.loadRecordings();
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to stop recording'});
       }
     },
     async deleteRecording(id) {
@@ -1294,33 +1287,22 @@ export default defineComponent({
   padding-right: 8px;
 }
 
-@media (min-width: 1024px) {
-  .dvr-list-item :deep(.q-item__section--side) {
-    width: 72px;
-    min-width: 72px;
-    align-items: flex-end;
-  }
+.dvr-list {
+  border: none;
 }
 
-@media (max-width: 1023px) {
-  .dvr-list {
-    border: none;
-  }
+.dvr-list-item {
+  margin-top: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--q-separator-color);
+  padding-left: 0;
+  padding-right: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
 
-  .dvr-list-item {
-    margin-top: 4px;
-    margin-bottom: 4px;
-    border-bottom: 1px solid var(--q-separator-color);
-    padding-left: 0;
-    padding-right: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-  }
-
-  .dvr-list .dvr-list-item:last-child {
-    border-bottom: none;
-  }
-
+.dvr-list .dvr-list-item:last-child {
+  border-bottom: none;
 }
 
 @media (max-width: 599px) {

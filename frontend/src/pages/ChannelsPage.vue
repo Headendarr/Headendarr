@@ -198,7 +198,7 @@
                       <q-item
                         :key="index"
                         class="channel-list-item q-px-none rounded-borders"
-                        :class="channelRowClass(element)"
+                        :class="!$q.screen.lt.md ? channelRowClass(element) : ''"
                       >
                         <template v-if="!$q.screen.lt.md">
                           <q-item-section avatar class="q-px-sm q-mx-sm handle">
@@ -328,7 +328,7 @@
 
                         <template v-else>
                           <q-item-section>
-                            <TicListItemCard>
+                            <TicListItemCard v-bind="channelCardProps(element)">
                               <template #header-left>
                                 <div class="row items-center no-wrap q-pr-sm">
                                   <div class="handle channel-drag-handle q-mr-sm">
@@ -850,6 +850,37 @@ export default defineComponent({
       }
       return '';
     },
+    channelCardProps: function(channel) {
+      if (!this.enableChannelHealthHighlight) {
+        if (channel.enabled) {
+          return {};
+        }
+        return {
+          accentColor: 'var(--tic-list-card-disabled-border)',
+          surfaceColor: 'var(--tic-list-card-disabled-bg)',
+          headerColor: 'var(--tic-list-card-disabled-header)',
+        };
+      }
+      if (!channel.enabled) {
+        return {
+          accentColor: 'var(--tic-list-card-disabled-border)',
+          surfaceColor: 'var(--tic-list-card-disabled-bg)',
+          headerColor: 'var(--tic-list-card-disabled-header)',
+        };
+      }
+      if (channel.status && channel.status.state === 'warning') {
+        return {
+          accentColor: 'var(--tic-list-card-issues-border)',
+          surfaceColor: 'var(--tic-list-card-issues-bg)',
+          headerColor: 'var(--tic-list-card-issues-header)',
+        };
+      }
+      return {
+        accentColor: '',
+        surfaceColor: 'var(--tic-list-card-default-bg)',
+        headerColor: 'var(--tic-list-card-default-header-bg)',
+      };
+    },
     channelIssueLabels: function(status) {
       if (!status || !status.issues || !status.issues.length) {
         return [];
@@ -1342,9 +1373,8 @@ export default defineComponent({
 }
 
 .channel-needs-attention {
-  background: var(--channel-attention-bg);
-  border-left: 4px solid var(--channel-attention-border);
-  color: var(--channel-attention-text);
+  background: var(--tic-list-card-issues-bg);
+  border-left: 4px solid var(--tic-list-card-issues-border);
 }
 
 .tic-form-layout > *:not(:last-child) {

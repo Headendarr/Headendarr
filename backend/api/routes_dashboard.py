@@ -16,7 +16,7 @@ from backend.api import blueprint
 from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts
 from backend.api.routes_hls_proxy import get_stream_activity_snapshot
 from backend.audit_view import build_device_label, serialize_audit_row
-from backend.auth import streamer_or_admin_required
+from backend.auth import admin_auth_required
 from backend.channels import (
     build_stream_source_index,
     read_config_all_channels,
@@ -191,7 +191,7 @@ async def _channel_issue_summary_cached():
 
 
 @blueprint.route('/tic-api/dashboard/activity', methods=['GET'])
-@streamer_or_admin_required
+@admin_auth_required
 async def api_dashboard_activity():
     activity_rows = await get_stream_activity_snapshot()
     if not activity_rows:
@@ -248,7 +248,7 @@ async def api_dashboard_activity():
 
 
 @blueprint.route('/tic-api/dashboard/summary', methods=['GET'])
-@streamer_or_admin_required
+@admin_auth_required
 async def api_dashboard_summary():
     app_config = current_app.config["APP_CONFIG"]
     db_info = _parse_db_path()

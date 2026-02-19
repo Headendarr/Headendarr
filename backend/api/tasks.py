@@ -241,8 +241,7 @@ async def sync_user_to_tvh(config, user_id):
         if is_admin:
             dvr_access_mode = "read_all_write_own"
         profile_templates = read_recording_profiles_from_settings(settings)
-        default_template = profile_templates[0] if profile_templates else None
-        default_dvr_config = ""
+        allowed_dvr_configs = []
         dvr_permissions = []
         if dvr_access_mode == "read_write_own":
             dvr_permissions = ["basic", "htsp"]
@@ -260,8 +259,8 @@ async def sync_user_to_tvh(config, user_id):
                         post_padding_mins=post_padding,
                         retention_policy=retention_policy,
                     )
-                    if default_template and profile.get("key") == default_template.get("key"):
-                        default_dvr_config = ensured_profile or ""
+                    if ensured_profile:
+                        allowed_dvr_configs.append(ensured_profile)
             await tvh.upsert_user(
                 user.username,
                 user.streaming_key,
@@ -269,7 +268,7 @@ async def sync_user_to_tvh(config, user_id):
                 enabled=user.is_active and is_streamer,
                 access_comment=f"{tvh_user_access_comment_prefix}:{user.username}",
                 password_comment=f"{tvh_user_password_comment_prefix}:{user.username}",
-                dvr_config=default_dvr_config or None,
+                dvr_config=allowed_dvr_configs if dvr_permissions else [],
                 dvr_permissions=dvr_permissions,
             )
     except Exception as exc:

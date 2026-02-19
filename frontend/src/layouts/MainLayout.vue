@@ -18,9 +18,10 @@
         </q-toolbar-title>
         <q-separator dark vertical inset />
 
-        <q-tabs v-if="aioMode" no-caps align="left">
+        <q-tabs v-if="showHeaderActions" no-caps align="left">
           <!--TODO: Find a way to prevent this from being destroyed from the DOM when showTvheadendAdmin is False-->
           <q-btn
+            v-if="showTvhBackendButton"
             :icon-right="!compactHeader ? 'fa-solid fa-window-restore' : void 0"
             :icon="compactHeader ? 'fa-solid fa-window-restore' : void 0"
             :label="compactHeader ? '' : 'Show Tvheadend Backend'"
@@ -31,7 +32,7 @@
             @click="loadTvheadendAdmin = true; showTvheadendAdmin = true"
           />
           <q-dialog
-            v-if="aioMode"
+            v-if="showTvhBackendButton"
             v-model="showTvheadendAdmin"
             :class="{'hidden': !showTvheadendAdmin}"
             full-screen full-width persistent>
@@ -63,10 +64,10 @@
               </q-card-section>
             </q-card>
           </q-dialog>
-          <q-separator dark vertical inset />
+          <q-separator v-if="showTvhBackendButton && showConnectionDetailsActions" dark vertical inset />
 
           <q-btn-dropdown
-            v-if="!isConnectionDialogCompact"
+            v-if="showConnectionDetailsActions && !isConnectionDialogCompact"
             stretch
             flat
             :round="compactHeader"
@@ -85,7 +86,7 @@
             />
           </q-btn-dropdown>
           <q-btn
-            v-else
+            v-else-if="showConnectionDetailsActions"
             :icon-right="!compactHeader ? 'link' : void 0"
             :icon="compactHeader ? 'link' : void 0"
             :label="compactHeader ? '' : 'Show Connection Details'"
@@ -96,7 +97,7 @@
             @click="showConnectionDetailsDialog = true"
           />
           <TicDialogWindow
-            v-if="isConnectionDialogCompact"
+            v-if="showConnectionDetailsActions && isConnectionDialogCompact"
             v-model="showConnectionDetailsDialog"
             title="Connection Details"
             width="100vw"
@@ -112,7 +113,7 @@
               @copy-url="copyUrlToClipboard"
             />
           </TicDialogWindow>
-          <q-separator dark vertical inset />
+          <q-separator v-if="showConnectionDetailsActions" dark vertical inset />
           <q-btn
             id="header-help-toggle"
             flat
@@ -178,7 +179,7 @@
 
           <q-separator class="q-my-lg" v-if="!drawerMini" />
 
-          <q-list v-if="!drawerMini">
+          <q-list v-if="!drawerMini && isAdmin">
             <q-item-label style="padding-left:10px" header>
               <q-btn
                 flat round dense
@@ -372,24 +373,28 @@ const linksList = [
     caption: 'Overview and live activity',
     icon: 'dashboard',
     link: '/dashboard',
+    adminOnly: true,
   },
   {
     title: 'Sources',
     caption: 'Configure Stream Sources',
     icon: 'playlist_play',
     link: '/playlists',
+    adminOnly: true,
   },
   {
     title: 'EPGs',
     caption: 'Configure EPG Sources',
     icon: 'calendar_month',
     link: '/epgs',
+    adminOnly: true,
   },
   {
     title: 'Channels',
     caption: 'Configure Channels',
     icon: 'queue_play_next',
     link: '/channels',
+    adminOnly: true,
   },
   {
     title: 'TV Guide',
@@ -404,6 +409,7 @@ const linksList = [
     icon: 'dvr',
     link: '/dvr',
     streamerOnly: true,
+    requiresDvrAccess: true,
   },
   {
     title: 'Users',
@@ -424,6 +430,7 @@ const linksList = [
     caption: 'TVHeadend Settings',
     icon: 'tvh-icon',
     link: '/tvheadend',
+    adminOnly: true,
   },
   {
     title: 'Settings',
@@ -449,11 +456,27 @@ export default defineComponent({
     const router = useRouter();
     const authStore = useAuthStore();
     const uiStore = useUiStore();
+    const roles = computed(() => authStore.user?.roles || []);
+    const isAdmin = computed(() => roles.value.includes('admin'));
+    const isStreamer = computed(() => roles.value.includes('streamer'));
+    const canViewConnectionDetails = computed(() => isAdmin.value || isStreamer.value);
+    const canUseDvr = computed(() => {
+      if (isAdmin.value) {
+        return true;
+      }
+      const mode = String(authStore.user?.dvr_access_mode || 'none').toLowerCase();
+      return mode === 'read_write_own' || mode === 'read_all_write_own';
+    });
+    const useAdminStartupFeatures = (authStore.user?.roles || []).includes('admin');
     const leftDrawerOpen = ref(true);
     const drawerMini = ref(false);
     const tasksArePaused = ref(false);
-    const {pendingTasks, pendingTasksStatus} = pollForBackgroundTasks();
-    const {firstRun, aioMode} = aioStartupTasks();
+    const {pendingTasks, pendingTasksStatus} = useAdminStartupFeatures
+      ? pollForBackgroundTasks()
+      : {pendingTasks: ref([]), pendingTasksStatus: ref('running')};
+    const {firstRun, aioMode} = useAdminStartupFeatures
+      ? aioStartupTasks()
+      : {firstRun: ref(false), aioMode: ref(false)};
 
     const loadTvheadendAdmin = ref(true);
     const showTvheadendAdmin = ref(false);
@@ -484,13 +507,16 @@ export default defineComponent({
     };
 
     const tasksPauseResume = () => {
+      if (!isAdmin.value) {
+        return;
+      }
       // tasksArePaused.value = !tasksArePaused.value;
       // Your logic to toggle pause/resume the tasks
       axios({
         method: 'GET',
         url: '/tic-api/toggle-pause-background-tasks',
       }).catch(() => {
-        this.$q.notify({
+        $q.notify({
           color: 'negative',
           position: 'top',
           message: 'Failed to pause task queue',
@@ -505,6 +531,9 @@ export default defineComponent({
     const compactHeader = computed(() => $q.screen.width <= 1024);
     const isConnectionDialogCompact = computed(() => $q.screen.width <= 1023);
     const showConnectionDetailsDialog = ref(false);
+    const showTvhBackendButton = computed(() => isAdmin.value && aioMode.value);
+    const showConnectionDetailsActions = computed(() => canViewConnectionDetails.value);
+    const showHeaderActions = computed(() => showTvhBackendButton.value || showConnectionDetailsActions.value || isAdmin.value);
     const drawerBehavior = computed(() => (isMobileDrawer.value ? 'mobile' : 'desktop'));
     const drawerWidth = computed(() => (isMobileDrawer.value ? Math.round($q.screen.width * 0.9) : 300));
     const drawerToggleIcon = computed(() => {
@@ -532,25 +561,27 @@ export default defineComponent({
 
     onMounted(() => {
       applyDrawerMode();
-      // Fetch current settings
-      axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        appUrl.value = response.data.data.app_url;
-        const theme = uiStore.loadThemeForUser(authStore.user?.username);
-        uiStore.loadTimeFormatForUser(authStore.user?.username);
-        $q.dark.set(theme === 'dark');
-      }).catch(() => {
-      });
-      // Fetch playlists list
-      axios({
-        method: 'get',
-        url: '/tic-api/playlists/get',
-      }).then((response) => {
-        enabledPlaylists.value = response.data.data;
-      }).catch(() => {
-      });
+      const theme = uiStore.loadThemeForUser(authStore.user?.username);
+      uiStore.loadTimeFormatForUser(authStore.user?.username);
+      $q.dark.set(theme === 'dark');
+      if (isAdmin.value) {
+        axios({
+          method: 'get',
+          url: '/tic-api/get-settings',
+        }).then((response) => {
+          appUrl.value = response.data.data.app_url;
+        }).catch(() => {
+        });
+      }
+      if (canViewConnectionDetails.value) {
+        axios({
+          method: 'get',
+          url: '/tic-api/playlists/get',
+        }).then((response) => {
+          enabledPlaylists.value = response.data.data;
+        }).catch(() => {
+        });
+      }
     });
 
     watch([isMobileDrawer, isCompactDrawer], () => {
@@ -566,9 +597,6 @@ export default defineComponent({
       },
     );
 
-    const roles = computed(() => authStore.user?.roles || []);
-    const isAdmin = computed(() => roles.value.includes('admin'));
-    const isStreamer = computed(() => roles.value.includes('streamer'));
     const enabledPlaylistsForConnectionDetails = computed(() => (
       (enabledPlaylists.value || []).filter((playlist) => playlist?.enabled !== false)
     ));
@@ -577,6 +605,9 @@ export default defineComponent({
         return false;
       }
       if (link.streamerOnly && !(isAdmin.value || isStreamer.value)) {
+        return false;
+      }
+      if (link.requiresDvrAccess && !canUseDvr.value) {
         return false;
       }
       return true;
@@ -647,6 +678,10 @@ export default defineComponent({
       compactHeader,
       isConnectionDialogCompact,
       showConnectionDetailsDialog,
+      showTvhBackendButton,
+      showConnectionDetailsActions,
+      showHeaderActions,
+      isAdmin,
     };
   },
 });

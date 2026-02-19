@@ -19,11 +19,28 @@ frontend_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__fi
 static_assets = os.path.join(frontend_dir, 'dist', 'spa')
 
 
+def _serialize_playlist_for_connection_details(playlist: dict) -> dict:
+    # Streamer-facing payload intentionally excludes source credentials/settings.
+    return {
+        "id": playlist.get("id"),
+        "name": playlist.get("name"),
+        "enabled": playlist.get("enabled", True),
+        "connections": playlist.get("connections"),
+    }
+
+
 @blueprint.route('/tic-api/playlists/get', methods=['GET'])
-@admin_auth_required
+@streamer_or_admin_required
 async def api_get_playlists_list():
     config = current_app.config['APP_CONFIG']
     all_playlist_configs = await read_config_all_playlists(config)
+    user = getattr(request, "_current_user", None)
+    role_names = {role.name for role in (getattr(user, "roles", None) or [])}
+    if "admin" not in role_names:
+        all_playlist_configs = [
+            _serialize_playlist_for_connection_details(playlist)
+            for playlist in all_playlist_configs
+        ]
     return jsonify(
         {
             "success": True,

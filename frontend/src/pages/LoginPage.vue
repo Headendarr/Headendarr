@@ -39,10 +39,11 @@ export default {
     const username = ref('');
     const password = ref('');
     const loading = ref(false);
-    const defaultStartPage = '/channels';
+    const defaultStartPage = '/dashboard';
     const startPageKey = 'tic_ui_start_page';
+    const isStreamerOnly = (roles = []) => roles.includes('streamer') && !roles.includes('admin');
 
-    const resolveStartPage = async () => {
+    const resolveAdminStartPage = async () => {
       try {
         const response = await axios.get('/tic-api/get-settings');
         const startPage = response.data?.data?.ui_settings?.start_page;
@@ -56,10 +57,20 @@ export default {
       return localStorage.getItem(startPageKey) || defaultStartPage;
     };
 
+    const resolvePostLoginRoute = async (roles = []) => {
+      if (isStreamerOnly(roles)) {
+        return '/guide';
+      }
+      if (roles.includes('admin')) {
+        return await resolveAdminStartPage();
+      }
+      return '/login';
+    };
+
     if (authStore.token) {
       authStore.checkAuthentication().then(() => {
         if (authStore.isAuthenticated) {
-          resolveStartPage().then((startPage) => {
+          resolvePostLoginRoute(authStore.user?.roles || []).then((startPage) => {
             router.replace({path: startPage});
           });
         }
@@ -71,7 +82,8 @@ export default {
       try {
         const response = await authStore.login(username.value, password.value);
         if (response.status === 200 && response.data.success) {
-          const startPage = await resolveStartPage();
+          const roles = response.data?.user?.roles || [];
+          const startPage = await resolvePostLoginRoute(roles);
           await router.replace({path: startPage});
         }
       } catch (error) {

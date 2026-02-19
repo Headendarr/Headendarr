@@ -12,6 +12,7 @@ export default function pollForBackgroundTasks() {
     if (!isActive) {
       return;
     }
+    let nextDelayMs = 1000;
     if (unauthorized) {
       startTimer(10000);
       return;
@@ -29,9 +30,11 @@ export default function pollForBackgroundTasks() {
         unauthorized = true;
         pendingTasks.value = [];
         pendingTasksStatus.value = 'running';
+        nextDelayMs = 10000;
         return;
       }
-      if ([502, 504].includes(response.status)) {
+      if (response.status >= 500) {
+        nextDelayMs = 10000;
         return;
       }
       if (response.ok) {
@@ -57,9 +60,13 @@ export default function pollForBackgroundTasks() {
     } catch (error) {
       if (error?.name !== 'AbortError') {
         console.error('Background task poll failed:', error);
+        nextDelayMs = 10000;
+      }
+    } finally {
+      if (isActive) {
+        startTimer(nextDelayMs);
       }
     }
-    startTimer();
   }
 
   function startTimer(delayMs = 1000) {

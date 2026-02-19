@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
@@ -14,6 +15,7 @@ from backend.dvr_profiles import (
 )
 from backend.models import Session, Recording, RecordingRule, Channel, EpgChannels, EpgChannelProgrammes, User
 from backend.tvheadend.tvh_requests import get_tvh, get_tvh_with_credentials
+from backend.auth import audit_stream_event
 
 logger = logging.getLogger('tic.dvr')
 
@@ -57,6 +59,20 @@ def _serialize_rule(rule: RecordingRule):
         "owner_user_id": rule.owner_user_id,
         "recording_profile_key": rule.recording_profile_key,
     }
+
+
+async def _audit_recording_sync_success(owner, rec: Recording, tvh_uuid: str):
+    user_obj = owner
+    if user_obj is None and rec.owner_user_id:
+        user_obj = SimpleNamespace(id=rec.owner_user_id, username="", is_active=True, roles=[])
+    details = f"Recording synced to TVHeadend | recording_id={rec.id} | tvh_uuid={tvh_uuid}"
+    await audit_stream_event(
+        user_obj,
+        "recording_sync",
+        "/tic-api/recordings/sync",
+        details=details,
+        user_agent="Headendarr DVR Sync",
+    )
 
 
 async def list_recordings():
@@ -113,14 +129,14 @@ async def create_recording(
         return recording.id
 
 
-async def cancel_recording(recording_id):
+async def stop_recording(recording_id):
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Recording).where(Recording.id == recording_id))
             recording = result.scalar_one_or_none()
             if not recording:
                 return False
-            recording.status = "canceled"
+            recording.status = "stop_requested"
             recording.sync_status = "pending"
         await session.commit()
         return True
@@ -308,7 +324,12 @@ async def reconcile_tvh_recordings(config):
                     continue
                 if rec.tvh_uuid and rec.tvh_uuid in tvh_map:
                     try:
-                        await tvh.delete_dvr_entry(rec.tvh_uuid)
+                        owner = users_by_id.get(rec.owner_user_id)
+                        if owner and owner.username and owner.streaming_key:
+                            async with await get_tvh_with_credentials(config, owner.username, owner.streaming_key) as owner_tvh:
+                                await owner_tvh.delete_dvr_entry(rec.tvh_uuid)
+                        else:
+                            await tvh.delete_dvr_entry(rec.tvh_uuid)
                     except Exception as exc:
                         logger.exception("Failed to delete DVR entry in TVH: %s", rec.tvh_uuid)
                         rec.sync_status = "failed"
@@ -364,17 +385,22 @@ async def reconcile_tvh_recordings(config):
                 if rec.status == "deleted":
                     # Deletions are handled in the pre-pass; avoid overwriting status from TVH.
                     continue
-                if rec.status == "canceled":
+                if rec.status == "stop_requested":
                     if rec.tvh_uuid:
                         try:
-                            await tvh.delete_dvr_entry(rec.tvh_uuid)
+                            owner = users_by_id.get(rec.owner_user_id)
+                            if owner and owner.username and owner.streaming_key:
+                                async with await get_tvh_with_credentials(config, owner.username, owner.streaming_key) as owner_tvh:
+                                    await owner_tvh.stop_dvr_entry(rec.tvh_uuid)
+                            else:
+                                await tvh.stop_dvr_entry(rec.tvh_uuid)
                         except Exception as exc:
                             logger.exception("Failed to cancel DVR entry in TVH: %s", rec.tvh_uuid)
                             rec.sync_status = "failed"
                             rec.sync_error = str(exc)
                             continue
-                        rec.sync_status = "synced"
-                    continue
+                        rec.sync_status = "pending"
+                        rec.sync_error = None
 
                 if rec.tvh_uuid and rec.tvh_uuid not in tvh_map:
                     # TVH entry no longer exists (deleted/expired externally). Reflect that in TIC
@@ -387,10 +413,13 @@ async def reconcile_tvh_recordings(config):
                 if rec.tvh_uuid and rec.tvh_uuid in tvh_map:
                     entry = tvh_map.get(rec.tvh_uuid, {})
                     rec.status = entry.get("state") or rec.status
-                    if entry.get("start"):
-                        rec.start_ts = entry.get("start")
-                    if entry.get("stop"):
-                        rec.stop_ts = entry.get("stop")
+                    # Prefer real recording bounds where TVH provides them; fall back to scheduled bounds.
+                    start_ts = entry.get("start_real") or entry.get("start")
+                    stop_ts = entry.get("stop_real") or entry.get("stop")
+                    if start_ts:
+                        rec.start_ts = start_ts
+                    if stop_ts:
+                        rec.stop_ts = stop_ts
                     if entry.get("title"):
                         rec.title = entry.get("title")
                     if entry.get("description"):
@@ -407,7 +436,6 @@ async def reconcile_tvh_recordings(config):
 
                 try:
                     owner = users_by_id.get(rec.owner_user_id)
-                    create_with_tvh = tvh
                     config_name = ""
                     if owner and owner.username and owner.streaming_key:
                         owner_retention_policy = normalize_retention_policy(
@@ -418,19 +446,22 @@ async def reconcile_tvh_recordings(config):
                             recording_profiles[0] if recording_profiles else None)
                         if profile_template and owner_dvr_access_mode in {"read_write_own", "read_all_write_own"}:
                             config_name = build_user_profile_name(owner.username, profile_template["name"])
-                            async with await get_tvh_with_credentials(config, owner.username, owner.streaming_key) as owner_tvh:
-                                ensured_profile = await owner_tvh.ensure_user_recorder_profile(
-                                    owner.username,
-                                    profile_name=config_name,
-                                    pathname=profile_template["pathname"],
-                                    pre_padding_mins=default_pre_padding,
-                                    post_padding_mins=default_post_padding,
-                                    retention_policy=owner_retention_policy,
-                                )
-                                if not ensured_profile:
-                                    config_name = ""
-                                create_with_tvh = owner_tvh
-                                tvh_uuid = await create_with_tvh.create_dvr_entry(
+                            ensured_profile = await tvh.ensure_user_recorder_profile(
+                                owner.username,
+                                profile_name=config_name,
+                                pathname=profile_template["pathname"],
+                                pre_padding_mins=default_pre_padding,
+                                post_padding_mins=default_post_padding,
+                                retention_policy=owner_retention_policy,
+                            )
+                            if not ensured_profile:
+                                raise Exception(f"Failed to ensure user recorder profile '{config_name}'")
+                            async with await get_tvh_with_credentials(
+                                config,
+                                owner.username,
+                                owner.streaming_key,
+                            ) as owner_tvh:
+                                tvh_uuid = await owner_tvh.create_dvr_entry(
                                     channel_uuid=channel.tvh_uuid,
                                     start_ts=rec.start_ts,
                                     stop_ts=rec.stop_ts,
@@ -439,15 +470,20 @@ async def reconcile_tvh_recordings(config):
                                     config_name=config_name,
                                 )
                         else:
-                            tvh_uuid = await create_with_tvh.create_dvr_entry(
-                                channel_uuid=channel.tvh_uuid,
-                                start_ts=rec.start_ts,
-                                stop_ts=rec.stop_ts,
-                                title=rec.title or "Recording",
-                                description=rec.description,
-                            )
+                            async with await get_tvh_with_credentials(
+                                config,
+                                owner.username,
+                                owner.streaming_key,
+                            ) as owner_tvh:
+                                tvh_uuid = await owner_tvh.create_dvr_entry(
+                                    channel_uuid=channel.tvh_uuid,
+                                    start_ts=rec.start_ts,
+                                    stop_ts=rec.stop_ts,
+                                    title=rec.title or "Recording",
+                                    description=rec.description,
+                                )
                     else:
-                        tvh_uuid = await create_with_tvh.create_dvr_entry(
+                        tvh_uuid = await tvh.create_dvr_entry(
                             channel_uuid=channel.tvh_uuid,
                             start_ts=rec.start_ts,
                             stop_ts=rec.stop_ts,
@@ -457,6 +493,8 @@ async def reconcile_tvh_recordings(config):
                     rec.tvh_uuid = tvh_uuid or rec.tvh_uuid
                     rec.sync_status = "synced"
                     rec.sync_error = None
+                    if tvh_uuid:
+                        await _audit_recording_sync_success(owner, rec, tvh_uuid)
                 except Exception as exc:
                     rec.sync_status = "failed"
                     rec.sync_error = str(exc)

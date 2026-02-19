@@ -6,7 +6,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/DashboardPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -18,7 +18,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/DashboardPage.vue'),
-        meta: {requiresAuth: true},
+        meta: {requiresAuth: true, requiresAdmin: true},
       },
     ],
   },
@@ -118,7 +118,7 @@ const routes = [
       {
         path: '',
         component: () => import('pages/DvrPage.vue'),
-        meta: {requiresAuth: true, requiresStreamer: true},
+        meta: {requiresAuth: true, requiresStreamer: true, requiresDvrAccess: true},
       },
     ],
   },

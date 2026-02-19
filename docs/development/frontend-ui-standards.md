@@ -247,8 +247,25 @@ Example:
 
 Use `TicListItemCard` for compact list rows that need a header with left content + right action buttons and a separate body section.
 
+`TicListItemCard` supports optional parent-driven visual accents via props:
+- `accent-color`
+- `surface-color`
+- `header-color`
+- `text-color`
+
+This keeps `TicListItemCard` generic while allowing each page to pass theme-token-backed colours for status-based highlighting.
+Current list-card theme token groups are:
+- `--tic-list-card-healthy-*`
+- `--tic-list-card-disabled-*`
+- `--tic-list-card-issues-*`
+- `--tic-list-card-error-*`
+
 ```vue
-<TicListItemCard>
+<TicListItemCard
+  accent-color="var(--tic-list-card-healthy-border)"
+  surface-color="var(--tic-list-card-healthy-bg)"
+  header-color="var(--tic-list-card-healthy-header)"
+>
   <template #header-left>
     <div class="text-caption text-grey-7">Reorder</div>
   </template>

@@ -55,14 +55,24 @@ export default route(function (/* { store, ssrContext } */) {
     return resolved.matched.length > 0;
   };
 
-  const getFallbackStartPage = (roles) => {
-    if (roles.includes('admin')) {
-      return defaultStartPage;
+  const getRoleHomeRoute = (roles) => {
+    if (roles.includes('streamer') && !roles.includes('admin')) {
+      return '/guide';
     }
-    if (roles.includes('streamer')) {
-      return '/dashboard';
+    if (roles.includes('admin')) {
+      const startPage = getStartPage();
+      return canAccessRoute(startPage, roles) ? startPage : defaultStartPage;
     }
     return '/login';
+  };
+
+  const canUseDvr = (user) => {
+    const roles = user?.roles || [];
+    if (roles.includes('admin')) {
+      return true;
+    }
+    const mode = String(user?.dvr_access_mode || 'none').toLowerCase();
+    return mode === 'read_write_own' || mode === 'read_all_write_own';
   };
 
   // Add navigation guard
@@ -81,8 +91,7 @@ export default route(function (/* { store, ssrContext } */) {
       if (authStore.isAuthenticated) {
         if (to.path === '/') {
           const roles = authStore.user?.roles || [];
-          const startPage = getStartPage();
-          const target = canAccessRoute(startPage, roles) ? startPage : getFallbackStartPage(roles);
+          const target = getRoleHomeRoute(roles);
           if (target && target !== to.path) {
             next({path: target, replace: true});
             return;
@@ -91,16 +100,21 @@ export default route(function (/* { store, ssrContext } */) {
         if (to.meta.requiresAdmin) {
           const roles = authStore.user?.roles || [];
           if (!roles.includes('admin')) {
-            next({path: '/', replace: true});
+            next({path: getRoleHomeRoute(roles), replace: true});
             return;
           }
         }
         if (to.meta.requiresStreamer) {
           const roles = authStore.user?.roles || [];
           if (!roles.includes('admin') && !roles.includes('streamer')) {
-            next({path: '/', replace: true});
+            next({path: getRoleHomeRoute(roles), replace: true});
             return;
           }
+        }
+        if (to.meta.requiresDvrAccess && !canUseDvr(authStore.user)) {
+          const roles = authStore.user?.roles || [];
+          next({path: getRoleHomeRoute(roles), replace: true});
+          return;
         }
         next();
       } else {
