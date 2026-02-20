@@ -5,11 +5,8 @@ from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services,
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
     TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status, \
     sync_all_users_to_tvh
-from backend.api.routes_hls_proxy import (
-    cleanup_hls_proxy_state,
-    load_stream_activity_state,
-    persist_stream_activity_state,
-)
+from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
+from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
 from backend.auth import cleanup_stream_audit_logs
 from backend import create_app, config
 import asyncio

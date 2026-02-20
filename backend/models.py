@@ -194,6 +194,8 @@ class Channel(Base):
     logo_base64 = Column(Text, index=False, unique=False)
     number = Column(Integer, index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
+    cso_enabled = Column(Boolean, nullable=False, unique=False, default=False)
+    cso_policy = Column(Text, index=False, unique=False)
 
     # Link with a guide
     guide_id = Column(Integer, ForeignKey('epgs.id'))
@@ -404,3 +406,31 @@ class StreamAuditLog(Base):
 
     def __repr__(self):
         return '<StreamAuditLog {}>'.format(self.id)
+
+
+class CsoEventLog(Base):
+    __tablename__ = "cso_event_logs"
+    __table_args__ = (
+        Index("ix_cso_event_logs_channel_created", "channel_id", "created_at"),
+        Index("ix_cso_event_logs_event_type_created", "event_type", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True, index=True)
+    source_id = Column(Integer, ForeignKey('channel_sources.id'), nullable=True, index=True)
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True, index=True)
+    recording_id = Column(Integer, ForeignKey('recordings.id'), nullable=True, index=True)
+    tvh_subscription_id = Column(String(128), nullable=True, index=True)
+    session_id = Column(String(128), nullable=True, index=True)
+    event_type = Column(String(64), index=True, nullable=False)
+    severity = Column(String(16), nullable=False, default="info")
+    details_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    channel = relationship("Channel")
+    source = relationship("ChannelSource")
+    playlist = relationship("Playlist")
+    recording = relationship("Recording")
+
+    def __repr__(self):
+        return '<CsoEventLog {}>'.format(self.id)

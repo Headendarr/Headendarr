@@ -173,10 +173,19 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None):
     base_url = request.host_url.rstrip('/')
     lineup_list = []
     from backend.epgs import generate_epg_channel_id
+    from backend.channels import build_cso_channel_stream_url
     for channel_details in await _get_channels(playlist_id):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
         channel_url = None
-        if use_tvh_source and channel_details.get('tvh_uuid'):
+        if channel_details.get('cso_enabled'):
+            channel_url = build_cso_channel_stream_url(
+                base_url=base_url,
+                channel_id=channel_details.get('id'),
+                stream_key=stream_key,
+                username=stream_username,
+                output_profile='default',
+            )
+        elif use_tvh_source and channel_details.get('tvh_uuid'):
             channel_url = f'{base_url}/tic-api/tvh_stream/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
             channel_url = f'{channel_url}{path_args}'
@@ -239,6 +248,7 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
             epg_url = f'{epg_url}?stream_key={stream_key}'
     playlist = [f'#EXTM3U url-tvg="{epg_url}"']
     from backend.epgs import generate_epg_channel_id
+    from backend.channels import build_cso_channel_stream_url
     for channel_details in await _get_channels(playlist_id):
         current_app.logger.warning(channel_details)
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
@@ -255,7 +265,15 @@ async def _get_playlist_channels(playlist_id, include_auth=False, stream_profile
         line += f' , {channel_name}'
         playlist.append(line)
         channel_url = None
-        if use_tvh_source and channel_details.get('tvh_uuid'):
+        if channel_details.get('cso_enabled'):
+            channel_url = build_cso_channel_stream_url(
+                base_url=base_url,
+                channel_id=channel_details.get('id'),
+                stream_key=stream_key,
+                username=username,
+                output_profile='default',
+            )
+        elif use_tvh_source and channel_details.get('tvh_uuid'):
             channel_url = f'{base_url}/tic-api/tvh_stream/stream/channel/{channel_details["tvh_uuid"]}'
             path_args = f'?profile={tvh_settings["stream_profile"]}&weight={tvh_settings["stream_priority"]}'
             channel_url = f'{channel_url}{path_args}'

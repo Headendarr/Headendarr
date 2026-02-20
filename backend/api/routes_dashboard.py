@@ -14,7 +14,6 @@ from sqlalchemy import select
 from backend import config as backend_config
 from backend.api import blueprint
 from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts
-from backend.api.routes_hls_proxy import get_stream_activity_snapshot
 from backend.audit_view import build_device_label, serialize_audit_row
 from backend.auth import admin_auth_required
 from backend.channels import (
@@ -25,6 +24,7 @@ from backend.channels import (
     resolve_stream_target,
 )
 from backend.models import Channel, ChannelSource, Session, StreamAuditLog, User
+from backend.stream_activity import get_stream_activity_snapshot
 from backend.tvheadend.tvh_requests import get_tvh
 
 _CHANNEL_ISSUE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}

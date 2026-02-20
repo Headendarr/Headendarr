@@ -14,7 +14,7 @@
           />
 
           <q-list bordered separator class="rounded-borders audit-list">
-            <q-item v-for="entry in entries" :key="entry.id" class="audit-list-item" top>
+            <q-item v-for="entry in entries" :key="entry.entry_key || `${entry.entry_type}:${entry.id}`" class="audit-list-item" top>
               <template v-if="!$q.screen.lt.md">
                 <q-item-section>
                   <q-item-label class="text-weight-medium">
@@ -28,9 +28,15 @@
                     Device: {{ displayDevice(entry) }}
                   </q-item-label>
                   <q-item-label caption class="text-grey-7 q-mt-xs">
+                    Type: {{ formatEntryType(entry.entry_type) }}
+                    <span class="q-mx-xs">|</span>
                     Event: {{ entry.event_type || '-' }}
                     <span v-if="entry.audit_mode" class="q-mx-xs">|</span>
                     <span v-if="entry.audit_mode">Mode: {{ formatAuditMode(entry.audit_mode) }}</span>
+                    <span v-if="entry.channel_id" class="q-mx-xs">|</span>
+                    <span v-if="entry.channel_id">Channel: {{ entry.channel_id }}</span>
+                    <span v-if="entry.severity" class="q-mx-xs">|</span>
+                    <span v-if="entry.severity">Severity: {{ entry.severity }}</span>
                     <span v-if="entry.ip_address" class="q-mx-xs">|</span>
                     <span v-if="entry.ip_address">IP: {{ entry.ip_address }}</span>
                   </q-item-label>
@@ -56,9 +62,12 @@
                     </template>
                     <div class="text-caption q-mt-xs">User: {{ displayUsername(entry) }}</div>
                     <div class="text-caption">Device: {{ displayDevice(entry) }}</div>
+                    <div class="text-caption">Type: {{ formatEntryType(entry.entry_type) }}</div>
                     <div class="text-caption">Event: {{ entry.event_type || '-' }}</div>
                     <div v-if="entry.audit_mode" class="text-caption">Mode: {{ formatAuditMode(entry.audit_mode) }}
                     </div>
+                    <div v-if="entry.channel_id" class="text-caption">Channel: {{ entry.channel_id }}</div>
+                    <div v-if="entry.severity" class="text-caption">Severity: {{ entry.severity }}</div>
                     <div class="text-caption endpoint-ellipsis">Endpoint: {{ entry.endpoint || '-' }}</div>
                     <div v-if="entry.ip_address" class="text-caption">IP: {{ entry.ip_address }}</div>
                     <div v-if="entry.details" class="text-caption text-grey-7 q-mt-xs">{{ entry.details }}</div>
@@ -124,6 +133,7 @@ export default defineComponent({
       loading: false,
       hasMore: true,
       search: '',
+      entryType: null,
       eventType: null,
       eventTypeOptions: [{label: 'All events', value: null}],
       pollTimer: null,
@@ -138,10 +148,30 @@ export default defineComponent({
     eventType() {
       this.scheduleRefresh();
     },
+    entryType() {
+      this.scheduleRefresh();
+    },
   },
   computed: {
     auditToolbarFilters() {
       return [
+        {
+          key: 'entryType',
+          modelValue: this.entryType,
+          label: 'Type',
+          options: [
+            {label: 'All activity', value: null},
+            {label: 'User Stream Audit Logs', value: 'stream_audit'},
+            {label: 'CSO Events', value: 'cso_event_log'},
+          ],
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: true,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
         {
           key: 'event',
           modelValue: this.eventType,
@@ -160,6 +190,9 @@ export default defineComponent({
   },
   methods: {
     onAuditToolbarFilterChange({key, value}) {
+      if (key === 'entryType') {
+        this.entryType = value ?? null;
+      }
       if (key === 'event') {
         this.eventType = value ?? null;
       }
@@ -181,6 +214,9 @@ export default defineComponent({
       return this.fallbackDeviceLabel(entry?.user_agent);
     },
     displayUsername(entry) {
+      if (entry?.entry_type === 'cso_event_log') {
+        return 'System';
+      }
       const username = String(entry?.username || '').trim();
       if (username) {
         return username;
@@ -192,6 +228,15 @@ export default defineComponent({
         return 'TVH backend';
       }
       return 'Unknown user';
+    },
+    formatEntryType(value) {
+      if (value === 'cso_event_log') {
+        return 'CSO Event';
+      }
+      if (value === 'stream_audit') {
+        return 'User Stream Audit Log';
+      }
+      return value || '-';
     },
     formatAuditTimestamp(value) {
       if (!value) {
@@ -229,6 +274,9 @@ export default defineComponent({
       }
       if (this.eventType) {
         params.event_type = this.eventType;
+      }
+      if (this.entryType) {
+        params.entry_types = this.entryType;
       }
       return params;
     },
@@ -277,6 +325,7 @@ export default defineComponent({
         ...this.buildFilterQuery(),
         before_created_at: tail.created_at,
         before_id: tail.id,
+        before_entry_type: tail.entry_type,
       };
       try {
         const response = await axios.get('/tic-api/audit/logs', {params});
@@ -286,8 +335,8 @@ export default defineComponent({
           done(true);
           return;
         }
-        const existing = new Set(this.entries.map((entry) => entry.id));
-        const additions = older.filter((entry) => !existing.has(entry.id));
+        const existing = new Set(this.entries.map((entry) => entry.entry_key || `${entry.entry_type}:${entry.id}`));
+        const additions = older.filter((entry) => !existing.has(entry.entry_key || `${entry.entry_type}:${entry.id}`));
         this.entries = [...this.entries, ...additions];
         this.hasMore = older.length >= PAGE_SIZE;
         this.updateEventTypeOptions();
@@ -310,6 +359,7 @@ export default defineComponent({
         timeout: 25,
         since_created_at: head.created_at,
         since_id: head.id,
+        since_entry_type: head.entry_type,
       };
       if (this.search?.trim()) {
         params.search = this.search.trim();
@@ -321,8 +371,8 @@ export default defineComponent({
         const response = await axios.get('/tic-api/audit/logs/poll', {params});
         const updates = response.data.data || [];
         if (updates.length) {
-          const existing = new Set(this.entries.map((entry) => entry.id));
-          const additions = updates.filter((entry) => !existing.has(entry.id));
+          const existing = new Set(this.entries.map((entry) => entry.entry_key || `${entry.entry_type}:${entry.id}`));
+          const additions = updates.filter((entry) => !existing.has(entry.entry_key || `${entry.entry_type}:${entry.id}`));
           if (additions.length) {
             this.entries = [...additions, ...this.entries];
             this.updateEventTypeOptions();

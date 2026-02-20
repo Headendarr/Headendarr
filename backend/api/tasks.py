@@ -448,8 +448,9 @@ async def poll_tvh_subscription_status(app):
     config = app.config['APP_CONFIG']
     from backend.tvheadend.tvh_requests import get_tvh
     from backend.users import get_user_by_username
-    from backend.api.routes_hls_proxy import upsert_stream_activity, stop_stream_activity
+    from backend.stream_activity import get_stream_activity_snapshot, stop_stream_activity, upsert_stream_activity
     from backend.channels import read_config_all_channels
+    from backend.cso import reconcile_cso_capacity_with_tvh_channels
 
     global _TVH_ACTIVE_SUBSCRIPTIONS, _TVH_POLL_LOCK
 
@@ -575,3 +576,8 @@ async def poll_tvh_subscription_status(app):
 
         _TVH_ACTIVE_SUBSCRIPTIONS = observed
         await _save_tvh_poll_state(config)
+        activity_sessions = await get_stream_activity_snapshot()
+        await reconcile_cso_capacity_with_tvh_channels(
+            [event.get("channel_id") for event in observed.values() if event.get("channel_id")],
+            activity_sessions=activity_sessions,
+        )

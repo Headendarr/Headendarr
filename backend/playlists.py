@@ -73,7 +73,11 @@ async def build_tic_playlist_with_epg_content(
     include_xtvg: bool = False,
 ) -> str:
     # Local imports to avoid circular import issues.
-    from backend.channels import build_channel_logo_proxy_url, read_config_all_channels
+    from backend.channels import (
+        build_channel_logo_proxy_url,
+        build_cso_channel_stream_url,
+        read_config_all_channels,
+    )
     from backend.streaming import append_stream_key, build_local_hls_proxy_url, normalize_local_proxy_url
 
     settings = config.read_settings()
@@ -99,7 +103,15 @@ async def build_tic_playlist_with_epg_content(
     async def _resolve_stream_url(channel):
         channel_url = None
         channel_uuid = channel.get("tvh_uuid")
-        if use_tvh_source and channel_uuid:
+        if channel.get("cso_enabled"):
+            channel_url = build_cso_channel_stream_url(
+                base_url=base_url,
+                channel_id=channel.get("id"),
+                stream_key=stream_key,
+                username=username,
+                output_profile="default",
+            )
+        elif use_tvh_source and channel_uuid:
             channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}?profile=pass&weight=300"
             if stream_key:
                 channel_url = append_stream_key(channel_url, stream_key=stream_key)

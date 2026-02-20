@@ -44,6 +44,13 @@ from backend.playlists import (
     _normalize_xc_host,
 )
 from backend.config import flask_run_port
+from backend.cso import (
+    build_cso_stream_query,
+    cso_runtime_capabilities,
+    default_cso_policy,
+    normalize_cso_policy,
+    serialize_cso_policy,
+)
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
     append_stream_key,
@@ -56,6 +63,45 @@ from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import normalize_id
 
 logger = logging.getLogger("tic.channels")
+
+
+def _extract_cso_payload(data, current_enabled=False, current_policy=None):
+    raw_enabled = data.get("cso_enabled", current_enabled)
+    cso_enabled = bool(raw_enabled)
+    raw_policy = data.get("cso_policy")
+    if raw_policy is None:
+        raw_policy = current_policy if current_policy is not None else default_cso_policy()
+    cso_policy = serialize_cso_policy(raw_policy)
+    return cso_enabled, cso_policy
+
+
+def _resolve_hls_proxy_prefix():
+    prefix = os.environ.get("HLS_PROXY_PREFIX", "/")
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    return prefix.rstrip("/")
+
+
+def build_cso_channel_stream_url(
+    *,
+    base_url,
+    channel_id,
+    stream_key=None,
+    username=None,
+    output_profile="tvh",
+    connection_id=None,
+):
+    prefix = _resolve_hls_proxy_prefix()
+    path = f"{prefix}/channel/{channel_id}"
+    query = build_cso_stream_query(
+        output_profile=output_profile,
+        connection_id=connection_id,
+        stream_key=stream_key,
+        username=username,
+    )
+    if query:
+        return f"{base_url.rstrip('/')}{path}?{query}"
+    return f"{base_url.rstrip('/')}{path}"
 
 
 def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) -> str:
@@ -837,6 +883,8 @@ async def read_config_all_channels(
                             "name": result.name,
                             "logo_url": result.logo_url,
                             "number": result.number,
+                            "cso_enabled": bool(getattr(result, "cso_enabled", False)),
+                            "cso_policy": normalize_cso_policy(getattr(result, "cso_policy", None)),
                             "tags": tags,
                             "guide": {
                                 "epg_name": result.guide_name,
@@ -853,6 +901,9 @@ async def read_config_all_channels(
                     "name": result.name,
                     "logo_url": result.logo_url,
                     "number": result.number,
+                    "cso_enabled": bool(getattr(result, "cso_enabled", False)),
+                    "cso_policy": normalize_cso_policy(getattr(result, "cso_policy", None)),
+                    "cso_capabilities": cso_runtime_capabilities(),
                     "tags": tags,
                     "guide": {
                         "epg_id": result.guide_id,
@@ -908,6 +959,9 @@ async def read_config_one_channel(channel_id):
             "name": result.name,
             "logo_url": result.logo_url,
             "number": result.number,
+            "cso_enabled": bool(getattr(result, "cso_enabled", False)),
+            "cso_policy": normalize_cso_policy(getattr(result, "cso_policy", None)),
+            "cso_capabilities": cso_runtime_capabilities(),
             "tags": tags,
             "guide": {
                 "epg_id": result.guide_id,
@@ -1030,11 +1084,14 @@ async def add_new_channel(config, data, commit=True, publish=True):
     instance_id = config.ensure_instance_id()
     app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
     async with Session() as session:
+        cso_enabled, cso_policy = _extract_cso_payload(data)
         channel = Channel(
             enabled=data.get("enabled"),
             name=data.get("name"),
             logo_url=data.get("logo_url"),
             number=data.get("number"),
+            cso_enabled=cso_enabled,
+            cso_policy=cso_policy,
         )
 
         for tag_name in data.get("tags", []):
@@ -1187,6 +1244,13 @@ async def update_channel(config, channel_id, data):
             channel = query.scalar_one()
             channel.enabled = data.get("enabled")
             channel.name = data.get("name")
+            cso_enabled, cso_policy = _extract_cso_payload(
+                data,
+                current_enabled=bool(getattr(channel, "cso_enabled", False)),
+                current_policy=getattr(channel, "cso_policy", None),
+            )
+            channel.cso_enabled = cso_enabled
+            channel.cso_policy = cso_policy
             # Channels API returns a rendered backend proxy URL in `logo_url` for UI display.
             # Prefer `source_logo_url` when present so bulk UI saves do not overwrite the
             # persisted source logo with a cache/proxy URL.
@@ -2226,6 +2290,29 @@ async def publish_channel_muxes(config):
         managed_uuids = []
         sem = asyncio.Semaphore(8)  # limit concurrency
         mux_tasks = []
+        cso_network_uuid = None
+        instance_id = config.ensure_instance_id()
+
+        async def ensure_cso_network():
+            nonlocal cso_network_uuid
+            if cso_network_uuid:
+                return cso_network_uuid
+
+            reserved_name = f"tic-system-cso-{instance_id[:8]}"
+            networks = await tvh.list_cur_networks()
+            for net in networks:
+                if net.get("pnetworkname") == reserved_name or net.get("networkname") == reserved_name:
+                    cso_network_uuid = net.get("uuid")
+                    break
+            if cso_network_uuid:
+                return cso_network_uuid
+            cso_network_uuid = await tvh.create_network(
+                "tic-system-cso",
+                reserved_name,
+                999999,
+                999,
+            )
+            return cso_network_uuid
 
         async def process_source(channel_obj, source_obj):
             async with sem:
@@ -2298,7 +2385,6 @@ async def publish_channel_muxes(config):
                 if not mux_name.lower().startswith("tic-"):
                     mux_name = f"tic-{mux_name}"
                 stream_url = source_obj.playlist_stream_url
-                instance_id = config.ensure_instance_id()
                 if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
                     stream_url = normalize_local_proxy_url(
                         stream_url,
@@ -2340,9 +2426,69 @@ async def publish_channel_muxes(config):
                         "Failed saving MUX for channel '%s': %s", channel_obj.name, e
                     )
 
+        async def process_cso_channel(channel_obj):
+            async with sem:
+                net_uuid = await ensure_cso_network()
+                if not net_uuid:
+                    logger.error("Failed resolving CSO network for channel '%s'", channel_obj.name)
+                    return
+
+                mux_name = f"tic-cso-{channel_obj.id}-{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
+                existing = next((m for m in existing_muxes if (m.get("iptv_muxname") or "") == mux_name), None)
+                mux_uuid = existing.get("uuid") if existing else None
+                run_mux_scan = False
+                if not mux_uuid:
+                    try:
+                        mux_uuid = await tvh.network_mux_create(net_uuid)
+                        run_mux_scan = True
+                    except Exception as exc:
+                        logger.error("Failed creating CSO mux for channel '%s': %s", channel_obj.name, exc)
+                        return
+
+                cso_url = build_cso_channel_stream_url(
+                    base_url=tic_base_url,
+                    channel_id=channel_obj.id,
+                    stream_key=tvh_stream_key,
+                    username=tvh_stream_username,
+                    output_profile="tvh",
+                    connection_id="tvh",
+                )
+                iptv_url = generate_iptv_url(
+                    config,
+                    url=cso_url,
+                    service_name=f"CSO - {channel_obj.name}",
+                )
+                channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
+                mux_conf = {
+                    "enabled": 1,
+                    "uuid": mux_uuid,
+                    "iptv_url": iptv_url,
+                    "iptv_icon": build_channel_logo_proxy_url(
+                        channel_obj.id,
+                        tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
+                        channel_obj.logo_url or "",
+                    ),
+                    "iptv_sname": channel_obj.name,
+                    "iptv_muxname": mux_name,
+                    "channel_number": channel_obj.number,
+                    "iptv_epgid": channel_id,
+                    "priority": "1",
+                    "spriority": "1",
+                }
+                if run_mux_scan:
+                    mux_conf["scan_state"] = 1
+                try:
+                    await tvh.idnode_save(mux_conf)
+                    managed_uuids.append(mux_uuid)
+                except Exception as exc:
+                    logger.error("Failed saving CSO mux for channel '%s': %s", channel_obj.name, exc)
+
         # Schedule tasks
         for channel_obj in results:
             if not channel_obj.enabled:
+                continue
+            if bool(getattr(channel_obj, "cso_enabled", False)):
+                mux_tasks.append(asyncio.create_task(process_cso_channel(channel_obj)))
                 continue
             for source_obj in channel_obj.sources:
                 mux_tasks.append(
@@ -2355,6 +2501,15 @@ async def publish_channel_muxes(config):
             async with Session() as session:
                 async with session.begin():
                     for channel_obj in results:
+                        if bool(getattr(channel_obj, "cso_enabled", False)):
+                            for source_obj in channel_obj.sources or []:
+                                if not source_obj.id:
+                                    continue
+                                source_row = await session.get(ChannelSource, source_obj.id)
+                                if not source_row:
+                                    continue
+                                source_row.tvh_uuid = None
+                            continue
                         for source_obj in channel_obj.sources or []:
                             if not source_obj.id:
                                 continue
@@ -2726,6 +2881,9 @@ def _build_stream_source_index_maps(rows, stream_rows):
             "channel_id": row.get("channel_id"),
             "channel_name": row.get("channel_name"),
             "channel_logo_url": row.get("channel_logo_url"),
+            "source_id": row.get("source_id"),
+            "playlist_id": row.get("playlist_id"),
+            "xc_account_id": row.get("xc_account_id"),
             "stream_name": row.get("stream_name"),
             "stream_url": stream_url,
             "priority": str(row.get("priority") or ""),
@@ -2787,6 +2945,9 @@ async def build_stream_source_index():
                 Channel.name.label("channel_name"),
                 Channel.logo_url.label("channel_logo_url"),
                 Channel.tvh_uuid.label("tvh_uuid"),
+                ChannelSource.id.label("source_id"),
+                ChannelSource.playlist_id.label("playlist_id"),
+                ChannelSource.xc_account_id.label("xc_account_id"),
                 ChannelSource.playlist_stream_name.label("stream_name"),
                 ChannelSource.playlist_stream_url.label("stream_url"),
                 ChannelSource.priority.label("priority"),
@@ -2840,6 +3001,9 @@ def resolve_stream_target(details: str | None, source_index: dict, related_urls:
         "channel_id": matched_source.get("channel_id") if matched_source else None,
         "channel_name": matched_source.get("channel_name") if matched_source else None,
         "channel_logo_url": matched_source.get("channel_logo_url") if matched_source else None,
+        "source_id": matched_source.get("source_id") if matched_source else None,
+        "playlist_id": matched_source.get("playlist_id") if matched_source else None,
+        "xc_account_id": matched_source.get("xc_account_id") if matched_source else None,
         "stream_name": matched_source.get("stream_name") if matched_source else None,
         "source_url": source_url,
         "display_url": display_url,

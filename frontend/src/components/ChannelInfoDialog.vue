@@ -105,6 +105,88 @@
 
           <h5 class="q-my-none">Channel Streams</h5>
 
+          <TicToggleInput
+            v-model="csoEnabled"
+            label="Enable Channel Stream Organiser"
+            description="Enable smart channel failover management for this channel and publish a single CSO playback mux to TVHeadend."
+          />
+
+          <div v-if="csoEnabled" class="sub-setting">
+            <TicSelectInput
+              v-model="csoOutputMode"
+              :options="csoOutputModeOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              label="CSO Output Mode"
+              description="Auto keeps first-source behavior. Force remux/transcode applies a fixed output profile."
+            />
+
+            <TicSelectInput
+              v-model="csoContainer"
+              :options="csoContainerOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              label="Output Container"
+              description="Default is MPEG-TS for TVHeadend compatibility."
+            />
+
+            <template v-if="csoOutputMode === 'force_transcode'">
+              <TicSelectInput
+                v-model="csoVideoCodec"
+                :options="csoVideoCodecOptions"
+                option-label="label"
+                option-value="value"
+                :emit-value="true"
+                :map-options="true"
+                :clearable="false"
+                :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                label="Video Codec"
+                description="Curated codec list for maintainable CSO transcoding. HEVC is only available with Matroska."
+              />
+
+              <TicSelectInput
+                v-model="csoAudioCodec"
+                :options="csoAudioCodecOptions"
+                option-label="label"
+                option-value="value"
+                :emit-value="true"
+                :map-options="true"
+                :clearable="false"
+                :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                label="Audio Codec"
+                description="Curated codec list for predictable remux/transcode behavior."
+              />
+
+              <TicSelectInput
+                v-model="csoHwAccel"
+                :options="csoHwAccelOptions"
+                option-label="label"
+                option-value="value"
+                :emit-value="true"
+                :map-options="true"
+                :clearable="false"
+                :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                label="Hardware Acceleration"
+                :description="csoVaapiAvailable ? 'Use VAAPI when available via /dev/dri.' : 'VAAPI unavailable on this runtime (no /dev/dri detected).'"
+              />
+
+              <TicToggleInput
+                v-model="csoForceDeinterlace"
+                label="Force Deinterlace"
+                description="Apply deinterlacing in transcoding pipelines (safe to leave enabled only when needed)."
+              />
+            </template>
+
+          </div>
+
           <q-list bordered separator class="rounded-borders">
             <draggable
               v-model="listOfChannelSources"
@@ -292,6 +374,14 @@ export default {
       epgChannelDefaultOptions: [],
       epgChannelOptions: [],
       epgChannel: '',
+      csoEnabled: false,
+      csoOutputMode: 'auto',
+      csoContainer: 'mpegts',
+      csoVideoCodec: '',
+      csoAudioCodec: '',
+      csoHwAccel: 'none',
+      csoForceDeinterlace: false,
+      csoVaapiAvailable: true,
       listOfPlaylists: [],
       listOfChannelSources: [],
       listOfChannelSourcesToRefresh: [],
@@ -347,12 +437,50 @@ export default {
         delayOnTouchOnly: true,
       };
     },
+    csoOutputModeOptions() {
+      return [
+        {label: 'Auto (recommended)', value: 'auto'},
+        {label: 'Force remux', value: 'force_remux'},
+        {label: 'Force transcode', value: 'force_transcode'},
+      ];
+    },
+    csoContainerOptions() {
+      return [
+        {label: 'MPEG-TS', value: 'mpegts'},
+        {label: 'Matroska (MKV)', value: 'matroska'},
+      ];
+    },
+    csoVideoCodecOptions() {
+      const isMpegts = this.csoContainer === 'mpegts';
+      return [
+        {label: 'H.264 (libx264)', value: 'libx264'},
+        {label: 'H.265 (libx265) - MKV only', value: 'libx265', disable: isMpegts},
+      ];
+    },
+    csoAudioCodecOptions() {
+      return [
+        {label: 'AAC', value: 'aac'},
+        {label: 'AC-3', value: 'ac3'},
+      ];
+    },
+    csoHwAccelOptions() {
+      return [
+        {label: 'Disabled', value: 'none'},
+        {label: 'VAAPI (/dev/dri)', value: 'vaapi', disable: !this.csoVaapiAvailable},
+      ];
+    },
   },
   watch: {
     epgSourceId() {
       if (this.epgChannelAllOptions) {
         this.updateCurrentEpgChannelOptions();
       }
+    },
+    csoContainer() {
+      this.enforceCsoPolicyCompatibility();
+    },
+    csoOutputMode() {
+      this.enforceCsoPolicyCompatibility();
     },
   },
   methods: {
@@ -420,6 +548,13 @@ export default {
       this.epgSourceId = null;
       this.epgSourceName = '';
       this.epgChannel = '';
+      this.csoEnabled = false;
+      this.csoOutputMode = 'auto';
+      this.csoContainer = 'mpegts';
+      this.csoVideoCodec = 'libx264';
+      this.csoAudioCodec = 'aac';
+      this.csoHwAccel = 'none';
+      this.csoForceDeinterlace = false;
       this.listOfChannelSources = [];
       this.listOfChannelSourcesToRefresh = [];
       this.refreshHint = '';
@@ -438,6 +573,13 @@ export default {
         tags: this.tags,
         epgSourceId: this.epgSourceId,
         epgChannel: this.epgChannel,
+        csoEnabled: this.csoEnabled,
+        csoOutputMode: this.csoOutputMode,
+        csoContainer: this.csoContainer,
+        csoVideoCodec: this.csoVideoCodec,
+        csoAudioCodec: this.csoAudioCodec,
+        csoHwAccel: this.csoHwAccel,
+        csoForceDeinterlace: this.csoForceDeinterlace,
         sources: (this.listOfChannelSources || []).map((source) => ({
           source_type: source.source_type || 'playlist',
           stream_id: source.stream_id || null,
@@ -470,12 +612,23 @@ export default {
         this.epgSourceId = response.data.data.guide.epg_id;
         this.epgSourceName = response.data.data.guide.epg_name;
         this.epgChannel = response.data.data.guide.channel_id;
+        this.csoEnabled = !!response.data.data.cso_enabled;
+        const csoPolicy = response.data.data.cso_policy || {};
+        const csoCapabilities = response.data.data.cso_capabilities || {};
+        this.csoVaapiAvailable = !!csoCapabilities.vaapi_available;
+        this.csoOutputMode = csoPolicy.output_mode || 'auto';
+        this.csoContainer = csoPolicy.container || 'mpegts';
+        this.csoVideoCodec = csoPolicy.video_codec || 'libx264';
+        this.csoAudioCodec = csoPolicy.audio_codec || 'aac';
+        this.csoHwAccel = csoPolicy.hwaccel || 'none';
+        this.csoForceDeinterlace = !!csoPolicy.deinterlace;
+        this.enforceCsoPolicyCompatibility();
         this.listOfChannelSources = response.data.data.sources.map((source) => this.withLocalKey({
           ...source,
           use_hls_proxy: !!source.use_hls_proxy,
         })).sort((a, b) => b.priority - a.priority);
         this.listOfChannelSourcesToRefresh = [];
-        return this.fetchSuggestions();
+        return Promise.all([this.fetchSuggestions()]);
       });
     },
     fetchSuggestions() {
@@ -834,6 +987,17 @@ export default {
         logo_url: this.logoUrl,
         tags: this.tags,
         number: this.newChannelNumber || this.number || 0,
+        cso_enabled: this.csoEnabled,
+        cso_policy: {
+          output_mode: this.csoOutputMode,
+          container: this.csoContainer,
+          video_codec: this.csoVideoCodec,
+          audio_codec: this.csoAudioCodec,
+          subtitle_mode: 'copy',
+          data_mode: 'copy',
+          hwaccel: this.csoHwAccel,
+          deinterlace: this.csoForceDeinterlace,
+        },
         guide: {
           epg_id: this.epgSourceId,
           epg_name: this.epgSourceName,
@@ -848,6 +1012,31 @@ export default {
         return;
       }
       this.saving = true;
+
+      if (this.csoEnabled && this.csoOutputMode === 'force_transcode') {
+        if (!String(this.csoVideoCodec || '').trim() || !String(this.csoAudioCodec || '').trim()) {
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Video codec and audio codec are required for force transcode mode.',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+          this.saving = false;
+          return;
+        }
+        if (this.csoContainer === 'mpegts' && this.csoVideoCodec === 'libx265') {
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'H.265 (libx265) is only supported when container is Matroska (MKV).',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+          this.saving = false;
+          return;
+        }
+      }
 
       const url = this.channelId ? `/tic-api/channels/settings/${this.channelId}/save` : '/tic-api/channels/new';
       const data = this.buildChannelPayload(this.listOfChannelSourcesToRefresh);
@@ -921,6 +1110,19 @@ export default {
           actions: [{icon: 'close', color: 'white'}],
         });
       });
+    },
+    enforceCsoPolicyCompatibility() {
+      if (this.csoOutputMode !== 'force_transcode') {
+        this.csoHwAccel = 'none';
+        this.csoForceDeinterlace = false;
+        return;
+      }
+      if (this.csoContainer === 'mpegts' && this.csoVideoCodec === 'libx265') {
+        this.csoVideoCodec = 'libx264';
+      }
+      if (this.csoHwAccel === 'vaapi' && !this.csoVaapiAvailable) {
+        this.csoHwAccel = 'none';
+      }
     },
     filterEpg(value, update) {
       if (value === '') {

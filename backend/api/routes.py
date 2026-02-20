@@ -16,6 +16,7 @@ from backend.auth import (
     admin_auth_required,
     get_user_from_token,
     get_authenticated_session_expires_at,
+    _get_bearer_token,
     stream_key_required,
     user_auth_required,
     audit_stream_event,
@@ -302,11 +303,12 @@ async def api_check_auth():
     config = current_app.config['APP_CONFIG']
     user = await get_user_from_token()
     if user:
+        token = _get_bearer_token()
         session_expires_at = get_authenticated_session_expires_at()
         role_names = [role.name for role in user.roles] if user.roles else []
         is_admin = "admin" in role_names
         dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
-        return jsonify(
+        response = jsonify(
             {
                 "success":     True,
                 "runtime_key": config.runtime_key,
@@ -320,7 +322,17 @@ async def api_check_auth():
                     "dvr_retention_policy": user.dvr_retention_policy or "forever",
                 },
             }
-        ), 200
+        )
+        if token:
+            response.set_cookie(
+                "tic_auth_token",
+                token,
+                httponly=True,
+                samesite="Lax",
+                path="/",
+                expires=session_expires_at,
+            )
+        return response, 200
     return jsonify(
         {
             "success": False,

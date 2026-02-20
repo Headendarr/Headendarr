@@ -102,6 +102,7 @@ async def auth_login():
         httponly=True,
         samesite="Lax",
         path="/",
+        expires=expires_at,
     )
     return response
 
@@ -203,5 +204,6 @@ async def auth_refresh():
         httponly=True,
         samesite="Lax",
         path="/",
+        expires=new_expires_at,
     )
     return response

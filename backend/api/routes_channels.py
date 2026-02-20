@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import io
 import hashlib
+import json
 import time
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
@@ -10,11 +11,14 @@ from urllib.parse import unquote, urlparse
 from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups, \
-    read_logo_health_map, build_bulk_epg_match_preview, read_epg_match_candidate_preview, apply_bulk_epg_matches
+    read_logo_health_map, build_bulk_epg_match_preview, read_epg_match_candidate_preview, apply_bulk_epg_matches, \
+    build_cso_channel_stream_url
+from backend.cso import resolve_cso_policy, policy_content_type
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels
+from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
+from backend.datetime_utils import to_utc_iso
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
 
@@ -485,6 +489,25 @@ def _build_preview_url_for_source(source, user, settings, config, request_base_u
     return preview_url, stream_type
 
 
+def _build_cso_preview_url(channel, user, request_base_url):
+    preview_url = build_cso_channel_stream_url(
+        base_url=request_base_url,
+        channel_id=channel.id,
+        stream_key=user.streaming_key,
+        username=user.username,
+        output_profile="default",
+    )
+    policy = resolve_cso_policy(channel, output_profile="default")
+    content_type = policy_content_type(policy)
+    if content_type == "video/mp2t":
+        stream_type = "mpegts"
+    elif content_type == "video/x-matroska":
+        stream_type = "mkv"
+    else:
+        stream_type = "auto"
+    return preview_url, stream_type
+
+
 @blueprint.route('/tic-api/channels/<int:channel_id>/preview', methods=['GET'])
 @streamer_or_admin_required
 async def api_get_channel_preview(channel_id):
@@ -493,6 +516,17 @@ async def api_get_channel_preview(channel_id):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
     async with Session() as session:
+        channel_result = await session.execute(
+            select(Channel).where(Channel.id == channel_id)
+        )
+        channel = channel_result.scalars().first()
+        if not channel:
+            return jsonify({"success": False, "message": "Channel not found"}), 404
+        if bool(getattr(channel, "cso_enabled", False)):
+            request_base_url = request.host_url.rstrip('/')
+            preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
+            return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
         result = await session.execute(
             select(ChannelSource)
             .where(ChannelSource.channel_id == channel_id)
@@ -524,6 +558,17 @@ async def api_get_channel_source_preview(channel_id, source_id):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
     async with Session() as session:
+        channel_result = await session.execute(
+            select(Channel).where(Channel.id == channel_id)
+        )
+        channel = channel_result.scalars().first()
+        if not channel:
+            return jsonify({"success": False, "message": "Channel not found"}), 404
+        if bool(getattr(channel, "cso_enabled", False)):
+            request_base_url = request.host_url.rstrip('/')
+            preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
+            return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
         result = await session.execute(
             select(ChannelSource)
             .where(
@@ -547,6 +592,62 @@ async def api_get_channel_source_preview(channel_id, source_id):
         request_base_url=request_base_url,
     )
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
+
+@blueprint.route('/tic-api/channel-stream-events', methods=['GET'])
+@admin_auth_required
+async def api_get_channel_stream_events():
+    try:
+        channel_id = int(request.args.get("channel_id")) if request.args.get("channel_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid channel_id"}), 400
+    event_type = (request.args.get("event_type") or "").strip().lower() or None
+    severity = (request.args.get("severity") or "").strip().lower() or None
+    try:
+        limit = int(request.args.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    async with Session() as session:
+        stmt = (
+            select(CsoEventLog)
+            .order_by(CsoEventLog.created_at.desc(), CsoEventLog.id.desc())
+            .limit(limit)
+        )
+        if channel_id is not None:
+            stmt = stmt.where(CsoEventLog.channel_id == channel_id)
+        if event_type:
+            stmt = stmt.where(CsoEventLog.event_type == event_type)
+        if severity:
+            stmt = stmt.where(CsoEventLog.severity == severity)
+        result = await session.execute(stmt)
+        events = result.scalars().all()
+
+    payload = []
+    for event in events:
+        details = None
+        if event.details_json:
+            try:
+                details = json.loads(event.details_json)
+            except Exception:
+                details = {"raw": event.details_json}
+        payload.append(
+            {
+                "id": event.id,
+                "created_at": to_utc_iso(event.created_at),
+                "channel_id": event.channel_id,
+                "source_id": event.source_id,
+                "playlist_id": event.playlist_id,
+                "recording_id": event.recording_id,
+                "tvh_subscription_id": event.tvh_subscription_id,
+                "session_id": event.session_id,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "details": details,
+            }
+        )
+    return jsonify({"success": True, "data": payload})
 
 
 @blueprint.route('/tic-api/channels/new', methods=['POST'])
