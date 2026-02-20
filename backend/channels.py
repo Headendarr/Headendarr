@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
+import difflib
 import hashlib
 import json
 import logging
@@ -15,7 +16,7 @@ from urllib.parse import urlparse, urlunparse
 import aiofiles
 import aiohttp
 import requests
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.ffmpeg import generate_iptv_url
@@ -25,6 +26,7 @@ from backend.models import (
     ChannelSuggestion,
     ChannelTag,
     Epg,
+    EpgChannelProgrammes,
     EpgChannels,
     Playlist,
     PlaylistStreams,
@@ -186,6 +188,576 @@ def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
     base = (base_url or "").rstrip("/")
     token = _logo_cache_token(source_logo_url)
     return f"{base}/tic-api/channels/{channel_id}/logo/{token}.png"
+
+
+_EPG_NAME_QUALITY_TOKENS = {"hd", "fhd", "uhd", "sd", "4k"}
+
+
+def _safe_int(value, fallback=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _normalize_match_name(value):
+    lowered = (value or "").strip().lower()
+    lowered = re.sub(r"[^a-z0-9+\s]", " ", lowered)
+    tokens = [token for token in lowered.split() if token and token not in _EPG_NAME_QUALITY_TOKENS]
+    return " ".join(tokens).strip()
+
+
+def _extract_plus_one_variant(value):
+    lowered = (value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9+\s]", " ", lowered)
+    plus_one = bool(re.search(r"(?:^|\s|\+)plus\s*1(?:\s|$)|(?:^|\s)\+\s*1(?:\s|$)", normalized))
+    base = re.sub(r"(?:^|\s|\+)plus\s*1(?:\s|$)", " ", normalized)
+    base = re.sub(r"(?:^|\s)\+\s*1(?:\s|$)", " ", base)
+    base = _normalize_match_name(base)
+    return base, plus_one
+
+
+def _channel_source_sort_key(source):
+    priority = _safe_int(getattr(source, "priority", None), fallback=9999)
+    return priority, _safe_int(getattr(source, "id", None), fallback=0)
+
+
+def _build_epg_channel_lookup(epg_rows):
+    by_channel_id = {}
+    by_normalized_name = {}
+    by_base_name = {}
+    for row in epg_rows:
+        channel_key = (row["channel_id"] or "").strip().lower()
+        if channel_key:
+            by_channel_id.setdefault(channel_key, []).append(row)
+        normalized_name = _normalize_match_name(row["name"])
+        base_name, plus_one = _extract_plus_one_variant(row["name"])
+        row["normalized_name"] = normalized_name
+        row["base_name"] = base_name
+        row["plus_one"] = plus_one
+        if normalized_name:
+            by_normalized_name.setdefault(normalized_name, []).append(row)
+        if base_name:
+            by_base_name.setdefault(base_name, []).append(row)
+    return by_channel_id, by_normalized_name, by_base_name
+
+
+def _dedupe_and_rank_candidates(raw_candidates, max_candidates_per_channel, programme_counts_map=None):
+    programme_counts_map = programme_counts_map or {}
+    best = {}
+    for candidate in raw_candidates:
+        key = (candidate["epg_id"], candidate["epg_channel_id"])
+        existing = best.get(key)
+        if not existing or candidate["score"] > existing["score"]:
+            best[key] = candidate
+    ranked = sorted(
+        best.values(),
+        key=lambda item: (
+            -float(item.get("score") or 0),
+            str(item.get("epg_name") or ""),
+            str(item.get("epg_display_name") or ""),
+            str(item.get("epg_channel_id") or ""),
+        ),
+    )
+    output = []
+    for index, candidate in enumerate(ranked[:max_candidates_per_channel], start=1):
+        epg_channel_row_id = candidate.get("epg_channel_row_id")
+        total_programmes = 0
+        if epg_channel_row_id is not None:
+            total_programmes = int(programme_counts_map.get(int(epg_channel_row_id), 0) or 0)
+        output.append(
+            {
+                "rank": index,
+                "score": round(float(candidate.get("score") or 0), 4),
+                "reason": candidate.get("reason") or "name_fuzzy",
+                "epg_id": candidate.get("epg_id"),
+                "epg_name": candidate.get("epg_name"),
+                "epg_channel_row_id": epg_channel_row_id,
+                "epg_channel_id": candidate.get("epg_channel_id"),
+                "epg_display_name": candidate.get("epg_display_name"),
+                "total_programmes": total_programmes,
+            }
+        )
+    return output
+
+
+async def build_bulk_epg_match_preview(
+    *,
+    channel_ids=None,
+    overwrite_existing=False,
+    max_candidates_per_channel=5,
+):
+    normalized_ids = []
+    for channel_id in channel_ids or []:
+        try:
+            normalized_ids.append(normalize_id(channel_id, "channel"))
+        except ValueError:
+            continue
+    normalized_ids = sorted(set(normalized_ids))
+    if not normalized_ids:
+        return {"rows": [], "summary": {"channels_considered": 0, "with_candidates": 0, "without_candidates": 0}}
+
+    max_candidates_per_channel = max(1, min(_safe_int(max_candidates_per_channel, 5), 10))
+
+    async with Session() as session:
+        channels_result = await session.execute(
+            select(Channel)
+            .options(joinedload(Channel.sources))
+            .where(Channel.id.in_(normalized_ids))
+            .order_by(Channel.number.asc(), Channel.name.asc())
+        )
+        channels = channels_result.scalars().unique().all()
+
+        # Load enabled EPG channels once and perform matching in memory.
+        epg_rows_result = await session.execute(
+            select(
+                EpgChannels.id.label("epg_channel_row_id"),
+                EpgChannels.epg_id.label("epg_id"),
+                Epg.name.label("epg_name"),
+                EpgChannels.channel_id.label("channel_id"),
+                EpgChannels.name.label("name"),
+            )
+            .join(Epg, Epg.id == EpgChannels.epg_id)
+            .where(Epg.enabled.is_(True))
+        )
+        epg_rows = [
+            {
+                "epg_channel_row_id": int(row.epg_channel_row_id),
+                "epg_id": int(row.epg_id),
+                "epg_name": row.epg_name,
+                "channel_id": row.channel_id or "",
+                "name": row.name or "",
+            }
+            for row in epg_rows_result.all()
+        ]
+
+        stream_match_sources = []
+        for channel in channels:
+            for source in sorted(channel.sources or [], key=_channel_source_sort_key):
+                playlist_id = getattr(source, "playlist_id", None)
+                if not playlist_id:
+                    continue
+                source_name = (getattr(source, "playlist_stream_name", None) or "").strip()
+                source_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+                if source_name:
+                    stream_match_sources.append(("name", int(playlist_id), source_name))
+                if source_url:
+                    stream_match_sources.append(("url", int(playlist_id), source_url))
+
+        stream_map = {}
+        if stream_match_sources:
+            name_pairs = sorted({(playlist_id, value)
+                                for mode, playlist_id, value in stream_match_sources if mode == "name"})
+            url_pairs = sorted({(playlist_id, value)
+                               for mode, playlist_id, value in stream_match_sources if mode == "url"})
+            match_clauses = []
+            if name_pairs:
+                name_condition = or_(
+                    *[
+                        and_(PlaylistStreams.playlist_id == playlist_id, PlaylistStreams.name == stream_name)
+                        for playlist_id, stream_name in name_pairs
+                    ]
+                )
+                match_clauses.append(name_condition)
+            if url_pairs:
+                url_condition = or_(
+                    *[
+                        and_(PlaylistStreams.playlist_id == playlist_id, PlaylistStreams.url == stream_url)
+                        for playlist_id, stream_url in url_pairs
+                    ]
+                )
+                match_clauses.append(url_condition)
+            if match_clauses:
+                streams_result = await session.execute(
+                    select(
+                        PlaylistStreams.id,
+                        PlaylistStreams.playlist_id,
+                        PlaylistStreams.name,
+                        PlaylistStreams.url,
+                        PlaylistStreams.channel_id,
+                        PlaylistStreams.tvg_id,
+                    ).where(or_(*match_clauses))
+                )
+                for row in streams_result.all():
+                    playlist_id = int(row.playlist_id) if row.playlist_id is not None else None
+                    if playlist_id is None:
+                        continue
+                    if row.name:
+                        stream_map[("name", playlist_id, row.name.strip())] = row
+                    if row.url:
+                        stream_map[("url", playlist_id, row.url.strip())] = row
+
+    by_channel_id, by_normalized_name, by_base_name = _build_epg_channel_lookup(epg_rows)
+    normalized_name_keys = list(by_normalized_name.keys())
+    epg_rows_by_tuple = {(row["epg_id"], row["channel_id"]): row for row in epg_rows}
+
+    row_buffers = []
+    with_candidates = 0
+    without_candidates = 0
+
+    for channel in channels:
+        channel_name = (channel.name or "").strip()
+        channel_name_normalized = _normalize_match_name(channel_name)
+        channel_base_name, channel_plus_one = _extract_plus_one_variant(channel_name)
+        raw_candidates = []
+
+        def _append_candidate(epg_row, score, reason):
+            raw_candidates.append(
+                {
+                    "score": score,
+                    "reason": reason,
+                    "epg_id": epg_row["epg_id"],
+                    "epg_name": epg_row["epg_name"],
+                    "epg_channel_row_id": epg_row["epg_channel_row_id"],
+                    "epg_channel_id": epg_row["channel_id"],
+                    "epg_display_name": epg_row["name"],
+                }
+            )
+
+        # 1) Source linked identifiers.
+        for source in sorted(channel.sources or [], key=_channel_source_sort_key):
+            playlist_id = getattr(source, "playlist_id", None)
+            if not playlist_id:
+                continue
+            source_name = (getattr(source, "playlist_stream_name", None) or "").strip()
+            source_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+            stream_row = None
+            if source_name:
+                stream_row = stream_map.get(("name", int(playlist_id), source_name))
+            if not stream_row and source_url:
+                stream_row = stream_map.get(("url", int(playlist_id), source_url))
+            if not stream_row:
+                continue
+            provider_channel_id = (stream_row.channel_id or "").strip()
+            tvg_id = (stream_row.tvg_id or "").strip()
+            if provider_channel_id:
+                for epg_row in by_channel_id.get(provider_channel_id.lower(), []):
+                    _append_candidate(epg_row, 1.0, "source_channel_id_exact")
+            if tvg_id:
+                for epg_row in by_channel_id.get(tvg_id.lower(), []):
+                    _append_candidate(epg_row, 0.99, "source_tvg_id_exact")
+
+        # 2) Existing mapping.
+        if channel.guide_id and channel.guide_channel_id:
+            existing = epg_rows_by_tuple.get((int(channel.guide_id), str(channel.guide_channel_id)))
+            if existing:
+                _append_candidate(existing, 0.97, "existing_mapping_valid")
+
+        # 3) Exact normalized name.
+        for epg_row in by_normalized_name.get(channel_name_normalized, []):
+            if bool(epg_row["plus_one"]) == bool(channel_plus_one):
+                _append_candidate(epg_row, 0.94, "name_exact")
+            else:
+                _append_candidate(epg_row, 0.9, "name_variant_plus_one_penalty")
+
+        # Timeshift fallback: same base, different variant.
+        for epg_row in by_base_name.get(channel_base_name, []):
+            if not channel_base_name:
+                continue
+            if bool(epg_row["plus_one"]) != bool(channel_plus_one):
+                _append_candidate(epg_row, 0.89, "name_variant_plus_one_penalty")
+
+        # 4) Fuzzy pass.
+        if channel_name_normalized and normalized_name_keys:
+            fuzzy_names = difflib.get_close_matches(
+                channel_name_normalized,
+                normalized_name_keys,
+                n=8,
+                cutoff=0.88,
+            )
+            for matched_name in fuzzy_names:
+                ratio = difflib.SequenceMatcher(None, channel_name_normalized, matched_name).ratio()
+                if ratio < 0.88:
+                    continue
+                for epg_row in by_normalized_name.get(matched_name, []):
+                    score = min(0.885, round(ratio, 4))
+                    _append_candidate(epg_row, score, "name_fuzzy")
+
+        candidates = _dedupe_and_rank_candidates(raw_candidates, max_candidates_per_channel)
+
+        default_selected = bool(candidates)
+        if channel.guide_id and channel.guide_channel_id and not overwrite_existing:
+            default_selected = False
+
+        if candidates:
+            with_candidates += 1
+        else:
+            without_candidates += 1
+
+        row_buffers.append(
+            {
+                "channel": {
+                    "id": int(channel.id),
+                    "number": channel.number,
+                    "name": channel.name,
+                    "current_guide": {
+                        "epg_id": channel.guide_id,
+                        "epg_name": channel.guide_name,
+                        "channel_id": channel.guide_channel_id,
+                    } if channel.guide_id and channel.guide_channel_id else None,
+                },
+                "default_selected": default_selected,
+                "candidates": candidates,
+            }
+        )
+
+    candidate_epg_channel_row_ids = sorted(
+        {
+            int(candidate["epg_channel_row_id"])
+            for row in row_buffers
+            for candidate in (row.get("candidates") or [])
+            if candidate.get("epg_channel_row_id") is not None
+        }
+    )
+    programme_counts_map = {}
+    if candidate_epg_channel_row_ids:
+        async with Session() as session:
+            counts_result = await session.execute(
+                select(
+                    EpgChannelProgrammes.epg_channel_id.label("epg_channel_id"),
+                    func.count(EpgChannelProgrammes.id).label("total_programmes"),
+                )
+                .where(EpgChannelProgrammes.epg_channel_id.in_(candidate_epg_channel_row_ids))
+                .group_by(EpgChannelProgrammes.epg_channel_id)
+            )
+            for row in counts_result.all():
+                programme_counts_map[int(row.epg_channel_id)] = int(row.total_programmes or 0)
+
+    rows = []
+    for row in row_buffers:
+        rows.append(
+            {
+                **row,
+                "candidates": _dedupe_and_rank_candidates(
+                    row.get("candidates") or [],
+                    max_candidates_per_channel,
+                    programme_counts_map=programme_counts_map,
+                ),
+            }
+        )
+
+    return {
+        "rows": rows,
+        "summary": {
+            "channels_considered": len(rows),
+            "with_candidates": with_candidates,
+            "without_candidates": without_candidates,
+        },
+    }
+
+
+async def read_epg_match_candidate_preview(*, epg_channel_row_id, now_ts=None):
+    now_ts = _safe_int(now_ts, int(time.time()))
+    start_ts_expr = cast(func.nullif(EpgChannelProgrammes.start_timestamp, ""), BigInteger)
+    stop_ts_expr = cast(func.nullif(EpgChannelProgrammes.stop_timestamp, ""), BigInteger)
+
+    async with Session() as session:
+        channel_result = await session.execute(
+            select(
+                EpgChannels.id.label("epg_channel_row_id"),
+                EpgChannels.epg_id.label("epg_id"),
+                EpgChannels.channel_id.label("channel_id"),
+                EpgChannels.name.label("name"),
+                EpgChannels.icon_url.label("icon_url"),
+                Epg.name.label("epg_name"),
+            )
+            .join(Epg, Epg.id == EpgChannels.epg_id)
+            .where(EpgChannels.id == epg_channel_row_id)
+        )
+        channel_row = channel_result.first()
+        if not channel_row:
+            return None
+
+        stats_result = await session.execute(
+            select(
+                func.count(EpgChannelProgrammes.id).label("total_programmes"),
+                func.count(EpgChannelProgrammes.id).filter(stop_ts_expr >= now_ts).label("future_programmes"),
+                func.max(stop_ts_expr).label("max_stop_ts"),
+            )
+            .where(EpgChannelProgrammes.epg_channel_id == epg_channel_row_id)
+        )
+        stats = stats_result.first()
+
+        ranked_upcoming_subquery = (
+            select(
+                EpgChannelProgrammes.epg_channel_id.label("epg_channel_id"),
+                EpgChannelProgrammes.title.label("title"),
+                start_ts_expr.label("start_ts"),
+                stop_ts_expr.label("stop_ts"),
+                func.row_number()
+                .over(
+                    partition_by=EpgChannelProgrammes.epg_channel_id,
+                    order_by=start_ts_expr.asc(),
+                )
+                .label("row_num"),
+            )
+            .where(
+                EpgChannelProgrammes.epg_channel_id == epg_channel_row_id,
+                stop_ts_expr >= now_ts,
+            )
+            .subquery()
+        )
+        upcoming_result = await session.execute(
+            select(
+                ranked_upcoming_subquery.c.title,
+                ranked_upcoming_subquery.c.start_ts,
+                ranked_upcoming_subquery.c.stop_ts,
+                ranked_upcoming_subquery.c.row_num,
+            )
+            .where(ranked_upcoming_subquery.c.row_num <= 4)
+            .order_by(ranked_upcoming_subquery.c.start_ts.asc())
+        )
+        upcoming_rows = upcoming_result.all()
+
+    now_programme = None
+    next_programmes = []
+    for row in upcoming_rows:
+        start_ts = int(row.start_ts) if row.start_ts is not None else None
+        stop_ts = int(row.stop_ts) if row.stop_ts is not None else None
+        programme = {
+            "title": row.title or "(Untitled)",
+            "start_ts": start_ts,
+            "stop_ts": stop_ts,
+        }
+        if (
+            now_programme is None
+            and start_ts is not None
+            and stop_ts is not None
+            and start_ts <= now_ts < stop_ts
+        ):
+            now_programme = programme
+            continue
+        if len(next_programmes) < 3:
+            next_programmes.append(programme)
+
+    total_programmes = _safe_int(getattr(stats, "total_programmes", 0), 0)
+    future_programmes = _safe_int(getattr(stats, "future_programmes", 0), 0)
+    max_stop_ts = getattr(stats, "max_stop_ts", None)
+    max_stop_ts = int(max_stop_ts) if max_stop_ts is not None else None
+    horizon_hours = None
+    if max_stop_ts and max_stop_ts >= now_ts:
+        horizon_hours = round((max_stop_ts - now_ts) / 3600, 1)
+
+    return {
+        "epg_channel_row_id": int(channel_row.epg_channel_row_id),
+        "epg_id": int(channel_row.epg_id),
+        "epg_name": channel_row.epg_name,
+        "channel_id": channel_row.channel_id,
+        "name": channel_row.name,
+        "icon_url": channel_row.icon_url,
+        "total_programmes": total_programmes,
+        "programmes_now_to_future": future_programmes,
+        "future_horizon_hours": horizon_hours,
+        "now_programme": now_programme,
+        "next_programmes": next_programmes,
+    }
+
+
+async def apply_bulk_epg_matches(*, updates):
+    normalized_updates = []
+    for row in updates or []:
+        channel_id = row.get("channel_id")
+        epg_id = row.get("epg_id")
+        epg_channel_id = (row.get("epg_channel_id") or "").strip()
+        try:
+            normalized_updates.append(
+                {
+                    "channel_id": normalize_id(channel_id, "channel"),
+                    "epg_id": normalize_id(epg_id, "epg"),
+                    "epg_channel_id": epg_channel_id,
+                }
+            )
+        except ValueError:
+            continue
+    if not normalized_updates:
+        return {"results": [], "summary": {"updated": 0, "skipped": 0, "failed": 0}}
+
+    channel_ids = sorted({row["channel_id"] for row in normalized_updates})
+    epg_keys = sorted({(row["epg_id"], row["epg_channel_id"]) for row in normalized_updates if row["epg_channel_id"]})
+
+    async with Session() as session:
+        results = []
+        updated = 0
+        skipped = 0
+        failed = 0
+
+        async with session.begin():
+            channels_result = await session.execute(
+                select(Channel).where(Channel.id.in_(channel_ids))
+            )
+            channels_map = {int(channel.id): channel for channel in channels_result.scalars().all()}
+
+            epg_lookup = {}
+            if epg_keys:
+                epg_rows = await session.execute(
+                    select(
+                        EpgChannels.epg_id.label("epg_id"),
+                        EpgChannels.channel_id.label("channel_id"),
+                        Epg.name.label("epg_name"),
+                    )
+                    .join(Epg, Epg.id == EpgChannels.epg_id)
+                    .where(
+                        tuple_(EpgChannels.epg_id, EpgChannels.channel_id).in_(epg_keys)
+                    )
+                )
+                for row in epg_rows.all():
+                    epg_lookup[(int(row.epg_id), str(row.channel_id))] = {"epg_name": row.epg_name}
+
+            for row in normalized_updates:
+                channel = channels_map.get(row["channel_id"])
+                if not channel:
+                    failed += 1
+                    results.append(
+                        {
+                            "channel_id": row["channel_id"],
+                            "status": "failed",
+                            "reason": "channel_not_found",
+                        }
+                    )
+                    continue
+
+                mapping = epg_lookup.get((row["epg_id"], row["epg_channel_id"]))
+                if not mapping:
+                    failed += 1
+                    results.append(
+                        {
+                            "channel_id": row["channel_id"],
+                            "status": "failed",
+                            "reason": "epg_mapping_not_found",
+                        }
+                    )
+                    continue
+
+                unchanged = (
+                    _safe_int(channel.guide_id, 0) == row["epg_id"]
+                    and (channel.guide_channel_id or "") == row["epg_channel_id"]
+                )
+                if unchanged:
+                    skipped += 1
+                    results.append(
+                        {
+                            "channel_id": row["channel_id"],
+                            "status": "skipped",
+                            "reason": "unchanged",
+                        }
+                    )
+                    continue
+
+                channel.guide_id = row["epg_id"]
+                channel.guide_channel_id = row["epg_channel_id"]
+                channel.guide_name = mapping.get("epg_name")
+                updated += 1
+                results.append(
+                    {
+                        "channel_id": row["channel_id"],
+                        "status": "updated",
+                    }
+                )
+
+    return {
+        "results": results,
+        "summary": {"updated": updated, "skipped": skipped, "failed": failed},
+    }
 
 
 async def read_config_all_channels(

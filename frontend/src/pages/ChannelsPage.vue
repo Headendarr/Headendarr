@@ -9,9 +9,10 @@
               <TicListToolbar
                 :actions="channelsToolbarActions"
                 :filters="channelsToolbarFilters"
-                :collapse-filters-on-mobile="false"
+                :collapse-filters-on-mobile="true"
                 @action="handleChannelsToolbarAction"
                 @filter-change="onChannelsToolbarFilterChange"
+                @filters="openBulkFilterDialog"
               />
             </q-card-section>
 
@@ -93,6 +94,56 @@
                   </template>
                 </TicDialogPopup>
 
+                <TicDialogPopup
+                  v-model="bulkFilterDialogVisible"
+                  title="Filter Channels"
+                  width="560px"
+                  max-width="95vw"
+                >
+                  <div class="tic-form-layout">
+                    <TicSelectInput
+                      v-model="bulkFilterDraft.category"
+                      label="Groups"
+                      description="Filter channels by groups."
+                      :options="bulkCategoryFilterOptions"
+                      option-label="label"
+                      option-value="value"
+                      :emit-value="true"
+                      :map-options="true"
+                      :clearable="false"
+                      :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                    />
+                    <TicSelectInput
+                      v-model="bulkFilterDraft.streamSource"
+                      label="Stream Source"
+                      description="Select channels by stream source."
+                      :options="bulkStreamSourceFilterOptions"
+                      option-label="label"
+                      option-value="value"
+                      :emit-value="true"
+                      :map-options="true"
+                      :clearable="false"
+                      :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                    />
+                    <TicSelectInput
+                      v-model="bulkFilterDraft.guide"
+                      label="Guide"
+                      description="Select channels by assigned guide."
+                      :options="bulkGuideFilterOptions"
+                      option-label="label"
+                      option-value="value"
+                      :emit-value="true"
+                      :map-options="true"
+                      :clearable="false"
+                      :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                    />
+                  </div>
+                  <template #actions>
+                    <TicButton label="Clear" variant="flat" color="grey-7" @click="clearBulkFilterDraft" />
+                    <TicButton label="Apply" icon="check" color="positive" @click="applyBulkFilterDraft" />
+                  </template>
+                </TicDialogPopup>
+
                 <div v-if="bulkEditMode" class="bulk-mode-controls">
                   <TicButtonDropdown
                     label="Bulk Actions"
@@ -132,7 +183,7 @@
                     item-key="number"
                     handle=".handle"
                     :component-data="{tag: 'ul', name: 'flip-list', type: 'transition'}"
-                    v-model="listOfChannels"
+                    v-model="renderedChannels"
                     v-bind="dragOptions"
                     @change="setChannelOrder"
                   >
@@ -244,7 +295,7 @@
                                   <div class="channel-meta-value">{{ streamSourceNames(element) }}</div>
                                 </div>
                                 <div class="channel-meta-row">
-                                  <div class="channel-meta-label">Categories:</div>
+                                  <div class="channel-meta-label">Groups:</div>
                                   <div class="channel-meta-value">{{ element.tags }}</div>
                                 </div>
                               </div>
@@ -368,7 +419,7 @@
                                   <div class="text-caption channel-wrap-text">{{ formatGuideLabel(element) }}</div>
                                 </div>
                                 <div class="col-12">
-                                  <div class="text-caption text-grey-7">Categories</div>
+                                  <div class="text-caption text-grey-7">Groups</div>
                                   <div class="text-caption channel-wrap-text">{{ element.tags }}</div>
                                 </div>
                               </div>
@@ -468,6 +519,7 @@ import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.
 import ChannelGroupSelectorDialog from 'components/ChannelGroupSelectorDialog.vue';
 import ChannelSuggestionsDialog from 'components/ChannelSuggestionsDialog.vue';
 import ChannelIssuesDialog from 'components/ChannelIssuesDialog.vue';
+import BulkEpgMatchDialog from 'components/channels/BulkEpgMatchDialog.vue';
 import {copyToClipboard} from 'quasar';
 import {
   TicActionButton,
@@ -520,11 +572,19 @@ export default defineComponent({
       enableChannelHealthHighlight: true,
       selectedChannels: [],
       selectedBulkCategory: null,
+      selectedBulkStreamSource: null,
+      selectedBulkGuide: null,
 
       channelNumberEditDialogVisible: false,
       bulkEditCategoriesDialogVisible: false,
+      bulkFilterDialogVisible: false,
       //newCategory: ref(''),
       bulkEditCategories: [],
+      bulkFilterDraft: {
+        category: null,
+        streamSource: null,
+        guide: null,
+      },
       applyCategoriesAction: 'Add', // Selected action
       applyCategoriesOptions: ['Add', 'Remove', 'Replace'], // Options for select menu
       editIndex: '',
@@ -536,19 +596,35 @@ export default defineComponent({
       return {
         animation: 100,
         group: 'pluginFlow',
-        disabled: false,
+        disabled: this.bulkEditMode || this.hasActiveChannelFilters,
         ghostClass: 'ghost',
         direction: 'vertical',
         delay: 260,
         delayOnTouchOnly: true,
       };
     },
+    hasActiveChannelFilters() {
+      return Boolean(this.selectedBulkCategory || this.selectedBulkStreamSource || this.selectedBulkGuide);
+    },
+    filteredChannels() {
+      return this.listOfChannels.filter((channel) => this.isChannelVisible(channel));
+    },
+    renderedChannels: {
+      get() {
+        return this.filteredChannels;
+      },
+      set(nextValue) {
+        if (this.hasActiveChannelFilters || this.bulkEditMode) {
+          return;
+        }
+        this.listOfChannels = nextValue;
+      },
+    },
     allChannelsSelected() {
-      return this.listOfChannels.length > 0 && this.listOfChannels.every((channel) => channel.selected);
+      return this.filteredChannels.length > 0 && this.filteredChannels.every((channel) => channel.selected);
     },
     anyChannelsSelectedInBulkEdit() {
-      // Check if any channels are selected
-      return this.listOfChannels.some((channel) => channel.selected);
+      return this.filteredChannels.some((channel) => channel.selected);
     },
     availableCategories() {
       // Extract all unique categories from channels
@@ -562,6 +638,48 @@ export default defineComponent({
       });
       return Array.from(allCategories).sort();
     },
+    availableStreamSources() {
+      const allSources = new Set();
+      this.listOfChannels.forEach((channel) => {
+        if (!channel?.sources || typeof channel.sources !== 'object') {
+          return;
+        }
+        Object.values(channel.sources).forEach((source) => {
+          const playlistName = source?.playlist_name;
+          if (playlistName) {
+            allSources.add(playlistName);
+          }
+        });
+      });
+      return Array.from(allSources).sort((a, b) => a.localeCompare(b));
+    },
+    availableGuides() {
+      const allGuides = new Set();
+      this.listOfChannels.forEach((channel) => {
+        const epgName = channel?.guide?.epg_name;
+        if (!epgName) {
+          return;
+        }
+        allGuides.add(epgName);
+      });
+      return Array.from(allGuides).sort((a, b) => a.localeCompare(b));
+    },
+    bulkCategoryFilterOptions() {
+      return [
+        {label: 'All', value: null},
+        ...this.availableCategories.map((category) => ({label: category, value: category}))];
+    },
+    bulkStreamSourceFilterOptions() {
+      return [
+        {label: 'All', value: null},
+        ...this.availableStreamSources.map((sourceName) => ({label: sourceName, value: sourceName})),
+      ];
+    },
+    bulkGuideFilterOptions() {
+      return [
+        {label: 'All', value: null},
+        ...this.availableGuides.map((guideName) => ({label: guideName, value: guideName}))];
+    },
     channelsToolbarActions() {
       if (this.bulkEditMode) {
         return [{id: 'toggle-bulk-edit', label: 'Exit Bulk Edit', icon: 'close', color: 'primary'}];
@@ -574,15 +692,38 @@ export default defineComponent({
       ];
     },
     channelsToolbarFilters() {
-      if (!this.bulkEditMode) {
-        return [];
-      }
       return [
         {
           key: 'selectByCategory',
           modelValue: this.selectedBulkCategory,
-          label: 'Select by Category',
-          options: this.availableCategories.map((category) => ({label: category, value: category})),
+          label: 'Groups',
+          options: this.bulkCategoryFilterOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+        {
+          key: 'selectByStreamSource',
+          modelValue: this.selectedBulkStreamSource,
+          label: 'Stream Source',
+          options: this.bulkStreamSourceFilterOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: false,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+        {
+          key: 'selectByGuide',
+          modelValue: this.selectedBulkGuide,
+          label: 'Guide',
+          options: this.bulkGuideFilterOptions,
           optionLabel: 'label',
           optionValue: 'value',
           emitValue: true,
@@ -596,8 +737,15 @@ export default defineComponent({
     bulkEditDropdownActions() {
       return [
         {
+          id: 'bulk-update-epg',
+          label: 'Update EPG',
+          icon: 'calendar_month',
+          color: 'primary',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+        {
           id: 'bulk-edit-categories',
-          label: 'Edit Categories',
+          label: 'Edit Groups',
           icon: 'sell',
           color: 'primary',
           disable: !this.anyChannelsSelectedInBulkEdit,
@@ -634,6 +782,9 @@ export default defineComponent({
         case 'bulk-edit-categories':
           this.showBulkEditCategoriesDialog();
           break;
+        case 'bulk-update-epg':
+          this.openBulkEpgUpdateDialog();
+          break;
         case 'bulk-refresh-streams':
           this.triggerRefreshChannelSources();
           break;
@@ -645,6 +796,8 @@ export default defineComponent({
             this.exitBulkEdit();
           } else {
             this.bulkEditMode = true;
+            this.enforceVisibleSelectionScope();
+            this.syncSelectedChannelsFromState();
           }
           break;
         default:
@@ -654,15 +807,60 @@ export default defineComponent({
     exitBulkEdit() {
       this.bulkEditMode = false;
       this.selectedBulkCategory = null;
+      this.selectedBulkStreamSource = null;
+      this.selectedBulkGuide = null;
+      this.bulkFilterDialogVisible = false;
+      this.syncBulkFilterDraftFromApplied();
+    },
+    openBulkFilterDialog() {
+      this.syncBulkFilterDraftFromApplied();
+      this.bulkFilterDialogVisible = true;
+    },
+    syncBulkFilterDraftFromApplied() {
+      this.bulkFilterDraft = {
+        category: this.selectedBulkCategory,
+        streamSource: this.selectedBulkStreamSource,
+        guide: this.selectedBulkGuide,
+      };
+    },
+    clearBulkFilterDraft() {
+      this.bulkFilterDraft = {
+        category: null,
+        streamSource: null,
+        guide: null,
+      };
+      this.selectedBulkCategory = null;
+      this.selectedBulkStreamSource = null;
+      this.selectedBulkGuide = null;
+      this.enforceVisibleSelectionScope();
+      this.syncSelectedChannelsFromState();
+      this.bulkFilterDialogVisible = false;
+    },
+    applyBulkFilterDraft() {
+      const draft = {...this.bulkFilterDraft};
+      this.selectedBulkCategory = draft.category || null;
+      this.selectedBulkStreamSource = draft.streamSource || null;
+      this.selectedBulkGuide = draft.guide || null;
+      this.enforceVisibleSelectionScope();
+      this.syncSelectedChannelsFromState();
+      this.bulkFilterDialogVisible = false;
     },
     onChannelsToolbarFilterChange({key, value}) {
-      if (key !== 'selectByCategory') {
-        return;
+      switch (key) {
+        case 'selectByCategory':
+          this.selectedBulkCategory = value || null;
+          break;
+        case 'selectByStreamSource':
+          this.selectedBulkStreamSource = value || null;
+          break;
+        case 'selectByGuide':
+          this.selectedBulkGuide = value || null;
+          break;
+        default:
+          break;
       }
-      this.selectedBulkCategory = value || null;
-      if (value) {
-        this.selectChannelsByCategory(value);
-      }
+      this.enforceVisibleSelectionScope();
+      this.syncSelectedChannelsFromState();
     },
     handleBulkDropdownAction(action) {
       if (!action || action.disable) {
@@ -670,11 +868,71 @@ export default defineComponent({
       }
       this.handleChannelsToolbarAction(action);
     },
+    openBulkEpgUpdateDialog() {
+      const selectedIds = this.filteredChannels.filter((channel) => channel.selected).map((channel) => channel.id);
+      if (!selectedIds.length) {
+        this.$q.notify({
+          color: 'warning',
+          icon: 'warning',
+          message: 'Select at least one channel first.',
+        });
+        return;
+      }
+      this.$q.dialog({
+        noRouteDismiss: true,
+        component: BulkEpgMatchDialog,
+        componentProps: {
+          channelIds: selectedIds,
+        },
+      }).onOk((payload) => {
+        if (payload?.refresh) {
+          this.fetchChannels();
+        }
+      }).onDismiss(() => {
+        this.fetchChannels();
+      });
+    },
     setAllChannelsSelected(value) {
-      this.listOfChannels.forEach((channel) => {
+      this.filteredChannels.forEach((channel) => {
         channel.selected = Boolean(value);
       });
-      this.selectedChannels = value ? this.listOfChannels.map((channel) => channel.id) : [];
+      this.syncSelectedChannelsFromState();
+    },
+    syncSelectedChannelsFromState() {
+      this.selectedChannels = this.listOfChannels.filter((channel) => channel.selected).map((channel) => channel.id);
+    },
+    isChannelVisible(channel) {
+      if (this.selectedBulkCategory) {
+        const tags = Array.isArray(channel?.tags) ? channel.tags : [];
+        if (!tags.includes(this.selectedBulkCategory)) {
+          return false;
+        }
+      }
+      if (this.selectedBulkStreamSource) {
+        const hasSource = channel?.sources && Object.values(channel.sources).some((source) =>
+          source?.playlist_name === this.selectedBulkStreamSource,
+        );
+        if (!hasSource) {
+          return false;
+        }
+      }
+      if (this.selectedBulkGuide) {
+        const epgName = channel?.guide?.epg_name || '';
+        if (epgName !== this.selectedBulkGuide) {
+          return false;
+        }
+      }
+      return true;
+    },
+    enforceVisibleSelectionScope() {
+      if (!this.bulkEditMode) {
+        return;
+      }
+      this.listOfChannels.forEach((channel) => {
+        if (!this.isChannelVisible(channel)) {
+          channel.selected = false;
+        }
+      });
     },
     generateNewChannel: function(range, usedValues) {
       for (let i = range[0]; i <= range[1]; i++) {
@@ -704,6 +962,49 @@ export default defineComponent({
         color: 'positive',
         message: `Selected ${count} channels in category "${category}"`,
         icon: 'category',
+        timeout: 2000,
+      });
+    },
+    selectChannelsByStreamSource(sourceName) {
+      let count = 0;
+      this.listOfChannels.forEach((channel) => {
+        const hasSource = channel?.sources && Object.values(channel.sources).some((source) =>
+          source?.playlist_name === sourceName,
+        );
+        if (hasSource) {
+          channel.selected = true;
+          if (!this.selectedChannels.includes(channel.id)) {
+            this.selectedChannels.push(channel.id);
+          }
+          count++;
+        }
+      });
+      this.selectedChannels = this.listOfChannels.filter((channel) => channel.selected).map((channel) => channel.id);
+      this.$q.notify({
+        color: 'positive',
+        message: `Selected ${count} channels from stream source "${sourceName}"`,
+        icon: 'dvr',
+        timeout: 2000,
+      });
+    },
+    selectChannelsByGuide(guideValue) {
+      const selectedEpgName = String(guideValue || '');
+      let count = 0;
+      this.listOfChannels.forEach((channel) => {
+        const epgName = channel?.guide?.epg_name || '';
+        if (epgName === selectedEpgName) {
+          channel.selected = true;
+          if (!this.selectedChannels.includes(channel.id)) {
+            this.selectedChannels.push(channel.id);
+          }
+          count++;
+        }
+      });
+      this.selectedChannels = this.listOfChannels.filter((channel) => channel.selected).map((channel) => channel.id);
+      this.$q.notify({
+        color: 'positive',
+        message: `Selected ${count} channels for guide "${selectedEpgName}"`,
+        icon: 'tv_guide',
         timeout: 2000,
       });
     },
@@ -1185,6 +1486,7 @@ export default defineComponent({
       } else {
         this.selectedChannels = this.selectedChannels.filter((id) => id !== channel.id);
       }
+      this.syncSelectedChannelsFromState();
     },
     openChannelsGroupImport: function() {
       this.$q.dialog({

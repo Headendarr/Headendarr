@@ -61,10 +61,11 @@
               hide-dropdown-icon
               input-debounce="0"
               new-value-mode="add-unique"
-              label="Categories"
+              label="Groups"
             />
             <div class="tic-input-description text-caption text-grey-7">
-              Categories/tags to apply in TVH.
+              Assign one or more groups to organize this channel and make it easier to filter in channel and guide
+              views.
             </div>
           </div>
 

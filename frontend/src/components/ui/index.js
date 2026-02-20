@@ -9,6 +9,7 @@ export {default as TicConfirmDialog} from './dialogs/TicConfirmDialog.vue';
 export {default as TicResponsiveHelp} from './dialogs/TicResponsiveHelp.vue';
 export {default as TicListItemCard} from './lists/TicListItemCard.vue';
 export {default as TicListToolbar} from './lists/TicListToolbar.vue';
+export {default as TicChannelIcon} from './channels/TicChannelIcon.vue';
 export {default as AdmonitionBanner} from './AdmonitionBanner.vue';
 
 export {default as TicSearchInput} from './inputs/TicSearchInput.vue';

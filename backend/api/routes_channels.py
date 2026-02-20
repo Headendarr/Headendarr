@@ -2,14 +2,15 @@
 # -*- coding:utf-8 -*-
 import io
 import hashlib
+import time
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
 
-from backend.auth import admin_auth_required, streamer_or_admin_required
+from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups, \
-    read_logo_health_map
+    read_logo_health_map, build_bulk_epg_match_preview, read_epg_match_candidate_preview, apply_bulk_epg_matches
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
@@ -633,6 +634,104 @@ async def api_add_multiple_channels():
             "success": True
         }
     )
+
+
+@blueprint.route('/tic-api/channels/bulk/epg-match/preview', methods=['POST'])
+@admin_auth_required
+async def api_bulk_epg_match_preview():
+    payload = await request.get_json(silent=True) or {}
+    channel_ids = payload.get("channel_ids", [])
+    overwrite_existing = bool(payload.get("overwrite_existing", False))
+    max_candidates_per_channel = payload.get("max_candidates_per_channel", 5)
+
+    start_ts = time.perf_counter()
+    preview_data = await build_bulk_epg_match_preview(
+        channel_ids=channel_ids,
+        overwrite_existing=overwrite_existing,
+        max_candidates_per_channel=max_candidates_per_channel,
+    )
+    elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
+    summary = preview_data.get("summary", {})
+    current_app.logger.info(
+        "Bulk EPG preview completed in %sms (channels=%s, with_candidates=%s, without_candidates=%s)",
+        elapsed_ms,
+        summary.get("channels_considered", 0),
+        summary.get("with_candidates", 0),
+        summary.get("without_candidates", 0),
+    )
+
+    user = getattr(request, "_current_user", None)
+    if user:
+        details = (
+            f"channels={summary.get('channels_considered', 0)};"
+            f"with_candidates={summary.get('with_candidates', 0)};"
+            f"without_candidates={summary.get('without_candidates', 0)};"
+            f"duration_ms={elapsed_ms}"
+        )
+        await audit_stream_event(
+            user,
+            "bulk_epg_match_preview_requested",
+            request.path,
+            details=details,
+        )
+
+    return jsonify({"success": True, "data": preview_data})
+
+
+@blueprint.route('/tic-api/channels/bulk/epg-match/candidate-preview', methods=['POST'])
+@admin_auth_required
+async def api_bulk_epg_match_candidate_preview():
+    payload = await request.get_json(silent=True) or {}
+    epg_channel_row_id = payload.get("epg_channel_row_id")
+    try:
+        epg_channel_row_id = int(epg_channel_row_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Invalid epg channel row id"}), 400
+
+    candidate_preview = await read_epg_match_candidate_preview(epg_channel_row_id=epg_channel_row_id)
+    if not candidate_preview:
+        return jsonify({"success": False, "message": "EPG candidate not found"}), 404
+    return jsonify({"success": True, "data": candidate_preview})
+
+
+@blueprint.route('/tic-api/channels/bulk/epg-match/apply', methods=['POST'])
+@admin_auth_required
+async def api_bulk_epg_match_apply():
+    payload = await request.get_json(silent=True) or {}
+    updates = payload.get("updates", [])
+    start_ts = time.perf_counter()
+    apply_result = await apply_bulk_epg_matches(updates=updates)
+    elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
+    summary = apply_result.get("summary", {})
+
+    if summary.get("updated", 0) > 0:
+        config = current_app.config['APP_CONFIG']
+        await queue_background_channel_update_tasks(config)
+
+    current_app.logger.info(
+        "Bulk EPG apply completed in %sms (updated=%s, skipped=%s, failed=%s)",
+        elapsed_ms,
+        summary.get("updated", 0),
+        summary.get("skipped", 0),
+        summary.get("failed", 0),
+    )
+
+    user = getattr(request, "_current_user", None)
+    if user:
+        details = (
+            f"updated={summary.get('updated', 0)};"
+            f"skipped={summary.get('skipped', 0)};"
+            f"failed={summary.get('failed', 0)};"
+            f"duration_ms={elapsed_ms}"
+        )
+        await audit_stream_event(
+            user,
+            "bulk_epg_match_applied",
+            request.path,
+            details=details,
+        )
+
+    return jsonify({"success": True, "data": apply_result})
 
 
 @blueprint.route('/tic-api/channels/settings/multiple/delete', methods=['POST'])

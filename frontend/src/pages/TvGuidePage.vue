@@ -139,31 +139,17 @@
                           'guide__channel-row--mobile-expanded': isMobileLayout && !channelRailCollapsed,
                         }"
                       >
-                        <div
-                          class="guide__channel-logo-wrap"
+                        <TicChannelIcon
+                          :src="channel.logo_url || ''"
+                          :clickable="true"
+                          :show-overlay="true"
+                          :overlay-active="hoveredChannelId === channel.id"
+                          fallback-icon="play_arrow"
+                          overlay-icon="play_arrow"
                           @click.stop="previewChannel(channel)"
                           @mouseenter="hoveredChannelId = channel.id"
                           @mouseleave="hoveredChannelId = null"
-                        >
-                          <img
-                            v-if="channel.logo_url"
-                            class="guide__channel-logo"
-                            :src="channel.logo_url"
-                            alt=""
-                          />
-                          <q-icon
-                            v-else
-                            name="play_arrow"
-                            size="20px"
-                            class="guide__channel-play-icon"
-                          />
-                          <div
-                            class="guide__channel-logo-overlay"
-                            :class="{'guide__channel-logo-overlay--active': hoveredChannelId === channel.id}"
-                          >
-                            <q-icon name="play_arrow" size="22px" />
-                          </div>
-                        </div>
+                        />
                         <template v-if="isMobileLayout && !channelRailCollapsed">
                           <div class="guide__channel-number guide__channel-number--mobile text-caption text-grey-7">
                             #{{ channel.number }}
@@ -384,13 +370,21 @@ import {useVideoStore} from 'stores/video';
 import {useUiStore} from 'stores/ui';
 import {useQuasar} from 'quasar';
 import {useMobile} from 'src/composables/useMobile';
-import {TicActionButton, TicButton, TicDialogPopup, TicListToolbar, TicSelectInput} from 'components/ui';
+import {
+  TicActionButton,
+  TicButton,
+  TicChannelIcon,
+  TicDialogPopup,
+  TicListToolbar,
+  TicSelectInput,
+} from 'components/ui';
 
 export default defineComponent({
   name: 'TvGuidePage',
   components: {
     TicActionButton,
     TicButton,
+    TicChannelIcon,
     TicDialogPopup,
     TicListToolbar,
     TicSelectInput,
