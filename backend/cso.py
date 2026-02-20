@@ -176,6 +176,9 @@ def normalize_cso_policy(value):
         policy["startup_grace_seconds"] = CSO_STARTUP_GRACE_SECONDS_DEFAULT
 
     # Curated policy enforcement for maintainable FFmpeg command generation.
+    if mode == "auto":
+        policy["container"] = "mpegts"
+
     if mode != "force_transcode":
         policy["video_codec"] = ""
         policy["audio_codec"] = ""

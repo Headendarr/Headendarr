@@ -806,6 +806,33 @@ async def apply_bulk_epg_matches(*, updates):
     }
 
 
+async def apply_bulk_cso_settings(*, channel_ids, cso_enabled, cso_policy):
+    normalized_ids = []
+    for channel_id in channel_ids or []:
+        try:
+            normalized_ids.append(normalize_id(channel_id, "channel"))
+        except ValueError:
+            continue
+    normalized_ids = sorted(set(normalized_ids))
+    if not normalized_ids:
+        return {"updated": 0}
+
+    serialized_policy = serialize_cso_policy(
+        cso_policy if cso_policy is not None else default_cso_policy()
+    )
+    async with Session() as session:
+        async with session.begin():
+            channels_result = await session.execute(
+                select(Channel).where(Channel.id.in_(normalized_ids))
+            )
+            channels = channels_result.scalars().all()
+            for channel in channels:
+                channel.cso_enabled = bool(cso_enabled)
+                channel.cso_policy = serialized_policy
+
+    return {"updated": len(channels)}
+
+
 async def read_config_all_channels(
     filter_playlist_ids=None,
     output_for_export=False,

@@ -12,6 +12,7 @@ from backend.auth import admin_auth_required, streamer_or_admin_required, audit_
 from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
     delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups, \
     read_logo_health_map, build_bulk_epg_match_preview, read_epg_match_candidate_preview, apply_bulk_epg_matches, \
+    apply_bulk_cso_settings, \
     build_cso_channel_stream_url
 from backend.cso import resolve_cso_policy, policy_content_type
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
@@ -828,6 +829,40 @@ async def api_bulk_epg_match_apply():
         await audit_stream_event(
             user,
             "bulk_epg_match_applied",
+            request.path,
+            details=details,
+        )
+
+    return jsonify({"success": True, "data": apply_result})
+
+
+@blueprint.route('/tic-api/channels/bulk/cso/apply', methods=['POST'])
+@admin_auth_required
+async def api_bulk_cso_apply():
+    payload = await request.get_json(silent=True) or {}
+    channel_ids = payload.get("channel_ids", [])
+    cso_enabled = bool(payload.get("cso_enabled", False))
+    cso_policy = payload.get("cso_policy") or {}
+
+    apply_result = await apply_bulk_cso_settings(
+        channel_ids=channel_ids,
+        cso_enabled=cso_enabled,
+        cso_policy=cso_policy,
+    )
+
+    config = current_app.config['APP_CONFIG']
+    await queue_background_channel_update_tasks(config)
+
+    user = getattr(request, "_current_user", None)
+    if user:
+        details = (
+            f"channels={len(channel_ids)};"
+            f"enabled={int(cso_enabled)};"
+            f"updated={apply_result.get('updated', 0)}"
+        )
+        await audit_stream_event(
+            user,
+            "bulk_cso_settings_applied",
             request.path,
             details=details,
         )

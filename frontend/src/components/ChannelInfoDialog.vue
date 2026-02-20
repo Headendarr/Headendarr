@@ -445,9 +445,10 @@ export default {
       ];
     },
     csoContainerOptions() {
+      const isAuto = this.csoOutputMode === 'auto';
       return [
         {label: 'MPEG-TS', value: 'mpegts'},
-        {label: 'Matroska (MKV)', value: 'matroska'},
+        {label: 'Matroska (MKV)', value: 'matroska', disable: isAuto},
       ];
     },
     csoVideoCodecOptions() {
@@ -1112,6 +1113,9 @@ export default {
       });
     },
     enforceCsoPolicyCompatibility() {
+      if (this.csoOutputMode === 'auto') {
+        this.csoContainer = 'mpegts';
+      }
       if (this.csoOutputMode !== 'force_transcode') {
         this.csoHwAccel = 'none';
         this.csoForceDeinterlace = false;
