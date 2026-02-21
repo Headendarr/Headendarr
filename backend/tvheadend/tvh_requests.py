@@ -1029,7 +1029,7 @@ async def configure_tvh(config):
         await tvh.disable_all_epg_grabbers()
         # Enable XMLTV URL grabber
         epg_url = append_stream_key(
-            f"{LOCAL_PROXY_HOST_PLACEHOLDER}/tic-web/epg.xml",
+            f"{LOCAL_PROXY_HOST_PLACEHOLDER}/tic-api/epg/xmltv.xml",
             tvh_stream_key,
             tvh_stream_username,
         )

@@ -120,6 +120,17 @@ Use shared components first. Do not introduce ad-hoc UI patterns unless there is
    - handle `@close-request` and require discard confirmation
 5. New/refactored settings dialogs must follow this pattern unless explicitly documented as read-only.
 
+## Page Settings Auto-Save Rules (Strict)
+
+1. Page-level settings forms (non-dialog pages) must auto-save. Do not require a manual Save button.
+2. Auto-save must be debounced (default: 3 seconds) for normal input changes.
+3. Text and number inputs should trigger an immediate save on `blur` in addition to debounced saves.
+4. Auto-save must flush pending changes before navigation/unmount:
+   - implement `beforeRouteLeave` and await a flush function
+   - implement `beforeUnmount` and flush pending changes
+5. Show notification toasts only for failed saves (negative). Do not show positive "Saved" toasts for background auto-save.
+6. Keep dialog edit forms on explicit Save actions. Do not apply this auto-save pattern to editable dialogs that follow the dialog dirty-state pattern above.
+
 ### Inputs
 
 - `TicSearchInput` (`frontend/src/components/ui/inputs/TicSearchInput.vue`)

@@ -196,7 +196,7 @@ async def api_dashboard_activity():
     activity_rows = await get_stream_activity_snapshot()
     if not activity_rows:
         return jsonify({"success": True, "data": []})
-    source_index = await build_stream_source_index()
+    source_index = None
     data = []
     for row in activity_rows:
         ip_address = row.get("ip_address")
@@ -211,6 +211,8 @@ async def api_dashboard_activity():
         stream_name = row.get("stream_name")
 
         if not channel_id or not channel_name:
+            if source_index is None:
+                source_index = await build_stream_source_index()
             resolved = resolve_stream_target(
                 row.get("identity") or row.get("details"),
                 source_index,

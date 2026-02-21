@@ -3,18 +3,14 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from quart import request, jsonify, Response, current_app, redirect
+from quart import request, jsonify, Response, redirect, current_app
 
 from backend.api import blueprint
+from backend.api.connections_common import resolve_channel_stream_url
+from backend.api.routes_connections_epg import build_xmltv_response
 from backend.auth import audit_stream_event
 from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
-from backend.epgs import render_xmltv_payload
-from backend.playlists import build_tic_playlist_with_epg_content, read_config_all_playlists
-from backend.streaming import (
-    append_stream_key,
-    build_local_hls_proxy_url,
-    normalize_local_proxy_url,
-)
+from backend.playlists import build_m3u_playlist_content, read_config_all_playlists
 from backend.users import get_user_by_username
 
 
@@ -38,6 +34,7 @@ class _TTLCache:
 
 
 _xc_cache = _TTLCache()
+_XC_ALLOWED_PROFILES = {"default", "mpegts", "h264-aac-mpegts"}
 
 
 async def _xc_auth_user():
@@ -55,6 +52,17 @@ async def _xc_auth_user():
 
 def _build_base_url() -> str:
     return request.host_url.rstrip("/")
+
+
+def _xc_channel_profile(channel: Dict[str, Any]) -> str:
+    profile = str(channel.get("cso_profile") or "").strip().lower()
+    if not profile:
+        policy = channel.get("cso_policy")
+        if isinstance(policy, dict):
+            profile = str(policy.get("profile") or "").strip().lower()
+    if profile in _XC_ALLOWED_PROFILES:
+        return profile
+    return "default"
 
 
 async def _get_enabled_channels() -> List[Dict[str, Any]]:
@@ -154,43 +162,6 @@ def _build_xc_server_info(user, include_categories=False):
     return info
 
 
-def _resolve_channel_stream_url(
-    channel: Dict[str, Any],
-    stream_key: str,
-    username: str,
-) -> Optional[str]:
-    config = current_app.config["APP_CONFIG"]
-    settings = config.read_settings()
-    use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
-    base_url = _build_base_url()
-    if use_tvh_source and channel.get("tvh_uuid"):
-        channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel['tvh_uuid']}?profile=pass&weight=300"
-        return append_stream_key(channel_url, stream_key=stream_key)
-
-    # TODO: support richer TIC-side stream selection when TVH routing is disabled.
-    source = channel["sources"][0] if channel.get("sources") else None
-    source_url = source.get("stream_url") if source else None
-    if not source_url:
-        return None
-    is_manual = source.get("source_type") == "manual"
-    use_hls_proxy = bool(source.get("use_hls_proxy", False))
-    if is_manual and use_hls_proxy:
-        return build_local_hls_proxy_url(
-            base_url,
-            config.ensure_instance_id(),
-            source_url,
-            stream_key=stream_key,
-            username=username,
-        )
-    return normalize_local_proxy_url(
-        source_url,
-        base_url=base_url,
-        instance_id=config.ensure_instance_id(),
-        stream_key=stream_key,
-        username=username,
-    )
-
-
 @blueprint.route("/get.php", methods=["GET"])
 async def xc_get():
     user, error = await _xc_auth_user()
@@ -198,7 +169,7 @@ async def xc_get():
         return jsonify({"error": error[0]}), error[1]
     await audit_stream_event(user, "xc_get", request.path)
 
-    cache_key = f"xc_m3u:{user.id}"
+    cache_key = f"xc_m3u:{user.id}:ts_only"
     cached = _xc_cache.get(cache_key)
     if cached:
         return Response(cached, mimetype="application/vnd.apple.mpegurl")
@@ -206,11 +177,26 @@ async def xc_get():
     channels = await _get_enabled_channels()
     categories, _ = _build_category_map(channels)
     _xc_cache.set("xc_categories", categories, ttl_seconds=60)
-    content = await build_tic_playlist_with_epg_content(
-        current_app.config["APP_CONFIG"],
-        base_url=request.url_root.rstrip('/'),
-        stream_key=user.streaming_key,
-        username=user.username,
+
+    base_url = request.url_root.rstrip("/")
+    epg_url = f"{base_url}/tic-api/epg/xmltv.xml?username={user.username}&password={user.streaming_key}"
+
+    async def _resolve_stream_url(channel):
+        stream_url, _, _ = await resolve_channel_stream_url(
+            config=current_app.config["APP_CONFIG"],
+            channel_details=channel,
+            base_url=base_url,
+            stream_key=user.streaming_key,
+            username=user.username,
+            requested_profile=_xc_channel_profile(channel),
+            route_scope="combined",
+        )
+        return stream_url
+
+    content = await build_m3u_playlist_content(
+        channels=channels,
+        epg_url=epg_url,
+        stream_url_resolver=_resolve_stream_url,
         include_xtvg=True,
     )
     _xc_cache.set(cache_key, content, ttl_seconds=30)
@@ -222,11 +208,8 @@ async def xc_xmltv():
     user, error = await _xc_auth_user()
     if error:
         return jsonify({"error": error[0]}), error[1]
-    await audit_stream_event(user, 'xc_xmltv', request.path)
-    config = current_app.config['APP_CONFIG']
-    base_url = request.url_root.rstrip('/')
-    payload = render_xmltv_payload(config, base_url)
-    return Response(payload, mimetype='application/xml')
+    await audit_stream_event(user, "xc_xmltv", request.path)
+    return await build_xmltv_response()
 
 
 @blueprint.route("/player_api.php", methods=["GET"])
@@ -271,7 +254,6 @@ async def xc_player_api():
         _xc_cache.set("xc_live_streams", stream_list, ttl_seconds=30)
         return jsonify(stream_list)
     if action in ("get_short_epg", "get_simple_data_table"):
-        # TODO: expose EPG program data via XC actions if needed in the future.
         return jsonify({"epg_listings": []})
     if action in (
         "get_vod_categories",
@@ -281,7 +263,6 @@ async def xc_player_api():
         "get_series",
         "get_series_info",
     ):
-        # TODO: expose VOD/series for XC sources in the future.
         return jsonify([])
 
     info = _build_xc_server_info(user)
@@ -315,7 +296,15 @@ async def xc_stream(username: str, password: str, stream_id: str, ext: str = Non
     if not channel:
         return jsonify({"error": "Not found"}), 404
 
-    target = _resolve_channel_stream_url(channel, user.streaming_key, user.username)
+    target, _, _ = await resolve_channel_stream_url(
+        config=current_app.config["APP_CONFIG"],
+        channel_details=channel,
+        base_url=_build_base_url(),
+        stream_key=user.streaming_key,
+        username=user.username,
+        requested_profile=_xc_channel_profile(channel),
+        route_scope="combined",
+    )
     if not target:
         return jsonify({"error": "Stream unavailable"}), 404
     return redirect(target, code=302)

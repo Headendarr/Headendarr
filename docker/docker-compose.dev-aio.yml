@@ -43,6 +43,8 @@ services:
       - ENABLE_SQLALCHEMY_DEBUGGING=false
       # Enables Hypercorn auto-reload for the Quart app
       - ENABLE_APP_HOT_RELOAD=true
+      # Logs the CSO FFmpeg commands STDOUT to our debug logs
+      - ENABLE_CSO_COMMAND_DEBUG_LOGGING=true
 
     # VOLUMES:
     volumes:

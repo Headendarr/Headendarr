@@ -20,6 +20,14 @@ These settings define how Headendarr interacts with external services and how cl
 
 - **Headendarr Host**: This is the external host and port that client applications (like M3U players, HDHomeRun emulators, etc.) use to reach your Headendarr instance. It is used to generate correct URLs for playlist, XMLTV, and HDHomeRun endpoints. Ensure this is set to an address accessible by your clients.
 - **Route playlists & HDHomeRun through TVHeadend**: When this setting is enabled, all playlist and HDHomeRun streams are routed through the integrated TVHeadend server. This allows TVHeadend to enforce its own stream policies (e.g., connection limits, buffering) and can improve compatibility with certain clients. When disabled, clients connect directly to Headendarr for streams.
+- Transcoding behavior is controlled per profile in **Stream Profiles**. Disable a transcoding profile there to prevent its use.
+- **Stream Profiles table**:
+  - Enable/disable each supported `profile` value exposed on stream and playlist URLs.
+  - Configure per-profile hardware acceleration preference (`HW Accel`, VAAPI encode path) for transcoding profiles.
+  - Configure per-profile `Deinterlace` for transcoding profiles.
+  - `Deinterlace` adds a small processing overhead when enabled.
+  - If a stream is not interlaced, enabling `Deinterlace` does not materially change visual output.
+  - If a client requests a disabled profile, Headendarr falls back to `default`.
 
 ## User Agents
 

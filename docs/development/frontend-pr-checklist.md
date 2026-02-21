@@ -12,6 +12,8 @@ Use this checklist for all frontend PRs.
 - [ ] Labels/tooltips/messages are clear and consistent.
 - [ ] I avoided regressions in existing flows.
 - [ ] I verified the UI in both light and dark themes (no one-theme-only styling regressions).
+- [ ] Page-level settings forms (non-dialog) use auto-save with debounced persistence and no manual Save button.
+- [ ] Page-level settings auto-save flushes pending changes on navigation/unmount and only shows failure notifications.
 
 ## Dialogs
 
@@ -20,6 +22,7 @@ Use this checklist for all frontend PRs.
 - [ ] Confirmation dialogs use `TicConfirmDialog` (no ad-hoc confirm popups).
 - [ ] Header actions and close/back behaviour follow shared dialog API.
 - [ ] Editable dialogs implement dirty-state save pattern (pulsing save action + close/discard protection).
+- [ ] I did not replace dialog explicit-save flows with page-style auto-save unless explicitly required and documented.
 
 ## Inputs
 

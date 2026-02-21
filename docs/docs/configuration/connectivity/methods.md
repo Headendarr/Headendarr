@@ -49,9 +49,9 @@ Your main Headendarr password is **only** for logging into the web interface. Yo
 
 ---
 
-## Method 2: Combined M3U Playlist
+## Method 2: Combined Playlist
 
-This method provides a single M3U playlist and XMLTV URL containing all your mapped channels. It is widely compatible but has one major drawback: it cannot enforce per-source connection limits.
+This method provides a single M3U playlist and XMLTV URL containing all mapped channels.
 
 | Supported Features    |                                                            |
 | :-------------------- | :--------------------------------------------------------- |
@@ -69,8 +69,9 @@ This method provides a single M3U playlist and XMLTV URL containing all your map
 
 ### Connection Details
 
--   **M3U Playlist URL**: `http://<your-ip>:9985/tic-web/playlist.m3u8?stream_key=<user_stream_key>`
--   **XMLTV EPG URL**: `http://<your-ip>:9985/tic-web/epg.xml?stream_key=<user_stream_key>`
+-   **Combined Playlist URL**: `http://<your-ip>:9985/tic-api/playlist/combined.m3u?stream_key=<user_stream_key>`
+-   **XMLTV EPG URL**: `http://<your-ip>:9985/tic-api/epg/xmltv.xml?stream_key=<user_stream_key>`
+-   **Optional profile override**: append `&profile=<profile_id>` (example: `profile=h264-aac-mpegts`).
 
 ---
 
@@ -97,7 +98,8 @@ This method generates a unique M3U playlist for each of your channel sources. It
 You can quickly copy the specific URL for each source from the "Show connection details" dropdown in the Headendarr frontend.
 :::
 
--   **Per-Source M3U URL**: `http://<your-ip>:9985/tic-api/tvh_playlist/<source_id>/channels.m3u?stream_key=<user_stream_key>`
+-   **Per-Source M3U URL**: `http://<your-ip>:9985/tic-api/playlist/<source_id>.m3u?stream_key=<user_stream_key>`
+-   **Optional profile override**: append `&profile=<profile_id>`.
 
 You can find the `<source_id>` by navigating to the **Sources** page in Headendarr and viewing the ID column.
 
@@ -131,15 +133,20 @@ For clients like Plex, the most reliable way to add the emulated tuner is to do 
 
 While some clients may support auto-discovery, this can be unreliable in Docker environments. Manually adding the tuner ensures the client can find it. Provide the following URL to your client when it asks for a tuner's address:
 
+- **Combined HDHomeRun Device URL**: `http://<your-ip>:9985/tic-api/hdhr_device/<user_stream_key>/combined`
+- **Combined HDHomeRun Device URL (fixed profile)**: `http://<your-ip>:9985/tic-api/hdhr_device/<user_stream_key>/combined/<profile>`
 - **HDHomeRun Device URL**: `http://<your-ip>:9985/tic-api/hdhr_device/<user_stream_key>/<source_id>`
 
-You can find the `<source_id>` by going to the **Sources** page and viewing the ID column. Your client will use this base URL to then discover the `device.xml`, `lineup.json`, and other required endpoints.
+Use the combined URL when you want one tuner endpoint that includes all channels. Use the per-source URL when you want source-specific connection-limit behavior.
+Use the profile-scoped combined URL when your client (for example Plex) does not support selecting a stream profile in HDHR requests and you want to force a profile such as `matroska`.
+
+You can find the `<source_id>` by going to the **Sources** page and viewing the ID column. Your client will use the selected base URL to discover `device.xml`, `lineup.json`, and other required endpoints.
 
 ---
 
 ## Method 5: Xtream Codes (XC) API
 
-For clients that are specifically designed for the Xtream Codes API, Headendarr provides a compatibility layer. This method does not enforce per-source connection limits.
+For clients designed for Xtream Codes, Headendarr provides a compatibility layer.
 
 | Supported Features    |                                                            |
 | :-------------------- | :--------------------------------------------------------- |
@@ -159,6 +166,13 @@ For clients that are specifically designed for the Xtream Codes API, Headendarr 
 - **Server URL / Host**: `http://<your-ip>:9985`
 - **Username**: Your username in Headendarr.
 - **Password**: Your **Streaming Key** from the Headendarr Users page.
+
+Compatibility routes:
+
+- `http://<your-ip>:9985/get.php?username=<username>&password=<stream_key>`
+- `http://<your-ip>:9985/xmltv.php?username=<username>&password=<stream_key>`
+
+These map to the same data as `/tic-api/playlist/combined.m3u` and `/tic-api/epg/xmltv.xml`.
 
 ---
 

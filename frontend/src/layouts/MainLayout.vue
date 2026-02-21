@@ -557,7 +557,8 @@ export default defineComponent({
     const showConnectionDetailsDialog = ref(false);
     const showTvhBackendButton = computed(() => isAdmin.value && aioMode.value);
     const showConnectionDetailsActions = computed(() => canViewConnectionDetails.value);
-    const showHeaderActions = computed(() => showTvhBackendButton.value || showConnectionDetailsActions.value || isAdmin.value);
+    const showHeaderActions = computed(
+      () => showTvhBackendButton.value || showConnectionDetailsActions.value || isAdmin.value);
     const drawerBehavior = computed(() => (isMobileDrawer.value ? 'mobile' : 'desktop'));
     const drawerWidth = computed(() => (isMobileDrawer.value ? Math.round($q.screen.width * 0.9) : 300));
     const drawerToggleIcon = computed(() => {
@@ -680,10 +681,10 @@ export default defineComponent({
     };
 
     const epgUrl = computed(() => (
-      `${connectionBaseUrl.value}/xmltv.php?username=${currentUsername.value}&password=${currentStreamingKey.value}`
+      `${connectionBaseUrl.value}/tic-api/epg/xmltv.xml?stream_key=${currentStreamingKey.value}`
     ));
     const xcPlaylistUrl = computed(() => (
-      `${connectionBaseUrl.value}/get.php?username=${currentUsername.value}&password=${currentStreamingKey.value}`
+      `${connectionBaseUrl.value}/tic-api/playlist/combined.m3u?stream_key=${currentStreamingKey.value}`
     ));
     const toggleHelp = () => {
       uiStore.toggleHelp();

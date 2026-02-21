@@ -24,6 +24,7 @@ from backend.hls_multiplexer import (
     SegmentCache
 )
 from backend.cso import cleanup_channel_stream_events, cso_session_manager, resolve_channel_for_stream, subscribe_channel_stream
+from backend.stream_profiles import resolve_cso_profile_name
 from backend.stream_activity import (
     cleanup_stream_activity,
     stop_stream_activity,
@@ -660,26 +661,64 @@ async def stream_ts(instance_id, encoded_url):
     methods=["GET"],
 )
 @stream_key_required
+@skip_stream_connect_audit
 async def stream_channel(channel_id):
+    """
+    TIC Channel Stream Organiser (CSO) playback endpoint.
+
+    Route:
+    - `GET /<hls_proxy_prefix>/channel/<channel_id>`
+
+    Authentication:
+    - Requires `stream_key_required`.
+
+    Behavior:
+    - Resolves the channel and starts/joins CSO sessions for that channel.
+    - Uses `profile` query param to select output behavior (remux/transcode profile).
+    - Supports shared upstream ingest per channel, with per-profile output pipelines.
+    - Returns a continuous stream response with container/content type based on the
+      resolved CSO profile.
+
+    Query params:
+    - `stream_key` (required): stream authentication token.
+    - `profile` (optional): requested stream profile.
+      Resolution order is: request profile -> channel profile -> `default`.
+      Special case: `tvh` maps to the TVHeadend-oriented MPEG-TS CSO behavior.
+    - `prebuffer` (optional): per-client prebuffer size for newly attached output
+      clients (for example `50k`, `1M`).
+
+    Failure behavior:
+    - If CSO cannot start due to capacity or source playback failure, returns 503.
+    - If `CSO_UNAVAILABLE_SHOW_SLATE` is enabled, 503 failures are replaced with a
+      temporary MPEG-TS unavailable slate stream (HTTP 200).
+
+    Notes:
+    - This endpoint is CSO-specific and separate from direct HLS proxy passthrough
+      routes that proxy encoded upstream URLs.
+    """
     try:
         channel_id_int = int(channel_id)
     except (TypeError, ValueError):
         return Response("Invalid channel id", status=400)
 
     config = current_app.config["APP_CONFIG"]
-    output_profile = (request.args.get("output_profile") or "default").strip().lower()
-    if output_profile not in {"default", "tvh"}:
-        output_profile = "default"
+    requested_profile = (request.args.get("profile") or "").strip().lower()
+    prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
+    channel = await resolve_channel_for_stream(channel_id_int)
+    effective_profile = resolve_cso_profile_name(
+        config,
+        requested_profile,
+        channel=channel,
+    )
 
     connection_id = _get_connection_id(default_new=True)
     generator, content_type, error_message, status = await subscribe_channel_stream(
         config=config,
-        channel_id=channel_id_int,
+        channel=channel,
         stream_key=getattr(request, "_stream_key", None),
-        username=getattr(getattr(request, "_stream_user", None), "username", None),
-        output_profile=output_profile,
+        profile=effective_profile,
         connection_id=connection_id,
-        prebuffer_bytes=0,
+        prebuffer_bytes=prebuffer_bytes,
         request_base_url=request.host_url.rstrip("/"),
     )
     if not generator:
@@ -698,9 +737,8 @@ async def stream_channel(channel_id):
         return Response(message or "Unable to start CSO stream", status=status or 500)
 
     activity_identity = f"{hls_proxy_prefix.rstrip('/')}/channel/{channel_id_int}"
-    channel_meta = await resolve_channel_for_stream(channel_id_int)
-    channel_name = getattr(channel_meta, "name", None) if channel_meta else None
-    channel_logo_url = getattr(channel_meta, "logo_url", None) if channel_meta else None
+    channel_name = getattr(channel, "name", None) if channel else None
+    channel_logo_url = getattr(channel, "logo_url", None) if channel else None
     details_override = activity_identity
     if channel_name:
         details_override = f"{channel_name}\n{activity_identity}"

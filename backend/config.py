@@ -12,6 +12,7 @@ import yaml
 from mergedeep import merge
 
 from backend.security import generate_stream_key
+from backend.stream_profiles import SUPPORTED_STREAM_PROFILES
 
 
 def get_home_dir():
@@ -93,7 +94,7 @@ async def get_local_tvh_proc_sync_user_credentials(username="tic-admin"):
             decoded_password = base64.b64decode(encoded_password).decode("utf-8")
             prefix = "TVHeadend-Hide-"
             if decoded_password.startswith(prefix):
-                return username, decoded_password[len(prefix):]
+                return username, decoded_password[len(prefix) :]
             parts = decoded_password.split("-")
             if len(parts) >= 3:
                 return username, parts[2]
@@ -145,9 +146,7 @@ class Config:
         self.config_path = os.path.join(get_home_dir(), ".tvh_iptv_config")
         self.config_file = os.path.join(self.config_path, "settings.yml")
         self.tvh_sync_user_file = os.path.join(self.config_path, "tvh_sync_user.json")
-        self.tvh_stream_user_file = os.path.join(
-            self.config_path, "tvh_stream_user.json"
-        )
+        self.tvh_stream_user_file = os.path.join(self.config_path, "tvh_stream_user.json")
         self.instance_id_file = os.path.join(self.config_path, "instance_id.json")
         # Set default settings
         self.settings = None
@@ -163,7 +162,12 @@ class Config:
                     "password": "",
                 },
                 "app_url": None,
+                "route_playlists_through_cso": True,
                 "route_playlists_through_tvh": False,
+                "stream_profiles": {
+                    profile_key: {"enabled": True, "hwaccel": False, "deinterlace": False}
+                    for profile_key in SUPPORTED_STREAM_PROFILES.keys()
+                },
                 "periodic_mux_scan": False,
                 "audit_log_retention_days": 7,
                 "user_agents": [
@@ -233,9 +237,7 @@ class Config:
 
     def read_settings(self):
         yaml_settings = self.read_config_yaml()
-        self.settings = recursive_dict_update(
-            copy.deepcopy(self.default_settings), yaml_settings
-        )
+        self.settings = recursive_dict_update(copy.deepcopy(self.default_settings), yaml_settings)
         return self.settings
 
     def _normalize_settings(self, settings):
@@ -321,9 +323,7 @@ class Config:
 
     def update_settings(self, updated_settings):
         current_settings = copy.deepcopy(self.read_settings() or self.default_settings)
-        self.settings = recursive_dict_update(
-            current_settings, updated_settings
-        )
+        self.settings = recursive_dict_update(current_settings, updated_settings)
         self._normalize_settings(self.settings)
 
     async def tvh_connection_settings(self):
@@ -358,9 +358,7 @@ class Config:
         }
 
 
-frontend_dir = os.path.join(
-    os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "frontend"
-)
+frontend_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "frontend")
 
 enable_app_debugging = False
 if os.environ.get("ENABLE_APP_DEBUGGING", "false").lower() == "true":
@@ -369,6 +367,10 @@ if os.environ.get("ENABLE_APP_DEBUGGING", "false").lower() == "true":
 enable_sqlalchemy_debugging = False
 if os.environ.get("ENABLE_SQLALCHEMY_DEBUGGING", "false").lower() == "true":
     enable_sqlalchemy_debugging = True
+
+enable_cso_command_debug_logging = False
+if os.environ.get("ENABLE_CSO_COMMAND_DEBUG_LOGGING", "false").lower() == "true":
+    enable_cso_command_debug_logging = True
 
 flask_run_host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
 flask_run_port = int(os.environ.get("FLASK_RUN_PORT", "9985"))
@@ -387,8 +389,12 @@ postgres_user = os.environ.get("POSTGRES_USER", "tic")
 postgres_password = os.environ.get("POSTGRES_PASSWORD", "tic")
 postgres_password_escaped = quote_plus(postgres_password)
 
-sqlalchemy_database_uri = f"postgresql+psycopg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}"
-sqlalchemy_database_async_uri = f"postgresql+asyncpg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}"
+sqlalchemy_database_uri = (
+    f"postgresql+psycopg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}"
+)
+sqlalchemy_database_async_uri = (
+    f"postgresql+asyncpg://{postgres_user}:{postgres_password_escaped}@{postgres_host}:{postgres_port}/{postgres_db}"
+)
 sqlalchemy_track_modifications = False
 
 # Configure scheduler

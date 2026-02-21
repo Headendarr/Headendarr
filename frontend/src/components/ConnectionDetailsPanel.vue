@@ -27,13 +27,13 @@
 
           <q-separator inset spaced />
 
-          <q-item-label header>Xtream Codes (Single Playlist)</q-item-label>
+          <q-item-label header>Combined Playlist</q-item-label>
           <q-item :dense="isCompact" clickable tabindex="0" @click="$emit('copy-url', xcPlaylistUrl)">
             <q-item-section avatar>
-              <q-avatar :size="avatarSize" icon="movie_filter" color="secondary" text-color="white" />
+              <q-avatar :size="avatarSize" icon="playlist_play" color="secondary" text-color="white" />
             </q-item-section>
             <q-item-section>
-              <q-item-label class="text-bold text-purple-7">XC Playlist</q-item-label>
+              <q-item-label class="text-bold text-purple-7">Combined Playlist</q-item-label>
               <q-item-label v-if="!isCompact" caption>{{ xcPlaylistUrl }}</q-item-label>
             </q-item-section>
             <q-item-section side>
@@ -43,14 +43,14 @@
 
           <q-separator inset spaced />
 
-          <q-item-label header>M3U Playlists</q-item-label>
+          <q-item-label header>Connection Limited Playlists</q-item-label>
           <q-item
             v-for="playlist in enabledPlaylists"
             :key="`m3u.${playlist.id}`"
             :dense="isCompact"
             clickable
             tabindex="0"
-            @click="$emit('copy-url', `${connectionBaseUrl}/tic-api/tvh_playlist/${playlist.id}/channels.m3u?stream_key=${currentStreamingKey}`)"
+            @click="$emit('copy-url', `${connectionBaseUrl}/tic-api/playlist/${playlist.id}.m3u?stream_key=${currentStreamingKey}`)"
           >
             <q-item-section avatar>
               <q-avatar :size="avatarSize" icon="playlist_play" color="secondary" text-color="white" />
@@ -58,8 +58,8 @@
             <q-item-section>
               <q-item-label class="text-bold text-blue-7">{{ playlist.name }}</q-item-label>
               <q-item-label v-if="!isCompact" caption>
-                {{ connectionBaseUrl }}/tic-api/tvh_playlist/{{ playlist.id
-                }}/channels.m3u?stream_key={{ currentStreamingKey }}
+                {{ connectionBaseUrl }}/tic-api/playlist/{{ playlist.id
+                }}.m3u?stream_key={{ currentStreamingKey }}
               </q-item-label>
               <q-item-label caption>Connections Limit: {{ playlist.connections }}</q-item-label>
             </q-item-section>
@@ -71,6 +71,27 @@
           <q-separator inset spaced />
 
           <q-item-label header>HDHomeRun Tuner Emulators</q-item-label>
+          <q-item
+            :dense="isCompact"
+            clickable
+            tabindex="0"
+            @click="$emit('copy-url', `${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/combined`)"
+          >
+            <q-item-section avatar>
+              <q-avatar :size="avatarSize" :font-size="isPhone ? '54px' : '82px'">
+                <img src="~assets/hd-icon.png">
+              </q-avatar>
+            </q-item-section>
+            <q-item-section>
+              <q-item-label class="text-bold text-teal-7">Combined HDHomeRun</q-item-label>
+              <q-item-label v-if="!isCompact" caption>
+                {{ connectionBaseUrl }}/tic-api/hdhr_device/{{ currentStreamingKey }}/combined
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-icon name="content_copy" />
+            </q-item-section>
+          </q-item>
           <q-item
             v-for="playlist in enabledPlaylists"
             :key="`hdhr.${playlist.id}`"
@@ -123,7 +144,7 @@
           <q-card-section>
             <div class="text-h6">How to use XC clients:</div>
             Use IPTV clients that support Xtream Codes logins with the <span
-            class="text-bold text-purple-7">XC Playlist</span>
+            class="text-bold text-purple-7">Combined Playlist</span>
             URL. This is recommended for clients that cannot set per-playlist connection limits.
             <br><br>
             If the XC playlist is routed through TVHeadend, it enforces connection limits, which prevents
@@ -134,23 +155,21 @@
               <li><b>Username</b>: your Headendarr username</li>
               <li><b>Password</b>: your streaming key</li>
             </ul>
-          </q-card-section>
-          <q-card-section>
-            <div class="text-h6">How to use the XC Playlist (Single Playlist):</div>
-            Use the <span class="text-bold text-purple-7">XC Playlist</span> with IPTV clients
-            that support XC logins or cannot set per-playlist connection limits.
-            <br><br>
-            If the XC playlist is routed through TVHeadend, it enforces connection limits, which prevents
-            streams from dropping when a channel is already in use.
-            <br><br>
-            Use these credentials:
+            <br>
+            Compatibility routes are also available:
             <ul>
-              <li><b>Username</b>: your Headendarr username</li>
-              <li><b>Password</b>: your streaming key</li>
+              <li>
+                <b>M3U (XC compat)</b>:
+                <code>{{ connectionBaseUrl }}/get.php?username=&lt;username&gt;&password=&lt;stream_key&gt;</code>
+              </li>
+              <li>
+                <b>XMLTV (XC compat)</b>:
+                <code>{{ connectionBaseUrl }}/xmltv.php?username=&lt;username&gt;&password=&lt;stream_key&gt;</code>
+              </li>
             </ul>
           </q-card-section>
           <q-card-section>
-            <div class="text-h6">How to use the M3U Playlists:</div>
+            <div class="text-h6">How to use the Connection Limited Playlists:</div>
             Filtered M3U playlist URLs are designed for use with Jellyfin/Emby.
             But they can also be used for any other client that supports M3U playlists.
             <br>
@@ -158,7 +177,7 @@
             <br>
             <ol>
               <li>
-                For each of the <span class="text-bold text-blue-7">M3U Playlists</span> listed:
+                For each of the <span class="text-bold text-blue-7">Connection Limited Playlists</span> listed:
                 <ol type="a">
                   <li>Create a new <b>M3U Tuner</b> in Jellyfin's <b>Live TV</b> device settings.</li>
                   <li>

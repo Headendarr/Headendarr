@@ -13,21 +13,21 @@
             @filter-change="onAuditToolbarFilterChange"
           />
 
-          <q-list bordered separator class="rounded-borders audit-list">
+          <q-list class="audit-list">
             <q-item v-for="entry in entries" :key="entry.entry_key || `${entry.entry_type}:${entry.id}`" class="audit-list-item" top>
-              <template v-if="!$q.screen.lt.md">
-                <q-item-section>
-                  <q-item-label class="text-weight-medium">
+              <q-item-section>
+                <TicListItemCard v-bind="entryCardProps(entry)" :hide-header="true">
+                  <div class="text-weight-medium">
                     {{ entry.activity_label || 'Other activity' }}
-                  </q-item-label>
-                  <q-item-label caption class="q-mt-xs">
+                  </div>
+                  <div class="text-caption text-grey-7 q-mt-xs">
                     {{ formatAuditTimestamp(entry.created_at) }}
                     <span class="q-mx-xs">|</span>
                     User: {{ displayUsername(entry) }}
                     <span class="q-mx-xs">|</span>
                     Device: {{ displayDevice(entry) }}
-                  </q-item-label>
-                  <q-item-label caption class="text-grey-7 q-mt-xs">
+                  </div>
+                  <div class="text-caption text-grey-7 q-mt-xs">
                     Type: {{ formatEntryType(entry.entry_type) }}
                     <span class="q-mx-xs">|</span>
                     Event: {{ entry.event_type || '-' }}
@@ -39,41 +39,15 @@
                     <span v-if="entry.severity">Severity: {{ entry.severity }}</span>
                     <span v-if="entry.ip_address" class="q-mx-xs">|</span>
                     <span v-if="entry.ip_address">IP: {{ entry.ip_address }}</span>
-                  </q-item-label>
-                  <q-item-label caption class="text-grey-7 q-mt-xs endpoint-ellipsis">
+                  </div>
+                  <div class="text-caption text-grey-7 q-mt-xs endpoint-ellipsis">
                     Endpoint: {{ entry.endpoint || '-' }}
-                  </q-item-label>
-                  <q-item-label v-if="entry.details" caption class="text-grey-7 q-mt-xs">
+                  </div>
+                  <div v-if="entry.details" class="text-caption text-grey-7 q-mt-xs">
                     {{ entry.details }}
-                  </q-item-label>
-                </q-item-section>
-              </template>
-
-              <template v-else>
-                <q-item-section>
-                  <TicListItemCard>
-                    <template #header-left>
-                      <div class="text-weight-medium">
-                        {{ entry.activity_label || 'Other activity' }}
-                      </div>
-                      <div class="text-caption text-grey-7">
-                        {{ formatAuditTimestamp(entry.created_at) }}
-                      </div>
-                    </template>
-                    <div class="text-caption q-mt-xs">User: {{ displayUsername(entry) }}</div>
-                    <div class="text-caption">Device: {{ displayDevice(entry) }}</div>
-                    <div class="text-caption">Type: {{ formatEntryType(entry.entry_type) }}</div>
-                    <div class="text-caption">Event: {{ entry.event_type || '-' }}</div>
-                    <div v-if="entry.audit_mode" class="text-caption">Mode: {{ formatAuditMode(entry.audit_mode) }}
-                    </div>
-                    <div v-if="entry.channel_id" class="text-caption">Channel: {{ entry.channel_id }}</div>
-                    <div v-if="entry.severity" class="text-caption">Severity: {{ entry.severity }}</div>
-                    <div class="text-caption endpoint-ellipsis">Endpoint: {{ entry.endpoint || '-' }}</div>
-                    <div v-if="entry.ip_address" class="text-caption">IP: {{ entry.ip_address }}</div>
-                    <div v-if="entry.details" class="text-caption text-grey-7 q-mt-xs">{{ entry.details }}</div>
-                  </TicListItemCard>
-                </q-item-section>
-              </template>
+                  </div>
+                </TicListItemCard>
+              </q-item-section>
             </q-item>
 
             <q-item v-if="!loading && !entries.length">
@@ -264,6 +238,35 @@ export default defineComponent({
         return 'Start only';
       }
       return mode || '-';
+    },
+    entryCardProps(entry) {
+      const severity = String(entry?.severity || '').trim().toLowerCase();
+      if (severity === 'error') {
+        return {
+          accentColor: 'var(--tic-list-card-error-border)',
+          surfaceColor: 'var(--tic-list-card-error-bg)',
+          headerColor: 'var(--tic-list-card-error-header)',
+        };
+      }
+      if (severity === 'warning') {
+        return {
+          accentColor: 'var(--tic-list-card-issues-border)',
+          surfaceColor: 'var(--tic-list-card-issues-bg)',
+          headerColor: 'var(--tic-list-card-issues-header)',
+        };
+      }
+      if (severity === 'info') {
+        return {
+          accentColor: 'transparent',
+          surfaceColor: 'var(--tic-list-card-default-bg)',
+          headerColor: 'var(--tic-list-card-default-header-bg)',
+        };
+      }
+      return {
+        accentColor: 'var(--tic-list-card-default-border, transparent)',
+        surfaceColor: 'var(--tic-list-card-default-bg)',
+        headerColor: 'var(--tic-list-card-default-header-bg)',
+      };
     },
     buildFilterQuery() {
       const params = {

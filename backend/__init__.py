@@ -96,9 +96,11 @@ def register_blueprints(app):
     import_module('backend.api.routes_guide')
     import_module('backend.api.routes_audit')
     import_module('backend.api.routes_dashboard')
-    import_module('backend.api.routes_playlist_proxy')
+    import_module('backend.api.routes_connections_epg')
+    import_module('backend.api.routes_connections_playlist')
+    import_module('backend.api.routes_connections_hdhr')
     import_module('backend.api.routes_hls_proxy')
-    import_module('backend.api.routes_xc')
+    import_module('backend.api.routes_connections_xc')
     import_module('backend.api.routes_diagnostics')
     app.register_blueprint(module.blueprint)
 

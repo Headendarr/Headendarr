@@ -44,6 +44,7 @@ const sidebars = {
               label: "Connectivity",
               items: [
                 "configuration/connectivity/methods",
+                "configuration/connectivity/endpoints",
                 "configuration/connectivity/plex",
                 "configuration/connectivity/jellyfin",
               ],

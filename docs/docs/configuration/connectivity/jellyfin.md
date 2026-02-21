@@ -24,10 +24,10 @@ Use a Headendarr TVHeadend playlist URL and force the TVHeadend stream profile t
 1. In Headendarr **Application Settings**, enable **Route playlists & HDHomeRun through TVHeadend**.
 2. In Headendarr, open **Show Connection Details**.
 3. Copy a **M3U Playlists** URL such as:
-   `/tic-api/tvh_playlist/<source_id>/channels.m3u?stream_key=<key>`
+   `/tic-api/playlist/<source_id>.m3u?stream_key=<key>`
 4. Append `&profile=matroska` to the URL.
    Example:
-   `/tic-api/tvh_playlist/1/channels.m3u?stream_key=<key>&profile=matroska`
+   `/tic-api/playlist/1.m3u?stream_key=<key>&profile=matroska`
 5. In Jellyfin, go to **Dashboard -> Live TV -> Add Tuner Device**.
 6. Choose **M3U Tuner**.
 7. Paste the updated M3U URL.

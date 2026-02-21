@@ -9,12 +9,25 @@ from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
 
 from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
-from backend.channels import read_config_all_channels, add_new_channel, read_config_one_channel, update_channel, \
-    delete_channel, add_bulk_channels, queue_background_channel_update_tasks, read_channel_logo, add_channels_from_groups, \
-    read_logo_health_map, build_bulk_epg_match_preview, read_epg_match_candidate_preview, apply_bulk_epg_matches, \
-    apply_bulk_cso_settings, \
-    build_cso_channel_stream_url
-from backend.cso import resolve_cso_policy, policy_content_type
+from backend.channels import (
+    read_config_all_channels,
+    add_new_channel,
+    read_config_one_channel,
+    update_channel,
+    delete_channel,
+    add_bulk_channels,
+    queue_background_channel_update_tasks,
+    read_channel_logo,
+    add_channels_from_groups,
+    read_logo_health_map,
+    build_bulk_epg_match_preview,
+    read_epg_match_candidate_preview,
+    apply_bulk_epg_matches,
+    apply_bulk_cso_settings,
+    build_cso_channel_stream_url,
+)
+from backend.cso import policy_content_type
+from backend.stream_profiles import resolve_cso_profile_name, generate_cso_policy_from_profile
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
@@ -148,12 +161,12 @@ async def _fetch_channel_suggestion_counts():
     return {row[0]: row[1] for row in rows}
 
 
-@blueprint.route('/tic-api/channels/get', methods=['GET'])
+@blueprint.route("/tic-api/channels/get", methods=["GET"])
 @admin_auth_required
 async def api_get_channels():
-    include_status = request.args.get('include_status') == 'true'
+    include_status = request.args.get("include_status") == "true"
     channels_config = await read_config_all_channels(include_status=include_status)
-    request_base_url = request.host_url.rstrip('/')
+    request_base_url = request.host_url.rstrip("/")
     for channel in channels_config:
         source_logo_url = channel.get("logo_url")
         channel["source_logo_url"] = source_logo_url
@@ -163,7 +176,7 @@ async def api_get_channels():
             source_logo_url,
         )
     if include_status:
-        config = current_app.config['APP_CONFIG']
+        config = current_app.config["APP_CONFIG"]
         mux_map = await _fetch_tvh_mux_map(config)
         suggestion_counts = await _fetch_channel_suggestion_counts()
         logo_health_map = read_logo_health_map(config)
@@ -171,15 +184,10 @@ async def api_get_channels():
             suggestion_count = suggestion_counts.get(channel.get("id"), 0)
             logo_health = logo_health_map.get(str(channel.get("id")), {})
             channel["status"] = _build_channel_status(channel, mux_map, suggestion_count, logo_health=logo_health)
-    return jsonify(
-        {
-            "success": True,
-            "data":    channels_config
-        }
-    )
+    return jsonify({"success": True, "data": channels_config})
 
 
-@blueprint.route('/tic-api/channels/<channel_id>/stream-suggestions', methods=['GET'])
+@blueprint.route("/tic-api/channels/<channel_id>/stream-suggestions", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_stream_suggestions(channel_id):
     channel_id = normalize_id(channel_id, "channel")
@@ -193,27 +201,29 @@ async def api_get_channel_stream_suggestions(channel_id):
             .order_by(ChannelSuggestion.score.desc())
         )
         suggestions = result.scalars().all()
-    return jsonify({
-        "success": True,
-        "data": [
-            {
-                "id": suggestion.id,
-                "channel_id": suggestion.channel_id,
-                "playlist_id": suggestion.playlist_id,
-                "stream_id": suggestion.stream_id,
-                "stream_name": suggestion.stream_name,
-                "stream_url": suggestion.stream_url,
-                "group_title": suggestion.group_title,
-                "playlist_name": suggestion.playlist_name,
-                "source_type": suggestion.source_type,
-                "score": suggestion.score,
-            }
-            for suggestion in suggestions
-        ],
-    })
+    return jsonify(
+        {
+            "success": True,
+            "data": [
+                {
+                    "id": suggestion.id,
+                    "channel_id": suggestion.channel_id,
+                    "playlist_id": suggestion.playlist_id,
+                    "stream_id": suggestion.stream_id,
+                    "stream_name": suggestion.stream_name,
+                    "stream_url": suggestion.stream_url,
+                    "group_title": suggestion.group_title,
+                    "playlist_name": suggestion.playlist_name,
+                    "source_type": suggestion.source_type,
+                    "score": suggestion.score,
+                }
+                for suggestion in suggestions
+            ],
+        }
+    )
 
 
-@blueprint.route('/tic-api/channels/<channel_id>/logo-suggestions', methods=['GET'])
+@blueprint.route("/tic-api/channels/<channel_id>/logo-suggestions", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_logo_suggestions(channel_id):
     channel_id = normalize_id(channel_id, "channel")
@@ -237,22 +247,23 @@ async def api_get_channel_logo_suggestions(channel_id):
         if not url or url in seen:
             return
         seen.add(url)
-        suggestions.append({
-            "url": url,
-            "source": source,
-            "label": label,
-        })
+        suggestions.append(
+            {
+                "url": url,
+                "source": source,
+                "label": label,
+            }
+        )
 
     # 1) Stream logos from linked playlist streams.
-    for source in (channel.sources or []):
+    for source in channel.sources or []:
         if not source.playlist_id:
             continue
         stream = None
         if source.playlist_stream_name:
             async with Session() as session:
                 result = await session.execute(
-                    select(PlaylistStreams)
-                    .where(
+                    select(PlaylistStreams).where(
                         PlaylistStreams.playlist_id == source.playlist_id,
                         PlaylistStreams.name == source.playlist_stream_name,
                     )
@@ -261,17 +272,14 @@ async def api_get_channel_logo_suggestions(channel_id):
         if not stream and source.playlist_stream_url:
             async with Session() as session:
                 result = await session.execute(
-                    select(PlaylistStreams)
-                    .where(
+                    select(PlaylistStreams).where(
                         PlaylistStreams.playlist_id == source.playlist_id,
                         PlaylistStreams.url == source.playlist_stream_url,
                     )
                 )
                 stream = result.scalars().first()
         if stream and stream.tvg_logo:
-            playlist_name = (
-                source.playlist.name if getattr(source, "playlist", None) else "playlist"
-            )
+            playlist_name = source.playlist.name if getattr(source, "playlist", None) else "playlist"
             _add(
                 stream.tvg_logo,
                 "stream",
@@ -302,7 +310,7 @@ async def api_get_channel_logo_suggestions(channel_id):
     return jsonify({"success": True, "data": suggestions})
 
 
-@blueprint.route('/tic-api/channels/<channel_id>/logo-suggestions/apply', methods=['POST'])
+@blueprint.route("/tic-api/channels/<channel_id>/logo-suggestions/apply", methods=["POST"])
 @admin_auth_required
 async def api_apply_channel_logo_suggestion(channel_id):
     channel_id = normalize_id(channel_id, "channel")
@@ -330,7 +338,7 @@ async def api_apply_channel_logo_suggestion(channel_id):
                 seen.add(url)
                 suggestions.append(url)
 
-            for source in (channel.sources or []):
+            for source in channel.sources or []:
                 if not source.playlist_id:
                     continue
                 stream = None
@@ -397,13 +405,13 @@ async def api_apply_channel_logo_suggestion(channel_id):
             channel.logo_url = chosen
             channel.logo_base64 = None
 
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     await queue_background_channel_update_tasks(config)
 
     return jsonify({"success": True, "data": {"logo_url": chosen}})
 
 
-@blueprint.route('/tic-api/channels/<channel_id>/stream-suggestions/<suggestion_id>/dismiss', methods=['POST'])
+@blueprint.route("/tic-api/channels/<channel_id>/stream-suggestions/<suggestion_id>/dismiss", methods=["POST"])
 @admin_auth_required
 async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
     channel_id = normalize_id(channel_id, "channel")
@@ -424,26 +432,28 @@ async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/basic', methods=['GET'])
+@blueprint.route("/tic-api/channels/basic", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channels_basic():
     channels_config = await read_config_all_channels()
-    request_base_url = request.host_url.rstrip('/')
+    request_base_url = request.host_url.rstrip("/")
     basic = []
     for channel in channels_config:
         if not channel.get("enabled"):
             continue
-        basic.append({
-            "id": channel.get("id"),
-            "name": channel.get("name"),
-            "number": channel.get("number"),
-            "logo_url": _build_backend_logo_url(
-                request_base_url,
-                channel.get("id"),
-                channel.get("logo_url"),
-            ),
-            "guide": channel.get("guide") or {},
-        })
+        basic.append(
+            {
+                "id": channel.get("id"),
+                "name": channel.get("name"),
+                "number": channel.get("number"),
+                "logo_url": _build_backend_logo_url(
+                    request_base_url,
+                    channel.get("id"),
+                    channel.get("logo_url"),
+                ),
+                "guide": channel.get("guide") or {},
+            }
+        )
     return jsonify({"success": True, "data": basic})
 
 
@@ -459,12 +469,11 @@ def _infer_stream_type(url):
 
 
 def _build_preview_url_for_source(source, user, settings, config, request_base_url):
-    use_tvh_source = settings['settings'].get('route_playlists_through_tvh', False)
+    use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
     instance_id = config.ensure_instance_id()
     if use_tvh_source and source.tvh_uuid:
         preview_url = (
-            f"{request_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}"
-            "?profile=pass&weight=300"
+            f"{request_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}" "?profile=pass&weight=300"
         )
         preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
         stream_type = "mpegts"
@@ -491,14 +500,16 @@ def _build_preview_url_for_source(source, user, settings, config, request_base_u
 
 
 def _build_cso_preview_url(channel, user, request_base_url):
+    config = current_app.config["APP_CONFIG"]
     preview_url = build_cso_channel_stream_url(
         base_url=request_base_url,
         channel_id=channel.id,
         stream_key=user.streaming_key,
         username=user.username,
-        output_profile="default",
+        profile="default",
     )
-    policy = resolve_cso_policy(channel, output_profile="default")
+    profile = resolve_cso_profile_name(config, requested_profile="default", channel=channel)
+    policy = generate_cso_policy_from_profile(config, profile)
     content_type = policy_content_type(policy)
     if content_type == "video/mp2t":
         stream_type = "mpegts"
@@ -509,7 +520,7 @@ def _build_cso_preview_url(channel, user, request_base_url):
     return preview_url, stream_type
 
 
-@blueprint.route('/tic-api/channels/<int:channel_id>/preview', methods=['GET'])
+@blueprint.route("/tic-api/channels/<int:channel_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_preview(channel_id):
     user = getattr(request, "_current_user", None)
@@ -517,30 +528,26 @@ async def api_get_channel_preview(channel_id):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
     async with Session() as session:
-        channel_result = await session.execute(
-            select(Channel).where(Channel.id == channel_id)
-        )
+        channel_result = await session.execute(select(Channel).where(Channel.id == channel_id))
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
         if bool(getattr(channel, "cso_enabled", False)):
-            request_base_url = request.host_url.rstrip('/')
+            request_base_url = request.host_url.rstrip("/")
             preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
             return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
         result = await session.execute(
-            select(ChannelSource)
-            .where(ChannelSource.channel_id == channel_id)
-            .order_by(ChannelSource.id.asc())
+            select(ChannelSource).where(ChannelSource.channel_id == channel_id).order_by(ChannelSource.id.asc())
         )
         source = result.scalars().first()
 
     if not source or not source.playlist_stream_url:
         return jsonify({"success": False, "message": "Channel has no source URL"}), 404
 
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    request_base_url = request.host_url.rstrip('/')
+    request_base_url = request.host_url.rstrip("/")
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,
@@ -551,7 +558,7 @@ async def api_get_channel_preview(channel_id):
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
 
-@blueprint.route('/tic-api/channels/<int:channel_id>/sources/<int:source_id>/preview', methods=['GET'])
+@blueprint.route("/tic-api/channels/<int:channel_id>/sources/<int:source_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_source_preview(channel_id, source_id):
     user = getattr(request, "_current_user", None)
@@ -559,20 +566,17 @@ async def api_get_channel_source_preview(channel_id, source_id):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
     async with Session() as session:
-        channel_result = await session.execute(
-            select(Channel).where(Channel.id == channel_id)
-        )
+        channel_result = await session.execute(select(Channel).where(Channel.id == channel_id))
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
         if bool(getattr(channel, "cso_enabled", False)):
-            request_base_url = request.host_url.rstrip('/')
+            request_base_url = request.host_url.rstrip("/")
             preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
             return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
         result = await session.execute(
-            select(ChannelSource)
-            .where(
+            select(ChannelSource).where(
                 ChannelSource.id == source_id,
                 ChannelSource.channel_id == channel_id,
             )
@@ -582,9 +586,9 @@ async def api_get_channel_source_preview(channel_id, source_id):
     if not source or not source.playlist_stream_url:
         return jsonify({"success": False, "message": "Channel source not found"}), 404
 
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    request_base_url = request.host_url.rstrip('/')
+    request_base_url = request.host_url.rstrip("/")
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,
@@ -595,7 +599,7 @@ async def api_get_channel_source_preview(channel_id, source_id):
     return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
 
-@blueprint.route('/tic-api/channel-stream-events', methods=['GET'])
+@blueprint.route("/tic-api/channel-stream-events", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_stream_events():
     try:
@@ -611,11 +615,7 @@ async def api_get_channel_stream_events():
     limit = max(1, min(limit, 500))
 
     async with Session() as session:
-        stmt = (
-            select(CsoEventLog)
-            .order_by(CsoEventLog.created_at.desc(), CsoEventLog.id.desc())
-            .limit(limit)
-        )
+        stmt = select(CsoEventLog).order_by(CsoEventLog.created_at.desc(), CsoEventLog.id.desc()).limit(limit)
         if channel_id is not None:
             stmt = stmt.where(CsoEventLog.channel_id == channel_id)
         if event_type:
@@ -651,21 +651,17 @@ async def api_get_channel_stream_events():
     return jsonify({"success": True, "data": payload})
 
 
-@blueprint.route('/tic-api/channels/new', methods=['POST'])
+@blueprint.route("/tic-api/channels/new", methods=["POST"])
 @admin_auth_required
 async def api_add_new_channel():
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     await add_new_channel(config, json_data)
     await queue_background_channel_update_tasks(config)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/settings/<channel_id>', methods=['GET'])
+@blueprint.route("/tic-api/channels/settings/<channel_id>", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_config(channel_id):
     try:
@@ -673,72 +669,55 @@ async def api_get_channel_config(channel_id):
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     channel_config = await read_config_one_channel(channel_id)
-    return jsonify(
-        {
-            "success": True,
-            "data":    channel_config
-        }
-    )
+    return jsonify({"success": True, "data": channel_config})
 
 
-@blueprint.route('/tic-api/channels/settings/<channel_id>/save', methods=['POST'])
+@blueprint.route("/tic-api/channels/settings/<channel_id>/save", methods=["POST"])
 @admin_auth_required
 async def api_set_config_channels(channel_id):
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     try:
         channel_id = int(channel_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     await update_channel(config, channel_id, json_data)
     await queue_background_channel_update_tasks(config)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/settings/multiple/save', methods=['POST'])
+@blueprint.route("/tic-api/channels/settings/multiple/save", methods=["POST"])
 @admin_auth_required
 async def api_set_config_multiple_channels():
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
-    for channel_id in json_data.get('channels', {}):
-        channel = json_data['channels'][channel_id]
+    config = current_app.config["APP_CONFIG"]
+    for channel_id in json_data.get("channels", {}):
+        channel = json_data["channels"][channel_id]
         normalized = normalize_id(channel_id, "channel")
         await update_channel(config, normalized, channel)
-    await queue_background_channel_update_tasks(config)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
-
-
-@blueprint.route('/tic-api/channels/sync', methods=['POST'])
-@admin_auth_required
-async def api_sync_channels():
-    config = current_app.config['APP_CONFIG']
     await queue_background_channel_update_tasks(config)
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/settings/multiple/add', methods=['POST'])
+@blueprint.route("/tic-api/channels/sync", methods=["POST"])
+@admin_auth_required
+async def api_sync_channels():
+    config = current_app.config["APP_CONFIG"]
+    await queue_background_channel_update_tasks(config)
+    return jsonify({"success": True})
+
+
+@blueprint.route("/tic-api/channels/settings/multiple/add", methods=["POST"])
 @admin_auth_required
 async def api_add_multiple_channels():
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
-    await add_bulk_channels(config, json_data.get('channels', []))
+    config = current_app.config["APP_CONFIG"]
+    await add_bulk_channels(config, json_data.get("channels", []))
     await queue_background_channel_update_tasks(config)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/bulk/epg-match/preview', methods=['POST'])
+@blueprint.route("/tic-api/channels/bulk/epg-match/preview", methods=["POST"])
 @admin_auth_required
 async def api_bulk_epg_match_preview():
     payload = await request.get_json(silent=True) or {}
@@ -780,7 +759,7 @@ async def api_bulk_epg_match_preview():
     return jsonify({"success": True, "data": preview_data})
 
 
-@blueprint.route('/tic-api/channels/bulk/epg-match/candidate-preview', methods=['POST'])
+@blueprint.route("/tic-api/channels/bulk/epg-match/candidate-preview", methods=["POST"])
 @admin_auth_required
 async def api_bulk_epg_match_candidate_preview():
     payload = await request.get_json(silent=True) or {}
@@ -796,7 +775,7 @@ async def api_bulk_epg_match_candidate_preview():
     return jsonify({"success": True, "data": candidate_preview})
 
 
-@blueprint.route('/tic-api/channels/bulk/epg-match/apply', methods=['POST'])
+@blueprint.route("/tic-api/channels/bulk/epg-match/apply", methods=["POST"])
 @admin_auth_required
 async def api_bulk_epg_match_apply():
     payload = await request.get_json(silent=True) or {}
@@ -807,7 +786,7 @@ async def api_bulk_epg_match_apply():
     summary = apply_result.get("summary", {})
 
     if summary.get("updated", 0) > 0:
-        config = current_app.config['APP_CONFIG']
+        config = current_app.config["APP_CONFIG"]
         await queue_background_channel_update_tasks(config)
 
     current_app.logger.info(
@@ -836,29 +815,27 @@ async def api_bulk_epg_match_apply():
     return jsonify({"success": True, "data": apply_result})
 
 
-@blueprint.route('/tic-api/channels/bulk/cso/apply', methods=['POST'])
+@blueprint.route("/tic-api/channels/bulk/cso/apply", methods=["POST"])
 @admin_auth_required
 async def api_bulk_cso_apply():
     payload = await request.get_json(silent=True) or {}
     channel_ids = payload.get("channel_ids", [])
     cso_enabled = bool(payload.get("cso_enabled", False))
-    cso_policy = payload.get("cso_policy") or {}
+    cso_profile = payload.get("cso_profile")
 
     apply_result = await apply_bulk_cso_settings(
         channel_ids=channel_ids,
         cso_enabled=cso_enabled,
-        cso_policy=cso_policy,
+        cso_profile=cso_profile,
     )
 
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     await queue_background_channel_update_tasks(config)
 
     user = getattr(request, "_current_user", None)
     if user:
         details = (
-            f"channels={len(channel_ids)};"
-            f"enabled={int(cso_enabled)};"
-            f"updated={apply_result.get('updated', 0)}"
+            f"channels={len(channel_ids)};" f"enabled={int(cso_enabled)};" f"updated={apply_result.get('updated', 0)}"
         )
         await audit_stream_event(
             user,
@@ -870,15 +847,15 @@ async def api_bulk_cso_apply():
     return jsonify({"success": True, "data": apply_result})
 
 
-@blueprint.route('/tic-api/channels/settings/multiple/delete', methods=['POST'])
+@blueprint.route("/tic-api/channels/settings/multiple/delete", methods=["POST"])
 @admin_auth_required
 async def api_delete_multiple_channels():
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     current_app.logger.warning(json_data)
 
     missing = []
-    for channel_id in json_data.get('channels', {}):
+    for channel_id in json_data.get("channels", {}):
         normalized = normalize_id(channel_id, "channel")
         deleted = await delete_channel(config, normalized)
         if not deleted:
@@ -887,29 +864,22 @@ async def api_delete_multiple_channels():
     # Queue background tasks to update TVHeadend
     await queue_background_channel_update_tasks(config)
 
-    return jsonify({
-        "success": True,
-        "missing": missing
-    })
+    return jsonify({"success": True, "missing": missing})
 
 
-@blueprint.route('/tic-api/channels/settings/<channel_id>/delete', methods=['DELETE'])
+@blueprint.route("/tic-api/channels/settings/<channel_id>/delete", methods=["DELETE"])
 @admin_auth_required
 async def api_delete_config_channels(channel_id):
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     try:
         channel_id = normalize_id(channel_id, "channel")
     except ValueError:
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     await delete_channel(config, channel_id)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/channels/<channel_id>/logo/<file_placeholder>', methods=['GET'])
+@blueprint.route("/tic-api/channels/<channel_id>/logo/<file_placeholder>", methods=["GET"])
 async def api_get_channel_logo(channel_id, file_placeholder):
     try:
         channel_id = normalize_id(channel_id, "channel")
@@ -923,19 +893,16 @@ async def api_get_channel_logo(channel_id, file_placeholder):
     return await send_file(image_io, mimetype=mime_type)
 
 
-@blueprint.route('/tic-api/channels/settings/groups/add', methods=['POST'])
+@blueprint.route("/tic-api/channels/settings/groups/add", methods=["POST"])
 @admin_auth_required
 async def api_add_channels_from_groups():
     json_data = await request.get_json()
-    groups = json_data.get('groups', [])
+    groups = json_data.get("groups", [])
 
     if not groups:
-        return jsonify({
-            "success": False,
-            "message": "No groups provided"
-        }), 400
+        return jsonify({"success": False, "message": "No groups provided"}), 400
 
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
 
     # This function needs to be implemented in the channels module
     # It should add all channels from the specified groups
@@ -943,9 +910,4 @@ async def api_add_channels_from_groups():
 
     await queue_background_channel_update_tasks(config)
 
-    return jsonify({
-        "success": True,
-        "data": {
-            "added_count": added_count
-        }
-    })
+    return jsonify({"success": True, "data": {"added_count": added_count}})

@@ -78,7 +78,7 @@ def normalize_local_proxy_url(
     base = base_url.rstrip("/")
     path = parsed.path or ""
     if path.startswith(LOCAL_PROXY_HOST_PLACEHOLDER):
-        path = path[len(LOCAL_PROXY_HOST_PLACEHOLDER):]
+        path = path[len(LOCAL_PROXY_HOST_PLACEHOLDER) :]
     if new_query:
         return f"{base}{path}?{new_query}"
     return f"{base}{path}"
@@ -129,11 +129,7 @@ def build_custom_hls_proxy_url(
     if ffmpeg or not _is_hls_source_url(source_url):
         template = _coerce_custom_proxy_template_for_stream_endpoint(template)
     encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
-    return (
-        template
-        .replace("[URL]", source_url)
-        .replace("[B64_URL]", encoded_url)
-    )
+    return template.replace("[URL]", source_url).replace("[B64_URL]", encoded_url)
 
 
 def build_configured_hls_proxy_url(
@@ -194,7 +190,9 @@ def is_tic_stream_url(url: str, instance_id: str | None = None) -> bool:
     return any(
         marker in url
         for marker in (
-            "/tic-web/",
+            "/tic-api/epg/",
+            "/tic-api/playlist/",
+            "/tic-api/hdhr_device/",
             "/xmltv.php",
             "/get.php",
         )

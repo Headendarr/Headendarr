@@ -147,11 +147,17 @@ def _serialize_channel_stream_row(row):
     if details_payload:
         reason = details_payload.get("reason") or details_payload.get("after_failure_reason")
         source_id = details_payload.get("source_id") or details_payload.get("failed_source_id")
+        return_code = details_payload.get("return_code")
+        ffmpeg_error = details_payload.get("ffmpeg_error")
         segments = []
         if reason:
             segments.append(f"reason={reason}")
         if source_id:
             segments.append(f"source={source_id}")
+        if return_code is not None:
+            segments.append(f"return_code={return_code}")
+        if ffmpeg_error:
+            segments.append(f"ffmpeg_error={ffmpeg_error}")
         details_text = " | ".join(segments) if segments else json.dumps(details_payload, sort_keys=True)
     endpoint = f"/tic-hls-proxy/channel/{row.get('channel_id')}" if row.get("channel_id") else "/tic-hls-proxy/channel"
     event_type = row.get("event_type")

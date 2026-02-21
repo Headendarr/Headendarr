@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -30,6 +29,9 @@ from backend.streaming import (
     is_local_hls_proxy_url,
     normalize_local_proxy_url,
 )
+from backend.stream_profiles import generate_cso_policy_from_profile
+from backend.users import get_user_by_stream_key
+from backend.config import enable_cso_command_debug_logging
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
@@ -42,31 +44,13 @@ _HLS_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
 _HLS_RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
 _HLS_STARTUP_RAMP_INTERVAL_SECONDS = 4
 
-
-DEFAULT_CSO_POLICY = {
-    "output_mode": "auto",
-    "container": "mpegts",
-    "video_codec": "",
-    "audio_codec": "",
-    "subtitle_mode": "copy",
-    "data_mode": "copy",
-    "hwaccel": "none",
-    "deinterlace": False,
-    "stall_seconds": CSO_STALL_SECONDS_DEFAULT,
-    "under_speed_ratio": CSO_UNDERSPEED_RATIO_DEFAULT,
-    "under_speed_window_seconds": CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT,
-    "startup_grace_seconds": CSO_STARTUP_GRACE_SECONDS_DEFAULT,
-}
-
-CSO_ALLOWED_VIDEO_CODECS = {"libx264", "libx265"}
-CSO_ALLOWED_AUDIO_CODECS = {"aac", "ac3"}
-CSO_ALLOWED_HWACCEL = {"none", "vaapi"}
-
 CONTAINER_TO_FORMAT = {
     "mpegts": "mpegts",
     "ts": "mpegts",
     "matroska": "matroska",
     "mkv": "matroska",
+    "mp4": "mp4",
+    "webm": "webm",
 }
 
 CONTAINER_TO_CONTENT_TYPE = {
@@ -74,11 +58,9 @@ CONTAINER_TO_CONTENT_TYPE = {
     "ts": "video/mp2t",
     "matroska": "video/x-matroska",
     "mkv": "video/x-matroska",
+    "mp4": "video/mp4",
+    "webm": "video/webm",
 }
-
-
-def default_cso_policy():
-    return dict(DEFAULT_CSO_POLICY)
 
 
 def detect_vaapi_device_path() -> str | None:
@@ -95,122 +77,6 @@ def cso_runtime_capabilities():
     return {
         "vaapi_available": bool(detect_vaapi_device_path()),
     }
-
-
-def normalize_cso_policy(value):
-    policy = default_cso_policy()
-    raw = {}
-    if isinstance(value, str):
-        value = value.strip()
-        if value:
-            try:
-                raw = json.loads(value)
-            except Exception:
-                raw = {}
-    elif isinstance(value, dict):
-        raw = value
-
-    mode = str(raw.get("output_mode") or policy["output_mode"]).strip().lower()
-    if mode not in {"auto", "force_remux", "force_transcode"}:
-        mode = policy["output_mode"]
-    policy["output_mode"] = mode
-
-    container = str(raw.get("container") or raw.get("output_container") or policy["container"]).strip().lower()
-    if container not in CONTAINER_TO_FORMAT:
-        container = policy["container"]
-    policy["container"] = container
-
-    video_codec = str(raw.get("video_codec") or "").strip().lower()
-    if video_codec and video_codec not in CSO_ALLOWED_VIDEO_CODECS:
-        video_codec = ""
-    policy["video_codec"] = video_codec
-
-    audio_codec = str(raw.get("audio_codec") or "").strip().lower()
-    if audio_codec and audio_codec not in CSO_ALLOWED_AUDIO_CODECS:
-        audio_codec = ""
-    policy["audio_codec"] = audio_codec
-
-    subtitle_mode = str(raw.get("subtitle_mode") or policy["subtitle_mode"]).strip().lower()
-    if subtitle_mode not in {"copy", "drop"}:
-        subtitle_mode = policy["subtitle_mode"]
-    policy["subtitle_mode"] = subtitle_mode
-
-    data_mode = str(raw.get("data_mode") or policy["data_mode"]).strip().lower()
-    if data_mode not in {"copy", "drop"}:
-        data_mode = policy["data_mode"]
-    policy["data_mode"] = data_mode
-
-    hwaccel = str(raw.get("hwaccel") or raw.get("hardware_acceleration") or policy["hwaccel"]).strip().lower()
-    if hwaccel not in CSO_ALLOWED_HWACCEL:
-        hwaccel = "none"
-    policy["hwaccel"] = hwaccel
-
-    deinterlace_raw = raw.get("deinterlace", policy["deinterlace"])
-    policy["deinterlace"] = bool(deinterlace_raw)
-    try:
-        policy["stall_seconds"] = max(
-            3, int(raw.get("stall_seconds", policy["stall_seconds"]) or policy["stall_seconds"]))
-    except Exception:
-        policy["stall_seconds"] = CSO_STALL_SECONDS_DEFAULT
-    try:
-        policy["under_speed_ratio"] = float(
-            raw.get("under_speed_ratio", policy["under_speed_ratio"]) or policy["under_speed_ratio"])
-    except Exception:
-        policy["under_speed_ratio"] = CSO_UNDERSPEED_RATIO_DEFAULT
-    if policy["under_speed_ratio"] <= 0:
-        policy["under_speed_ratio"] = CSO_UNDERSPEED_RATIO_DEFAULT
-    try:
-        policy["under_speed_window_seconds"] = max(
-            4,
-            int(raw.get("under_speed_window_seconds",
-                policy["under_speed_window_seconds"]) or policy["under_speed_window_seconds"]),
-        )
-    except Exception:
-        policy["under_speed_window_seconds"] = CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT
-    try:
-        policy["startup_grace_seconds"] = max(
-            0,
-            int(raw.get("startup_grace_seconds", policy["startup_grace_seconds"]) or policy["startup_grace_seconds"]),
-        )
-    except Exception:
-        policy["startup_grace_seconds"] = CSO_STARTUP_GRACE_SECONDS_DEFAULT
-
-    # Curated policy enforcement for maintainable FFmpeg command generation.
-    if mode == "auto":
-        policy["container"] = "mpegts"
-
-    if mode != "force_transcode":
-        policy["video_codec"] = ""
-        policy["audio_codec"] = ""
-        policy["hwaccel"] = "none"
-        policy["deinterlace"] = False
-    else:
-        if not policy["video_codec"]:
-            policy["video_codec"] = "libx264"
-        if not policy["audio_codec"]:
-            policy["audio_codec"] = "aac"
-        # HEVC in MPEG-TS is intentionally disallowed in curated profile.
-        if policy["container"] in {"mpegts", "ts"} and policy["video_codec"] == "libx265":
-            policy["video_codec"] = "libx264"
-        # VAAPI only available when /dev/dri is present.
-        if policy["hwaccel"] == "vaapi" and not detect_vaapi_device_path():
-            policy["hwaccel"] = "none"
-
-    return policy
-
-
-def resolve_cso_policy(channel, output_profile="default"):
-    base = normalize_cso_policy(getattr(channel, "cso_policy", None))
-    if (output_profile or "").lower() == "tvh":
-        base["output_mode"] = "auto"
-        base["container"] = "mpegts"
-        base["video_codec"] = ""
-        base["audio_codec"] = ""
-    return base
-
-
-def serialize_cso_policy(policy):
-    return json.dumps(normalize_cso_policy(policy), sort_keys=True)
 
 
 def policy_content_type(policy):
@@ -379,56 +245,6 @@ def _resolve_source_url(source_url, base_url, instance_id, stream_key=None, user
     return normalized
 
 
-def _build_ffmpeg_command(source_url, policy, include_subtitles=True, include_data=True):
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-reconnect",
-        "1",
-        "-reconnect_at_eof",
-        "1",
-        "-reconnect_streamed",
-        "1",
-        "-reconnect_delay_max",
-        "2",
-        "-i",
-        source_url,
-        "-map",
-        "0:p:0:v:0?",
-        "-map",
-        "0:p:0:a?",
-    ]
-    if include_subtitles:
-        command += ["-map", "0:p:0:s?"]
-
-    mode = (policy or {}).get("output_mode", "auto")
-    ffmpeg_format = policy_ffmpeg_format(policy)
-    video_codec = (policy or {}).get("video_codec", "").strip()
-    audio_codec = (policy or {}).get("audio_codec", "").strip()
-
-    if mode in {"auto", "force_remux"}:
-        command += ["-c", "copy"]
-        if not include_subtitles:
-            command.append("-sn")
-    else:
-        command += ["-c:v", video_codec or "libx264"]
-        command += ["-c:a", audio_codec or "aac"]
-        command += ["-c:s", "copy" if include_subtitles else "none"]
-        if not include_subtitles:
-            command.append("-sn")
-
-    # Hard CSO rule: never include data streams in output.
-    command.append("-dn")
-
-    if ffmpeg_format == "mpegts":
-        command += ["-muxdelay", "0", "-muxpreload", "0"]
-
-    command += ["-f", ffmpeg_format, "pipe:1"]
-    return command
-
-
 async def emit_channel_stream_event(
     *,
     channel_id=None,
@@ -475,21 +291,24 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
         days = 1
     cutoff_dt = datetime.utcnow() - timedelta(days=days)
     async with Session() as session:
-        result = await session.execute(
-            delete(CsoEventLog).where(CsoEventLog.created_at < cutoff_dt)
-        )
+        result = await session.execute(delete(CsoEventLog).where(CsoEventLog.created_at < cutoff_dt))
         await session.commit()
         return int(result.rowcount or 0)
 
 
 def _build_ingest_ffmpeg_command(source_url, program_index=0):
     map_program = max(0, int(program_index or 0))
-    return [
+    command = [
         "ffmpeg",
         "-hide_banner",
-        "-nostats",
         "-loglevel",
-        "warning",
+        "info" if enable_cso_command_debug_logging else "warning",
+    ]
+    if enable_cso_command_debug_logging:
+        command += ["-stats"]
+    else:
+        command += ["-nostats"]
+    command += [
         "-progress",
         "pipe:2",
         "-reconnect",
@@ -519,38 +338,38 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0):
         "mpegts",
         "pipe:1",
     ]
-
-
-def _build_output_ffmpeg_command(policy):
-    builder = CsoFfmpegCommandBuilder(policy)
-    return builder.build_output_command()
+    return command
 
 
 def _policy_log_label(policy):
     data = policy or {}
     return (
-        f"output_mode={data.get('output_mode', 'auto')}, "
+        f"output_mode={data.get('output_mode', 'force_remux')}, "
         f"container={data.get('container', 'mpegts')}, "
         f"video_codec={data.get('video_codec', '') or 'copy'}, "
         f"audio_codec={data.get('audio_codec', '') or 'copy'}, "
         f"subtitle_mode={data.get('subtitle_mode', 'copy')}, "
-        f"hwaccel={data.get('hwaccel', 'none')}, "
+        f"hwaccel={bool(data.get('hwaccel', False))}, "
         f"deinterlace={bool(data.get('deinterlace', False))}"
     )
 
 
-class CsoFfmpegCommandBuilder:
+class CsoOutputFfmpegCommandBuilder:
     """Curated FFmpeg command builder for CSO output pipelines."""
 
     def __init__(self, policy):
-        self.policy = normalize_cso_policy(policy)
+        self.policy = policy or {}
 
     def _base(self):
-        return [
+        command = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "warning",
+            "info" if enable_cso_command_debug_logging else "warning",
+        ]
+        if enable_cso_command_debug_logging:
+            command += ["-stats"]
+        command += [
             "-f",
             "mpegts",
             "-i",
@@ -560,33 +379,65 @@ class CsoFfmpegCommandBuilder:
             "-map",
             "0:a?",
         ]
+        return command
+
+    @staticmethod
+    def video_encoder_for_codec(video_codec: str) -> str:
+        codec = str(video_codec or "")
+        return {
+            "h264": "libx264",
+            "h265": "libx265",
+            "vp8": "libvpx",
+        }.get(codec, "libx264")
+
+    @staticmethod
+    def vaapi_encoder_for_codec(video_codec: str) -> str:
+        codec = str(video_codec or "")
+        return "hevc_vaapi" if codec == "h265" else "h264_vaapi"
+
+    @staticmethod
+    def audio_encoder_for_codec(audio_codec: str) -> str:
+        codec = str(audio_codec or "")
+        return {
+            "aac": "aac",
+            "ac3": "ac3",
+            "vorbis": "libvorbis",
+        }.get(codec, "aac")
 
     def _apply_stream_selection(self, command):
-        subtitle_mode = str(self.policy.get("subtitle_mode") or "copy").strip().lower()
+        subtitle_mode = self.policy.get("subtitle_mode") or "copy"
         if subtitle_mode != "drop":
             command += ["-map", "0:s?"]
         return subtitle_mode
 
     def _apply_transcode_options(self, command, subtitle_mode):
-        video_codec = self.policy.get("video_codec", "libx264")
-        audio_codec = self.policy.get("audio_codec", "aac")
-        hwaccel = self.policy.get("hwaccel", "none")
-        deinterlace = bool(self.policy.get("deinterlace", False))
-        vaapi_device = detect_vaapi_device_path() if hwaccel == "vaapi" else None
+        video_codec = self.policy.get("video_codec") or ""
+        audio_codec = self.policy.get("audio_codec") or ""
+        use_hwaccel = bool(self.policy.get("hwaccel", False)) and bool(video_codec)
+        deinterlace = bool(self.policy.get("deinterlace", False)) and bool(video_codec)
+        vaapi_device = detect_vaapi_device_path() if use_hwaccel else None
 
-        if vaapi_device:
-            encoder = "hevc_vaapi" if video_codec == "libx265" else "h264_vaapi"
-            filters = []
-            if deinterlace:
-                filters.append("bwdif=mode=send_frame:parity=auto:deint=all")
-            filters += ["format=nv12", "hwupload"]
-            command += ["-vaapi_device", vaapi_device, "-vf", ",".join(filters), "-c:v", encoder]
+        if video_codec:
+            if vaapi_device:
+                encoder = self.vaapi_encoder_for_codec(video_codec)
+                filters = []
+                if deinterlace:
+                    filters.append("bwdif=mode=send_frame:parity=auto:deint=all")
+                filters += ["format=nv12", "hwupload"]
+                command += ["-vaapi_device", vaapi_device, "-vf", ",".join(filters), "-c:v", encoder]
+            else:
+                if deinterlace:
+                    command += ["-vf", "bwdif=mode=send_frame:parity=auto:deint=all"]
+                sw_video_encoder = self.video_encoder_for_codec(video_codec)
+                command += ["-c:v", sw_video_encoder]
         else:
-            if deinterlace:
-                command += ["-vf", "bwdif=mode=send_frame:parity=auto:deint=all"]
-            command += ["-c:v", video_codec or "libx264"]
+            command += ["-c:v", "copy"]
 
-        command += ["-c:a", audio_codec or "aac"]
+        if audio_codec:
+            sw_audio_encoder = self.audio_encoder_for_codec(audio_codec)
+            command += ["-c:a", sw_audio_encoder]
+        else:
+            command += ["-c:a", "copy"]
         command += ["-c:s", "copy" if subtitle_mode != "drop" else "none"]
         if subtitle_mode == "drop":
             command.append("-sn")
@@ -594,20 +445,28 @@ class CsoFfmpegCommandBuilder:
     def build_output_command(self):
         command = self._base()
         subtitle_mode = self._apply_stream_selection(command)
-        mode = self.policy.get("output_mode", "auto")
+        mode = self.policy.get("output_mode") or "force_remux"
         ffmpeg_format = policy_ffmpeg_format(self.policy)
 
-        if mode in {"auto", "force_remux"}:
+        if mode == "force_transcode":
+            self._apply_transcode_options(command, subtitle_mode)
+        else:
             command += ["-c", "copy"]
+            if ffmpeg_format == "mp4":
+                # TS/HLS (MPEG-TS) often carries AAC with ADTS headers per frame.
+                # MP4 stores codec config once in container header (extradata), so
+                # remuxing copy into MP4 needs this bitstream rewrite.
+                command += ["-bsf:a", "aac_adtstoasc"]
             if subtitle_mode == "drop":
                 command.append("-sn")
-        else:
-            self._apply_transcode_options(command, subtitle_mode)
 
         # Hard CSO rule: never include data streams in output.
         command.append("-dn")
         if ffmpeg_format == "mpegts":
             command += ["-muxdelay", "0", "-muxpreload", "0"]
+        elif ffmpeg_format == "mp4":
+            # Fragmented MP4 is required for live streaming to a pipe.
+            command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
         command += ["-f", ffmpeg_format, "pipe:1"]
         return command
 
@@ -624,7 +483,6 @@ class CsoIngestSession:
         capacity_owner_key,
         stream_key=None,
         username=None,
-        cso_policy=None,
     ):
         self.key = key
         self.channel_id = channel_id
@@ -634,7 +492,6 @@ class CsoIngestSession:
         self.capacity_owner_key = capacity_owner_key
         self.stream_key = stream_key
         self.username = username
-        self.cso_policy = cso_policy
         self.process = None
         self.read_task = None
         self.stderr_task = None
@@ -657,7 +514,6 @@ class CsoIngestSession:
         self.last_ffmpeg_speed = None
         self.health_failover_reason = None
         self.health_failover_details = None
-        self.health_policy = default_cso_policy()
         self.hls_variants = []
         self.current_variant_position = None
         self.current_program_index = 0
@@ -695,7 +551,6 @@ class CsoIngestSession:
         self.last_ffmpeg_speed = None
         self.health_failover_reason = None
         self.health_failover_details = None
-        self.health_policy = normalize_cso_policy(self.cso_policy)
         logger.info(
             "CSO ingest upstream connected channel=%s source_id=%s source_url=%s subscribers=%s",
             self.channel_id,
@@ -765,7 +620,30 @@ class CsoIngestSession:
             self.current_source = source
             self.current_source_url = resolved_url
             self.current_capacity_key = capacity_key
-            await self._start_process_unlocked()
+            try:
+                await self._start_process_unlocked()
+            except Exception as exc:
+                await emit_channel_stream_event(
+                    channel_id=self.channel_id,
+                    source_id=getattr(source, "id", None),
+                    playlist_id=getattr(source, "playlist_id", None),
+                    session_id=self.key,
+                    event_type="playback_unavailable",
+                    severity="warning",
+                    details={
+                        "reason": "ingest_start_failed",
+                        "pipeline": "ingest",
+                        "source_url": resolved_url,
+                        "error": str(exc),
+                    },
+                )
+                self.current_source = None
+                self.current_source_url = ""
+                self.current_capacity_key = None
+                self.running = False
+                self.process = None
+                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
+                continue
             if old_capacity_key and old_capacity_key != capacity_key:
                 await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key)
 
@@ -792,50 +670,56 @@ class CsoIngestSession:
     async def _stderr_loop(self):
         if not self.process:
             return
+        text_buffer = ""
         while True:
             try:
-                line = await self.process.stderr.readline()
+                chunk = await self.process.stderr.read(4096)
             except Exception:
                 break
-            if not line:
+            if not chunk:
                 break
-            rendered = line.decode("utf-8", errors="replace").strip()
-            progress_handled = False
-            if "=" in rendered:
-                key, value = rendered.split("=", 1)
-                key = key.strip().lower()
-                value = value.strip()
-                if key == "speed":
-                    progress_handled = True
-                    value = value.rstrip("xX")
-                    try:
-                        self.last_ffmpeg_speed = float(value)
-                    except Exception:
-                        self.last_ffmpeg_speed = None
+            text_buffer += chunk.decode("utf-8", errors="replace")
+            lines = re.split(r"[\r\n]+", text_buffer)
+            text_buffer = lines.pop() if lines else ""
+            for rendered in lines:
+                rendered = rendered.strip()
+                if not rendered:
+                    continue
+                progress_handled = False
+                if "=" in rendered:
+                    key, value = rendered.split("=", 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    if key == "speed":
+                        progress_handled = True
+                        value = value.rstrip("xX")
+                        try:
+                            self.last_ffmpeg_speed = float(value)
+                        except Exception:
+                            self.last_ffmpeg_speed = None
 
-            if not progress_handled:
-                speed_match = _FFMPEG_SPEED_RE.search(rendered)
-                if speed_match:
-                    try:
-                        self.last_ffmpeg_speed = float(speed_match.group(1))
-                    except Exception:
-                        self.last_ffmpeg_speed = None
-            # Per-line FFmpeg stderr forwarding is intentionally suppressed to avoid log noise.
+                if not progress_handled:
+                    speed_match = _FFMPEG_SPEED_RE.search(rendered)
+                    if speed_match:
+                        try:
+                            self.last_ffmpeg_speed = float(speed_match.group(1))
+                        except Exception:
+                            self.last_ffmpeg_speed = None
 
     async def _health_loop(self):
         while self.running:
             await asyncio.sleep(1.0)
             now = time.time()
-            startup_grace_seconds = int(self.health_policy.get(
-                "startup_grace_seconds", CSO_STARTUP_GRACE_SECONDS_DEFAULT))
-            if (now - self.last_source_start_ts) < startup_grace_seconds:
+            if (now - self.last_source_start_ts) < CSO_STARTUP_GRACE_SECONDS_DEFAULT:
                 continue
 
-            stall_seconds = int(self.health_policy.get("stall_seconds", CSO_STALL_SECONDS_DEFAULT))
-            if self.last_chunk_ts and (now - self.last_chunk_ts) >= stall_seconds:
+            if self.last_chunk_ts and (now - self.last_chunk_ts) >= CSO_STALL_SECONDS_DEFAULT:
                 await self._request_health_failover(
                     "stall_timeout",
-                    {"stall_seconds": round(now - self.last_chunk_ts, 2), "threshold_seconds": stall_seconds},
+                    {
+                        "stall_seconds": round(now - self.last_chunk_ts, 2),
+                        "threshold_seconds": CSO_STALL_SECONDS_DEFAULT,
+                    },
                 )
                 return
 
@@ -844,20 +728,16 @@ class CsoIngestSession:
                 self.low_speed_since = None
                 continue
 
-            under_speed_ratio = float(self.health_policy.get("under_speed_ratio", CSO_UNDERSPEED_RATIO_DEFAULT))
-            under_speed_window_seconds = int(
-                self.health_policy.get("under_speed_window_seconds", CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT)
-            )
-            if speed < under_speed_ratio:
+            if speed < CSO_UNDERSPEED_RATIO_DEFAULT:
                 if self.low_speed_since is None:
                     self.low_speed_since = now
-                elif (now - self.low_speed_since) >= under_speed_window_seconds:
+                elif (now - self.low_speed_since) >= CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT:
                     await self._request_health_failover(
                         "under_speed",
                         {
                             "speed": speed,
-                            "threshold_ratio": under_speed_ratio,
-                            "window_seconds": under_speed_window_seconds,
+                            "threshold_ratio": CSO_UNDERSPEED_RATIO_DEFAULT,
+                            "window_seconds": CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT,
                         },
                     )
                     return
@@ -1160,6 +1040,19 @@ class CsoOutputSession:
         self.max_history_bytes = 16 * 1024 * 1024
         self.last_error = None
         self.ingest_queue = None
+        self._recent_ffmpeg_stderr = deque(maxlen=30)
+
+    def _ffmpeg_error_summary(self):
+        lines = [line for line in self._recent_ffmpeg_stderr if line]
+        if not lines:
+            return ""
+        error_lines = [
+            line
+            for line in lines
+            if any(token in line.lower() for token in ("error", "invalid", "failed", "could not", "unsupported"))
+        ]
+        selected = error_lines[-3:] if error_lines else lines[-3:]
+        return " | ".join(selected)
 
     async def start(self):
         async with self.lock:
@@ -1170,7 +1063,7 @@ class CsoOutputSession:
                 self.last_error = self.ingest_session.last_error or "ingest_not_running"
                 return
             self.ingest_queue = await self.ingest_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
-            command = _build_output_ffmpeg_command(self.policy)
+            command = CsoOutputFfmpegCommandBuilder(self.policy).build_output_command()
             logger.info(
                 "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
                 self.channel_id,
@@ -1199,15 +1092,29 @@ class CsoOutputSession:
     async def _stderr_loop(self):
         if not self.process:
             return
+        text_buffer = ""
         while True:
             try:
-                line = await self.process.stderr.readline()
+                chunk = await self.process.stderr.read(4096)
             except Exception:
                 break
-            if not line:
+            if not chunk:
                 break
-            rendered = line.decode("utf-8", errors="replace").strip()
-            # Per-line FFmpeg stderr forwarding is intentionally suppressed to avoid log noise.
+            text_buffer += chunk.decode("utf-8", errors="replace")
+            lines = re.split(r"[\r\n]+", text_buffer)
+            text_buffer = lines.pop() if lines else ""
+            for rendered in lines:
+                rendered = rendered.strip()
+                if not rendered:
+                    continue
+                self._recent_ffmpeg_stderr.append(rendered)
+                if enable_cso_command_debug_logging:
+                    logger.info("CSO output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
+        rendered = text_buffer.strip()
+        if rendered:
+            self._recent_ffmpeg_stderr.append(rendered)
+            if enable_cso_command_debug_logging:
+                logger.info("CSO output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
 
     async def _write_loop(self):
         try:
@@ -1228,6 +1135,7 @@ class CsoOutputSession:
                 pass
 
     async def _read_loop(self):
+        return_code = None
         try:
             while self.running and self.process and self.process.stdout:
                 chunk = await self.process.stdout.read(16384)
@@ -1235,6 +1143,36 @@ class CsoOutputSession:
                     break
                 await self._broadcast(chunk)
         finally:
+            try:
+                if self.process:
+                    return_code = self.process.returncode
+                    if return_code is None:
+                        return_code = await self.process.wait()
+            except Exception:
+                return_code = None
+
+            async with self.lock:
+                client_count = len(self.clients)
+                still_running = bool(self.running)
+
+            if still_running and client_count > 0:
+                self.last_error = "output_reader_ended"
+                ffmpeg_error = self._ffmpeg_error_summary()
+                await emit_channel_stream_event(
+                    channel_id=self.channel_id,
+                    source_id=getattr(self.ingest_session.current_source, "id", None),
+                    playlist_id=getattr(self.ingest_session.current_source, "playlist_id", None),
+                    session_id=self.key,
+                    event_type="playback_unavailable",
+                    severity="error",
+                    details={
+                        "reason": "output_reader_ended",
+                        "return_code": return_code,
+                        "ffmpeg_error": ffmpeg_error or None,
+                        "policy": self.policy,
+                    },
+                )
+
             await self.stop(force=True)
 
     async def _broadcast(self, chunk):
@@ -1428,12 +1366,12 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
     external_counts = {}
     fallback_channel_ids = set()
 
-    for value in (channel_ids or []):
+    for value in channel_ids or []:
         parsed = _safe_int(value)
         if parsed:
             fallback_channel_ids.add(parsed)
 
-    for session in (activity_sessions or []):
+    for session in activity_sessions or []:
         if not isinstance(session, dict):
             continue
         endpoint = str(session.get("endpoint") or "")
@@ -1550,6 +1488,12 @@ def _parse_hls_master_variants(payload):
 
 
 async def resolve_channel_for_stream(channel_id):
+    """Return the channel model for stream playback if it exists.
+
+    This is the single channel lookup for CSO playback requests. Callers should
+    reuse the returned model for profile resolution, activity metadata, and
+    session subscription setup to avoid duplicate database queries.
+    """
     async with Session() as session:
         result = await session.execute(
             select(Channel)
@@ -1562,18 +1506,41 @@ async def resolve_channel_for_stream(channel_id):
         return result.scalars().unique().one_or_none()
 
 
+async def _resolve_username_for_stream_key(config, stream_key):
+    key = str(stream_key or "").strip()
+    if not key:
+        return None
+    try:
+        tvh_stream_user = await config.get_tvh_stream_user()
+        if tvh_stream_user and str(tvh_stream_user.get("stream_key") or "") == key:
+            return tvh_stream_user.get("username")
+    except Exception:
+        pass
+    try:
+        user = await get_user_by_stream_key(key)
+        if user:
+            return user.username
+    except Exception:
+        pass
+    return None
+
+
 async def subscribe_channel_stream(
-    *,
     config,
-    channel_id,
+    channel,
     stream_key,
-    username,
-    output_profile,
+    profile,
     connection_id,
     prebuffer_bytes=0,
     request_base_url="",
 ):
-    channel = await resolve_channel_for_stream(channel_id)
+    """Subscribe a playback client to a channel/profile CSO output session.
+
+    Returns:
+    - `(generator, content_type, error_message, status_code)`
+      where `generator` is an async byte iterator when successful, otherwise
+      `None` with error details.
+    """
     if not channel:
         return None, None, "Channel not found", 404
     if not channel.enabled:
@@ -1590,11 +1557,11 @@ async def subscribe_channel_stream(
         )
         return None, None, "No available stream source for this channel", 503
 
-    policy = resolve_cso_policy(channel, output_profile=output_profile)
-    policy_key = serialize_cso_policy(policy)
+    policy = generate_cso_policy_from_profile(config, profile)
     ingest_key = f"cso-ingest-{channel.id}"
-    output_session_key = f"cso-output-{channel.id}-{output_profile or 'default'}-{uuid.uuid5(uuid.NAMESPACE_URL, policy_key)}"
+    output_session_key = f"cso-output-{channel.id}-{profile}"
     capacity_owner_key = f"cso-channel-{channel.id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
 
     def _ingest_factory():
         return CsoIngestSession(
@@ -1606,7 +1573,6 @@ async def subscribe_channel_stream(
             capacity_owner_key=capacity_owner_key,
             stream_key=stream_key,
             username=username,
-            cso_policy=getattr(channel, "cso_policy", None),
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -1618,7 +1584,7 @@ async def subscribe_channel_stream(
             session_id=ingest_key,
             event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
             severity="warning",
-            details={"reason": reason, "output_profile": output_profile or "default"},
+            details={"reason": reason, "profile": profile},
         )
         message = (
             "Channel unavailable due to connection limits"
@@ -1644,7 +1610,7 @@ async def subscribe_channel_stream(
             session_id=output_session_key,
             event_type="playback_unavailable",
             severity="warning",
-            details={"reason": reason, "output_profile": output_profile or "default"},
+            details={"reason": reason, "profile": profile},
         )
         return None, None, "Channel unavailable because output pipeline could not be started", 503
 
@@ -1667,16 +1633,16 @@ async def subscribe_channel_stream(
                 session_id=output_session_key,
                 event_type="session_end",
                 severity="info",
-                details={"output_profile": output_profile or "default"},
+                details={"profile": profile},
             )
 
     return _generator(), content_type, None, 200
 
 
-def build_cso_stream_query(output_profile=None, connection_id=None, stream_key=None, username=None):
+def build_cso_stream_query(profile=None, connection_id=None, stream_key=None, username=None):
     query = []
-    if output_profile:
-        query.append(("output_profile", output_profile))
+    if profile:
+        query.append(("profile", profile))
     if connection_id:
         query.append(("connection_id", connection_id))
     if stream_key:

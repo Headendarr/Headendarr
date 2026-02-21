@@ -25,8 +25,6 @@ from backend.config import is_tvh_process_running_locally
 from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.tvheadend.tvh_requests import configure_tvh
-from backend.epgs import render_xmltv_payload
-from backend.playlists import build_tic_playlist_with_epg_content
 
 
 @blueprint.route('/')
@@ -64,34 +62,6 @@ async def _serve_file(directory, filename):
         return response
     except Exception:
         return "File not found", 404
-
-
-@blueprint.route('/tic-web/epg.xml')
-@stream_key_required
-async def serve_epg_static():
-    await audit_stream_event(request._stream_user, 'epg_xml', request.path)
-    config = current_app.config['APP_CONFIG']
-    base_url = request.url_root.rstrip('/')
-    payload = render_xmltv_payload(config, base_url)
-    return Response(payload, mimetype='application/xml')
-
-
-@blueprint.route('/tic-web/playlist.m3u8')
-@stream_key_required
-async def serve_playlist_static():
-    await audit_stream_event(request._stream_user, "playlist_m3u8", request.path)
-    config = current_app.config['APP_CONFIG']
-    stream_key = request.args.get('stream_key') or request.args.get('password')
-    username = request._stream_user.username if stream_key and getattr(request, "_stream_user", None) else None
-    base_url = request.url_root.rstrip('/')
-    content = await build_tic_playlist_with_epg_content(
-        config,
-        base_url=base_url,
-        stream_key=stream_key,
-        username=username,
-        include_xtvg=False,
-    )
-    return Response(content, mimetype='application/vnd.apple.mpegurl')
 
 
 @blueprint.route('/tic-api/ping')

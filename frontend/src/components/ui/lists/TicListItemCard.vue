@@ -1,6 +1,9 @@
 <template>
   <div class="tic-list-item-card" :style="cardStyle">
-    <div class="tic-list-item-card__header row items-start justify-between no-wrap">
+    <div
+      v-if="!hideHeader"
+      class="tic-list-item-card__header row items-start justify-between no-wrap"
+    >
       <div class="tic-list-item-card__header-left">
         <slot name="header-left" />
       </div>
@@ -35,6 +38,10 @@ export default defineComponent({
     textColor: {
       type: String,
       default: '',
+    },
+    hideHeader: {
+      type: Boolean,
+      default: false,
     },
   },
   computed: {

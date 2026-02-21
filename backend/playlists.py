@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
+from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profile_name
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
 from backend.utils import convert_to_int
@@ -71,6 +72,8 @@ async def build_tic_playlist_with_epg_content(
     stream_key: str | None = None,
     username: str | None = None,
     include_xtvg: bool = False,
+    requested_profile: str | None = None,
+    allow_tvh_profile: bool = False,
 ) -> str:
     # Local imports to avoid circular import issues.
     from backend.channels import (
@@ -81,11 +84,13 @@ async def build_tic_playlist_with_epg_content(
     from backend.streaming import append_stream_key, build_local_hls_proxy_url, normalize_local_proxy_url
 
     settings = config.read_settings()
-    use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
+    use_cso_combined = settings["settings"].get("route_playlists_through_cso", False)
+    # Combined playlist routing is controlled by CSO routing settings and does not inherit per-source TVH routing.
+    use_tvh_source = False
     instance_id = config.ensure_instance_id()
     base_url = (base_url or "").rstrip("/") or settings["settings"].get("app_url") or ""
 
-    epg_url = f"{base_url}/xmltv.php"
+    epg_url = f"{base_url}/tic-api/epg/xmltv.xml"
     if stream_key:
         if username:
             epg_url = f"{epg_url}?username={username}&password={stream_key}"
@@ -101,18 +106,27 @@ async def build_tic_playlist_with_epg_content(
         )
 
     async def _resolve_stream_url(channel):
+        resolved_profile = resolve_cso_profile_name(
+            config,
+            requested_profile,
+            channel=channel,
+        )
+        tvh_stream_profile = resolve_tvh_profile_name(config, cso_profile=resolved_profile)
         channel_url = None
         channel_uuid = channel.get("tvh_uuid")
-        if channel.get("cso_enabled"):
+        if use_cso_combined or channel.get("cso_enabled"):
             channel_url = build_cso_channel_stream_url(
                 base_url=base_url,
                 channel_id=channel.get("id"),
                 stream_key=stream_key,
                 username=username,
-                output_profile="default",
+                profile=resolved_profile,
             )
         elif use_tvh_source and channel_uuid:
-            channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}?profile=pass&weight=300"
+            channel_url = (
+                f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}"
+                f"?profile={tvh_stream_profile}&weight=300"
+            )
             if stream_key:
                 channel_url = append_stream_key(channel_url, stream_key=stream_key)
         else:
@@ -258,9 +272,7 @@ def _render_xc_url(template, username, password):
     return template
 
 
-def _build_xc_live_stream_url(
-    host_url, stream_id, stream_url, account, preferred_extension=None
-):
+def _build_xc_live_stream_url(host_url, stream_id, stream_url, account, preferred_extension=None):
     suffix = _resolve_xc_live_suffix(stream_url, preferred_extension=preferred_extension)
     template = _build_xc_url_template(host_url, stream_id, suffix)
     return _render_xc_url(template, account.username, account.password)
@@ -271,9 +283,7 @@ async def _get_primary_xc_account_async(playlist_id):
         async with session.begin():
             result = await session.execute(
                 select(XcAccount)
-                .where(
-                    XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True)
-                )
+                .where(XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True))
                 .order_by(XcAccount.id.asc())
             )
             return result.scalars().first()
@@ -284,9 +294,7 @@ async def _get_enabled_xc_accounts_async(playlist_id):
         async with session.begin():
             result = await session.execute(
                 select(XcAccount)
-                .where(
-                    XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True)
-                )
+                .where(XcAccount.playlist_id == playlist_id, XcAccount.enabled.is_(True))
                 .order_by(XcAccount.id.asc())
             )
             return result.scalars().all()
@@ -333,9 +341,7 @@ async def _import_xc_playlist_streams(settings, playlist):
         if not isinstance(categories, list):
             logger.error("XC categories response invalid for playlist %s", playlist.id)
             return False
-        category_map = {
-            str(c.get("category_id")): c.get("category_name") for c in categories
-        }
+        category_map = {str(c.get("category_id")): c.get("category_name") for c in categories}
 
         streams = await _xc_request(
             session,
@@ -380,17 +386,13 @@ async def _import_xc_playlist_streams(settings, playlist):
                 "tvg_logo": tvg_logo,
                 "source_type": XC_ACCOUNT_TYPE,
                 "xc_stream_id": stream_id,
-                "xc_category_id": int(category_id)
-                if category_id is not None and str(category_id).isdigit()
-                else None,
+                "xc_category_id": int(category_id) if category_id is not None and str(category_id).isdigit() else None,
             }
         )
 
     async with Session() as session:
         async with session.begin():
-            stmt = delete(PlaylistStreams).where(
-                PlaylistStreams.playlist_id == playlist.id
-            )
+            stmt = delete(PlaylistStreams).where(PlaylistStreams.playlist_id == playlist.id)
             await session.execute(stmt)
             if items:
                 await session.execute(insert(PlaylistStreams), items)
@@ -423,9 +425,11 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                             "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                             "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
-                            "hls_proxy_path": result.hls_proxy_path
-                            if result.hls_proxy_path
-                            else "https://proxy.example.com/hls/[B64_URL].m3u8",
+                            "hls_proxy_path": (
+                                result.hls_proxy_path
+                                if result.hls_proxy_path
+                                else "https://proxy.example.com/hls/[B64_URL].m3u8"
+                            ),
                         }
                     )
                     continue
@@ -445,9 +449,11 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                         "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                         "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
-                        "hls_proxy_path": result.hls_proxy_path
-                        if result.hls_proxy_path
-                        else "https://proxy.example.com/hls/[B64_URL].m3u8",
+                        "hls_proxy_path": (
+                            result.hls_proxy_path
+                            if result.hls_proxy_path
+                            else "https://proxy.example.com/hls/[B64_URL].m3u8"
+                        ),
                         "health": playlist_health_map.get(str(result.id), {}),
                     }
                 )
@@ -464,15 +470,11 @@ async def read_config_one_playlist(config, playlist_id):
     playlist_health_map = _read_playlist_health_map(config) if config else {}
     async with Session() as session:
         async with session.begin():
-            query = await session.execute(
-                select(Playlist).filter(Playlist.id == playlist_id)
-            )
+            query = await session.execute(select(Playlist).filter(Playlist.id == playlist_id))
             result = query.scalar_one()
 
             if result:
-                accounts_query = await session.execute(
-                    select(XcAccount).where(XcAccount.playlist_id == result.id)
-                )
+                accounts_query = await session.execute(select(XcAccount).where(XcAccount.playlist_id == result.id))
                 accounts = accounts_query.scalars().all()
                 xc_accounts = [
                     {
@@ -492,9 +494,7 @@ async def read_config_one_playlist(config, playlist_id):
                     "url": result.url,
                     "connections": result.connections,
                     "account_type": result.account_type,
-                    "xc_live_stream_format": _normalize_xc_live_extension(
-                        result.xc_live_stream_format
-                    ),
+                    "xc_live_stream_format": _normalize_xc_live_extension(result.xc_live_stream_format),
                     "xc_username": result.xc_username,
                     "xc_password_set": bool(result.xc_password),
                     "xc_accounts": xc_accounts,
@@ -504,9 +504,11 @@ async def read_config_one_playlist(config, playlist_id):
                     "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                     "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                     "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
-                    "hls_proxy_path": result.hls_proxy_path
-                    if result.hls_proxy_path
-                    else "https://proxy.example.com/hls/[B64_URL].m3u8",
+                    "hls_proxy_path": (
+                        result.hls_proxy_path
+                        if result.hls_proxy_path
+                        else "https://proxy.example.com/hls/[B64_URL].m3u8"
+                    ),
                     "health": playlist_health_map.get(str(result.id), {}),
                 }
     return return_item
@@ -521,9 +523,7 @@ async def add_new_playlist(config, data):
                 name=data.get("name"),
                 url=data.get("url"),
                 account_type=account_type,
-                xc_live_stream_format=_normalize_xc_live_extension(
-                    data.get("xc_live_stream_format")
-                ),
+                xc_live_stream_format=_normalize_xc_live_extension(data.get("xc_live_stream_format")),
                 xc_username=data.get("xc_username"),
                 xc_password=data.get("xc_password"),
                 connections=convert_to_int(data.get("connections")),
@@ -549,9 +549,7 @@ async def add_new_playlist(config, data):
 async def update_playlist(config, playlist_id, data):
     async with Session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(Playlist).where(Playlist.id == playlist_id)
-            )
+            result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
             playlist = result.scalar_one()
             playlist.enabled = data.get("enabled", playlist.enabled)
             playlist.name = data.get("name", playlist.name)
@@ -567,21 +565,11 @@ async def update_playlist(config, playlist_id, data):
             playlist.connections = convert_to_int(data.get("connections"), playlist.connections)
             playlist.user_agent = data.get("user_agent", playlist.user_agent)
             playlist.use_hls_proxy = data.get("use_hls_proxy", playlist.use_hls_proxy)
-            playlist.use_custom_hls_proxy = data.get(
-                "use_custom_hls_proxy", playlist.use_custom_hls_proxy
-            )
-            playlist.chain_custom_hls_proxy = data.get(
-                "chain_custom_hls_proxy", playlist.chain_custom_hls_proxy
-            )
-            playlist.hls_proxy_use_ffmpeg = data.get(
-                "hls_proxy_use_ffmpeg", playlist.hls_proxy_use_ffmpeg
-            )
-            playlist.hls_proxy_prebuffer = data.get(
-                "hls_proxy_prebuffer", playlist.hls_proxy_prebuffer
-            )
-            playlist.hls_proxy_path = data.get(
-                "hls_proxy_path", playlist.hls_proxy_path
-            )
+            playlist.use_custom_hls_proxy = data.get("use_custom_hls_proxy", playlist.use_custom_hls_proxy)
+            playlist.chain_custom_hls_proxy = data.get("chain_custom_hls_proxy", playlist.chain_custom_hls_proxy)
+            playlist.hls_proxy_use_ffmpeg = data.get("hls_proxy_use_ffmpeg", playlist.hls_proxy_use_ffmpeg)
+            playlist.hls_proxy_prebuffer = data.get("hls_proxy_prebuffer", playlist.hls_proxy_prebuffer)
+            playlist.hls_proxy_path = data.get("hls_proxy_path", playlist.hls_proxy_path)
             if playlist.account_type == XC_ACCOUNT_TYPE:
                 await _upsert_xc_accounts(session, playlist, data)
 
@@ -601,9 +589,7 @@ async def _upsert_xc_accounts(session, playlist, data):
                 "connection_limit": 1,
             }
         ]
-    existing_query = await session.execute(
-        select(XcAccount).where(XcAccount.playlist_id == playlist.id)
-    )
+    existing_query = await session.execute(select(XcAccount).where(XcAccount.playlist_id == playlist.id))
     existing = {account.id: account for account in existing_query.scalars().all()}
     keep_ids = set()
     total_connections = 0
@@ -653,15 +639,11 @@ async def delete_playlist(config, playlist_id):
     net_uuids = []
     async with Session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(Playlist).where(Playlist.id == playlist_id)
-            )
+            result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
             playlist = result.scalar_one()
             if playlist.account_type == XC_ACCOUNT_TYPE:
                 accounts_query = await session.execute(
-                    select(XcAccount.tvh_uuid).where(
-                        XcAccount.playlist_id == playlist.id
-                    )
+                    select(XcAccount.tvh_uuid).where(XcAccount.playlist_id == playlist.id)
                 )
                 net_uuids = [row[0] for row in accounts_query.all() if row[0]]
             else:
@@ -669,12 +651,8 @@ async def delete_playlist(config, playlist_id):
                     net_uuids = [playlist.tvh_uuid]
             # Remove cached copy of playlist
             cache_files = [
-                os.path.join(
-                    config.config_path, "cache", "playlists", f"{playlist_id}.m3u"
-                ),
-                os.path.join(
-                    config.config_path, "cache", "playlists", f"{playlist_id}.yml"
-                ),
+                os.path.join(config.config_path, "cache", "playlists", f"{playlist_id}.m3u"),
+                os.path.join(config.config_path, "cache", "playlists", f"{playlist_id}.yml"),
             ]
             for f in cache_files:
                 if os.path.isfile(f):
@@ -709,9 +687,7 @@ async def download_playlist_file(settings, url, output, user_agent=None):
     for attempt in range(1, 4):
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    url, headers=headers, allow_redirects=True
-                ) as response:
+                async with session.get(url, headers=headers, allow_redirects=True) as response:
                     if response.status < 200 or response.status >= 400:
                         # Some providers return non-standard status codes but still send a valid M3U.
                         peek = b""
@@ -771,9 +747,7 @@ async def download_playlist_file(settings, url, output, user_agent=None):
 
 
 async def store_playlist_streams(config, playlist_id):
-    m3u_file = os.path.join(
-        config.config_path, "cache", "playlists", f"{playlist_id}.m3u"
-    )
+    m3u_file = os.path.join(config.config_path, "cache", "playlists", f"{playlist_id}.m3u")
     if not os.path.exists(m3u_file):
         logger.error("No such file '%s'", m3u_file)
         return False
@@ -787,9 +761,7 @@ async def store_playlist_streams(config, playlist_id):
     async with Session() as session:
         async with session.begin():
             # Delete all existing playlist streams
-            stmt = delete(PlaylistStreams).where(
-                PlaylistStreams.playlist_id == playlist_id
-            )
+            stmt = delete(PlaylistStreams).where(PlaylistStreams.playlist_id == playlist_id)
             await session.execute(stmt)
             # Add an updated list of streams from the M3U file to the DB
             logger.info(
@@ -807,9 +779,7 @@ async def store_playlist_streams(config, playlist_id):
                         "url": stream.url,
                         "channel_id": stream.attributes.get("channel-id"),
                         "group_title": stream.attributes.get("group-title"),
-                        "tvg_chno": int(tvg_channel_number)
-                        if tvg_channel_number is not None
-                        else None,
+                        "tvg_chno": int(tvg_channel_number) if tvg_channel_number is not None else None,
                         "tvg_id": stream.attributes.get("tvg-id"),
                         "tvg_logo": stream.attributes.get("tvg-logo"),
                         "source_type": M3U_ACCOUNT_TYPE,
@@ -836,22 +806,19 @@ async def import_playlist_data(config, playlist_id):
     settings = config.read_settings()
     async with Session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(Playlist).where(Playlist.id == playlist_id)
-            )
+            result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
             playlist = result.scalar_one()
     attempt_ts = int(time.time())
     source_url = playlist.url
 
     try:
         if playlist.account_type == XC_ACCOUNT_TYPE:
-            logger.info(
-                "Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url
-            )
+            logger.info("Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url)
             ok = await _import_xc_playlist_streams(settings, playlist)
             if not ok:
                 raise RuntimeError("Failed to import Xtream Codes source")
             from backend.channel_suggestions import update_channel_suggestions_for_playlist
+
             await update_channel_suggestions_for_playlist(playlist_id)
             _set_playlist_health(
                 config,
@@ -874,12 +841,8 @@ async def import_playlist_data(config, playlist_id):
             playlist.url,
         )
         start_time = time.time()
-        m3u_file = os.path.join(
-            config.config_path, "cache", "playlists", f"{playlist_id}.m3u"
-        )
-        await download_playlist_file(
-            settings, playlist.url, m3u_file, playlist.user_agent
-        )
+        m3u_file = os.path.join(config.config_path, "cache", "playlists", f"{playlist_id}.m3u")
+        await download_playlist_file(settings, playlist.url, m3u_file, playlist.user_agent)
         execution_time = time.time() - start_time
         logger.info(
             "Updated M3U file for playlist #%s was downloaded in '%s' seconds",
@@ -897,6 +860,7 @@ async def import_playlist_data(config, playlist_id):
             int(execution_time),
         )
         from backend.channel_suggestions import update_channel_suggestions_for_playlist
+
         await update_channel_suggestions_for_playlist(playlist_id)
         # Publish changes to TVH
         await publish_playlist_networks(config)
@@ -950,9 +914,7 @@ async def read_stream_details_from_all_playlists():
         if account.playlist_id not in primary_accounts:
             primary_accounts[account.playlist_id] = account
     async with Session() as session:
-        streams_result = await session.execute(
-            select(PlaylistStreams).options(joinedload(PlaylistStreams.playlist))
-        )
+        streams_result = await session.execute(select(PlaylistStreams).options(joinedload(PlaylistStreams.playlist)))
         stream_rows = streams_result.scalars().all()
     for result in stream_rows:
         stream_url = result.url
@@ -1016,9 +978,7 @@ async def read_filtered_stream_details_from_all_playlists(
             filters.append(PlaylistStreams.group_title == group_title)
         search_value = request_json.get("search_value")
         if search_value:
-            playlist_rows = await session.execute(
-                select(Playlist.id).where(Playlist.name.ilike(f"%{search_value}%"))
-            )
+            playlist_rows = await session.execute(select(Playlist.id).where(Playlist.name.ilike(f"%{search_value}%")))
             filters.append(
                 or_(
                     PlaylistStreams.name.ilike(f"%{search_value}%"),
@@ -1128,9 +1088,7 @@ async def publish_playlist_networks(config):
             if result.account_type == XC_ACCOUNT_TYPE:
                 async with Session() as session:
                     accounts_result = await session.execute(
-                        select(XcAccount)
-                        .where(XcAccount.playlist_id == result.id)
-                        .order_by(XcAccount.id.asc())
+                        select(XcAccount).where(XcAccount.playlist_id == result.id).order_by(XcAccount.id.asc())
                     )
                     accounts = accounts_result.scalars().all()
                 for account in accounts:
@@ -1156,9 +1114,7 @@ async def publish_playlist_networks(config):
                         if not found:
                             net_uuid = None
                     if not net_uuid:
-                        net_uuid = await tvh.create_network(
-                            tic_name, network_name, max_streams, net_priority
-                        )
+                        net_uuid = await tvh.create_network(tic_name, network_name, max_streams, net_priority)
                     net_conf = network_template.copy()
                     net_conf["uuid"] = net_uuid
                     net_conf["enabled"] = bool(result.enabled and account.enabled)
@@ -1197,9 +1153,7 @@ async def publish_playlist_networks(config):
             if not net_uuid:
                 # No network exists, create one
                 # Check if network exists with this playlist name
-                net_uuid = await tvh.create_network(
-                    tic_name, network_name, max_streams, net_priority
-                )
+                net_uuid = await tvh.create_network(tic_name, network_name, max_streams, net_priority)
             # Update network
             net_conf = network_template.copy()
             net_conf["uuid"] = net_uuid
@@ -1336,9 +1290,7 @@ async def get_playlist_groups(
 
             # Apply search filter to groups
             if search_value:
-                groups_query = groups_query.filter(
-                    PlaylistStreams.group_title.ilike(f"%{search_value}%")
-                )
+                groups_query = groups_query.filter(PlaylistStreams.group_title.ilike(f"%{search_value}%"))
 
             # Group by group name
             groups_query = groups_query.group_by(PlaylistStreams.group_title)
@@ -1346,22 +1298,14 @@ async def get_playlist_groups(
             # Apply ordering
             if order_by == "name":
                 if order_direction.lower() == "desc":
-                    groups_query = groups_query.order_by(
-                        PlaylistStreams.group_title.desc()
-                    )
+                    groups_query = groups_query.order_by(PlaylistStreams.group_title.desc())
                 else:
-                    groups_query = groups_query.order_by(
-                        PlaylistStreams.group_title.asc()
-                    )
+                    groups_query = groups_query.order_by(PlaylistStreams.group_title.asc())
             elif order_by == "channel_count":
                 if order_direction.lower() == "desc":
-                    groups_query = groups_query.order_by(
-                        func.count(PlaylistStreams.id).desc()
-                    )
+                    groups_query = groups_query.order_by(func.count(PlaylistStreams.id).desc())
                 else:
-                    groups_query = groups_query.order_by(
-                        func.count(PlaylistStreams.id).asc()
-                    )
+                    groups_query = groups_query.order_by(func.count(PlaylistStreams.id).asc())
 
             # Apply pagination (length=0 means no limit)
             if length:

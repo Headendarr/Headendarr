@@ -89,7 +89,7 @@
 
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <q-form @submit.prevent="save" class="tic-form-layout">
+              <q-form class="tic-form-layout">
                 <h5 class="text-primary q-mt-none q-mb-none">Additional EPG Metadata</h5>
 
                 <TicToggleInput
@@ -106,6 +106,7 @@
                   <TicTextInput
                     v-else
                     v-model="tmdbApiKey"
+                    @blur="triggerImmediateAutoSave"
                     label="Your TMDB account API key"
                     description="Can be found at 'https://www.themoviedb.org/settings/api'."
                   />
@@ -118,10 +119,6 @@
                   label="Attempt to fetch missing programme images from Google Image Search"
                   description="This only fetches the first Google image result for the programme title when TMDB has no result."
                 />
-
-                <div>
-                  <TicButton label="Save" icon="save" type="submit" color="positive" />
-                </div>
               </q-form>
             </q-card-section>
           </q-card>
@@ -215,7 +212,6 @@ import {useUiStore} from 'stores/ui';
 import EpgInfoDialog from 'components/EpgInfoDialog.vue';
 import EpgReviewDialog from 'components/EpgReviewDialog.vue';
 import {
-  TicButton,
   TicConfirmDialog,
   TicListActions,
   TicListToolbar,
@@ -227,7 +223,6 @@ import {
 export default defineComponent({
   name: 'EpgsPage',
   components: {
-    TicButton,
     TicListActions,
     TicListToolbar,
     TicResponsiveHelp,
@@ -249,6 +244,12 @@ export default defineComponent({
       enableGoogleImageSearchMetadata: null,
       epgStatusPollTimer: null,
       epgStatusPollInFlight: false,
+      isHydratingSettings: true,
+      autoSaveTimer: null,
+      autoSaveDelayMs: 3000,
+      saveInFlight: false,
+      pendingSaveAfterFlight: false,
+      lastSavedSettingsSignature: '',
     };
   },
   computed: {
@@ -266,6 +267,17 @@ export default defineComponent({
         ];
         return values.some((value) => String(value || '').toLowerCase().includes(query));
       });
+    },
+  },
+  watch: {
+    enableTmdbMetadata() {
+      this.queueAutoSave();
+    },
+    tmdbApiKey() {
+      this.queueAutoSave();
+    },
+    enableGoogleImageSearchMetadata() {
+      this.queueAutoSave();
     },
   },
   methods: {
@@ -348,6 +360,7 @@ export default defineComponent({
         this.enableTmdbMetadata = response.data.data.epgs.enable_tmdb_metadata;
         this.tmdbApiKey = response.data.data.epgs.tmdb_api_key;
         this.enableGoogleImageSearchMetadata = response.data.data.epgs.enable_google_image_search_metadata;
+        this.lastSavedSettingsSignature = JSON.stringify(this.buildMetadataPostData().settings);
       }).catch(() => {
         if (!silent) {
           this.$q.notify({
@@ -359,6 +372,77 @@ export default defineComponent({
           });
         }
       });
+    },
+    buildMetadataPostData() {
+      return {
+        settings: {
+          epgs: {
+            enable_tmdb_metadata: this.enableTmdbMetadata,
+            tmdb_api_key: this.tmdbApiKey,
+            enable_google_image_search_metadata: this.enableGoogleImageSearchMetadata,
+          },
+        },
+      };
+    },
+    triggerImmediateAutoSave() {
+      this.queueAutoSave(0);
+    },
+    queueAutoSave(delayMs = this.autoSaveDelayMs) {
+      if (this.isHydratingSettings) {
+        return;
+      }
+      if (this.autoSaveTimer) {
+        clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = null;
+      }
+      this.autoSaveTimer = setTimeout(() => {
+        this.autoSaveTimer = null;
+        this.persistSettings();
+      }, Math.max(0, Number(delayMs) || 0));
+    },
+    async flushPendingAutoSave() {
+      if (this.autoSaveTimer) {
+        clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = null;
+      }
+      await this.persistSettings();
+    },
+    async persistSettings() {
+      if (this.isHydratingSettings) {
+        return;
+      }
+      const postData = this.buildMetadataPostData();
+      const signature = JSON.stringify(postData.settings);
+      if (signature === this.lastSavedSettingsSignature && !this.pendingSaveAfterFlight) {
+        return;
+      }
+      if (this.saveInFlight) {
+        this.pendingSaveAfterFlight = true;
+        return;
+      }
+      this.saveInFlight = true;
+      try {
+        await axios({
+          method: 'POST',
+          url: '/tic-api/save-settings',
+          data: postData,
+        });
+        this.lastSavedSettingsSignature = signature;
+      } catch {
+        this.$q.notify({
+          color: 'negative',
+          position: 'top',
+          message: 'Failed to save settings',
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
+        });
+      } finally {
+        this.saveInFlight = false;
+        if (this.pendingSaveAfterFlight) {
+          this.pendingSaveAfterFlight = false;
+          this.queueAutoSave(0);
+        }
+      }
     },
     fetchSettings: function({silent = false} = {}) {
       return Promise.all([
@@ -525,47 +609,18 @@ export default defineComponent({
         });
       });
     },
-    save: function() {
-      // Save settings
-      const postData = {
-        settings: {
-          epgs: {
-            enable_tmdb_metadata: this.enableTmdbMetadata,
-            tmdb_api_key: this.tmdbApiKey,
-            enable_google_image_search_metadata: this.enableGoogleImageSearchMetadata,
-          },
-        },
-      };
-      axios({
-        method: 'POST',
-        url: '/tic-api/save-settings',
-        data: postData,
-      }).then(() => {
-        // Save success, show feedback
-        this.fetchSettings();
-        this.$q.notify({
-          color: 'positive',
-          icon: 'cloud_done',
-          message: 'Saved',
-          timeout: 200,
-        });
-      }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to save settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
-      });
-    },
   },
   created() {
     this.fetchSettings().finally(() => {
+      this.isHydratingSettings = false;
       this.startEpgStatusPolling();
     });
   },
+  beforeRouteLeave(to, from, next) {
+    this.flushPendingAutoSave().finally(() => next());
+  },
   beforeUnmount() {
+    this.flushPendingAutoSave();
     this.stopEpgStatusPolling();
   },
 });

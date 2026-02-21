@@ -103,83 +103,23 @@
                   <q-form class="tic-form-layout" @submit.prevent="submitBulkCsoChange">
                     <TicToggleInput
                       v-model="bulkCsoEnabled"
-                      label="Enable Channel Stream Organiser"
+                      label="Force use of Channel Stream Organiser for selected channels"
                       :description="`Apply CSO state to ${selectedBulkChannelCount} selected channel(s).`"
                     />
 
                     <div v-if="bulkCsoEnabled" class="sub-setting">
                       <TicSelectInput
-                        v-model="bulkCsoOutputMode"
-                        :options="bulkCsoOutputModeOptions"
+                        v-model="bulkCsoProfile"
+                        :options="bulkCsoProfileOptions"
                         option-label="label"
                         option-value="value"
                         :emit-value="true"
                         :map-options="true"
                         :clearable="false"
                         :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                        label="CSO Output Mode"
-                        description="Auto keeps first-source behavior. Force remux/transcode applies a fixed output profile."
+                        label="Preferred Stream Profile"
+                        description="Apply this CSO profile to all selected channels."
                       />
-
-                      <TicSelectInput
-                        v-model="bulkCsoContainer"
-                        :options="bulkCsoContainerOptions"
-                        option-label="label"
-                        option-value="value"
-                        :emit-value="true"
-                        :map-options="true"
-                        :clearable="false"
-                        :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                        label="Output Container"
-                        description="Default is MPEG-TS for TVHeadend compatibility."
-                      />
-
-                      <template v-if="bulkCsoOutputMode === 'force_transcode'">
-                        <TicSelectInput
-                          v-model="bulkCsoVideoCodec"
-                          :options="bulkCsoVideoCodecOptions"
-                          option-label="label"
-                          option-value="value"
-                          :emit-value="true"
-                          :map-options="true"
-                          :clearable="false"
-                          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                          label="Video Codec"
-                          description="Curated codec list for maintainable CSO transcoding. HEVC is only available with Matroska."
-                        />
-
-                        <TicSelectInput
-                          v-model="bulkCsoAudioCodec"
-                          :options="bulkCsoAudioCodecOptions"
-                          option-label="label"
-                          option-value="value"
-                          :emit-value="true"
-                          :map-options="true"
-                          :clearable="false"
-                          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                          label="Audio Codec"
-                          description="Curated codec list for predictable remux/transcode behavior."
-                        />
-
-                        <TicSelectInput
-                          v-model="bulkCsoHwAccel"
-                          :options="bulkCsoHwAccelOptions"
-                          option-label="label"
-                          option-value="value"
-                          :emit-value="true"
-                          :map-options="true"
-                          :clearable="false"
-                          :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                          label="Hardware Acceleration"
-                          :description="bulkCsoVaapiAvailable ? 'Use VAAPI when available via /dev/dri.' : 'VAAPI unavailable on this runtime (no /dev/dri detected).'"
-                        />
-
-                        <TicToggleInput
-                          v-model="bulkCsoForceDeinterlace"
-                          label="Force Deinterlace"
-                          description="Apply deinterlacing in transcoding pipelines (safe to leave enabled only when needed)."
-                        />
-                      </template>
                     </div>
                   </q-form>
                   <template #actions>
@@ -618,7 +558,7 @@ import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.
 import ChannelGroupSelectorDialog from 'components/ChannelGroupSelectorDialog.vue';
 import ChannelSuggestionsDialog from 'components/ChannelSuggestionsDialog.vue';
 import ChannelIssuesDialog from 'components/ChannelIssuesDialog.vue';
-import BulkEpgMatchDialog from 'components/channels/BulkEpgMatchDialog.vue';
+import BulkEpgMatchDialog from 'components/BulkEpgMatchDialog.vue';
 import {copyToClipboard} from 'quasar';
 import {
   TicActionButton,
@@ -634,6 +574,19 @@ import {
   TicSelectInput,
   TicToggleInput,
 } from 'components/ui';
+
+const CSO_SUPPORTED_PROFILE_IDS = [
+  'mpegts',
+  'matroska',
+  'h264-aac-mpegts',
+  'h264-aac-matroska',
+  'h264-aac-mp4',
+  'vp8-vorbis-webm',
+  'h265-aac-mp4',
+  'h265-aac-matroska',
+  'h265-ac3-mp4',
+  'h265-ac3-matroska',
+];
 
 export default defineComponent({
   name: 'ChannelsPage',
@@ -683,13 +636,8 @@ export default defineComponent({
       //newCategory: ref(''),
       bulkEditCategories: [],
       bulkCsoEnabled: false,
-      bulkCsoOutputMode: 'auto',
-      bulkCsoContainer: 'mpegts',
-      bulkCsoVideoCodec: 'libx264',
-      bulkCsoAudioCodec: 'aac',
-      bulkCsoHwAccel: 'none',
-      bulkCsoForceDeinterlace: false,
-      bulkCsoVaapiAvailable: true,
+      bulkCsoProfile: 'mpegts',
+      csoProfileChoices: [],
       bulkFilterDraft: {
         category: null,
         streamSource: null,
@@ -886,48 +834,8 @@ export default defineComponent({
         },
       ];
     },
-    bulkCsoOutputModeOptions() {
-      return [
-        {label: 'Auto (copy/remux)', value: 'auto'},
-        {label: 'Force remux', value: 'force_remux'},
-        {label: 'Force transcode', value: 'force_transcode'},
-      ];
-    },
-    bulkCsoContainerOptions() {
-      const isAuto = this.bulkCsoOutputMode === 'auto';
-      return [
-        {label: 'MPEG-TS', value: 'mpegts'},
-        {label: 'Matroska (MKV)', value: 'matroska', disable: isAuto},
-      ];
-    },
-    bulkCsoVideoCodecOptions() {
-      const isMpegts = this.bulkCsoContainer === 'mpegts';
-      return [
-        {label: 'H.264 (libx264)', value: 'libx264'},
-        {label: 'H.265 (libx265)', value: 'libx265', disable: isMpegts},
-      ];
-    },
-    bulkCsoAudioCodecOptions() {
-      return [
-        {label: 'AAC', value: 'aac'},
-      ];
-    },
-    bulkCsoHwAccelOptions() {
-      return [
-        {label: 'None (software)', value: 'none'},
-        {label: 'VAAPI (/dev/dri)', value: 'vaapi', disable: !this.bulkCsoVaapiAvailable},
-      ];
-    },
-  },
-  watch: {
-    bulkCsoContainer() {
-      this.enforceBulkCsoPolicyCompatibility();
-    },
-    bulkCsoOutputMode() {
-      this.enforceBulkCsoPolicyCompatibility();
-    },
-    bulkCsoHwAccel() {
-      this.enforceBulkCsoPolicyCompatibility();
+    bulkCsoProfileOptions() {
+      return (this.csoProfileChoices || []).map((value) => ({label: value, value}));
     },
   },
   methods: {
@@ -1339,12 +1247,36 @@ export default defineComponent({
         url: '/tic-api/get-settings',
       }).then((response) => {
         const uiSettings = response.data.data?.ui_settings || {};
+        const streamProfiles = response.data.data?.stream_profiles || {};
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles);
+        this.bulkCsoProfile = this.resolveValidCsoProfile(this.bulkCsoProfile);
         this.enableChannelHealthHighlight = uiSettings.enable_channel_health_highlight !== false;
         this.fetchChannels();
       }).catch(() => {
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(null);
+        this.bulkCsoProfile = this.resolveValidCsoProfile(this.bulkCsoProfile);
         this.enableChannelHealthHighlight = true;
         this.fetchChannels();
       });
+    },
+    normalizeCsoProfileOptions(rawOptions) {
+      if (rawOptions && typeof rawOptions === 'object') {
+        const enabledProfiles = Object.entries(rawOptions)
+          .filter(([, value]) => value && value.enabled !== false)
+          .map(([key]) => String(key || '').trim().toLowerCase())
+          .filter((item) => item && CSO_SUPPORTED_PROFILE_IDS.includes(item));
+        if (enabledProfiles.length) {
+          return enabledProfiles;
+        }
+      }
+      return ['mpegts'];
+    },
+    resolveValidCsoProfile(requestedProfile) {
+      const candidate = String(requestedProfile || '').trim().toLowerCase();
+      if (candidate && this.csoProfileChoices.includes(candidate)) {
+        return candidate;
+      }
+      return this.csoProfileChoices[0] || 'mpegts';
     },
     channelRowClass: function(channel) {
       if (!this.enableChannelHealthHighlight) {
@@ -1657,17 +1589,8 @@ export default defineComponent({
         return;
       }
       const first = selected[0] || {};
-      const policy = first.cso_policy || {};
-      const capabilities = first.cso_capabilities || {};
-      this.bulkCsoVaapiAvailable = !!capabilities.vaapi_available;
       this.bulkCsoEnabled = !!first.cso_enabled;
-      this.bulkCsoOutputMode = policy.output_mode || 'auto';
-      this.bulkCsoContainer = policy.container || 'mpegts';
-      this.bulkCsoVideoCodec = policy.video_codec || 'libx264';
-      this.bulkCsoAudioCodec = policy.audio_codec || 'aac';
-      this.bulkCsoHwAccel = policy.hwaccel || 'none';
-      this.bulkCsoForceDeinterlace = !!policy.deinterlace;
-      this.enforceBulkCsoPolicyCompatibility();
+      this.bulkCsoProfile = this.resolveValidCsoProfile(first.cso_profile);
       this.bulkEditCsoDialogVisible = true;
     },
     toggleSelection(channel) {
@@ -1783,22 +1706,6 @@ export default defineComponent({
         timeout: 2000,
       });
     },
-    enforceBulkCsoPolicyCompatibility() {
-      if (this.bulkCsoOutputMode === 'auto') {
-        this.bulkCsoContainer = 'mpegts';
-      }
-      if (this.bulkCsoOutputMode !== 'force_transcode') {
-        this.bulkCsoHwAccel = 'none';
-        this.bulkCsoForceDeinterlace = false;
-        return;
-      }
-      if (this.bulkCsoContainer === 'mpegts' && this.bulkCsoVideoCodec === 'libx265') {
-        this.bulkCsoVideoCodec = 'libx264';
-      }
-      if (this.bulkCsoHwAccel === 'vaapi' && !this.bulkCsoVaapiAvailable) {
-        this.bulkCsoHwAccel = 'none';
-      }
-    },
     async submitBulkCsoChange() {
       const selectedIds = this.filteredChannels.filter((channel) => channel.selected).map((channel) => channel.id);
       if (!selectedIds.length) {
@@ -1810,42 +1717,10 @@ export default defineComponent({
         return;
       }
 
-      if (this.bulkCsoEnabled && this.bulkCsoOutputMode === 'force_transcode') {
-        if (!String(this.bulkCsoVideoCodec || '').trim() || !String(this.bulkCsoAudioCodec || '').trim()) {
-          this.$q.notify({
-            color: 'negative',
-            position: 'top',
-            message: 'Video codec and audio codec are required for force transcode mode.',
-            icon: 'report_problem',
-            actions: [{icon: 'close', color: 'white'}],
-          });
-          return;
-        }
-        if (this.bulkCsoContainer === 'mpegts' && this.bulkCsoVideoCodec === 'libx265') {
-          this.$q.notify({
-            color: 'negative',
-            position: 'top',
-            message: 'H.265 (libx265) is only supported when container is Matroska (MKV).',
-            icon: 'report_problem',
-            actions: [{icon: 'close', color: 'white'}],
-          });
-          return;
-        }
-      }
-
       const payload = {
         channel_ids: selectedIds,
         cso_enabled: this.bulkCsoEnabled,
-        cso_policy: {
-          output_mode: this.bulkCsoOutputMode,
-          container: this.bulkCsoContainer,
-          video_codec: this.bulkCsoVideoCodec,
-          audio_codec: this.bulkCsoAudioCodec,
-          subtitle_mode: 'copy',
-          data_mode: 'copy',
-          hwaccel: this.bulkCsoHwAccel,
-          deinterlace: this.bulkCsoForceDeinterlace,
-        },
+        cso_profile: this.bulkCsoProfile,
       };
 
       try {

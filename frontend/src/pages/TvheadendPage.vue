@@ -5,7 +5,7 @@
         <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <q-form class="tic-form-layout" @submit.prevent="save">
+              <q-form class="tic-form-layout">
                 <h5 v-if="aioMode === false" class="text-primary q-mt-none q-mb-none">TVHeadend Connection</h5>
 
                 <div v-if="aioMode === false">
@@ -15,6 +15,7 @@
                   <TicTextInput
                     v-else
                     v-model="tvhHost"
+                    @blur="triggerImmediateAutoSave"
                     label="TVHeadend Host"
                     description="Set a hostname or IP reachable by Headendarr and all clients that connect to TVHeadend."
                   />
@@ -27,6 +28,7 @@
                   <TicNumberInput
                     v-else
                     v-model="tvhPort"
+                    @blur="triggerImmediateAutoSave"
                     label="TVHeadend Port"
                     :min="1"
                     :max="65535"
@@ -40,6 +42,7 @@
                   <TicTextInput
                     v-else
                     v-model="tvhUsername"
+                    @blur="triggerImmediateAutoSave"
                     :readonly="aioMode"
                     label="TVHeadend Admin Username"
                     description="Optional for external TVHeadend. Leave blank if TVHeadend has no admin user configured."
@@ -53,6 +56,7 @@
                   <TicTextInput
                     v-else
                     v-model="tvhPassword"
+                    @blur="triggerImmediateAutoSave"
                     :type="hideTvhPassword ? 'password' : 'text'"
                     label="TVHeadend Admin Password"
                     description="Optional for external TVHeadend. Leave blank if TVHeadend has no admin user configured."
@@ -95,6 +99,7 @@
                   <TicTextareaInput
                     v-else
                     v-model="defaultFfmpegPipeArgs"
+                    @blur="triggerImmediateAutoSave"
                     label="Default FFmpeg Stream Buffer Options"
                     description="Note: [URL] and [SERVICE_NAME] will be replaced with the stream source and service name."
                     autogrow
@@ -106,10 +111,6 @@
                   label="Enable Periodic Stream Health Scans"
                   description="Every 6 hours Headendarr marks TVHeadend muxes as pending so TVH scans them. Failed scans disable the mux and surface channel warnings."
                 />
-
-                <div>
-                  <TicButton label="Save" icon="save" type="submit" color="positive" />
-                </div>
               </q-form>
             </q-card-section>
           </q-card>
@@ -171,13 +172,12 @@
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
-import {TicButton, TicNumberInput, TicResponsiveHelp, TicTextareaInput, TicTextInput, TicToggleInput} from 'components/ui';
+import {TicNumberInput, TicResponsiveHelp, TicTextareaInput, TicTextInput, TicToggleInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
   name: 'TvheadendPage',
   components: {
-    TicButton,
     TicNumberInput,
     TicResponsiveHelp,
     TicTextareaInput,
@@ -217,13 +217,43 @@ export default defineComponent({
         defaultFfmpegPipeArgs: '-hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1',
         periodicMuxScan: false,
       }),
+      isHydratingSettings: true,
+      autoSaveTimer: null,
+      autoSaveDelayMs: 3000,
+      saveInFlight: false,
+      pendingSaveAfterFlight: false,
+      lastSavedSettingsSignature: '',
     };
+  },
+  watch: {
+    tvhHost() {
+      this.queueAutoSave();
+    },
+    tvhPort() {
+      this.queueAutoSave();
+    },
+    tvhUsername() {
+      this.queueAutoSave();
+    },
+    tvhPassword() {
+      this.queueAutoSave();
+    },
+    enableStreamBuffer() {
+      this.queueAutoSave();
+    },
+    defaultFfmpegPipeArgs() {
+      this.queueAutoSave();
+    },
+    periodicMuxScan() {
+      this.queueAutoSave();
+    },
   },
   methods: {
     convertToCamelCase(str) {
       return str.replace(/([-_][a-z])/g, (group) => group.toUpperCase().replace('-', '').replace('_', ''));
     },
     fetchSettings: function() {
+      this.isHydratingSettings = true;
       // Fetch current settings
       axios({
         method: 'get',
@@ -252,6 +282,7 @@ export default defineComponent({
             this[key] = this.defSet[key];
           }
         });
+        this.lastSavedSettingsSignature = JSON.stringify(this.buildSettingsPostData().settings);
 
       }).catch(() => {
         this.$q.notify({
@@ -261,13 +292,14 @@ export default defineComponent({
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
+      }).finally(() => {
+        this.isHydratingSettings = false;
       });
       const {firstRun, aioMode} = aioStartupTasks();
       this.aioMode = aioMode;
     },
-    save: function() {
-      // Save settings
-      let postData = {
+    buildSettingsPostData() {
+      const postData = {
         settings: {
           tvheadend: {},
         },
@@ -285,23 +317,53 @@ export default defineComponent({
           postData.settings[snakeCaseKey] = this[key] ?? this.defSet[key];
         }
       });
-      this.$q.loading.show();
-      axios({
-        method: 'POST',
-        url: '/tic-api/save-settings',
-        data: postData,
-      }).then((response) => {
-        this.$q.loading.hide();
-        // Save success, show feedback
-        this.fetchSettings();
-        this.$q.notify({
-          color: 'positive',
-          icon: 'cloud_done',
-          message: 'Saved',
-          timeout: 200,
+      return postData;
+    },
+    triggerImmediateAutoSave() {
+      this.queueAutoSave(0);
+    },
+    queueAutoSave(delayMs = this.autoSaveDelayMs) {
+      if (this.isHydratingSettings) {
+        return;
+      }
+      if (this.autoSaveTimer) {
+        clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = null;
+      }
+      this.autoSaveTimer = setTimeout(() => {
+        this.autoSaveTimer = null;
+        this.persistSettings();
+      }, Math.max(0, Number(delayMs) || 0));
+    },
+    async flushPendingAutoSave() {
+      if (this.autoSaveTimer) {
+        clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = null;
+      }
+      await this.persistSettings();
+    },
+    async persistSettings() {
+      if (this.isHydratingSettings) {
+        return;
+      }
+      const postData = this.buildSettingsPostData();
+      const signature = JSON.stringify(postData.settings);
+      if (signature === this.lastSavedSettingsSignature && !this.pendingSaveAfterFlight) {
+        return;
+      }
+      if (this.saveInFlight) {
+        this.pendingSaveAfterFlight = true;
+        return;
+      }
+      this.saveInFlight = true;
+      try {
+        await axios({
+          method: 'POST',
+          url: '/tic-api/save-settings',
+          data: postData,
         });
-      }).catch(() => {
-        this.$q.loading.hide();
+        this.lastSavedSettingsSignature = signature;
+      } catch {
         this.$q.notify({
           color: 'negative',
           position: 'top',
@@ -309,11 +371,23 @@ export default defineComponent({
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
-      });
+      } finally {
+        this.saveInFlight = false;
+        if (this.pendingSaveAfterFlight) {
+          this.pendingSaveAfterFlight = false;
+          this.queueAutoSave(0);
+        }
+      }
     },
   },
   created() {
     this.fetchSettings();
+  },
+  beforeRouteLeave(to, from, next) {
+    this.flushPendingAutoSave().finally(() => next());
+  },
+  beforeUnmount() {
+    this.flushPendingAutoSave();
   },
 });
 </script>
