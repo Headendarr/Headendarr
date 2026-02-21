@@ -60,8 +60,8 @@
                   />
                 </template>
 
-                <div class="bulk-epg-match__row-body row q-col-gutter-md items-start">
-                  <div class="col-12 col-md-5">
+                <div class="bulk-epg-match__row-body row items-start">
+                  <div class="col-12 col-md-5 bulk-epg-match__left-col">
                     <div v-if="!row.candidates.length" class="text-negative text-caption">
                       No likely EPG match found.
                     </div>
@@ -122,7 +122,11 @@
                     </div>
                   </div>
 
-                  <div class="col-12 col-md-7">
+                  <div class="col-auto gt-sm bulk-epg-match__divider-col">
+                    <q-separator vertical class="bulk-epg-match__vertical-separator" />
+                  </div>
+
+                  <div class="col-12 col-md bulk-epg-match__right-col">
                     <div v-if="row.previewLoading" class="row items-center q-gutter-sm q-mt-sm">
                       <q-spinner size="18px" color="primary" />
                       <div class="text-caption text-grey-7">Loading EPG details...</div>
@@ -511,6 +515,26 @@ export default {
   padding-top: 8px;
 }
 
+.bulk-epg-match__left-col {
+  padding-right: 12px;
+}
+
+.bulk-epg-match__divider-col {
+  display: flex;
+  justify-content: center;
+  padding: 0 4px;
+  align-self: stretch;
+}
+
+.bulk-epg-match__vertical-separator {
+  height: 100%;
+}
+
+.bulk-epg-match__right-col {
+  min-width: 0;
+  padding-left: 12px;
+}
+
 .bulk-epg-match__preview-icon {
   align-self: flex-start;
 }
@@ -542,6 +566,15 @@ export default {
 @media (max-width: 1023px) {
   .bulk-epg-match__list {
     max-height: calc(100vh - 200px);
+  }
+
+  .bulk-epg-match__left-col {
+    padding-right: 0;
+  }
+
+  .bulk-epg-match__right-col {
+    padding-left: 0;
+    margin-top: 10px;
   }
 }
 </style>
