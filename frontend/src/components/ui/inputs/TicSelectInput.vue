@@ -23,6 +23,16 @@
       @update:model-value="$emit('update:modelValue', $event)"
       @filter="onFilter"
     >
+      <template #option="scope">
+        <q-item v-bind="scope.itemProps">
+          <q-item-section>
+            <q-item-label>{{ resolveOptionLabel(scope.opt) }}</q-item-label>
+            <q-item-label v-if="resolveOptionDescription(scope.opt)" caption>
+              {{ resolveOptionDescription(scope.opt) }}
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+      </template>
       <template #no-option>
         <q-item>
           <q-item-section class="text-grey"> No matching options</q-item-section>
@@ -62,6 +72,10 @@ const props = defineProps({
   optionValue: {
     type: [String, Function],
     default: 'value',
+  },
+  optionDescription: {
+    type: [String, Function],
+    default: null,
   },
   emitValue: {
     type: Boolean,
@@ -132,6 +146,19 @@ const resolveOptionLabel = (option) => {
     return option;
   }
   return option?.[props.optionLabel] ?? '';
+};
+
+const resolveOptionDescription = (option) => {
+  if (!props.optionDescription) {
+    return '';
+  }
+  if (typeof props.optionDescription === 'function') {
+    return props.optionDescription(option) || '';
+  }
+  if (typeof option === 'string') {
+    return '';
+  }
+  return option?.[props.optionDescription] ?? '';
 };
 
 const onFilter = (value, update) => {

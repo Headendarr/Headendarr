@@ -27,6 +27,8 @@ TVH_PROFILE_TO_STREAM_PROFILE = {
 # CSO profiles that users can request via ?profile=<id>
 SUPPORTED_STREAM_PROFILES = {
     "mpegts": {
+        "label": "mpegts",
+        "description": "Force remux to MPEG-TS.",
         "output_mode": "force_remux",
         "container": "mpegts",
         "video_codec": "",
@@ -36,6 +38,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "matroska": {
+        "label": "matroska",
+        "description": "Force remux to Matroska.",
         "output_mode": "force_remux",
         "container": "matroska",
         "video_codec": "",
@@ -45,6 +49,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "matroska",
     },
     "aac-mpegts": {
+        "label": "aac-mpegts",
+        "description": "Transcode audio to AAC in MPEG-TS (copy video).",
         "output_mode": "force_transcode",
         "container": "mpegts",
         "video_codec": "",
@@ -54,6 +60,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "aac-matroska": {
+        "label": "aac-matroska",
+        "description": "Transcode audio to AAC in Matroska (copy video).",
         "output_mode": "force_transcode",
         "container": "matroska",
         "video_codec": "",
@@ -63,6 +71,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "aac-mp4": {
+        "label": "aac-mp4",
+        "description": "Transcode audio to AAC in MP4 (copy video).",
         "output_mode": "force_transcode",
         "container": "mp4",
         "video_codec": "",
@@ -72,6 +82,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "h264-aac-mpegts": {
+        "label": "h264-aac-mpegts",
+        "description": "Transcode to H.264/AAC in MPEG-TS.",
         "output_mode": "force_transcode",
         "container": "mpegts",
         "video_codec": "h264",
@@ -81,6 +93,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "webtv-h264-aac-mpegts",
     },
     "h264-aac-matroska": {
+        "label": "h264-aac-matroska",
+        "description": "Transcode to H.264/AAC in Matroska.",
         "output_mode": "force_transcode",
         "container": "matroska",
         "video_codec": "h264",
@@ -90,6 +104,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "webtv-h264-aac-matroska",
     },
     "h264-aac-mp4": {
+        "label": "h264-aac-mp4",
+        "description": "Transcode to H.264/AAC in MP4.",
         "output_mode": "force_transcode",
         "container": "mp4",
         "video_codec": "h264",
@@ -99,6 +115,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "webtv-h264-aac-mp4",
     },
     "vp8-vorbis-webm": {
+        "label": "vp8-vorbis-webm",
+        "description": "Transcode to VP8/Vorbis in WebM.",
         "output_mode": "force_transcode",
         "container": "webm",
         "video_codec": "vp8",
@@ -108,6 +126,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "webtv-vp8-vorbis-webm",
     },
     "h265-aac-mp4": {
+        "label": "h265-aac-mp4",
+        "description": "Transcode to H.265/AAC in MP4.",
         "output_mode": "force_transcode",
         "container": "mp4",
         "video_codec": "h265",
@@ -117,6 +137,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "h265-aac-matroska": {
+        "label": "h265-aac-matroska",
+        "description": "Transcode to H.265/AAC in Matroska.",
         "output_mode": "force_transcode",
         "container": "matroska",
         "video_codec": "h265",
@@ -126,6 +148,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "h265-ac3-mp4": {
+        "label": "h265-ac3-mp4",
+        "description": "Transcode to H.265/AC3 in MP4.",
         "output_mode": "force_transcode",
         "container": "mp4",
         "video_codec": "h265",
@@ -135,6 +159,8 @@ SUPPORTED_STREAM_PROFILES = {
         "tvh_profile_name": "pass",
     },
     "h265-ac3-matroska": {
+        "label": "h265-ac3-matroska",
+        "description": "Transcode to H.265/AC3 in Matroska.",
         "output_mode": "force_transcode",
         "container": "matroska",
         "video_codec": "h265",
@@ -149,6 +175,8 @@ SUPPORTED_STREAM_PROFILES = {
 DEFAULT_PROFILE = "default"
 TVH_PROFILE = "tvh"
 DEFAULT_PROFILE_TEMPLATE = {
+    "label": "",
+    "description": "",
     "output_mode": "force_remux",
     "container": "mpegts",
     "video_codec": "",
@@ -364,3 +392,23 @@ def get_profile_options_payload(config):
     return {
         "profiles": entries,
     }
+
+
+def get_stream_profile_definitions():
+    definitions = []
+    for profile_key, profile in SUPPORTED_STREAM_PROFILES.items():
+        profile = _normalized_profile_definition(profile)
+        video_codec = str(profile.get("video_codec") or "").strip().lower()
+        transcode = bool(profile.get("transcode", False))
+        supports_video_filters = bool(transcode and video_codec)
+        definitions.append(
+            {
+                "key": profile_key,
+                "label": str(profile.get("label") or profile_key),
+                "description": str(profile.get("description") or ""),
+                "transcode": transcode,
+                "supports_hwaccel": supports_video_filters,
+                "supports_deinterlace": supports_video_filters,
+            }
+        )
+    return definitions

@@ -24,6 +24,7 @@ from backend.auth import (
 from backend.config import is_tvh_process_running_locally
 from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
+from backend.stream_profiles import get_stream_profile_definitions
 from backend.tvheadend.tvh_requests import configure_tvh
 
 
@@ -444,7 +445,8 @@ async def api_save_config():
 async def api_get_config_tvheadend():
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
-    return_data = settings.get('settings', {})
+    return_data = dict(settings.get('settings', {}) or {})
+    return_data["stream_profile_definitions"] = get_stream_profile_definitions()
     return jsonify(
         {
             "success": True,

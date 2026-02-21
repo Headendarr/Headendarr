@@ -505,91 +505,7 @@ export default defineComponent({
         {label: 'Maintained space', value: 'maintained_space'},
         {label: 'Forever', value: 'forever'},
       ],
-      streamProfileDefinitions: [
-        {
-          key: 'mpegts',
-          label: 'mpegts',
-          description: 'Force remux to MPEG-TS.',
-          transcode: false,
-        },
-        {
-          key: 'matroska',
-          label: 'matroska',
-          description: 'Force remux to Matroska.',
-          transcode: false,
-        },
-        {
-          key: 'aac-mpegts',
-          label: 'aac-mpegts',
-          description: 'Transcode audio to AAC in MPEG-TS (copy video).',
-          transcode: true,
-          supportsHwaccel: false,
-          supportsDeinterlace: false,
-        },
-        {
-          key: 'aac-matroska',
-          label: 'aac-matroska',
-          description: 'Transcode audio to AAC in Matroska (copy video).',
-          transcode: true,
-          supportsHwaccel: false,
-          supportsDeinterlace: false,
-        },
-        {
-          key: 'aac-mp4',
-          label: 'aac-mp4',
-          description: 'Transcode audio to AAC in MP4 (copy video).',
-          transcode: true,
-          supportsHwaccel: false,
-          supportsDeinterlace: false,
-        },
-        {
-          key: 'h264-aac-mpegts',
-          label: 'h264-aac-mpegts',
-          description: 'Transcode to H.264/AAC in MPEG-TS.',
-          transcode: true,
-        },
-        {
-          key: 'h264-aac-matroska',
-          label: 'h264-aac-matroska',
-          description: 'Transcode to H.264/AAC in Matroska.',
-          transcode: true,
-        },
-        {
-          key: 'h264-aac-mp4',
-          label: 'h264-aac-mp4',
-          description: 'Transcode to H.264/AAC in MP4.',
-          transcode: true,
-        },
-        {
-          key: 'vp8-vorbis-webm',
-          label: 'vp8-vorbis-webm',
-          description: 'Transcode to VP8/Vorbis in WebM.',
-          transcode: true,
-        },
-        {
-          key: 'h265-aac-mp4', label: 'h265-aac-mp4',
-          description: 'Transcode to H.265/AAC in MP4.',
-          transcode: true,
-        },
-        {
-          key: 'h265-aac-matroska',
-          label: 'h265-aac-matroska',
-          description: 'Transcode to H.265/AAC in Matroska.',
-          transcode: true,
-        },
-        {
-          key: 'h265-ac3-mp4',
-          label: 'h265-ac3-mp4',
-          description: 'Transcode to H.265/AC3 in MP4.',
-          transcode: true,
-        },
-        {
-          key: 'h265-ac3-matroska',
-          label: 'h265-ac3-matroska',
-          description: 'Transcode to H.265/AC3 in Matroska.',
-          transcode: true,
-        },
-      ],
+      streamProfileDefinitions: [],
       isHydratingSettings: true,
       autoSaveTimer: null,
       autoSaveDelayMs: 3000,
@@ -705,6 +621,27 @@ export default defineComponent({
         };
       });
       return next;
+    },
+    normalizeStreamProfileDefinitions(definitions, streamProfiles) {
+      if (Array.isArray(definitions) && definitions.length) {
+        return definitions.map((profile) => ({
+          key: String(profile?.key || '').trim().toLowerCase(),
+          label: String(profile?.label || profile?.key || '').trim(),
+          description: String(profile?.description || '').trim(),
+          transcode: !!profile?.transcode,
+          supportsHwaccel: !!profile?.supports_hwaccel,
+          supportsDeinterlace: !!profile?.supports_deinterlace,
+        })).filter((profile) => profile.key);
+      }
+      const fallbackMap = streamProfiles && typeof streamProfiles === 'object' ? streamProfiles : {};
+      return Object.keys(fallbackMap).map((key) => ({
+        key,
+        label: key,
+        description: '',
+        transcode: false,
+        supportsHwaccel: false,
+        supportsDeinterlace: false,
+      }));
     },
     ensureStreamProfileEntry(key) {
       if (!this.streamProfiles || typeof this.streamProfiles !== 'object') {
@@ -916,6 +853,10 @@ export default defineComponent({
       }).then((response) => {
         // All other application settings are here
         const appSettings = response.data.data;
+        this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+          appSettings.stream_profile_definitions,
+          appSettings.stream_profiles ?? this.defSet.streamProfiles,
+        );
         // Iterate over the settings and set values
         Object.entries(appSettings).forEach(([key, value]) => {
           if (typeof value !== 'object') {

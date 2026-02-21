@@ -113,6 +113,7 @@
                         :options="bulkCsoProfileOptions"
                         option-label="label"
                         option-value="value"
+                        option-description="description"
                         :emit-value="true"
                         :map-options="true"
                         :clearable="false"
@@ -575,19 +576,6 @@ import {
   TicToggleInput,
 } from 'components/ui';
 
-const CSO_SUPPORTED_PROFILE_IDS = [
-  'mpegts',
-  'matroska',
-  'h264-aac-mpegts',
-  'h264-aac-matroska',
-  'h264-aac-mp4',
-  'vp8-vorbis-webm',
-  'h265-aac-mp4',
-  'h265-aac-matroska',
-  'h265-ac3-mp4',
-  'h265-ac3-matroska',
-];
-
 export default defineComponent({
   name: 'ChannelsPage',
   components: {
@@ -637,6 +625,7 @@ export default defineComponent({
       bulkEditCategories: [],
       bulkCsoEnabled: false,
       bulkCsoProfile: 'mpegts',
+      streamProfileDefinitions: [],
       csoProfileChoices: [],
       bulkFilterDraft: {
         category: null,
@@ -835,7 +824,7 @@ export default defineComponent({
       ];
     },
     bulkCsoProfileOptions() {
-      return (this.csoProfileChoices || []).map((value) => ({label: value, value}));
+      return this.csoProfileChoices || [];
     },
   },
   methods: {
@@ -1248,35 +1237,65 @@ export default defineComponent({
       }).then((response) => {
         const uiSettings = response.data.data?.ui_settings || {};
         const streamProfiles = response.data.data?.stream_profiles || {};
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles);
+        this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+          response.data.data?.stream_profile_definitions,
+        );
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
         this.bulkCsoProfile = this.resolveValidCsoProfile(this.bulkCsoProfile);
         this.enableChannelHealthHighlight = uiSettings.enable_channel_health_highlight !== false;
         this.fetchChannels();
       }).catch(() => {
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(null);
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(null, this.streamProfileDefinitions);
         this.bulkCsoProfile = this.resolveValidCsoProfile(this.bulkCsoProfile);
         this.enableChannelHealthHighlight = true;
         this.fetchChannels();
       });
     },
-    normalizeCsoProfileOptions(rawOptions) {
+    normalizeStreamProfileDefinitions(definitions) {
+      if (!Array.isArray(definitions)) {
+        return [];
+      }
+      return definitions.map((profile) => ({
+        key: String(profile?.key || '').trim().toLowerCase(),
+        label: String(profile?.label || profile?.key || '').trim(),
+        description: String(profile?.description || '').trim(),
+      })).filter((profile) => profile.key);
+    },
+    normalizeCsoProfileOptions(rawOptions, definitions = []) {
+      const definitionByKey = new Map((definitions || []).map((item) => [item.key, item]));
+      const buildOption = (key) => {
+        const info = definitionByKey.get(key);
+        return {
+          value: key,
+          label: info?.label || key,
+          description: info?.description || '',
+        };
+      };
       if (rawOptions && typeof rawOptions === 'object') {
-        const enabledProfiles = Object.entries(rawOptions)
-          .filter(([, value]) => value && value.enabled !== false)
-          .map(([key]) => String(key || '').trim().toLowerCase())
-          .filter((item) => item && CSO_SUPPORTED_PROFILE_IDS.includes(item));
-        if (enabledProfiles.length) {
-          return enabledProfiles;
+        const enabledSet = new Set(
+          Object.entries(rawOptions).
+            filter(([, value]) => value && value.enabled !== false).
+            map(([key]) => String(key || '').trim().toLowerCase()).
+            filter((item) => item),
+        );
+        if (enabledSet.size) {
+          const ordered = (definitions || []).map((item) => item.key).filter((key) => enabledSet.has(key));
+          const unordered = [...enabledSet].filter((key) => !ordered.includes(key));
+          return [...ordered, ...unordered].map(buildOption);
         }
       }
-      return ['mpegts'];
+      if (definitions.length) {
+        return definitions.map((item) => buildOption(item.key));
+      }
+      return [{value: 'mpegts', label: 'mpegts', description: ''}];
     },
     resolveValidCsoProfile(requestedProfile) {
       const candidate = String(requestedProfile || '').trim().toLowerCase();
-      if (candidate && this.csoProfileChoices.includes(candidate)) {
+      const values = (this.csoProfileChoices || []).map((item) => item.value);
+      if (candidate && values.includes(candidate)) {
         return candidate;
       }
-      return this.csoProfileChoices[0] || 'mpegts';
+      return this.csoProfileChoices[0]?.value || 'mpegts';
     },
     channelRowClass: function(channel) {
       if (!this.enableChannelHealthHighlight) {

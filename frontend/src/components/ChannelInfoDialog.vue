@@ -117,6 +117,7 @@
               :options="csoProfileOptions"
               option-label="label"
               option-value="value"
+              option-description="description"
               :emit-value="true"
               :map-options="true"
               :clearable="false"
@@ -281,19 +282,6 @@ import TicTextareaInput from 'components/ui/inputs/TicTextareaInput.vue';
 import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
 
-const CSO_SUPPORTED_PROFILE_IDS = [
-  'mpegts',
-  'matroska',
-  'h264-aac-mpegts',
-  'h264-aac-matroska',
-  'h264-aac-mp4',
-  'vp8-vorbis-webm',
-  'h265-aac-mp4',
-  'h265-aac-matroska',
-  'h265-ac3-mp4',
-  'h265-ac3-matroska',
-];
-
 export default {
   name: 'ChannelInfoDialog',
   components: {
@@ -340,6 +328,7 @@ export default {
       epgChannel: '',
       csoEnabled: false,
       csoProfile: 'default',
+      streamProfileDefinitions: [],
       csoProfileChoices: [],
       listOfPlaylists: [],
       listOfChannelSources: [],
@@ -397,10 +386,7 @@ export default {
       };
     },
     csoProfileOptions() {
-      return (this.csoProfileChoices || []).map((value) => ({
-        label: value,
-        value,
-      }));
+      return this.csoProfileChoices || [];
     },
   },
   watch: {
@@ -530,8 +516,16 @@ export default {
         this.epgSourceName = response.data.data.guide.epg_name;
         this.epgChannel = response.data.data.guide.channel_id;
         this.csoEnabled = !!response.data.data.cso_enabled;
+        if (response.data.data.stream_profile_definitions) {
+          this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+            response.data.data.stream_profile_definitions,
+          );
+        }
         if (response.data.data.cso_profile_options) {
-          this.csoProfileChoices = this.normalizeCsoProfileOptions(response.data.data.cso_profile_options);
+          this.csoProfileChoices = this.normalizeCsoProfileOptions(
+            response.data.data.cso_profile_options,
+            this.streamProfileDefinitions,
+          );
         }
         this.csoProfile = this.resolveValidCsoProfile(response.data.data.cso_profile);
         this.listOfChannelSources = response.data.data.sources.map((source) => this.withLocalKey({
@@ -882,35 +876,68 @@ export default {
         url: '/tic-api/get-settings',
       }).then((response) => {
         const streamProfiles = response.data?.data?.stream_profiles || {};
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles);
+        this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+          response.data?.data?.stream_profile_definitions,
+        );
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
         this.csoProfile = this.resolveValidCsoProfile(this.csoProfile);
       }).catch(() => {
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(null);
+        this.csoProfileChoices = this.normalizeCsoProfileOptions(null, this.streamProfileDefinitions);
         this.csoProfile = this.resolveValidCsoProfile(this.csoProfile);
       });
     },
-    normalizeCsoProfileOptions(rawOptions) {
+    normalizeStreamProfileDefinitions(definitions) {
+      if (!Array.isArray(definitions)) {
+        return [];
+      }
+      return definitions.map((profile) => ({
+        key: String(profile?.key || '').trim().toLowerCase(),
+        label: String(profile?.label || profile?.key || '').trim(),
+        description: String(profile?.description || '').trim(),
+      })).filter((profile) => profile.key);
+    },
+    normalizeCsoProfileOptions(rawOptions, definitions = []) {
+      const definitionByKey = new Map((definitions || []).map((item) => [item.key, item]));
+      const buildOption = (key) => {
+        const info = definitionByKey.get(key);
+        return {
+          value: key,
+          label: info?.label || key,
+          description: info?.description || '',
+        };
+      };
+
       if (Array.isArray(rawOptions)) {
-        const normalized = rawOptions
-          .map((item) => String(item || '').trim().toLowerCase())
-          .filter((item) => item && CSO_SUPPORTED_PROFILE_IDS.includes(item));
-        return normalized.length ? normalized : ['mpegts'];
+        const normalized = rawOptions.map((item) => String(item || '').trim().toLowerCase()).filter((item) => item);
+        if (normalized.length) {
+          return normalized.map(buildOption);
+        }
       }
-      if (rawOptions && typeof rawOptions === 'object') {
-        const enabledProfiles = Object.entries(rawOptions)
-          .filter(([, value]) => value && value.enabled !== false)
-          .map(([key]) => String(key || '').trim().toLowerCase())
-          .filter((item) => item && CSO_SUPPORTED_PROFILE_IDS.includes(item));
-        return enabledProfiles.length ? enabledProfiles : ['mpegts'];
+      if (rawOptions && typeof rawOptions === 'object' && !Array.isArray(rawOptions)) {
+        const enabledSet = new Set(
+          Object.entries(rawOptions).
+            filter(([, value]) => value && value.enabled !== false).
+            map(([key]) => String(key || '').trim().toLowerCase()).
+            filter((item) => item),
+        );
+        if (enabledSet.size) {
+          const ordered = (definitions || []).map((item) => item.key).filter((key) => enabledSet.has(key));
+          const unordered = [...enabledSet].filter((key) => !ordered.includes(key));
+          return [...ordered, ...unordered].map(buildOption);
+        }
       }
-      return ['mpegts'];
+      if (definitions.length) {
+        return definitions.map((item) => buildOption(item.key));
+      }
+      return [{value: 'mpegts', label: 'mpegts', description: ''}];
     },
     resolveValidCsoProfile(requestedProfile) {
       const candidate = String(requestedProfile || '').trim().toLowerCase();
-      if (candidate && this.csoProfileChoices.includes(candidate)) {
+      const values = (this.csoProfileChoices || []).map((item) => item.value);
+      if (candidate && values.includes(candidate)) {
         return candidate;
       }
-      return this.csoProfileChoices[0] || 'mpegts';
+      return this.csoProfileChoices[0]?.value || 'mpegts';
     },
     isChannelSourceDisabled(source) {
       if (!source || source.source_type === 'manual' || !source.playlist_id) {
