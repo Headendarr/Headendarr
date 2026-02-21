@@ -78,7 +78,6 @@
                         map-options
                         :clearable="false"
                         :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-                        class="bulk-epg-match__candidate-select"
                         @update:model-value="(value) => onCandidateChange(row, value)"
                       >
                         <template #selected-item="scope">
@@ -105,7 +104,7 @@
                           </q-item>
                         </template>
                       </q-select>
-                      <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-mt-xs">
+                      <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-mt-xs bulk-epg-match__match-summary">
                         {{ candidateMatchSummary(row) }}
                       </div>
                       <q-checkbox
@@ -141,8 +140,10 @@
                           fallback-icon="tv"
                         />
                         <div class="col">
-                          <div class="text-weight-medium">{{ row.preview.epg_name }} ★ {{ row.preview.name }}</div>
-                          <div>
+                          <div class="text-weight-medium bulk-epg-match__preview-title">
+                            {{ row.preview.epg_name }} ★ {{ row.preview.name }}
+                          </div>
+                          <div class="bulk-epg-match__detail-row">
                             <span class="text-weight-medium">Channel ID:</span> {{ row.preview.channel_id || '-' }}
                             <span class="q-mx-xs">•</span>
                             <span class="text-weight-medium">Now->future:</span>
@@ -150,17 +151,21 @@
                             <span class="q-mx-xs">•</span>
                             <span class="text-weight-medium">Total:</span> {{ row.preview.total_programmes || 0 }}
                           </div>
-                          <div>
+                          <div class="bulk-epg-match__detail-row">
                             <span class="text-weight-medium">Coverage horizon:</span>
                             {{ formatHorizon(row.preview.future_horizon_hours) }}
                           </div>
-                          <div>
+                          <div class="bulk-epg-match__detail-row">
                             <span class="text-weight-medium">Now:</span>
-                            {{ formatNowProgramme(row.preview.now_programme) }}
+                            <span class="bulk-epg-match__detail-value-clamp">
+                              {{ formatNowProgramme(row.preview.now_programme) }}
+                            </span>
                           </div>
-                          <div>
+                          <div class="bulk-epg-match__detail-row">
                             <span class="text-weight-medium">Next:</span>
-                            {{ formatUpcoming(row.preview.next_programmes) }}
+                            <span class="bulk-epg-match__detail-value-clamp">
+                              {{ formatUpcoming(row.preview.next_programmes) }}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -513,6 +518,7 @@ export default {
 .bulk-epg-match__row-body {
   border-top: 1px solid var(--q-separator-color);
   padding-top: 8px;
+  min-height: 148px;
 }
 
 .bulk-epg-match__left-col {
@@ -539,8 +545,24 @@ export default {
   align-self: flex-start;
 }
 
-.bulk-epg-match__candidate-select {
-  padding-bottom: 0 !important;
+.bulk-epg-match__preview-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-epg-match__detail-row {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-epg-match__detail-value-clamp {
+  display: inline-block;
+  max-width: calc(100% - 56px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 .bulk-epg-match__select-selected {
@@ -548,12 +570,14 @@ export default {
   max-width: 100%;
   line-height: 1.2;
   padding: 2px 0;
+  min-height: 2.4em;
 }
 
 .bulk-epg-match__option-main {
   font-size: 0.86rem;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.2;
 }
 
@@ -561,6 +585,15 @@ export default {
   font-size: 0.75rem;
   color: var(--q-grey-7);
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-epg-match__match-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 1023px) {
