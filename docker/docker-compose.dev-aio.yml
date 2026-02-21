@@ -63,6 +63,7 @@ services:
   # -- FRONTEND DEV SERVER --
   frontend:
     image: node:22-trixie
+    user: 1000:1000
     working_dir: /app/frontend
     command: bash -lc "npm install && npx quasar dev --host 0.0.0.0 --port 8080 --debug"
     network_mode: host
@@ -72,12 +73,17 @@ services:
       - NODE_ENV=development
       - QUASAR_DEV_PORT=8080
       - QUASAR_DEV_HOST=0.0.0.0
+      - NPM_CONFIG_PREFIX=/home/node/.npm-global
+      - PATH=/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ../:/app
+      - ../temp/cache/.npm:/home/node/.npm
+      - ../temp/cache/.npm-global:/home/node/.npm-global
 
   # -- DOCS DEV SERVER --
   docs:
     image: node:22-trixie
+    user: 1000:1000
     working_dir: /app/docs
     command: bash -lc "npm install && npm start"
     network_mode: host
@@ -85,8 +91,12 @@ services:
       - NODE_ENV=development
       - DOCUSAURUS_DEV_PORT=8030
       - DOCUSAURUS_DEV_HOST=0.0.0.0
+      - NPM_CONFIG_PREFIX=/home/node/.npm-global
+      - PATH=/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ../:/app
+      - ../temp/cache/.npm:/home/node/.npm
+      - ../temp/cache/.npm-global:/home/node/.npm-global
 
   # -- DOCS STATIC SERVER --
   docs-static:

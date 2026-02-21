@@ -460,9 +460,12 @@ print_log info "RUN_PIP_INSTALL: ${RUN_PIP_INSTALL:-RUN_PIP_INSTALL variable has
 mkdir -p /config/.tvh_iptv_config
 
 # Exec provided command
-if [ "X$*" != "X" ]; then
-    print_log info "Running command '${*}'"
-    exec "$*"
+if [ $# -gt 0 ]; then
+    if [ -f /var/venv-docker/bin/activate ]; then
+        source /var/venv-docker/bin/activate
+    fi
+    print_log info "Running command '$@'"
+    exec "$@"
 fi
 
 install_packages

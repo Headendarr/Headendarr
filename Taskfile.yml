@@ -4,8 +4,14 @@ vars:
   COMPOSE_FILE: ./docker/docker-compose.dev-aio.yml
 
 tasks:
+  init:
+    desc: Initialize local cache directories
+    cmds:
+      - mkdir -p temp/cache/.npm temp/cache/.npm-global temp/cache/venv-backend
+
   all:start:
     desc: Start backend, frontend, and docs services in dev AIO stack (detached)
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d headendarr frontend docs
 
@@ -34,6 +40,12 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} build headendarr
 
+  backend:upgrade:
+    desc: Upgrade backend Python dependencies using pip-compile and pip-audit
+    deps: [init]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm --entrypoint="" --user 1000:1000 -v ./temp/cache/venv-backend:/var/venv-temp headendarr bash -c "[ -f /var/venv-temp/bin/activate ] || (python3 -m venv --without-pip /var/venv-temp && . /var/venv-temp/bin/activate && curl -sS https://bootstrap.pypa.io/get-pip.py | python3) && . /var/venv-temp/bin/activate && pip install --upgrade pip pip-tools pip-audit && pip-compile ./requirements.in --upgrade && pip install -r ./requirements.txt -r ./requirements-dev.txt && pip-audit"
+
   backend:migrate:rollback-last:
     desc: Roll back the most recent Alembic migration using a one-off backend (tic) container
     cmds:
@@ -46,6 +58,7 @@ tasks:
 
   frontend:start:
     desc: Start frontend dev server service in dev AIO stack (detached)
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d frontend
 
@@ -61,16 +74,26 @@ tasks:
 
   frontend:clean:
     desc: Clear Quasar CLI caches for frontend
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar clean"
 
   frontend:build:
     desc: Build frontend (Quasar SPA) for backend serving
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar build"
 
+  frontend:upgrade:
+    desc: Upgrade Quasar and npm dependencies
+    deps: [init]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -c "npm audit || true"
+      - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -c "npm install -g @quasar/cli && /home/node/.npm-global/bin/quasar upgrade -i && npm update && npm audit fix"
+
   docs:start:
     desc: Start docs dev server service in dev AIO stack (detached)
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d docs
 
@@ -87,6 +110,7 @@ tasks:
 
   docs:build:
     desc: Build static documentation pages
+    deps: [init]
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm docs bash -lc "npm run build"
 
