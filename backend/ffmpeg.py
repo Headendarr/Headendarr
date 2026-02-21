@@ -78,8 +78,8 @@ async def ffprobe_file(vid_file_path):
     return info
 
 
-def generate_iptv_url(config, url="", service_name=""):
-    if not url.startswith("pipe://"):
+def generate_iptv_url(config, url="", service_name="", use_buffer_wrapper=True):
+    if not url.startswith("pipe://") and use_buffer_wrapper:
         settings = config.read_settings()
         if settings["settings"]["enable_stream_buffer"]:
             ffmpeg_args = settings["settings"]["default_ffmpeg_pipe_args"]

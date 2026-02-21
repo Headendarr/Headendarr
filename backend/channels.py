@@ -2358,6 +2358,7 @@ async def publish_channel_muxes(config):
                     config,
                     url=cso_url,
                     service_name=f"CSO - {channel_obj.name}",
+                    use_buffer_wrapper=False,
                 )
                 channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
                 mux_conf = {
