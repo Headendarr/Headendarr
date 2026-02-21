@@ -8,7 +8,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -289,7 +289,7 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
         days = 7
     if days < 1:
         days = 1
-    cutoff_dt = datetime.utcnow() - timedelta(days=days)
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
     async with Session() as session:
         result = await session.execute(delete(CsoEventLog).where(CsoEventLog.created_at < cutoff_dt))
         await session.commit()
