@@ -709,6 +709,7 @@ async def apply_bulk_epg_matches(*, updates):
                     "channel_id": normalize_id(channel_id, "channel"),
                     "epg_id": normalize_id(epg_id, "epg"),
                     "epg_channel_id": epg_channel_id,
+                    "use_epg_logo": bool(row.get("use_epg_logo", False)),
                 }
             )
         except ValueError:
@@ -736,12 +737,16 @@ async def apply_bulk_epg_matches(*, updates):
                         EpgChannels.epg_id.label("epg_id"),
                         EpgChannels.channel_id.label("channel_id"),
                         Epg.name.label("epg_name"),
+                        EpgChannels.icon_url.label("icon_url"),
                     )
                     .join(Epg, Epg.id == EpgChannels.epg_id)
                     .where(tuple_(EpgChannels.epg_id, EpgChannels.channel_id).in_(epg_keys))
                 )
                 for row in epg_rows.all():
-                    epg_lookup[(int(row.epg_id), str(row.channel_id))] = {"epg_name": row.epg_name}
+                    epg_lookup[(int(row.epg_id), str(row.channel_id))] = {
+                        "epg_name": row.epg_name,
+                        "icon_url": row.icon_url,
+                    }
 
             for row in normalized_updates:
                 channel = channels_map.get(row["channel_id"])
@@ -772,7 +777,20 @@ async def apply_bulk_epg_matches(*, updates):
                     _safe_int(channel.guide_id, 0) == row["epg_id"]
                     and (channel.guide_channel_id or "") == row["epg_channel_id"]
                 )
+                should_update_logo = bool(row.get("use_epg_logo")) and bool(mapping.get("icon_url"))
+                logo_unchanged = (channel.logo_url or "") == (mapping.get("icon_url") or "")
                 if unchanged:
+                    if should_update_logo and not logo_unchanged:
+                        channel.logo_url = mapping.get("icon_url")
+                        channel.logo_base64 = None
+                        updated += 1
+                        results.append(
+                            {
+                                "channel_id": row["channel_id"],
+                                "status": "updated",
+                            }
+                        )
+                        continue
                     skipped += 1
                     results.append(
                         {
@@ -786,6 +804,9 @@ async def apply_bulk_epg_matches(*, updates):
                 channel.guide_id = row["epg_id"]
                 channel.guide_channel_id = row["epg_channel_id"]
                 channel.guide_name = mapping.get("epg_name")
+                if should_update_logo:
+                    channel.logo_url = mapping.get("icon_url")
+                    channel.logo_base64 = None
                 updated += 1
                 results.append(
                     {

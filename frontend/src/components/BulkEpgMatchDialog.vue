@@ -108,6 +108,17 @@
                       <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-mt-xs">
                         {{ candidateMatchSummary(row) }}
                       </div>
+                      <q-checkbox
+                        v-if="row.selectedCandidate"
+                        v-model="row.useEpgLogo"
+                        color="primary"
+                        dense
+                        class="q-mt-xs"
+                        label="Use EPG Logo"
+                      />
+                      <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-ml-sm">
+                        Replaces channel logo with the selected EPG channel logo.
+                      </div>
                     </div>
                   </div>
 
@@ -273,6 +284,7 @@ export default {
             selectedCandidateKey: first ? this.candidateKey(first) : '',
             selectedCandidate: first,
             selected: Boolean(first),
+            useEpgLogo: false,
             preview: null,
             previewLoading: false,
           };
@@ -384,6 +396,7 @@ export default {
             channel_id: row.channel.id,
             epg_id: row.selectedCandidate.epg_id,
             epg_channel_id: row.selectedCandidate.epg_channel_id,
+            use_epg_logo: !!row.useEpgLogo,
           }));
 
         const response = await axios.post('/tic-api/channels/bulk/epg-match/apply', {updates});
