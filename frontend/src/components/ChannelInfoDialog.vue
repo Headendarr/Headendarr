@@ -137,7 +137,11 @@
               v-bind="dragOptions"
             >
               <template #item="{element, index}">
-                <q-item :key="`source-${element.local_key || index}`" class="q-px-none rounded-borders">
+                <q-item
+                  :key="`source-${element.local_key || index}`"
+                  class="q-px-none rounded-borders channel-source-row"
+                  :class="{'channel-source-row--disabled': isChannelSourceDisabled(element)}"
+                >
                   <q-item-section avatar class="handle q-px-sm q-mx-sm">
                     <q-avatar rounded>
                       <q-icon name="format_line_spacing" style="max-width: 30px; cursor: grab">
@@ -162,6 +166,13 @@
                     </q-item-label>
                     <q-item-label caption lines="1" class="text-left">
                       {{ element.playlist_name }}
+                    </q-item-label>
+                    <q-item-label
+                      v-if="isChannelSourceDisabled(element)"
+                      caption
+                      class="text-left channel-source-disabled-label"
+                    >
+                      Source disabled
                     </q-item-label>
 
                     <div
@@ -901,6 +912,18 @@ export default {
       }
       return this.csoProfileChoices[0] || 'mpegts';
     },
+    isChannelSourceDisabled(source) {
+      if (!source || source.source_type === 'manual' || !source.playlist_id) {
+        return false;
+      }
+      if (source.playlist_enabled === false) {
+        return true;
+      }
+      const playlist = (this.listOfPlaylists || []).find(
+        (item) => parseInt(item?.id, 10) === parseInt(source.playlist_id, 10),
+      );
+      return playlist ? playlist.enabled === false : false;
+    },
     updateCurrentEpgChannelOptions() {
       if (!this.epgSourceId || !this.epgChannelAllOptions) {
         this.epgChannelDefaultOptions = [];
@@ -1168,5 +1191,21 @@ export default {
 .tic-input-description {
   margin-top: 0;
   margin-left: 8px;
+}
+
+.channel-source-row {
+  border-left: 4px solid transparent;
+  transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.channel-source-row--disabled {
+  background: var(--tic-list-card-disabled-bg);
+  border-left-color: var(--tic-list-card-disabled-border);
+  opacity: 0.9;
+}
+
+.channel-source-disabled-label {
+  color: var(--q-warning);
+  font-weight: 600;
 }
 </style>
