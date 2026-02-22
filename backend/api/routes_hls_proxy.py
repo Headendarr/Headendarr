@@ -1071,8 +1071,4 @@ async def stream_channel(channel_id):
 
     response = Response(generate_stream(), content_type=content_type or "application/octet-stream")
     response.timeout = None
-    try:
-        response.call_on_close(lambda: asyncio.create_task(disconnect_output_client(output_session_key, connection_id)))
-    except Exception:
-        pass
     return response

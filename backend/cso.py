@@ -1977,6 +1977,11 @@ async def subscribe_channel_stream(
 
 async def disconnect_output_client(output_session_key, connection_id):
     """Force-disconnect a specific client from an output session if it still exists."""
+    logging.getLogger("cso").info(
+        "Request to disconnect CSO client key=%s connection_id=%s",
+        output_session_key,
+        connection_id,
+    )
     if not output_session_key or not connection_id:
         return
     session = await cso_session_manager.get_output_session(output_session_key)
@@ -1984,8 +1989,14 @@ async def disconnect_output_client(output_session_key, connection_id):
         return
     try:
         await session.remove_client(connection_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger("cso").error(
+            "Error disconnecting CSO client key=%s connection_id=%s error=%s",
+            output_session_key,
+            connection_id,
+            exc,
+            exc_info=True,
+        )
 
 
 def build_cso_stream_query(profile=None, connection_id=None, stream_key=None, username=None):
