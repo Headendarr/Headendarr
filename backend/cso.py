@@ -1230,7 +1230,7 @@ class CsoIngestSession:
             source_url,
         )
         if remaining == 0:
-            await self.stop(force=False)
+            await self.stop(force=True)
         return remaining
 
     async def stop(self, force=False):
@@ -1537,7 +1537,7 @@ class CsoOutputSession:
             _policy_log_label(self.policy),
         )
         if remaining == 0:
-            await self.stop(force=False)
+            await self.stop(force=True)
         return remaining
 
     async def stop(self, force=False):
