@@ -167,27 +167,46 @@ class CsoCapacityRegistry:
         self._external_counts = {}
         self._lock = asyncio.Lock()
 
-    async def try_reserve(self, key, owner_key, limit):
+    async def try_reserve(self, key, owner_key, limit, slot_id=None):
         async with self._lock:
-            # key -> {owner_key: ref_count}
+            # key -> {owner_key: {slot_id: 1}}
             current = self._allocations.setdefault(key, {})
-            if owner_key in current:
-                # Owner already holds a slot for this key; do not ref-count leak on retries/restarts.
+            owner_slots = current.setdefault(owner_key, {})
+            if slot_id in owner_slots:
+                # Owner already holds this specific slot; do not ref-count leak.
                 return True
+
+            # Count total slots across ALL owners for this key
+            total_active = sum(len(slots) for slots in current.values())
             external = int(self._external_counts.get(key) or 0)
-            if (len(current) + external) >= max(0, int(limit or 0)):
+            if (total_active + external) >= max(0, int(limit or 0)):
                 return False
-            current[owner_key] = 1
+
+            owner_slots[slot_id] = 1
             return True
 
-    async def release(self, key, owner_key):
+    async def release(self, key, owner_key, slot_id=None):
         async with self._lock:
             current = self._allocations.get(key)
             if not current:
                 return
-            current.pop(owner_key, None)
+            owner_slots = current.get(owner_key)
+            if not owner_slots:
+                return
+            owner_slots.pop(slot_id, None)
+            if not owner_slots:
+                current.pop(owner_key, None)
             if not current:
                 self._allocations.pop(key, None)
+
+    async def release_all(self, owner_key):
+        """Release all slots held by a specific owner across all keys."""
+        async with self._lock:
+            for key in list(self._allocations.keys()):
+                current = self._allocations[key]
+                current.pop(owner_key, None)
+                if not current:
+                    self._allocations.pop(key, None)
 
     async def set_external_counts(self, counts):
         async with self._lock:
@@ -258,17 +277,22 @@ def _resolve_source_url(source_url, base_url, instance_id, stream_key=None, user
         return normalized
     if LOCAL_PROXY_HOST_PLACEHOLDER in normalized:
         normalized = normalized.replace(LOCAL_PROXY_HOST_PLACEHOLDER, base_url)
-    unwrapped = _unwrap_local_tic_hls_proxy_url(normalized, instance_id=instance_id)
-    if unwrapped:
-        return unwrapped
+    # Only unwrap this same instance's local TIC HLS proxy URL.
+    for _ in range(4):
+        next_url = _unwrap_local_tic_hls_proxy_url(normalized, instance_id=instance_id)
+        if not next_url:
+            break
+        if next_url == normalized:
+            break
+        normalized = next_url
+
     if is_local_hls_proxy_url(normalized, instance_id=instance_id):
-        normalized = normalize_local_proxy_url(
-            normalized,
-            base_url=base_url,
-            instance_id=instance_id,
-            stream_key=stream_key,
-            username=username,
+        # CSO ingest must never route through this same instance's HLS proxy.
+        # If we still have a local proxy URL at this point, treat it as unresolved.
+        logger.warning(
+            "CSO source URL still points to local HLS proxy after unwrapping; skipping source url=%s", normalized
         )
+        return ""
     elif stream_key and "/tic-hls-proxy/" in normalized and "stream_key=" not in normalized:
         normalized = append_stream_key(normalized, stream_key=stream_key, username=username)
     return normalized
@@ -327,6 +351,7 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
 
 def _build_ingest_ffmpeg_command(source_url, program_index=0):
     map_program = max(0, int(program_index or 0))
+    is_hls_input = (urlparse(str(source_url or "")).path or "").lower().endswith(".m3u8")
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -338,20 +363,35 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0):
     else:
         command += ["-nostats"]
     command += [
+        # Progress reporting for health-checks; reconnect flags for resilience.
         "-progress",
         "pipe:2",
         "-reconnect",
         "1",
-        "-reconnect_at_eof",
-        "1",
-        "-reconnect_streamed",
-        "1",
         "-reconnect_on_network_error",
         "1",
-        "-reconnect_on_http_error",
-        "4xx,5xx",
         "-reconnect_delay_max",
         str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+    ]
+    # For HLS, we let the smart HLS demuxer handle playlist retries to avoid manifest
+    # spam/IP bans. For direct streams (non-HLS), we use socket-level reconnection.
+    if not is_hls_input:
+        command += [
+            "-reconnect_at_eof",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_on_http_error",
+            "4xx,5xx",
+        ]
+    else:
+        # HLS demuxing already handles playlist refresh and segment polling.
+        # Avoid EOF/http reconnect loops that can spam upstream proxy requests.
+        command += [
+            "-reconnect_streamed",
+            "0",
+        ]
+    command += [
         # Tolerate malformed/corrupt packets and continue ingest.
         "-fflags",
         "+discardcorrupt+genpts",
@@ -563,34 +603,44 @@ class CsoIngestSession:
         self.hls_variants = []
         self.current_variant_position = None
         self.current_program_index = 0
-        self.rendition_switch_target_position = None
-        self.ramp_last_switch_ts = 0.0
+        self.source_program_index = {}
         self.startup_jump_done = False
+        self.process_token = 0
 
     async def start(self):
         async with self.lock:
             if self.running:
                 return
+            logger.info(
+                "CSO ingest start requested channel=%s sources=%s",
+                self.channel_id,
+                len(self.sources or []),
+            )
             start_result = await self._start_best_source_unlocked(reason="initial_start")
             if not start_result.success:
                 self.running = False
                 self.last_error = start_result.reason or "no_available_source"
                 return
 
-    async def _start_process_unlocked(self):
-        command = _build_ingest_ffmpeg_command(self.current_source_url, program_index=self.current_program_index)
+    async def _spawn_ingest_process(self, source_url, program_index, source=None):
+        command = _build_ingest_ffmpeg_command(source_url, program_index=program_index)
         logger.info(
             "Starting CSO ingest channel=%s source=%s command=%s",
             self.channel_id,
-            getattr(self.current_source, "id", None),
+            getattr(source, "id", None) if source is not None else getattr(self.current_source, "id", None),
             command,
         )
-        self.process = await asyncio.create_subprocess_exec(
+        return await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+    def _activate_process_unlocked(self, process):
+        self.process = process
         self.running = True
+        self.process_token += 1
+        token = self.process_token
         self.last_source_start_ts = time.time()
         self.last_chunk_ts = self.last_source_start_ts
         self.low_speed_since = None
@@ -606,17 +656,21 @@ class CsoIngestSession:
             self.current_source_url,
             len(self.subscribers),
         )
-        self.read_task = asyncio.create_task(self._read_loop())
-        self.stderr_task = asyncio.create_task(self._stderr_loop())
-        self.health_task = asyncio.create_task(self._health_loop())
+        self.read_task = asyncio.create_task(self._read_loop(token, process))
+        self.stderr_task = asyncio.create_task(self._stderr_loop(token, process))
+        self.health_task = asyncio.create_task(self._health_loop(token))
 
-    async def _start_best_source_unlocked(self, reason):
+    async def _start_best_source_unlocked(self, reason, preferred_source_id=None):
         now = time.time()
         candidates = sorted(
             self.sources,
             key=lambda item: _priority_value(getattr(item, "priority", 0)),
             reverse=True,
         )
+        if preferred_source_id is not None:
+            preferred = [source for source in candidates if getattr(source, "id", None) == preferred_source_id]
+            others = [source for source in candidates if getattr(source, "id", None) != preferred_source_id]
+            candidates = preferred + others
         saw_capacity_block = False
         for source in candidates:
             source_id = getattr(source, "id", None)
@@ -636,6 +690,7 @@ class CsoIngestSession:
                 capacity_key,
                 self.capacity_owner_key,
                 capacity_limit,
+                slot_id=source_id,
             )
             if not reserved:
                 saw_capacity_block = True
@@ -649,27 +704,32 @@ class CsoIngestSession:
                 username=self.username,
             )
             if not resolved_url:
-                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
+                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source_id)
                 continue
 
             variants = await _discover_hls_variants(resolved_url)
-            self.hls_variants = variants
+            remembered_program_index = self.source_program_index.get(source_id)
+            variant_position = None
             if variants:
-                # Lock to the highest available rendition for stable timeline continuity.
-                self.current_variant_position = len(variants) - 1
-                self.current_program_index = int(variants[self.current_variant_position].get("program_index") or 0)
-                self.startup_jump_done = True
+                if remembered_program_index is not None:
+                    for idx, item in enumerate(variants):
+                        if int(item.get("program_index") or 0) == int(remembered_program_index):
+                            variant_position = idx
+                            break
+                if variant_position is None:
+                    variant_position = len(variants) - 1
+                program_index = int(variants[variant_position].get("program_index") or 0)
             else:
-                self.current_variant_position = None
-                self.current_program_index = 0
-                self.startup_jump_done = True
-
-            old_capacity_key = self.current_capacity_key
-            self.current_source = source
-            self.current_source_url = resolved_url
-            self.current_capacity_key = capacity_key
+                program_index = int(remembered_program_index or 0)
+                if remembered_program_index is not None:
+                    logger.info(
+                        "CSO ingest variant discovery empty; reusing remembered program index channel=%s source_id=%s program_index=%s",
+                        self.channel_id,
+                        source_id,
+                        program_index,
+                    )
             try:
-                await self._start_process_unlocked()
+                process = await self._spawn_ingest_process(resolved_url, program_index, source=source)
             except Exception as exc:
                 await emit_channel_stream_event(
                     channel_id=self.channel_id,
@@ -690,10 +750,22 @@ class CsoIngestSession:
                 self.current_capacity_key = None
                 self.running = False
                 self.process = None
-                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
+                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source_id)
                 continue
-            if old_capacity_key and old_capacity_key != capacity_key:
-                await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key)
+            old_capacity_key = self.current_capacity_key
+            old_source_id = getattr(self.current_source, "id", None)
+            self.current_source = source
+            self.current_source_url = resolved_url
+            self.current_capacity_key = capacity_key
+            self.hls_variants = variants
+            self.current_variant_position = variant_position
+            self.current_program_index = program_index
+            if source_id is not None:
+                self.source_program_index[source_id] = int(program_index)
+            self.startup_jump_done = True
+            self._activate_process_unlocked(process)
+            if old_capacity_key:
+                await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key, slot_id=old_source_id)
 
             await emit_channel_stream_event(
                 channel_id=self.channel_id,
@@ -714,16 +786,18 @@ class CsoIngestSession:
 
         return CsoStartResult(success=False, reason="capacity_blocked" if saw_capacity_block else "no_available_source")
 
-    async def _stderr_loop(self):
-        if not self.process:
+    async def _stderr_loop(self, token, process):
+        if not process:
             return
         text_buffer = ""
         while True:
             try:
-                chunk = await self.process.stderr.read(4096)
+                chunk = await process.stderr.read(4096)
             except Exception:
                 break
             if not chunk:
+                break
+            if token != self.process_token:
                 break
             text_buffer += chunk.decode("utf-8", errors="replace")
             lines = re.split(r"[\r\n]+", text_buffer)
@@ -757,7 +831,12 @@ class CsoIngestSession:
                             self.last_ffmpeg_speed = None
 
                 lower = rendered.lower()
-                if "http error" in lower or "server returned" in lower or "forbidden" in lower or "unauthorized" in lower:
+                if (
+                    "http error" in lower
+                    or "server returned" in lower
+                    or "forbidden" in lower
+                    or "unauthorized" in lower
+                ):
                     status_codes = _HTTP_STATUS_CODE_RE.findall(rendered)
                     if status_codes:
                         if any(code.startswith("4") or code.startswith("5") for code in status_codes):
@@ -765,7 +844,7 @@ class CsoIngestSession:
                     else:
                         self.http_error_timestamps.append(time.time())
         rendered = text_buffer.strip()
-        if rendered:
+        if rendered and token == self.process_token:
             self._recent_ffmpeg_stderr.append(rendered)
             lower = rendered.lower()
             if "http error" in lower or "server returned" in lower or "forbidden" in lower or "unauthorized" in lower:
@@ -788,8 +867,8 @@ class CsoIngestSession:
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
 
-    async def _health_loop(self):
-        while self.running:
+    async def _health_loop(self, token):
+        while self.running and token == self.process_token:
             await asyncio.sleep(1.0)
             now = time.time()
             if (now - self.last_source_start_ts) < CSO_STARTUP_GRACE_SECONDS_DEFAULT:
@@ -866,6 +945,7 @@ class CsoIngestSession:
             process = self.process
             source = self.current_source
             source_url = self.current_source_url
+
         logger.warning(
             "CSO ingest health-triggered failover channel=%s source_id=%s reason=%s details=%s",
             self.channel_id,
@@ -893,25 +973,28 @@ class CsoIngestSession:
         except Exception:
             pass
 
-    async def _read_loop(self):
+    async def _read_loop(self, token, process):
         saw_data = False
         return_code = None
         try:
-            while self.running and self.process and self.process.stdout:
-                chunk = await self.process.stdout.read(16384)
+            while self.running and token == self.process_token and process and process.stdout:
+                chunk = await process.stdout.read(16384)
                 if not chunk:
                     break
                 saw_data = True
                 self.last_chunk_ts = time.time()
                 await self._broadcast(chunk)
         finally:
-            if self.process:
+            if process:
                 try:
-                    return_code = self.process.returncode
+                    return_code = process.returncode
                     if return_code is None:
-                        return_code = await self.process.wait()
+                        return_code = await process.wait()
                 except Exception:
                     return_code = None
+
+            if token != self.process_token:
+                return
 
             async with self.lock:
                 has_subscribers = bool(self.subscribers)
@@ -967,11 +1050,35 @@ class CsoIngestSession:
             failed_source = self.current_source
             failed_source_id = getattr(failed_source, "id", None)
             ffmpeg_error = self._ffmpeg_error_summary()
+            ffmpeg_error_lower = (ffmpeg_error or "").lower()
+            is_connectivity_startup_failure = (
+                reason == "ingest_reader_ended"
+                and return_code not in (None, 0)
+                and any(
+                    token in ffmpeg_error_lower
+                    for token in (
+                        "connection refused",
+                        "timed out",
+                        "network is unreachable",
+                        "name or service not known",
+                        "could not resolve",
+                        "forbidden",
+                        "unauthorized",
+                        "http error",
+                        "server returned",
+                    )
+                )
+            )
 
             # Apply source hold-down only for health-triggered failover. For generic ingest
-            # exits we allow immediate same-source restart to avoid tearing down clients.
+            # exits we allow immediate same-source restart to avoid tearing down clients,
+            # except startup/connectivity failures where immediate same-source retry
+            # causes endless loops on an unavailable upstream.
             multi_source_channel = len(self.sources or []) > 1
-            if failed_source_id and multi_source_channel and reason in {"under_speed", "stall_timeout"}:
+            hold_down_applicable = reason in {"under_speed", "stall_timeout"} or is_connectivity_startup_failure
+            hold_down_applied = bool(failed_source_id and multi_source_channel and hold_down_applicable)
+
+            if hold_down_applied:
                 self.failed_source_until[failed_source_id] = time.time() + CSO_SOURCE_HOLD_DOWN_SECONDS
 
             old_capacity_key = self.current_capacity_key
@@ -981,12 +1088,15 @@ class CsoIngestSession:
             self.hls_variants = []
             self.current_variant_position = None
             self.current_program_index = 0
-            self.rendition_switch_target_position = None
             self.startup_jump_done = False
             self.process = None
             self.running = False
             if old_capacity_key:
-                await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key)
+                await cso_capacity_registry.release(
+                    old_capacity_key,
+                    self.capacity_owner_key,
+                    slot_id=failed_source_id,
+                )
 
         await emit_channel_stream_event(
             channel_id=self.channel_id,
@@ -1005,6 +1115,13 @@ class CsoIngestSession:
                 **_source_event_context(failed_source),
             },
         )
+        logger.info(
+            "CSO ingest failover decision channel=%s reason=%s failed_source_id=%s hold_down_applied=%s",
+            self.channel_id,
+            reason,
+            failed_source_id,
+            hold_down_applied,
+        )
 
         deadline = time.time() + CSO_INGEST_RECOVERY_RETRY_WINDOW_SECONDS
         last_result = CsoStartResult(success=False, reason="no_available_source")
@@ -1013,6 +1130,10 @@ class CsoIngestSession:
                 has_subscribers = bool(self.subscribers)
                 start_result = await self._start_best_source_unlocked(reason="failover")
                 if start_result.success:
+                    logger.info(
+                        "CSO ingest failover started replacement channel=%s",
+                        self.channel_id,
+                    )
                     self.running = True
                     return True
             last_result = start_result
@@ -1130,14 +1251,18 @@ class CsoIngestSession:
             self.hls_variants = []
             self.current_variant_position = None
             self.current_program_index = 0
-            self.rendition_switch_target_position = None
             self.startup_jump_done = False
             subscriber_count = len(self.subscribers)
         # Release capacity immediately so other channels are not blocked while
         # this ingest session drains/tears down.
         if capacity_key:
-            await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
-            capacity_key = None
+            await cso_capacity_registry.release(
+                capacity_key,
+                self.capacity_owner_key,
+                slot_id=source_id,
+            )
+        await cso_capacity_registry.release_all(self.capacity_owner_key)
+
         logger.info(
             "Stopping CSO ingest channel=%s ingest_key=%s source_id=%s source_url=%s subscribers=%s force=%s",
             self.channel_id,
@@ -1848,6 +1973,19 @@ async def subscribe_channel_stream(
             )
 
     return _generator(), content_type, None, 200
+
+
+async def disconnect_output_client(output_session_key, connection_id):
+    """Force-disconnect a specific client from an output session if it still exists."""
+    if not output_session_key or not connection_id:
+        return
+    session = await cso_session_manager.get_output_session(output_session_key)
+    if not session:
+        return
+    try:
+        await session.remove_client(connection_id)
+    except Exception:
+        pass
 
 
 def build_cso_stream_query(profile=None, connection_id=None, stream_key=None, username=None):

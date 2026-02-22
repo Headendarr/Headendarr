@@ -31,6 +31,7 @@ from backend.cso import (
     CsoOutputReaderEnded,
     cleanup_channel_stream_events,
     cso_session_manager,
+    disconnect_output_client,
     policy_content_type,
     resolve_channel_for_stream,
     subscribe_channel_stream,
@@ -742,6 +743,15 @@ async def proxy_m3u8_redirect(instance_id):
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
     connection_id = _get_connection_id(default_new=True)
+    if connection_id == "tvh":
+        # Treat "tvh" as a logical label only. Internally, each request gets a
+        # unique client id to avoid teardown collisions across reconnects.
+        connection_id = f"tvh-{uuid.uuid4().hex}"
+        proxy_logger.info(
+            "Remapped reserved connection_id requested=tvh effective=%s url=%s",
+            connection_id,
+            url,
+        )
     target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/{encoded}.m3u8"
     query = [("connection_id", connection_id)]
     if stream_key:
@@ -952,6 +962,15 @@ async def stream_channel(channel_id):
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
 
     connection_id = _get_connection_id(default_new=True)
+    if connection_id == "tvh":
+        # Treat "tvh" as a logical label only. Internally, each request gets a
+        # unique client id to avoid teardown collisions across reconnects.
+        connection_id = f"tvh-{uuid.uuid4().hex}"
+        proxy_logger.info(
+            "Remapped reserved connection_id requested=tvh effective=%s channel=%s",
+            connection_id,
+            channel_id_int,
+        )
     generator, content_type, error_message, status = await subscribe_channel_stream(
         config=config,
         channel=channel,
@@ -1052,4 +1071,8 @@ async def stream_channel(channel_id):
 
     response = Response(generate_stream(), content_type=content_type or "application/octet-stream")
     response.timeout = None
+    try:
+        response.call_on_close(lambda: asyncio.create_task(disconnect_output_client(output_session_key, connection_id)))
+    except Exception:
+        pass
     return response

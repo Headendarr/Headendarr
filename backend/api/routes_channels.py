@@ -120,7 +120,10 @@ async def _fetch_cso_attention_map(channel_ids):
             "_created_at": created_at,
         }
 
-        if event_type in {"playback_unavailable", "capacity_blocked"}:
+        if event_type in {
+            "playback_unavailable",
+            "capacity_blocked",
+        }:
             current = channel_state.get("connection_issue")
             if current is None or created_at > current.get("_created_at"):
                 channel_state["connection_issue"] = payload
@@ -148,12 +151,9 @@ async def _fetch_cso_attention_map(channel_ids):
             issue_at = unhealthy_issue.get("_created_at")
             if recovery_at is None or (issue_at and issue_at > recovery_at):
                 issues.append("cso_stream_unhealthy")
-                if (
-                    latest_event is None
-                    or (
-                        unhealthy_issue.get("_created_at")
-                        and unhealthy_issue.get("_created_at") > latest_event.get("_created_at")
-                    )
+                if latest_event is None or (
+                    unhealthy_issue.get("_created_at")
+                    and unhealthy_issue.get("_created_at") > latest_event.get("_created_at")
                 ):
                     latest_event = unhealthy_issue
 
@@ -708,10 +708,6 @@ async def api_get_channel_source_preview(channel_id, source_id):
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
-        if bool(getattr(channel, "cso_enabled", False)):
-            request_base_url = request.host_url.rstrip("/")
-            preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
-            return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
         result = await session.execute(
             select(ChannelSource).where(
