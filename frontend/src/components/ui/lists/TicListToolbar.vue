@@ -24,6 +24,7 @@
           :debounce="search.debounce ?? 300"
           :clearable="search.clearable !== false"
           @update:model-value="$emit('update:searchValue', $event)"
+          @search="$emit('search')"
         />
       </div>
 
@@ -162,6 +163,7 @@ const emit = defineEmits([
   'filterChange',
   'filters',
   'sort',
+  'search',
 ]);
 
 const handleActionClick = (action) => {

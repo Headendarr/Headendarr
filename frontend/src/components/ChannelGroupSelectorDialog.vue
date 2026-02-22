@@ -30,6 +30,7 @@
                   :filters="groupToolbarFilters"
                   :sort-action="{label: sortButtonLabel, mobileLabel: 'Sort'}"
                   @update:search-value="searchValue = $event"
+                  @search="resetAndReload"
                   @filter-change="onToolbarFilterChange"
                   @sort="openSortDialog"
                 />
@@ -68,7 +69,7 @@
 
       <div id="channel-group-selector-scroll" class="selector-scroll" @scroll.passive="handleScroll">
         <q-infinite-scroll
-          :disable="allLoaded || loadingMore"
+          :disable="allLoaded || loadingMore || loadingInitial"
           :offset="160"
           scroll-target="#channel-group-selector-scroll"
           @load="loadMore"
@@ -203,6 +204,7 @@ export default {
       selectedRowKeys: new Set(),
       excludedRowKeys: new Set(),
       selectAllMatching: false,
+      currentAbortController: null,
     };
   },
   computed: {
@@ -221,8 +223,8 @@ export default {
       return this.$q.screen.lt.sm;
     },
     allLoaded() {
-      if (this.totalMatchingCount < 1) {
-        return false;
+      if (this.totalMatchingCount === 0) {
+        return !this.loadingInitial;
       }
       return this.loadOffset >= this.totalMatchingCount;
     },
@@ -353,6 +355,11 @@ export default {
       }
     },
     async resetAndReload() {
+      if (this.currentAbortController) {
+        this.currentAbortController.abort();
+        this.currentAbortController = null;
+      }
+      this.loadingMore = false;
       this.rows = [];
       this.rowsByKey = {};
       this.loadOffset = 0;
@@ -362,37 +369,51 @@ export default {
       this.loadingInitial = false;
     },
     async loadNextChunk() {
-      if (this.loadingMore || this.allLoaded || !this.appliedFilters.playlistId) {
+      if (this.loadingMore || !this.appliedFilters.playlistId) {
         return;
       }
 
       this.loadingMore = true;
       try {
-        const response = await this.fetchGroupsPage(this.loadOffset, GROUP_PAGE_SIZE);
-        const groups = response.groups || [];
-        this.totalMatchingCount = response.total || 0;
-        this.loadOffset += groups.length;
-
-        const playlist = this.playlistOptions.find((item) => item.value === this.appliedFilters.playlistId);
-        const playlistName = playlist?.label || 'Source';
-        const mapped = groups.map((group) => ({
-          name: group.name,
-          channel_count: group.channel_count || 0,
-          playlist_id: this.appliedFilters.playlistId,
-          playlist_name: playlistName,
-          row_key: `${this.appliedFilters.playlistId}-${group.name}`,
-        })).filter((group) => !this.rowsByKey[group.row_key]);
-
-        if (mapped.length) {
-          const nextRows = [...this.rows, ...mapped];
-          this.rows = nextRows;
-          const byKey = {...this.rowsByKey};
-          for (const row of mapped) {
-            byKey[row.row_key] = row;
+        let appendedRows = 0;
+        while (appendedRows === 0 && (this.loadOffset < this.totalMatchingCount || this.totalMatchingCount === 0)) {
+          if (this.totalMatchingCount === 0 && this.loadOffset > 0) {
+            break;
           }
-          this.rowsByKey = byKey;
+          const response = await this.fetchGroupsPage(this.loadOffset, GROUP_PAGE_SIZE);
+          const groups = response.groups || [];
+          this.totalMatchingCount = response.total || 0;
+          this.loadOffset += groups.length;
+
+          const playlist = this.playlistOptions.find((item) => item.value === this.appliedFilters.playlistId);
+          const playlistName = playlist?.label || 'Source';
+          const mapped = groups.map((group) => ({
+            name: group.name,
+            channel_count: group.channel_count || 0,
+            playlist_id: this.appliedFilters.playlistId,
+            playlist_name: playlistName,
+            row_key: `${this.appliedFilters.playlistId}-${group.name}`,
+          })).filter((group) => !this.rowsByKey[group.row_key]);
+
+          if (mapped.length) {
+            const nextRows = [...this.rows, ...mapped];
+            this.rows = nextRows;
+            const byKey = {...this.rowsByKey};
+            for (const row of mapped) {
+              byKey[row.row_key] = row;
+            }
+            this.rowsByKey = byKey;
+            appendedRows = mapped.length;
+          }
+
+          if (!groups.length || this.loadOffset >= this.totalMatchingCount) {
+            break;
+          }
         }
-      } catch {
+      } catch (err) {
+        if (axios.isCancel(err)) {
+          return;
+        }
         this.$q.notify({
           color: 'negative',
           message: 'Failed to load groups for source',
@@ -402,9 +423,15 @@ export default {
       }
     },
     async fetchGroupsPage(start, length) {
+      if (this.currentAbortController) {
+        this.currentAbortController.abort();
+      }
+      this.currentAbortController = new AbortController();
+
       const response = await axios({
         method: 'POST',
         url: '/tic-api/playlists/groups',
+        signal: this.currentAbortController.signal,
         data: {
           start,
           length,
@@ -414,6 +441,7 @@ export default {
           playlist_id: this.appliedFilters.playlistId,
         },
       });
+      this.currentAbortController = null;
       return {
         groups: response.data?.data?.groups || [],
         total: response.data?.data?.total || 0,

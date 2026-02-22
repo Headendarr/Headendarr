@@ -1,5 +1,6 @@
 <template>
   <q-input
+    ref="inputRef"
     outlined
     :model-value="modelValue"
     :label="label"
@@ -11,6 +12,7 @@
     :disable="disable"
     :loading="loading"
     @update:model-value="$emit('update:modelValue', $event)"
+    @keydown.enter="onEnter"
     @clear="$emit('clear')">
     <template #prepend>
       <q-icon name="search" />
@@ -19,7 +21,9 @@
 </template>
 
 <script setup>
-defineProps({
+import {ref} from 'vue';
+
+const props = defineProps({
   modelValue: {
     type: String,
     default: '',
@@ -58,5 +62,15 @@ defineProps({
   },
 });
 
-defineEmits(['update:modelValue', 'clear']);
+const emit = defineEmits(['update:modelValue', 'clear', 'search']);
+
+const inputRef = ref(null);
+
+const onEnter = () => {
+  const inputEl = inputRef.value?.$el?.querySelector('input');
+  if (inputEl) {
+    emit('update:modelValue', inputEl.value);
+  }
+  emit('search');
+};
 </script>

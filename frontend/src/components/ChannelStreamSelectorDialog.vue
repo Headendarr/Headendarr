@@ -30,6 +30,7 @@
                   :filters="streamToolbarFilters"
                   :sort-action="{label: sortButtonLabel, mobileLabel: 'Sort'}"
                   @update:search-value="searchValue = $event"
+                  @search="resetAndReload"
                   @filter-change="onToolbarFilterChange"
                   @filters="openFilterDialog"
                   @sort="openSortDialog"
@@ -76,7 +77,7 @@
       >
         <q-infinite-scroll
           ref="infiniteScrollRef"
-          :disable="allLoaded || loadingMore"
+          :disable="allLoaded || loadingMore || loadingInitial"
           :offset="160"
           scroll-target="#channel-stream-selector-scroll"
           @load="loadMore"
@@ -286,6 +287,7 @@ export default {
       selectedRowKeys: new Set(),
       excludedRowKeys: new Set(),
       selectAllMatching: false,
+      currentAbortController: null,
     };
   },
   computed: {
@@ -310,8 +312,8 @@ export default {
       return this.$q.screen.lt.sm;
     },
     allLoaded() {
-      if (this.totalMatchingCount < 1) {
-        return false;
+      if (this.totalMatchingCount === 0) {
+        return !this.loadingInitial;
       }
       return this.loadOffset >= this.totalMatchingCount;
     },
@@ -486,6 +488,11 @@ export default {
       done();
     },
     async resetAndReload() {
+      if (this.currentAbortController) {
+        this.currentAbortController.abort();
+        this.currentAbortController = null;
+      }
+      this.loadingMore = false;
       this.rows = [];
       this.rowsByKey = {};
       this.loadOffset = 0;
@@ -495,7 +502,7 @@ export default {
       this.loadingInitial = false;
     },
     async loadNextChunk() {
-      if (this.loadingMore || this.allLoaded) {
+      if (this.loadingMore) {
         return;
       }
 
@@ -503,6 +510,9 @@ export default {
       try {
         let appendedRows = 0;
         while (appendedRows === 0 && (this.loadOffset < this.totalMatchingCount || this.totalMatchingCount === 0)) {
+          if (this.totalMatchingCount === 0 && this.loadOffset > 0) {
+            break;
+          }
           const response = await this.fetchStreamsPage(this.loadOffset, STREAM_PAGE_SIZE);
           const streams = response.streams || [];
           this.totalMatchingCount = response.recordsFiltered || 0;
@@ -527,7 +537,10 @@ export default {
             break;
           }
         }
-      } catch {
+      } catch (err) {
+        if (axios.isCancel(err)) {
+          return;
+        }
         this.$q.notify({
           color: 'negative',
           message: 'Failed to load stream list',
@@ -537,9 +550,15 @@ export default {
       }
     },
     async fetchStreamsPage(start, length) {
+      if (this.currentAbortController) {
+        this.currentAbortController.abort();
+      }
+      this.currentAbortController = new AbortController();
+
       const response = await axios({
         method: 'POST',
         url: '/tic-api/playlists/streams',
+        signal: this.currentAbortController.signal,
         data: {
           start,
           length,
@@ -550,6 +569,7 @@ export default {
           group_title: this.appliedFilters.groupTitle || null,
         },
       });
+      this.currentAbortController = null;
       return {
         streams: response.data?.data?.streams || [],
         recordsFiltered: response.data?.data?.records_filtered || 0,
