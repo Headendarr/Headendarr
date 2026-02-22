@@ -1221,12 +1221,33 @@ export default defineComponent({
         method: 'GET',
         url: `/tic-api/channels/get?include_status=${this.enableChannelHealthHighlight ? 'true' : 'false'}`,
       }).then((response) => {
-        // Map and sort channels, preserving selected status
-        this.listOfChannels = response.data.data.sort((a, b) => a.number - b.number).map((channel) => {
-          // Check if channel ID exists in selectedChannels
-          const isSelected = this.selectedChannels.includes(channel.id);
-          return {...channel, selected: isSelected};
+        const newChannels = response.data.data.sort((a, b) => a.number - b.number);
+        const newChannelsById = new Map(newChannels.map(c => [c.id, c]));
+        const newChannelIds = new Set(newChannels.map(c => c.id));
+ 
+        // Update existing channels and identify new ones
+        this.listOfChannels.forEach(existingChannel => {
+          const newChannelData = newChannelsById.get(existingChannel.id);
+          if (newChannelData) {
+            // Preserve selection status and update everything else
+            const isSelected = existingChannel.selected;
+            Object.assign(existingChannel, newChannelData);
+            existingChannel.selected = isSelected;
+            newChannelsById.delete(existingChannel.id); // Remove from map so only new channels remain
+          }
         });
+ 
+        // Add new channels
+        newChannelsById.forEach(newChannel => {
+          const isSelected = this.selectedChannels.includes(newChannel.id);
+          this.listOfChannels.push({...newChannel, selected: isSelected});
+        });
+ 
+        // Remove deleted channels
+        this.listOfChannels = this.listOfChannels.filter(c => newChannelIds.has(c.id));
+ 
+        // Ensure list remains sorted by channel number
+        this.listOfChannels.sort((a, b) => a.number - b.number);
       }).catch(() => {
         if (!silent) {
           this.$q.notify({
@@ -1245,7 +1266,7 @@ export default defineComponent({
       this.stopChannelsAutoRefresh();
       this.channelsAutoRefreshTimerId = setInterval(() => {
         this.fetchChannels({silent: true});
-      }, 30000);
+      }, 15000);
     },
     stopChannelsAutoRefresh() {
       if (this.channelsAutoRefreshTimerId) {
@@ -1587,6 +1608,9 @@ export default defineComponent({
       // post this.chanelExportDialogJson
     },
     saveChannels: function() {
+      this.$q.loading.show({
+        message: 'Saving channels...',
+      });
       // Send changes to backend
       let data = {
         channels: {},
@@ -1607,8 +1631,42 @@ export default defineComponent({
         data: data,
       }).then((response) => {
         // Reload from backend
-        this.fetchChannels();
+        window.location.reload();
       }).catch(() => {
+        this.$q.loading.hide();
+        // Notify failure
+        this.$q.notify({
+          color: 'negative',
+          position: 'top',
+          message: 'An error was encountered while saving the channel order.',
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
+        });
+      });
+    },
+    saveChannelOrder: function() {
+      this.$q.loading.show({
+        message: 'Saving channel order...',
+      });
+      // Send changes to backend
+      let data = {
+        channels: {},
+      };
+      for (let i = 0; i < this.listOfChannels.length; i++) {
+        const item = this.listOfChannels[i];
+        data.channels[item.id] = {
+          number: item.number,
+        };
+      }
+      axios({
+        method: 'POST',
+        url: '/tic-api/channels/settings/multiple/save-order',
+        data: data,
+      }).then((response) => {
+        // Reload from backend
+        window.location.reload();
+      }).catch(() => {
+        this.$q.loading.hide();
         // Notify failure
         this.$q.notify({
           color: 'negative',
@@ -1627,7 +1685,7 @@ export default defineComponent({
       // Fix the channel numbering so there are no duplicates
       this.fixNumberIncrement(this.listOfChannels);
       // Save new channel layout
-      this.saveChannels();
+      this.saveChannelOrder();
     },
     showChannelNumberMod: function(index) {
       console.log(index);
@@ -1916,7 +1974,7 @@ export default defineComponent({
       // Fix the channel numbering
       this.fixNumberIncrement(this.listOfChannels);
       // Save new channel layout
-      this.saveChannels();
+      this.saveChannelOrder();
     },
   },
   created() {

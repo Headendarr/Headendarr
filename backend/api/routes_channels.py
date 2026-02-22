@@ -16,6 +16,7 @@ from backend.channels import (
     update_channel,
     delete_channel,
     add_bulk_channels,
+    update_channels_order,
     queue_background_channel_update_tasks,
     read_channel_logo,
     add_channels_from_groups,
@@ -816,6 +817,16 @@ async def api_set_config_channels(channel_id):
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     await update_channel(config, channel_id, json_data)
+    await queue_background_channel_update_tasks(config)
+    return jsonify({"success": True})
+
+
+@blueprint.route("/tic-api/channels/settings/multiple/save-order", methods=["POST"])
+@admin_auth_required
+async def api_set_config_multiple_channels_order():
+    json_data = await request.get_json()
+    config = current_app.config["APP_CONFIG"]
+    await update_channels_order(config, json_data.get("channels", {}))
     await queue_background_channel_update_tasks(config)
     return jsonify({"success": True})
 

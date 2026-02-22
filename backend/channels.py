@@ -16,7 +16,7 @@ from urllib.parse import urlparse, urlunparse
 import aiofiles
 import aiohttp
 import requests
-from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_
+from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.ffmpeg import generate_iptv_url
@@ -1245,6 +1245,28 @@ async def add_new_channel(config, data, commit=True, publish=True):
         else:
             await session.flush()
         return channel
+
+
+async def update_channels_order(config, data):
+    """
+    Optimized function to update only the channel numbering.
+    Used when reordering or shifting channel numbers.
+    """
+    async with Session() as session:
+        async with session.begin():
+            for channel_id, channel_data in data.items():
+                normalized = normalize_id(channel_id, "channel")
+                number = channel_data.get("number")
+                if number is not None:
+                    try:
+                        number = int(number)
+                    except (TypeError, ValueError):
+                        number = None
+                    await session.execute(
+                        update(Channel)
+                        .where(Channel.id == normalized)
+                        .values(number=number)
+                    )
 
 
 async def update_channel(config, channel_id, data):
