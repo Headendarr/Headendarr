@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 import time
 from collections import deque
@@ -42,7 +43,14 @@ CSO_STALL_SECONDS_DEFAULT = 20
 CSO_UNDERSPEED_RATIO_DEFAULT = 0.9
 CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT = 12
 CSO_STARTUP_GRACE_SECONDS_DEFAULT = 8
+CSO_HTTP_ERROR_WINDOW_SECONDS_DEFAULT = int(os.environ.get("CSO_HTTP_ERROR_WINDOW_SECONDS", "10") or 10)
+CSO_HTTP_ERROR_THRESHOLD_DEFAULT = int(os.environ.get("CSO_HTTP_ERROR_THRESHOLD", "4") or 4)
+CSO_SPEED_STALE_SECONDS_DEFAULT = int(os.environ.get("CSO_SPEED_STALE_SECONDS", "6") or 6)
+CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = int(os.environ.get("CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS", "2") or 2)
+CSO_INGEST_RW_TIMEOUT_US = int(os.environ.get("CSO_INGEST_RW_TIMEOUT_US", "15000000") or 15000000)
+CSO_INGEST_TIMEOUT_US = int(os.environ.get("CSO_INGEST_TIMEOUT_US", "10000000") or 10000000)
 _FFMPEG_SPEED_RE = re.compile(r"speed=\s*([0-9.]+)x")
+_HTTP_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
 _HLS_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
 _HLS_RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
 _HLS_STARTUP_RAMP_INTERVAL_SECONDS = 4
@@ -338,8 +346,22 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0):
         "1",
         "-reconnect_streamed",
         "1",
+        "-reconnect_on_network_error",
+        "1",
+        "-reconnect_on_http_error",
+        "4xx,5xx",
         "-reconnect_delay_max",
-        "2",
+        str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+        # Tolerate malformed/corrupt packets and continue ingest.
+        "-fflags",
+        "+discardcorrupt+genpts",
+        "-err_detect",
+        "ignore_err",
+        # Bound network stalls so reconnect logic can recover.
+        "-rw_timeout",
+        str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
+        "-timeout",
+        str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
         "-i",
         source_url,
         "-map",
@@ -533,9 +555,11 @@ class CsoIngestSession:
         self.last_source_start_ts = 0.0
         self.low_speed_since = None
         self.last_ffmpeg_speed = None
+        self.last_ffmpeg_speed_ts = 0.0
         self.health_failover_reason = None
         self.health_failover_details = None
         self._recent_ffmpeg_stderr = deque(maxlen=50)
+        self.http_error_timestamps = deque(maxlen=200)
         self.hls_variants = []
         self.current_variant_position = None
         self.current_program_index = 0
@@ -571,6 +595,8 @@ class CsoIngestSession:
         self.last_chunk_ts = self.last_source_start_ts
         self.low_speed_since = None
         self.last_ffmpeg_speed = None
+        self.last_ffmpeg_speed_ts = self.last_source_start_ts
+        self.http_error_timestamps.clear()
         self.health_failover_reason = None
         self.health_failover_details = None
         logger.info(
@@ -717,6 +743,7 @@ class CsoIngestSession:
                         value = value.rstrip("xX")
                         try:
                             self.last_ffmpeg_speed = float(value)
+                            self.last_ffmpeg_speed_ts = time.time()
                         except Exception:
                             self.last_ffmpeg_speed = None
 
@@ -725,11 +752,29 @@ class CsoIngestSession:
                     if speed_match:
                         try:
                             self.last_ffmpeg_speed = float(speed_match.group(1))
+                            self.last_ffmpeg_speed_ts = time.time()
                         except Exception:
                             self.last_ffmpeg_speed = None
+
+                lower = rendered.lower()
+                if "http error" in lower or "server returned" in lower or "forbidden" in lower or "unauthorized" in lower:
+                    status_codes = _HTTP_STATUS_CODE_RE.findall(rendered)
+                    if status_codes:
+                        if any(code.startswith("4") or code.startswith("5") for code in status_codes):
+                            self.http_error_timestamps.append(time.time())
+                    else:
+                        self.http_error_timestamps.append(time.time())
         rendered = text_buffer.strip()
         if rendered:
             self._recent_ffmpeg_stderr.append(rendered)
+            lower = rendered.lower()
+            if "http error" in lower or "server returned" in lower or "forbidden" in lower or "unauthorized" in lower:
+                status_codes = _HTTP_STATUS_CODE_RE.findall(rendered)
+                if status_codes:
+                    if any(code.startswith("4") or code.startswith("5") for code in status_codes):
+                        self.http_error_timestamps.append(time.time())
+                else:
+                    self.http_error_timestamps.append(time.time())
 
     def _ffmpeg_error_summary(self):
         lines = [line for line in self._recent_ffmpeg_stderr if line]
@@ -750,23 +795,47 @@ class CsoIngestSession:
             if (now - self.last_source_start_ts) < CSO_STARTUP_GRACE_SECONDS_DEFAULT:
                 continue
 
+            if self.http_error_timestamps:
+                window_seconds = max(1, int(CSO_HTTP_ERROR_WINDOW_SECONDS_DEFAULT))
+                threshold = max(1, int(CSO_HTTP_ERROR_THRESHOLD_DEFAULT))
+                while self.http_error_timestamps and (now - self.http_error_timestamps[0]) > window_seconds:
+                    self.http_error_timestamps.popleft()
+                if len(self.http_error_timestamps) >= threshold:
+                    await self._request_health_failover(
+                        "http_error_burst",
+                        {
+                            "http_error_count": len(self.http_error_timestamps),
+                            "threshold_count": threshold,
+                            "window_seconds": window_seconds,
+                        },
+                    )
+                    return
+
             # Treat stall as actionable only when we have sustained no-data and
             # ingest is not keeping up at realtime speed.
             if self.last_chunk_ts and (now - self.last_chunk_ts) >= CSO_STALL_SECONDS_DEFAULT:
                 speed = self.last_ffmpeg_speed
-                if speed is not None and speed >= 1.0:
+                speed_age = now - float(self.last_ffmpeg_speed_ts or 0.0)
+                speed_stale_seconds = max(1, int(CSO_SPEED_STALE_SECONDS_DEFAULT))
+                speed_is_stale = speed_age >= speed_stale_seconds
+                if speed is not None and not speed_is_stale and speed >= 1.0:
                     continue
                 await self._request_health_failover(
                     "stall_timeout",
                     {
                         "stall_seconds": round(now - self.last_chunk_ts, 2),
                         "threshold_seconds": CSO_STALL_SECONDS_DEFAULT,
+                        "speed": speed,
+                        "speed_stale": speed_is_stale,
+                        "speed_age_seconds": round(speed_age, 2),
+                        "speed_stale_threshold_seconds": speed_stale_seconds,
                     },
                 )
                 return
 
             speed = self.last_ffmpeg_speed
-            if speed is None:
+            speed_age = now - float(self.last_ffmpeg_speed_ts or 0.0)
+            if speed is None or speed_age >= max(1, int(CSO_SPEED_STALE_SECONDS_DEFAULT)):
                 self.low_speed_since = None
                 continue
 
