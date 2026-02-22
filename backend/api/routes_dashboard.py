@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from backend import config as backend_config
 from backend.api import blueprint
-from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts
+from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts, _fetch_cso_attention_map
 from backend.audit_view import build_device_label, serialize_audit_row
 from backend.auth import admin_auth_required
 from backend.channels import (
@@ -130,6 +130,7 @@ async def _channel_issue_summary():
 
     logo_health_map = read_logo_health_map(config)
     suggestion_counts = await _fetch_channel_suggestion_counts()
+    cso_attention_map = await _fetch_cso_attention_map([channel.get("id") for channel in channels])
     issue_counts = {}
     warning_channels = 0
     for channel in channels:
@@ -138,6 +139,7 @@ async def _channel_issue_summary():
             mux_map,
             suggestion_counts.get(channel.get("id"), 0),
             logo_health=logo_health_map.get(str(channel.get("id")), {}),
+            cso_health=cso_attention_map.get(channel.get("id"), {}),
         )
         if status.get("state") != "warning":
             continue
@@ -152,6 +154,8 @@ async def _channel_issue_summary():
         "all_sources_disabled": "One or more channels only have disabled sources",
         "no_sources": "One or more channels have no sources configured",
         "channel_logo_unavailable": "Channel logo fetch failures detected",
+        "cso_connection_issue": "CSO stream connection failures detected",
+        "cso_stream_unhealthy": "CSO unhealthy stream conditions detected",
     }
     for key, count in sorted(issue_counts.items(), key=lambda item: item[1], reverse=True):
         issue_list.append(

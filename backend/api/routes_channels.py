@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import time
+from datetime import timedelta
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
@@ -32,7 +33,7 @@ from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_u
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
-from backend.datetime_utils import to_utc_iso
+from backend.datetime_utils import to_utc_iso, utc_now_naive
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
 
@@ -47,7 +48,78 @@ async def _fetch_tvh_mux_map(config):
         return None
 
 
-def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None):
+def _parse_cso_event_details(details_json):
+    if not details_json:
+        return {}
+    try:
+        payload = json.loads(details_json)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _fetch_cso_attention_map(channel_ids, lookback_minutes=30):
+    normalized_ids = []
+    for channel_id in channel_ids or []:
+        try:
+            normalized_ids.append(int(channel_id))
+        except Exception:
+            continue
+    if not normalized_ids:
+        return {}
+
+    cutoff = utc_now_naive() - timedelta(minutes=max(1, int(lookback_minutes or 30)))
+    async with Session() as session:
+        result = await session.execute(
+            select(CsoEventLog)
+            .where(
+                CsoEventLog.channel_id.in_(normalized_ids),
+                CsoEventLog.created_at >= cutoff,
+                CsoEventLog.severity.in_(["warning", "error"]),
+            )
+            .order_by(CsoEventLog.created_at.desc())
+        )
+        rows = result.scalars().all()
+
+    attention_map = {}
+    for row in rows:
+        channel_id = int(row.channel_id or 0)
+        if channel_id <= 0:
+            continue
+        details = _parse_cso_event_details(row.details_json)
+        reason = str(details.get("reason") or details.get("after_failure_reason") or "").strip().lower()
+        event_type = str(row.event_type or "").strip().lower()
+        severity = str(row.severity or "warning").strip().lower()
+
+        entry = attention_map.setdefault(
+            channel_id,
+            {
+                "issues": set(),
+                "latest_event": {
+                    "event_type": event_type,
+                    "severity": severity,
+                    "reason": reason,
+                    "details": details,
+                    "created_at": to_utc_iso(row.created_at),
+                },
+            },
+        )
+
+        if event_type in {"playback_unavailable", "capacity_blocked"}:
+            entry["issues"].add("cso_connection_issue")
+
+        if event_type in {"health_actioned", "switch_attempt"} or reason in {"under_speed", "stall_timeout"}:
+            entry["issues"].add("cso_stream_unhealthy")
+
+        if reason in {"ingest_start_failed", "no_available_source", "capacity_blocked", "output_reader_ended"}:
+            entry["issues"].add("cso_connection_issue")
+
+    for payload in attention_map.values():
+        payload["issues"] = sorted(payload["issues"])
+    return attention_map
+
+
+def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None, cso_health=None):
     if not channel.get("enabled"):
         return {
             "state": "disabled",
@@ -75,6 +147,7 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
     missing_streams = []
     failed_streams = []
     has_enabled_source = False
+    cso_enabled = bool(channel.get("cso_enabled", False))
 
     for source in sources:
         if source.get("source_type") == "manual":
@@ -88,6 +161,8 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
             continue
 
         has_enabled_source = True
+        if cso_enabled:
+            continue
         tvh_uuid = source.get("tvh_uuid")
         if mux_map is None:
             continue
@@ -129,6 +204,11 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
     source_logo_url = channel.get("source_logo_url") or channel.get("logo_url")
     if logo_health and logo_health.get("status") == "error" and source_logo_url:
         issues.append("channel_logo_unavailable")
+    if cso_enabled:
+        cso_issues = list((cso_health or {}).get("issues") or [])
+        for issue in cso_issues:
+            if issue not in issues:
+                issues.append(issue)
     return {
         "state": "warning" if issues else "ok",
         "issues": issues,
@@ -138,6 +218,7 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
         "missing_streams": missing_streams,
         "failed_streams": failed_streams,
         "logo_health": logo_health or {},
+        "cso_health": cso_health or {},
         "suggestion_count": suggestion_count,
     }
 
@@ -180,10 +261,17 @@ async def api_get_channels():
         mux_map = await _fetch_tvh_mux_map(config)
         suggestion_counts = await _fetch_channel_suggestion_counts()
         logo_health_map = read_logo_health_map(config)
+        cso_attention_map = await _fetch_cso_attention_map([channel.get("id") for channel in channels_config])
         for channel in channels_config:
             suggestion_count = suggestion_counts.get(channel.get("id"), 0)
             logo_health = logo_health_map.get(str(channel.get("id")), {})
-            channel["status"] = _build_channel_status(channel, mux_map, suggestion_count, logo_health=logo_health)
+            channel["status"] = _build_channel_status(
+                channel,
+                mux_map,
+                suggestion_count,
+                logo_health=logo_health,
+                cso_health=cso_attention_map.get(channel.get("id"), {}),
+            )
     return jsonify({"success": True, "data": channels_config})
 
 

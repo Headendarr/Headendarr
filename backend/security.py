@@ -2,10 +2,11 @@
 # -*- coding:utf-8 -*-
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from backend.datetime_utils import utc_now_naive
 
 
 _password_hasher = PasswordHasher()
@@ -45,4 +46,4 @@ def hash_session_token(token: str) -> str:
 
 
 def compute_session_expiry(days: int = 30) -> datetime:
-    return datetime.now(timezone.utc) + timedelta(days=days)
+    return utc_now_naive() + timedelta(days=days)

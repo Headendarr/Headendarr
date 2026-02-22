@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-from datetime import datetime, timezone
-
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
+from backend.datetime_utils import utc_now_naive
 from backend.models import Session, User, Role
 from backend.security import hash_password, verify_password, needs_rehash, generate_stream_key
 from backend.dvr_profiles import normalize_retention_policy
@@ -46,7 +45,7 @@ async def ensure_default_admin(config):
                 password_hash=hash_password(admin_password),
                 is_active=True,
                 streaming_key=stream_key,
-                streaming_key_created_at=datetime.now(timezone.utc),
+                streaming_key_created_at=utc_now_naive(),
             )
             admin_user.roles.append(roles["admin"])
             session.add(admin_user)
@@ -87,7 +86,7 @@ async def create_user(username: str, password: str, role_names=None):
                 password_hash=hash_password(password),
                 is_active=True,
                 streaming_key=stream_key,
-                streaming_key_created_at=datetime.now(timezone.utc),
+                streaming_key_created_at=utc_now_naive(),
                 dvr_access_mode="none",
                 dvr_retention_policy="forever",
             )
@@ -205,7 +204,7 @@ async def rotate_stream_key(user_id: int):
                 return None, None
             stream_key = generate_stream_key()
             user.streaming_key = stream_key
-            user.streaming_key_created_at = datetime.now(timezone.utc)
+            user.streaming_key_created_at = utc_now_naive()
             session.add(user)
             return user, stream_key
 
@@ -219,7 +218,7 @@ async def set_user_tvh_sync_status(user_id: int, status: str, error: str = None)
                 return None
             user.tvh_sync_status = status
             user.tvh_sync_error = error
-            user.tvh_sync_updated_at = datetime.now(timezone.utc)
+            user.tvh_sync_updated_at = utc_now_naive()
             session.add(user)
             return user
 

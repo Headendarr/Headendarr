@@ -636,6 +636,8 @@ export default defineComponent({
       applyCategoriesOptions: ['Add', 'Remove', 'Replace'], // Options for select menu
       editIndex: '',
       editedValue: '',
+      channelsAutoRefreshTimerId: null,
+      channelsFetchInFlight: false,
     };
   },
   computed: {
@@ -1208,7 +1210,12 @@ export default defineComponent({
       }
       return lastNumber + 1;
     },
-    fetchChannels: function() {
+    fetchChannels: function(options = {}) {
+      const silent = Boolean(options?.silent);
+      if (this.channelsFetchInFlight) {
+        return;
+      }
+      this.channelsFetchInFlight = true;
       // Fetch current settings
       axios({
         method: 'GET',
@@ -1221,14 +1228,30 @@ export default defineComponent({
           return {...channel, selected: isSelected};
         });
       }).catch(() => {
-        this.$q.notify({
-          color: 'negative',
-          position: 'top',
-          message: 'Failed to fetch settings',
-          icon: 'report_problem',
-          actions: [{icon: 'close', color: 'white'}],
-        });
+        if (!silent) {
+          this.$q.notify({
+            color: 'negative',
+            position: 'top',
+            message: 'Failed to fetch settings',
+            icon: 'report_problem',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+        }
+      }).finally(() => {
+        this.channelsFetchInFlight = false;
       });
+    },
+    startChannelsAutoRefresh() {
+      this.stopChannelsAutoRefresh();
+      this.channelsAutoRefreshTimerId = setInterval(() => {
+        this.fetchChannels({silent: true});
+      }, 30000);
+    },
+    stopChannelsAutoRefresh() {
+      if (this.channelsAutoRefreshTimerId) {
+        clearInterval(this.channelsAutoRefreshTimerId);
+        this.channelsAutoRefreshTimerId = null;
+      }
     },
     fetchUiSettings: function() {
       axios({
@@ -1358,6 +1381,8 @@ export default defineComponent({
         missing_tvh_mux: 'Missing stream in TVHeadend',
         tvh_mux_failed: 'TVHeadend stream failed',
         channel_logo_unavailable: 'Channel logo unavailable',
+        cso_connection_issue: 'CSO connection issue',
+        cso_stream_unhealthy: 'CSO stream unhealthy',
       };
       return status.issues.map((issue) => labels[issue] || issue);
     },
@@ -1874,6 +1899,16 @@ export default defineComponent({
   },
   created() {
     this.fetchUiSettings();
+  },
+  mounted() {
+    this.startChannelsAutoRefresh();
+  },
+  beforeUnmount() {
+    this.stopChannelsAutoRefresh();
+  },
+  beforeRouteLeave(to, from, next) {
+    this.stopChannelsAutoRefresh();
+    next();
   },
 });
 </script>

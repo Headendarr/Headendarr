@@ -21,10 +21,18 @@ from backend.hls_multiplexer import (
     b64_urlsafe_encode,
     parse_size,
     mux_manager,
-    SegmentCache
+    SegmentCache,
 )
-from backend.cso import cleanup_channel_stream_events, cso_session_manager, resolve_channel_for_stream, subscribe_channel_stream
-from backend.stream_profiles import resolve_cso_profile_name
+from backend.cso import (
+    CsoOutputFfmpegCommandBuilder,
+    CsoOutputReaderEnded,
+    cleanup_channel_stream_events,
+    cso_session_manager,
+    policy_content_type,
+    resolve_channel_for_stream,
+    subscribe_channel_stream,
+)
+from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.stream_activity import (
     cleanup_stream_activity,
     stop_stream_activity,
@@ -72,7 +80,11 @@ buffer_logger = logging.getLogger("buffer")
 # CSO unavailable response behavior.
 # Keep hard-coded defaults for now; can be moved into app settings/UI later.
 CSO_UNAVAILABLE_SHOW_SLATE = True
-CSO_UNAVAILABLE_SLATE_DURATION_SECONDS = 10
+CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS = {
+    "default": 10,
+    "capacity_blocked": 10,
+    "playback_unavailable": 3,
+}
 CSO_UNAVAILABLE_SLATE_MESSAGES = {
     "capacity_blocked": {
         "title": "Channel Temporarily Unavailable",
@@ -88,6 +100,14 @@ CSO_UNAVAILABLE_SLATE_MESSAGES = {
 def _cso_unavailable_slate_message(reason: str) -> tuple[str, str]:
     payload = CSO_UNAVAILABLE_SLATE_MESSAGES.get(reason) or CSO_UNAVAILABLE_SLATE_MESSAGES["playback_unavailable"]
     return str(payload.get("title") or ""), str(payload.get("subtitle") or "")
+
+
+def _cso_unavailable_duration_seconds(reason: str) -> int:
+    fallback = CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS.get("default", 10)
+    try:
+        return int(CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS.get(reason, fallback))
+    except Exception:
+        return int(fallback)
 
 
 def _resolve_cso_unavailable_logo_path() -> str | None:
@@ -135,17 +155,13 @@ def _wrap_words(text: str, max_chars: int = 44, max_lines: int = 2) -> list[str]
     return lines[:max_lines]
 
 
-def _build_cso_unavailable_slate_command(reason: str, duration_seconds: int = 10, output_target: str = "pipe:1") -> list[str]:
+def _build_cso_unavailable_slate_command(
+    reason: str, duration_seconds: int = 10, output_target: str = "pipe:1"
+) -> list[str]:
     title, subtitle = _cso_unavailable_slate_message(reason)
     title = _escape_ffmpeg_drawtext_text(title)
     subtitle_lines = [_escape_ffmpeg_drawtext_text(line) for line in _wrap_words(subtitle, max_chars=46, max_lines=2)]
-    drawtext_title = (
-        "drawtext="
-        f"text='{title}':"
-        "fontcolor=white:"
-        "fontsize=52:"
-        "x=(w-text_w)/2:y=(h/2)-84"
-    )
+    drawtext_title = "drawtext=" f"text='{title}':" "fontcolor=white:" "fontsize=52:" "x=(w-text_w)/2:y=(h/2)-84"
     drawtext_subtitle_1 = (
         "drawtext="
         f"text='{subtitle_lines[0] if len(subtitle_lines) > 0 else ''}':"
@@ -250,9 +266,10 @@ def _build_cso_unavailable_slate_command(reason: str, duration_seconds: int = 10
     return command
 
 
-async def _cso_unavailable_slate_stream(reason: str, duration_seconds: int = CSO_UNAVAILABLE_SLATE_DURATION_SECONDS):
+async def _iter_cso_unavailable_slate_source(reason: str):
+    resolved_duration = _cso_unavailable_duration_seconds(reason)
     config = current_app.config.get("APP_CONFIG") if current_app else None
-    slate_file = await _ensure_cso_unavailable_slate_asset(config, reason, duration_seconds)
+    slate_file = await _ensure_cso_unavailable_slate_asset(config, reason, resolved_duration)
     if slate_file and os.path.exists(slate_file):
         proxy_logger.info("Streaming cached CSO unavailable slate reason=%s file=%s", reason, slate_file)
         async with aiofiles.open(slate_file, "rb") as f:
@@ -263,11 +280,11 @@ async def _cso_unavailable_slate_stream(reason: str, duration_seconds: int = CSO
                 yield chunk
         return
 
-    command = _build_cso_unavailable_slate_command(reason, duration_seconds=duration_seconds)
+    command = _build_cso_unavailable_slate_command(reason, duration_seconds=resolved_duration)
     proxy_logger.info(
         "Starting CSO unavailable slate reason=%s duration=%ss command=%s",
         reason,
-        duration_seconds,
+        resolved_duration,
         command,
     )
     process = await asyncio.create_subprocess_exec(
@@ -307,6 +324,95 @@ async def _cso_unavailable_slate_stream(reason: str, duration_seconds: int = CSO
         except Exception:
             pass
         proxy_logger.info("CSO unavailable slate ended reason=%s", reason)
+
+
+async def _cso_unavailable_slate_stream(
+    reason: str,
+    policy: dict | None = None,
+):
+    if not policy:
+        async for chunk in _iter_cso_unavailable_slate_source(reason):
+            yield chunk
+        return
+
+    effective_policy = dict(policy or {})
+    container = str(effective_policy.get("container") or "mpegts")
+    if container in {"matroska", "mp4"}:
+        # Live fallback slates for non-TS containers are more reliable when audio is re-encoded.
+        effective_policy["output_mode"] = "force_transcode"
+        if not effective_policy.get("audio_codec"):
+            effective_policy["audio_codec"] = "aac"
+        if "video_codec" not in effective_policy:
+            effective_policy["video_codec"] = ""
+    command = CsoOutputFfmpegCommandBuilder(effective_policy).build_output_command()
+    proxy_logger.info(
+        "Starting CSO unavailable slate transform reason=%s duration=%ss policy=%s command=%s",
+        reason,
+        _cso_unavailable_duration_seconds(reason),
+        effective_policy,
+        command,
+    )
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    async def _writer():
+        try:
+            async for chunk in _iter_cso_unavailable_slate_source(reason):
+                if not process.stdin:
+                    break
+                process.stdin.write(chunk)
+                await process.stdin.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                if process.stdin:
+                    process.stdin.close()
+            except Exception:
+                pass
+
+    async def _stderr_reader():
+        while True:
+            try:
+                line = await process.stderr.readline()
+            except Exception:
+                break
+            if not line:
+                break
+            # Drain stderr to avoid blocking FFmpeg; line-by-line output is intentionally suppressed.
+
+    writer_task = asyncio.create_task(_writer())
+    stderr_task = asyncio.create_task(_stderr_reader())
+    emitted_bytes = 0
+    try:
+        while process.stdout:
+            chunk = await process.stdout.read(16384)
+            if not chunk:
+                break
+            emitted_bytes += len(chunk)
+            yield chunk
+    finally:
+        try:
+            await asyncio.wait_for(writer_task, timeout=2.0)
+        except Exception:
+            writer_task.cancel()
+        try:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=1.5)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        try:
+            await asyncio.wait_for(stderr_task, timeout=0.5)
+        except Exception:
+            pass
+        proxy_logger.info("CSO unavailable slate transform ended reason=%s bytes=%s", reason, emitted_bytes)
 
 
 async def _ensure_cso_unavailable_slate_asset(config, reason: str, duration_seconds: int) -> str | None:
@@ -476,11 +582,13 @@ async def proxy_m3u8(instance_id, encoded_url):
             resp.headers[k] = v
         return resp
 
-    if hasattr(body, '__aiter__'):
+    if hasattr(body, "__aiter__"):
+
         @stream_with_context
         async def generate_playlist():
             async for chunk in body:
                 yield chunk
+
         return Response(generate_playlist(), content_type=content_type)
     return Response(body, content_type=content_type)
 
@@ -543,7 +651,7 @@ async def proxy_ts(instance_id, encoded_url):
     """
     TIC Legacy/Segment Proxy Endpoint
 
-    This endpoint serves individual .ts segments for HLS or provides a 
+    This endpoint serves individual .ts segments for HLS or provides a
     direct stream when configured.
 
     Parameters:
@@ -564,7 +672,9 @@ async def proxy_ts(instance_id, encoded_url):
             target = f"{target}?{request.query_string.decode()}"
         return redirect(target, code=302)
 
-    content, status, content_type = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    content, status, content_type = await handle_segment_proxy(
+        decoded_url, _build_upstream_headers(), hls_segment_cache
+    )
     if content is None:
         return Response("Failed to fetch.", status=status)
 
@@ -614,7 +724,7 @@ async def stream_ts(instance_id, encoded_url):
     Uses high-performance async socket reads. Best for 99% of streams.
 
     Fallback Mode (FFmpeg):
-    Enabled by appending '?ffmpeg=true'. Uses an external FFmpeg process to 
+    Enabled by appending '?ffmpeg=true'. Uses an external FFmpeg process to
     remux/clean the stream. Use this ONLY if 'direct' mode has playback issues.
 
     Parameters:
@@ -637,11 +747,7 @@ async def stream_ts(instance_id, encoded_url):
     mode = "ffmpeg" if use_ffmpeg else "direct"
 
     generator = await handle_multiplexed_stream(
-        decoded_url,
-        mode,
-        _build_upstream_headers(),
-        prebuffer_bytes,
-        connection_id
+        decoded_url, mode, _build_upstream_headers(), prebuffer_bytes, connection_id
     )
 
     if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):
@@ -651,6 +757,7 @@ async def stream_ts(instance_id, encoded_url):
     async def generate_stream():
         async for chunk in generator:
             yield chunk
+
     response = Response(generate_stream(), content_type="video/mp2t")
     response.timeout = None  # Disable timeout for streaming response
     return response
@@ -710,6 +817,7 @@ async def stream_channel(channel_id):
         requested_profile,
         channel=channel,
     )
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
 
     connection_id = _get_connection_id(default_new=True)
     generator, content_type, error_message, status = await subscribe_channel_stream(
@@ -729,10 +837,14 @@ async def stream_channel(channel_id):
 
             @stream_with_context
             async def generate_unavailable_slate():
-                async for chunk in _cso_unavailable_slate_stream(reason):
+                async for chunk in _cso_unavailable_slate_stream(reason, policy=effective_policy):
                     yield chunk
 
-            return Response(generate_unavailable_slate(), content_type="video/mp2t", status=200)
+            return Response(
+                generate_unavailable_slate(),
+                content_type=policy_content_type(effective_policy) or "application/octet-stream",
+                status=200,
+            )
 
         return Response(message or "Unable to start CSO stream", status=status or 500)
 
@@ -756,18 +868,34 @@ async def stream_channel(channel_id):
         stream_name=channel_name,
         display_url=activity_identity,
     )
+    output_session_key = f"cso-output-{channel_id_int}-{effective_profile}"
 
     @stream_with_context
     async def generate_stream():
         touch_identity = activity_identity
         last_touch_ts = time.time()
+        should_emit_failure_slate = False
         try:
-            async for chunk in generator:
-                now = time.time()
-                if (now - last_touch_ts) >= 5.0:
-                    await touch_stream_activity(connection_id, identity=touch_identity)
-                    last_touch_ts = now
-                yield chunk
+            try:
+                async for chunk in generator:
+                    now = time.time()
+                    if (now - last_touch_ts) >= 5.0:
+                        await touch_stream_activity(connection_id, identity=touch_identity)
+                        last_touch_ts = now
+                    yield chunk
+            except CsoOutputReaderEnded:
+                should_emit_failure_slate = True
+
+            if not should_emit_failure_slate:
+                session = await cso_session_manager.get_output_session(output_session_key)
+                should_emit_failure_slate = bool(
+                    session and getattr(session, "last_error", "") == "output_reader_ended"
+                )
+
+            if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE:
+                reason = "playback_unavailable"
+                async for chunk in _cso_unavailable_slate_stream(reason, policy=effective_policy):
+                    yield chunk
         finally:
             await stop_stream_activity(
                 "",

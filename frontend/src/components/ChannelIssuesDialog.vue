@@ -28,6 +28,14 @@
                   </div>
                 </div>
               </div>
+              <div v-if="issue.csoDetails && issue.csoDetails.length">
+                <div class="text-caption text-grey-7">Latest CSO event details</div>
+                <div class="text-body2">
+                  <div v-for="detail in issue.csoDetails" :key="detail">
+                    {{ detail }}
+                  </div>
+                </div>
+              </div>
 
               <div v-if="issue.key === 'channel_logo_unavailable'" class="q-mt-md">
                 <div class="text-caption text-grey-7 q-mb-xs">Suggested logos</div>
@@ -156,6 +164,20 @@ export default {
           description: this.logoIssueDescription,
           actions: [actions.openSettings],
         },
+        cso_connection_issue: {
+          title: 'Channel Stream Organiser connection issue',
+          description:
+            'CSO could not connect to an upstream source or maintain output playback. Check source availability, connection limits, and channel stream ordering.',
+          csoDetails: this.csoIssueDetails,
+          actions: [actions.openSettings],
+        },
+        cso_stream_unhealthy: {
+          title: 'Channel Stream Organiser unhealthy stream',
+          description:
+            'CSO detected unstable stream health (for example buffering/underspeed) and triggered failover attempts. Review source quality and priority.',
+          csoDetails: this.csoIssueDetails,
+          actions: [actions.openSettings],
+        },
       };
       const issues = this.normalizedIssues;
       return issues.map((issue) => ({key: issue, ...(definitions[issue] || {title: issue, description: ''})})).
@@ -182,12 +204,45 @@ export default {
     logoIssueError() {
       return this.channel?.status?.logo_health?.error || '';
     },
+    csoLatestEvent() {
+      return this.channel?.status?.cso_health?.latest_event || null;
+    },
+    csoIssueDetails() {
+      const event = this.csoLatestEvent || {};
+      const details = event.details || {};
+      const lines = [];
+
+      const reason = details.reason || event.reason;
+      if (reason) {
+        lines.push(`Reason: ${reason}`);
+      }
+      if (details.stream_name) {
+        lines.push(`Stream: ${details.stream_name}`);
+      }
+      if (details.playlist_name) {
+        lines.push(`Playlist: ${details.playlist_name}`);
+      }
+      if (details.source_priority !== undefined && details.source_priority !== null) {
+        lines.push(`Priority: ${details.source_priority}`);
+      }
+      if (details.source_id) {
+        lines.push(`Source ID: ${details.source_id}`);
+      }
+      if (details.ffmpeg_error) {
+        lines.push(`FFmpeg: ${details.ffmpeg_error}`);
+      }
+      if (event.created_at) {
+        lines.push(`At: ${event.created_at}`);
+      }
+      return lines;
+    },
   },
   methods: {
     hasIssueDetails(issue) {
       return Boolean(
         (issue.actions && issue.actions.length) ||
         (issue.streams && issue.streams.length) ||
+        (issue.csoDetails && issue.csoDetails.length) ||
         issue.key === 'channel_logo_unavailable',
       );
     },

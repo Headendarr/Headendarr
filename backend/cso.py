@@ -8,7 +8,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -32,6 +32,7 @@ from backend.streaming import (
 from backend.stream_profiles import generate_cso_policy_from_profile
 from backend.users import get_user_by_stream_key
 from backend.config import enable_cso_command_debug_logging
+from backend.datetime_utils import utc_now_naive
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
@@ -61,6 +62,10 @@ CONTAINER_TO_CONTENT_TYPE = {
     "mp4": "video/mp4",
     "webm": "video/webm",
 }
+
+
+class CsoOutputReaderEnded(Exception):
+    """Raised when CSO output ended unexpectedly while clients were still attached."""
 
 
 def detect_vaapi_device_path() -> str | None:
@@ -122,6 +127,24 @@ def _capacity_limit_for_source(source):
     return 1_000_000
 
 
+def _source_event_context(source, source_url=None):
+    if not source:
+        return {}
+    playlist = getattr(source, "playlist", None)
+    stream_name = str(getattr(source, "playlist_stream_name", "") or "").strip()
+    playlist_name = str(getattr(playlist, "name", "") or "").strip()
+    payload = {
+        "source_id": getattr(source, "id", None),
+        "playlist_id": getattr(source, "playlist_id", None),
+        "playlist_name": playlist_name or None,
+        "stream_name": stream_name or None,
+        "source_priority": _priority_value(getattr(source, "priority", 0)),
+    }
+    if source_url:
+        payload["source_url"] = source_url
+    return payload
+
+
 @dataclass
 class CsoStartResult:
     success: bool
@@ -139,7 +162,7 @@ class CsoCapacityRegistry:
             # key -> {owner_key: ref_count}
             current = self._allocations.setdefault(key, {})
             if owner_key in current:
-                current[owner_key] = int(current.get(owner_key) or 0) + 1
+                # Owner already holds a slot for this key; do not ref-count leak on retries/restarts.
                 return True
             external = int(self._external_counts.get(key) or 0)
             if (len(current) + external) >= max(0, int(limit or 0)):
@@ -152,11 +175,7 @@ class CsoCapacityRegistry:
             current = self._allocations.get(key)
             if not current:
                 return
-            existing = int(current.get(owner_key) or 0)
-            if existing <= 1:
-                current.pop(owner_key, None)
-            else:
-                current[owner_key] = existing - 1
+            current.pop(owner_key, None)
             if not current:
                 self._allocations.pop(key, None)
 
@@ -289,7 +308,7 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
         days = 7
     if days < 1:
         days = 1
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_dt = utc_now_naive() - timedelta(days=days)
     async with Session() as session:
         result = await session.execute(delete(CsoEventLog).where(CsoEventLog.created_at < cutoff_dt))
         await session.commit()
@@ -633,8 +652,8 @@ class CsoIngestSession:
                     details={
                         "reason": "ingest_start_failed",
                         "pipeline": "ingest",
-                        "source_url": resolved_url,
                         "error": str(exc),
+                        **_source_event_context(source, source_url=resolved_url),
                     },
                 )
                 self.current_source = None
@@ -656,11 +675,10 @@ class CsoIngestSession:
                 severity="info",
                 details={
                     "reason": reason,
-                    "source_id": getattr(source, "id", None),
                     "pipeline": "ingest",
-                    "source_url": self.current_source_url,
                     "program_index": self.current_program_index,
                     "variant_count": len(self.hls_variants),
+                    **_source_event_context(source, source_url=self.current_source_url),
                 },
             )
             return CsoStartResult(success=True)
@@ -753,12 +771,29 @@ class CsoIngestSession:
             self.health_failover_reason = reason
             self.health_failover_details = details or {}
             process = self.process
+            source = self.current_source
+            source_url = self.current_source_url
         logger.warning(
             "CSO ingest health-triggered failover channel=%s source_id=%s reason=%s details=%s",
             self.channel_id,
             getattr(self.current_source, "id", None),
             reason,
             details,
+        )
+        await emit_channel_stream_event(
+            channel_id=self.channel_id,
+            source_id=getattr(source, "id", None),
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=self.key,
+            event_type="health_actioned",
+            severity="warning",
+            details={
+                "reason": reason,
+                "pipeline": "ingest",
+                "action": "trigger_failover",
+                **(details or {}),
+                **_source_event_context(source, source_url=source_url),
+            },
         )
         try:
             process.terminate()
@@ -855,11 +890,11 @@ class CsoIngestSession:
                 severity="warning",
                 details={
                     "reason": reason,
-                    "failed_source_id": failed_source_id,
                     "return_code": return_code,
                     "saw_data": saw_data,
                     "pipeline": "ingest",
                     **(details or {}),
+                    **_source_event_context(failed_source),
                 },
             )
 
@@ -881,6 +916,7 @@ class CsoIngestSession:
                     "after_failure_reason": reason,
                     "pipeline": "ingest",
                     **(details or {}),
+                    **_source_event_context(failed_source),
                 },
             )
             return False
@@ -976,6 +1012,11 @@ class CsoIngestSession:
             self.rendition_switch_target_position = None
             self.startup_jump_done = False
             subscriber_count = len(self.subscribers)
+        # Release capacity immediately so other channels are not blocked while
+        # this ingest session drains/tears down.
+        if capacity_key:
+            await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
+            capacity_key = None
         logger.info(
             "Stopping CSO ingest channel=%s ingest_key=%s source_id=%s source_url=%s subscribers=%s force=%s",
             self.channel_id,
@@ -1002,10 +1043,10 @@ class CsoIngestSession:
             health_task.cancel()
             try:
                 await health_task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
-        if capacity_key:
-            await cso_capacity_registry.release(capacity_key, self.capacity_owner_key)
         logger.info(
             "CSO ingest upstream disconnected channel=%s ingest_key=%s source_id=%s return_code=%s",
             self.channel_id,
@@ -1170,6 +1211,10 @@ class CsoOutputSession:
                         "return_code": return_code,
                         "ffmpeg_error": ffmpeg_error or None,
                         "policy": self.policy,
+                        **_source_event_context(
+                            self.ingest_session.current_source,
+                            source_url=getattr(self.ingest_session, "current_source_url", None),
+                        ),
                     },
                 )
 
@@ -1316,7 +1361,13 @@ class _SessionMap:
                 running = bool(session.running)
             if running and has_subscribers:
                 continue
-            await session.stop(force=True)
+            try:
+                await session.stop(force=True)
+            except asyncio.CancelledError:
+                # Session is being torn down; continue cleanup for other sessions.
+                pass
+            except Exception as exc:
+                logger.warning("CSO session cleanup failed key=%s error=%s", key, exc)
             async with self.lock:
                 if self.sessions.get(key) is session:
                     self.sessions.pop(key, None)
@@ -1336,6 +1387,10 @@ class CsoRuntimeManager:
     async def cleanup_idle_streams(self, idle_timeout=300):
         await self.output.cleanup_idle_streams(idle_timeout=idle_timeout)
         await self.ingest.cleanup_idle_streams(idle_timeout=idle_timeout)
+
+    async def get_output_session(self, key):
+        async with self.output.lock:
+            return self.output.sessions.get(key)
 
     async def has_active_ingest_for_channel(self, channel_id):
         prefix = f"cso-ingest-{int(channel_id)}"
@@ -1616,12 +1671,30 @@ async def subscribe_channel_stream(
 
     queue = await output_session.add_client(connection_id, prebuffer_bytes=prebuffer_bytes)
     content_type = policy_content_type(policy)
+    await emit_channel_stream_event(
+        channel_id=channel.id,
+        source_id=getattr(ingest_session.current_source, "id", None),
+        playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+        session_id=output_session_key,
+        event_type="session_start",
+        severity="info",
+        details={
+            "profile": profile,
+            "connection_id": connection_id,
+            **_source_event_context(
+                ingest_session.current_source,
+                source_url=getattr(ingest_session, "current_source_url", None),
+            ),
+        },
+    )
 
     async def _generator():
         try:
             while True:
                 chunk = await queue.get()
                 if chunk is None:
+                    if output_session.last_error == "output_reader_ended":
+                        raise CsoOutputReaderEnded("output_reader_ended")
                     break
                 yield chunk
         finally:
@@ -1633,7 +1706,14 @@ async def subscribe_channel_stream(
                 session_id=output_session_key,
                 event_type="session_end",
                 severity="info",
-                details={"profile": profile},
+                details={
+                    "profile": profile,
+                    "connection_id": connection_id,
+                    **_source_event_context(
+                        ingest_session.current_source,
+                        source_url=getattr(ingest_session, "current_source_url", None),
+                    ),
+                },
             )
 
     return _generator(), content_type, None, 200
