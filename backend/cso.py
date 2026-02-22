@@ -36,7 +36,9 @@ from backend.datetime_utils import utc_now_naive
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
-CSO_STALL_SECONDS_DEFAULT = 8
+CSO_INGEST_RECOVERY_RETRY_WINDOW_SECONDS = 12
+CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS = 1
+CSO_STALL_SECONDS_DEFAULT = 20
 CSO_UNDERSPEED_RATIO_DEFAULT = 0.9
 CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT = 12
 CSO_STARTUP_GRACE_SECONDS_DEFAULT = 8
@@ -533,6 +535,7 @@ class CsoIngestSession:
         self.last_ffmpeg_speed = None
         self.health_failover_reason = None
         self.health_failover_details = None
+        self._recent_ffmpeg_stderr = deque(maxlen=50)
         self.hls_variants = []
         self.current_variant_position = None
         self.current_program_index = 0
@@ -703,6 +706,7 @@ class CsoIngestSession:
                 rendered = rendered.strip()
                 if not rendered:
                     continue
+                self._recent_ffmpeg_stderr.append(rendered)
                 progress_handled = False
                 if "=" in rendered:
                     key, value = rendered.split("=", 1)
@@ -723,6 +727,21 @@ class CsoIngestSession:
                             self.last_ffmpeg_speed = float(speed_match.group(1))
                         except Exception:
                             self.last_ffmpeg_speed = None
+        rendered = text_buffer.strip()
+        if rendered:
+            self._recent_ffmpeg_stderr.append(rendered)
+
+    def _ffmpeg_error_summary(self):
+        lines = [line for line in self._recent_ffmpeg_stderr if line]
+        if not lines:
+            return ""
+        error_lines = [
+            line
+            for line in lines
+            if any(token in line.lower() for token in ("error", "invalid", "failed", "could not", "unsupported"))
+        ]
+        selected = error_lines[-3:] if error_lines else lines[-3:]
+        return " | ".join(selected)
 
     async def _health_loop(self):
         while self.running:
@@ -731,7 +750,12 @@ class CsoIngestSession:
             if (now - self.last_source_start_ts) < CSO_STARTUP_GRACE_SECONDS_DEFAULT:
                 continue
 
+            # Treat stall as actionable only when we have sustained no-data and
+            # ingest is not keeping up at realtime speed.
             if self.last_chunk_ts and (now - self.last_chunk_ts) >= CSO_STALL_SECONDS_DEFAULT:
+                speed = self.last_ffmpeg_speed
+                if speed is not None and speed >= 1.0:
+                    continue
                 await self._request_health_failover(
                     "stall_timeout",
                     {
@@ -834,6 +858,14 @@ class CsoIngestSession:
 
             failover_reason = self.health_failover_reason or "ingest_reader_ended"
             failover_details = self.health_failover_details or {}
+            if return_code not in (None, 0):
+                logger.warning(
+                    "CSO ingest non-zero exit channel=%s return_code=%s reason=%s stderr=%s",
+                    self.channel_id,
+                    return_code,
+                    failover_reason,
+                    self._ffmpeg_error_summary() or "n/a",
+                )
             switched = await self._switch_source_after_failure(
                 reason=failover_reason,
                 return_code=return_code,
@@ -865,8 +897,14 @@ class CsoIngestSession:
 
             failed_source = self.current_source
             failed_source_id = getattr(failed_source, "id", None)
-            if failed_source_id:
+            ffmpeg_error = self._ffmpeg_error_summary()
+
+            # Apply source hold-down only for health-triggered failover. For generic ingest
+            # exits we allow immediate same-source restart to avoid tearing down clients.
+            multi_source_channel = len(self.sources or []) > 1
+            if failed_source_id and multi_source_channel and reason in {"under_speed", "stall_timeout"}:
                 self.failed_source_until[failed_source_id] = time.time() + CSO_SOURCE_HOLD_DOWN_SECONDS
+
             old_capacity_key = self.current_capacity_key
             self.current_source = None
             self.current_source_url = ""
@@ -881,45 +919,59 @@ class CsoIngestSession:
             if old_capacity_key:
                 await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key)
 
-            await emit_channel_stream_event(
-                channel_id=self.channel_id,
-                source_id=failed_source_id,
-                playlist_id=getattr(failed_source, "playlist_id", None),
-                session_id=self.key,
-                event_type="switch_attempt",
-                severity="warning",
-                details={
-                    "reason": reason,
-                    "return_code": return_code,
-                    "saw_data": saw_data,
-                    "pipeline": "ingest",
-                    **(details or {}),
-                    **_source_event_context(failed_source),
-                },
-            )
+        await emit_channel_stream_event(
+            channel_id=self.channel_id,
+            source_id=failed_source_id,
+            playlist_id=getattr(failed_source, "playlist_id", None),
+            session_id=self.key,
+            event_type="switch_attempt",
+            severity="warning",
+            details={
+                "reason": reason,
+                "return_code": return_code,
+                "saw_data": saw_data,
+                "pipeline": "ingest",
+                "ffmpeg_error": ffmpeg_error or None,
+                **(details or {}),
+                **_source_event_context(failed_source),
+            },
+        )
 
-            start_result = await self._start_best_source_unlocked(reason="failover")
-            if start_result.success:
-                self.running = True
-                return True
+        deadline = time.time() + CSO_INGEST_RECOVERY_RETRY_WINDOW_SECONDS
+        last_result = CsoStartResult(success=False, reason="no_available_source")
+        while True:
+            async with self.lock:
+                has_subscribers = bool(self.subscribers)
+                start_result = await self._start_best_source_unlocked(reason="failover")
+                if start_result.success:
+                    self.running = True
+                    return True
+            last_result = start_result
 
-            event_type = "capacity_blocked" if start_result.reason == "capacity_blocked" else "playback_unavailable"
-            await emit_channel_stream_event(
-                channel_id=self.channel_id,
-                source_id=failed_source_id,
-                playlist_id=getattr(failed_source, "playlist_id", None),
-                session_id=self.key,
-                event_type=event_type,
-                severity="warning",
-                details={
-                    "reason": start_result.reason,
-                    "after_failure_reason": reason,
-                    "pipeline": "ingest",
-                    **(details or {}),
-                    **_source_event_context(failed_source),
-                },
-            )
-            return False
+            if not has_subscribers:
+                return False
+            if time.time() >= deadline:
+                break
+            await asyncio.sleep(CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS)
+
+        event_type = "capacity_blocked" if last_result.reason == "capacity_blocked" else "playback_unavailable"
+        await emit_channel_stream_event(
+            channel_id=self.channel_id,
+            source_id=failed_source_id,
+            playlist_id=getattr(failed_source, "playlist_id", None),
+            session_id=self.key,
+            event_type=event_type,
+            severity="warning",
+            details={
+                "reason": last_result.reason,
+                "after_failure_reason": reason,
+                "pipeline": "ingest",
+                "ffmpeg_error": ffmpeg_error or None,
+                **(details or {}),
+                **_source_event_context(failed_source),
+            },
+        )
+        return False
 
     async def _broadcast(self, chunk):
         if not chunk:
@@ -1197,26 +1249,36 @@ class CsoOutputSession:
                 still_running = bool(self.running)
 
             if still_running and client_count > 0:
-                self.last_error = "output_reader_ended"
-                ffmpeg_error = self._ffmpeg_error_summary()
-                await emit_channel_stream_event(
-                    channel_id=self.channel_id,
-                    source_id=getattr(self.ingest_session.current_source, "id", None),
-                    playlist_id=getattr(self.ingest_session.current_source, "playlist_id", None),
-                    session_id=self.key,
-                    event_type="playback_unavailable",
-                    severity="error",
-                    details={
-                        "reason": "output_reader_ended",
-                        "return_code": return_code,
-                        "ffmpeg_error": ffmpeg_error or None,
-                        "policy": self.policy,
-                        **_source_event_context(
-                            self.ingest_session.current_source,
-                            source_url=getattr(self.ingest_session, "current_source_url", None),
-                        ),
-                    },
-                )
+                intentional_failover = bool(getattr(self.ingest_session, "health_failover_reason", None))
+                if intentional_failover and return_code in (None, 0):
+                    logger.info(
+                        "CSO output reader ended during intentional ingest failover channel=%s output_key=%s return_code=%s",
+                        self.channel_id,
+                        self.key,
+                        return_code,
+                    )
+                else:
+                    self.last_error = "output_reader_ended"
+                    ffmpeg_error = self._ffmpeg_error_summary()
+                    severity = "error" if return_code not in (None, 0) else "warning"
+                    await emit_channel_stream_event(
+                        channel_id=self.channel_id,
+                        source_id=getattr(self.ingest_session.current_source, "id", None),
+                        playlist_id=getattr(self.ingest_session.current_source, "playlist_id", None),
+                        session_id=self.key,
+                        event_type="playback_unavailable",
+                        severity=severity,
+                        details={
+                            "reason": "output_reader_ended",
+                            "return_code": return_code,
+                            "ffmpeg_error": ffmpeg_error or None,
+                            "policy": self.policy,
+                            **_source_event_context(
+                                self.ingest_session.current_source,
+                                source_url=getattr(self.ingest_session, "current_source_url", None),
+                            ),
+                        },
+                    )
 
             await self.stop(force=True)
 
