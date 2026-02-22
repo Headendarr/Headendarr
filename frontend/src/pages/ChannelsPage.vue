@@ -274,9 +274,10 @@
                           <q-item-section top class="q-mx-md">
                             <q-item-label lines="1" class="text-left">
                               <div class="row items-center no-wrap">
-                                <q-avatar rounded size="35px">
-                                  <q-img :src="element.logo_url" style="max-width: 30px" />
-                                </q-avatar>
+                                <TicChannelIcon
+                                  :src="element.logo_url"
+                                  size="35px"
+                                />
                                 <span
                                   class="text-weight-medium q-ml-sm channel-name-label"
                                   :class="channelTitleTextClass(element)"
@@ -396,9 +397,11 @@
                                 />
                               </template>
                               <div class="row items-start">
-                                <q-avatar rounded class="q-mr-sm channel-card-avatar">
-                                  <q-img :src="element.logo_url" />
-                                </q-avatar>
+                                <TicChannelIcon
+                                  :src="element.logo_url"
+                                  size="46px"
+                                  class="q-mr-sm channel-card-avatar"
+                                />
                                 <div class="col">
                                   <div class="text-weight-medium" :class="channelTitleTextClass(element)">
                                     {{ element.name }}
@@ -574,6 +577,7 @@ import {
   TicResponsiveHelp,
   TicSelectInput,
   TicToggleInput,
+  TicChannelIcon,
 } from 'components/ui';
 
 export default defineComponent({
@@ -591,6 +595,7 @@ export default defineComponent({
     TicResponsiveHelp,
     TicSelectInput,
     TicToggleInput,
+    TicChannelIcon,
   },
 
   setup() {
