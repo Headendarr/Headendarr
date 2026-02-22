@@ -190,6 +190,12 @@ def _stream_filters_from_params(params):
     search = (params.get("search") or "").strip()
     from_ts = _parse_iso_datetime(params.get("from_ts"))
     to_ts = _parse_iso_datetime(params.get("to_ts"))
+    channel_id_raw = (params.get("channel_id") or "").strip()
+    channel_id = None
+    try:
+        channel_id = int(channel_id_raw) if channel_id_raw else None
+    except ValueError:
+        channel_id = None
     if event_type:
         filters.append(StreamAuditLog.event_type == event_type)
     if username:
@@ -198,6 +204,8 @@ def _stream_filters_from_params(params):
         filters.append(StreamAuditLog.created_at >= from_ts)
     if to_ts:
         filters.append(StreamAuditLog.created_at <= to_ts)
+    if channel_id is not None:
+        filters.append(StreamAuditLog.endpoint.ilike(f"%/channel/{channel_id}%"))
     if search:
         like = f"%{search}%"
         filters.append(
@@ -218,12 +226,20 @@ def _channel_event_filters_from_params(params):
     search = (params.get("search") or "").strip()
     from_ts = _parse_iso_datetime(params.get("from_ts"))
     to_ts = _parse_iso_datetime(params.get("to_ts"))
+    channel_id_raw = (params.get("channel_id") or "").strip()
+    channel_id = None
+    try:
+        channel_id = int(channel_id_raw) if channel_id_raw else None
+    except ValueError:
+        channel_id = None
     if event_type:
         filters.append(CsoEventLog.event_type == event_type)
     if from_ts:
         filters.append(CsoEventLog.created_at >= from_ts)
     if to_ts:
         filters.append(CsoEventLog.created_at <= to_ts)
+    if channel_id is not None:
+        filters.append(CsoEventLog.channel_id == channel_id)
     if search:
         like = f"%{search}%"
         filters.append(
@@ -315,21 +331,25 @@ async def _query_unified_audit_rows(limit: int, params):
     return out
 
 
-@blueprint.route('/tic-api/audit/logs', methods=['GET'])
+@blueprint.route("/tic-api/audit/logs", methods=["GET"])
 @admin_auth_required
 async def api_list_audit_logs():
+    include_all = str(request.args.get("include_all", "")).strip().lower() in {"1", "true", "yes", "on"}
     try:
         limit = int(request.args.get("limit", 50))
     except ValueError:
         limit = 50
-    limit = max(1, min(limit, 200))
+    if include_all:
+        limit = max(1, min(limit, 5000))
+    else:
+        limit = max(1, min(limit, 200))
 
     rows = await _query_unified_audit_rows(limit=limit, params=request.args)
     data = rows
     return jsonify({"success": True, "data": data})
 
 
-@blueprint.route('/tic-api/audit/logs/poll', methods=['GET'])
+@blueprint.route("/tic-api/audit/logs/poll", methods=["GET"])
 @admin_auth_required
 async def api_poll_audit_logs():
     timeout = request.args.get("timeout", "25")
@@ -356,7 +376,7 @@ async def api_poll_audit_logs():
         await asyncio.sleep(1)
 
 
-@blueprint.route('/tic-api/audit/playback-start', methods=['POST'])
+@blueprint.route("/tic-api/audit/playback-start", methods=["POST"])
 @streamer_or_admin_required
 async def api_audit_playback_start():
     user = getattr(request, "_current_user", None)
@@ -377,7 +397,7 @@ async def api_audit_playback_start():
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/audit/playback-heartbeat', methods=['POST'])
+@blueprint.route("/tic-api/audit/playback-heartbeat", methods=["POST"])
 @streamer_or_admin_required
 async def api_audit_playback_heartbeat():
     data = await request.get_json(force=True, silent=True) or {}
@@ -394,7 +414,7 @@ async def api_audit_playback_heartbeat():
     return jsonify({"success": True, "state": state})
 
 
-@blueprint.route('/tic-api/audit/playback-stop', methods=['POST'])
+@blueprint.route("/tic-api/audit/playback-stop", methods=["POST"])
 @streamer_or_admin_required
 async def api_audit_playback_stop():
     data = await request.get_json(force=True, silent=True) or {}

@@ -1413,6 +1413,28 @@ export default defineComponent({
           issues: channel.status.issues,
         },
       }).onOk((payload) => {
+        if (payload?.openAudit) {
+          const channelId = payload?.channelId || channel?.id;
+          const createdAt = payload?.createdAt || null;
+          const query = {
+            entry_types: 'cso_event_log',
+            channel_id: channelId,
+          };
+          if (createdAt) {
+            const center = new Date(createdAt);
+            if (!Number.isNaN(center.getTime())) {
+              const from = new Date(center.getTime() - (30 * 60 * 1000));
+              const to = new Date(center.getTime() + (10 * 60 * 1000));
+              query.from_ts = from.toISOString();
+              query.to_ts = to.toISOString();
+            }
+          }
+          // Defer navigation until after dialog teardown/history cleanup.
+          setTimeout(() => {
+            this.$router.push({path: '/audit', query});
+          }, 0);
+          return;
+        }
         if (payload?.openSettings) {
           const channelId = payload?.channelId || channel?.id;
           const targetChannel = this.listOfChannels.find((item) => item?.id === channelId) || channel;

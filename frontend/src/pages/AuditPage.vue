@@ -12,9 +12,35 @@
             @update:search-value="search = $event"
             @filter-change="onAuditToolbarFilterChange"
           />
+          <div class="row q-col-gutter-sm q-mb-sm">
+            <div class="col-12 col-md-3">
+              <q-input
+                v-model="fromTsInput"
+                dense
+                outlined
+                type="datetime-local"
+                label="From"
+              />
+            </div>
+            <div class="col-12 col-md-3">
+              <q-input
+                v-model="toTsInput"
+                dense
+                outlined
+                type="datetime-local"
+                label="To"
+              />
+            </div>
+            <div class="col-12 col-md-6 flex items-center">
+              <div class="text-caption text-grey-7">
+                Set a time range to load all matching logs without infinite scrolling.
+              </div>
+            </div>
+          </div>
 
           <q-list class="audit-list">
-            <q-item v-for="entry in entries" :key="entry.entry_key || `${entry.entry_type}:${entry.id}`" class="audit-list-item" top>
+            <q-item v-for="entry in entries" :key="entry.entry_key || `${entry.entry_type}:${entry.id}`"
+                    class="audit-list-item" top>
               <q-item-section>
                 <TicListItemCard v-bind="entryCardProps(entry)" :hide-header="true">
                   <div class="text-weight-medium">
@@ -60,7 +86,7 @@
           </q-list>
 
           <q-infinite-scroll
-            v-if="!loading && hasMore"
+            v-if="!loading && hasMore && !isTimeRangeMode"
             ref="infiniteRef"
             :offset="80"
             scroll-target="body"
@@ -109,6 +135,9 @@ export default defineComponent({
       search: '',
       entryType: null,
       eventType: null,
+      fromTsInput: '',
+      toTsInput: '',
+      channelIdFilter: null,
       eventTypeOptions: [{label: 'All events', value: null}],
       pollTimer: null,
       pollCancelled: false,
@@ -125,8 +154,17 @@ export default defineComponent({
     entryType() {
       this.scheduleRefresh();
     },
+    fromTsInput() {
+      this.scheduleRefresh();
+    },
+    toTsInput() {
+      this.scheduleRefresh();
+    },
   },
   computed: {
+    isTimeRangeMode() {
+      return Boolean((this.fromTsInput || '').trim() || (this.toTsInput || '').trim());
+    },
     auditToolbarFilters() {
       return [
         {
@@ -272,6 +310,9 @@ export default defineComponent({
       const params = {
         limit: PAGE_SIZE,
       };
+      if (this.channelIdFilter !== null && this.channelIdFilter !== undefined && this.channelIdFilter !== '') {
+        params.channel_id = this.channelIdFilter;
+      }
       if (this.search?.trim()) {
         params.search = this.search.trim();
       }
@@ -280,6 +321,18 @@ export default defineComponent({
       }
       if (this.entryType) {
         params.entry_types = this.entryType;
+      }
+      const fromTsIso = this.localInputToIso(this.fromTsInput);
+      const toTsIso = this.localInputToIso(this.toTsInput);
+      if (fromTsIso) {
+        params.from_ts = fromTsIso;
+      }
+      if (toTsIso) {
+        params.to_ts = toTsIso;
+      }
+      if (this.isTimeRangeMode) {
+        params.include_all = 1;
+        params.limit = 5000;
       }
       return params;
     },
@@ -308,7 +361,7 @@ export default defineComponent({
           params: this.buildFilterQuery(),
         });
         this.entries = response.data.data || [];
-        this.hasMore = (this.entries.length || 0) >= PAGE_SIZE;
+        this.hasMore = this.isTimeRangeMode ? false : (this.entries.length || 0) >= PAGE_SIZE;
         this.updateEventTypeOptions();
       } catch (error) {
         console.error('Failed to load audit logs:', error);
@@ -319,7 +372,7 @@ export default defineComponent({
       }
     },
     async onLoadOlder(done) {
-      if (!this.entries.length || !this.hasMore) {
+      if (this.isTimeRangeMode || !this.entries.length || !this.hasMore) {
         done(true);
         return;
       }
@@ -350,7 +403,7 @@ export default defineComponent({
       }
     },
     async pollOnce() {
-      if (this.pollCancelled) {
+      if (this.pollCancelled || this.isTimeRangeMode) {
         return;
       }
       const head = this.entries[0];
@@ -370,12 +423,19 @@ export default defineComponent({
       if (this.eventType) {
         params.event_type = this.eventType;
       }
+      if (this.entryType) {
+        params.entry_types = this.entryType;
+      }
+      if (this.channelIdFilter !== null && this.channelIdFilter !== undefined && this.channelIdFilter !== '') {
+        params.channel_id = this.channelIdFilter;
+      }
       try {
         const response = await axios.get('/tic-api/audit/logs/poll', {params});
         const updates = response.data.data || [];
         if (updates.length) {
           const existing = new Set(this.entries.map((entry) => entry.entry_key || `${entry.entry_type}:${entry.id}`));
-          const additions = updates.filter((entry) => !existing.has(entry.entry_key || `${entry.entry_type}:${entry.id}`));
+          const additions = updates.filter(
+            (entry) => !existing.has(entry.entry_key || `${entry.entry_type}:${entry.id}`));
           if (additions.length) {
             this.entries = [...additions, ...this.entries];
             this.updateEventTypeOptions();
@@ -391,6 +451,9 @@ export default defineComponent({
     },
     startPolling() {
       this.stopPolling();
+      if (this.isTimeRangeMode) {
+        return;
+      }
       this.pollCancelled = false;
       this.pollTimer = setTimeout(() => this.pollOnce(), 250);
     },
@@ -413,8 +476,51 @@ export default defineComponent({
         this.refreshLogs();
       }, 350);
     },
+    isoToLocalInput(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      const yyyy = parsed.getFullYear();
+      const mm = pad(parsed.getMonth() + 1);
+      const dd = pad(parsed.getDate());
+      const hh = pad(parsed.getHours());
+      const min = pad(parsed.getMinutes());
+      return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    },
+    localInputToIso(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) return '';
+      return parsed.toISOString();
+    },
+    applyRouteQueryDefaults() {
+      const query = this.$route?.query || {};
+      if (typeof query.search === 'string') {
+        this.search = query.search;
+      }
+      if (typeof query.event_type === 'string') {
+        this.eventType = query.event_type || null;
+      }
+      if (typeof query.entry_types === 'string') {
+        this.entryType = query.entry_types || null;
+      }
+      if (query.channel_id !== undefined) {
+        const parsed = Number.parseInt(String(query.channel_id), 10);
+        this.channelIdFilter = Number.isNaN(parsed) ? null : parsed;
+      }
+      if (typeof query.from_ts === 'string') {
+        this.fromTsInput = this.isoToLocalInput(query.from_ts);
+      }
+      if (typeof query.to_ts === 'string') {
+        this.toTsInput = this.isoToLocalInput(query.to_ts);
+      }
+    },
   },
   mounted() {
+    this.applyRouteQueryDefaults();
     this.fetchInitial();
   },
   beforeUnmount() {

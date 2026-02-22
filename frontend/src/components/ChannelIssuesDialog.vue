@@ -129,6 +129,10 @@ export default {
           label: 'Open Channel Settings',
           handler: this.openChannelSettings,
         },
+        openAuditLogs: {
+          label: 'View Audit Logs',
+          handler: this.openAuditLogs,
+        },
         syncTVHeadend: {
           label: 'Sync TVHeadend Now',
           handler: this.syncTVHeadend,
@@ -169,14 +173,14 @@ export default {
           description:
             'CSO could not connect to an upstream source or maintain output playback. Check source availability, connection limits, and channel stream ordering.',
           csoDetails: this.csoIssueDetails,
-          actions: [actions.openSettings],
+          actions: [actions.openAuditLogs, actions.openSettings],
         },
         cso_stream_unhealthy: {
           title: 'Channel Stream Organiser unhealthy stream',
           description:
             'CSO detected unstable stream health (for example buffering/underspeed) and triggered failover attempts. Review source quality and priority.',
           csoDetails: this.csoIssueDetails,
-          actions: [actions.openSettings],
+          actions: [actions.openAuditLogs, actions.openSettings],
         },
       };
       const issues = this.normalizedIssues;
@@ -264,6 +268,16 @@ export default {
     openChannelSettings() {
       this.didEmitOk = true;
       this.$emit('ok', {openSettings: true, channelId: this.channel?.id});
+      this.hide();
+    },
+    openAuditLogs() {
+      const createdAt = this.csoLatestEvent?.created_at || null;
+      this.didEmitOk = true;
+      this.$emit('ok', {
+        openAudit: true,
+        channelId: this.channel?.id,
+        createdAt,
+      });
       this.hide();
     },
     syncTVHeadend() {
