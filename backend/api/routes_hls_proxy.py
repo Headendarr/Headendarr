@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -10,6 +12,7 @@ from urllib.parse import urlencode, urlparse
 
 import aiofiles
 from quart import Response, current_app, redirect, request, stream_with_context
+from sqlalchemy import select
 
 from backend.api import blueprint
 from backend.auth import audit_stream_event, is_tvh_backend_stream_user, skip_stream_connect_audit, stream_key_required
@@ -39,6 +42,7 @@ from backend.stream_activity import (
     touch_stream_activity,
     upsert_stream_activity,
 )
+from backend.models import Session, CsoEventLog
 
 # Global cache instance (short default TTL for HLS segments)
 hls_segment_cache = SegmentCache(ttl=120)
@@ -85,6 +89,8 @@ CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS = {
     "capacity_blocked": 10,
     "playback_unavailable": 3,
 }
+CSO_UNAVAILABLE_SLATE_CACHE_TTL_SECONDS = 30 * 60
+CSO_UNAVAILABLE_SLATE_CACHE_VERSION = "v2"
 CSO_UNAVAILABLE_SLATE_MESSAGES = {
     "capacity_blocked": {
         "title": "Channel Temporarily Unavailable",
@@ -97,9 +103,14 @@ CSO_UNAVAILABLE_SLATE_MESSAGES = {
 }
 
 
-def _cso_unavailable_slate_message(reason: str) -> tuple[str, str]:
+def _cso_unavailable_slate_message(reason: str, detail_hint: str = "") -> tuple[str, str]:
     payload = CSO_UNAVAILABLE_SLATE_MESSAGES.get(reason) or CSO_UNAVAILABLE_SLATE_MESSAGES["playback_unavailable"]
-    return str(payload.get("title") or ""), str(payload.get("subtitle") or "")
+    title = str(payload.get("title") or "")
+    subtitle = str(payload.get("subtitle") or "").strip()
+    detail = str(detail_hint or "").strip()
+    if detail:
+        subtitle = f"{subtitle} {detail}".strip()
+    return title, subtitle
 
 
 def _cso_unavailable_duration_seconds(reason: str) -> int:
@@ -108,6 +119,62 @@ def _cso_unavailable_duration_seconds(reason: str) -> int:
         return int(CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS.get(reason, fallback))
     except Exception:
         return int(fallback)
+
+
+def _summarize_playback_issue(raw_message: str) -> str:
+    message = str(raw_message or "").strip()
+    if not message:
+        return ""
+    lower = message.lower()
+    if "connection limit" in lower:
+        return "Source connection limit reached for this channel."
+    if "matroska" in lower and ("aac extradata" in lower or "samplerate" in lower):
+        return "Requested Matroska remux is not compatible with source audio. Try profile aac-matroska or default."
+    if "could not write header" in lower and "matroska" in lower:
+        return "Requested Matroska profile failed to initialize. Try default or aac-matroska."
+    if "no available stream source" in lower or "no_available_source" in lower:
+        return "No eligible upstream stream is currently available."
+    if "output pipeline could not be started" in lower:
+        return "Requested profile could not be started for this source. Try default profile."
+    if "ingest_start_failed" in lower:
+        return "Upstream ingest could not be started for this source."
+    compact = " ".join(message.split())
+    if len(compact) > 140:
+        compact = compact[:140].rstrip() + "..."
+    return compact
+
+
+async def _latest_cso_playback_issue_hint(channel_id: int, session_id: str = "") -> str:
+    try:
+        async with Session() as session:
+            stmt = (
+                select(CsoEventLog)
+                .where(
+                    CsoEventLog.channel_id == int(channel_id),
+                    CsoEventLog.event_type.in_(["playback_unavailable", "capacity_blocked", "switch_attempt"]),
+                )
+                .order_by(CsoEventLog.created_at.desc(), CsoEventLog.id.desc())
+                .limit(10)
+            )
+            if session_id:
+                stmt = stmt.where(CsoEventLog.session_id == session_id)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+    except Exception:
+        return ""
+
+    for row in rows:
+        try:
+            details = json.loads(row.details_json or "{}")
+        except Exception:
+            details = {}
+        ffmpeg_error = str(details.get("ffmpeg_error") or "").strip()
+        reason = str(details.get("reason") or details.get("after_failure_reason") or "").strip()
+        if ffmpeg_error:
+            return _summarize_playback_issue(ffmpeg_error)
+        if reason:
+            return _summarize_playback_issue(reason)
+    return ""
 
 
 def _resolve_cso_unavailable_logo_path() -> str | None:
@@ -156,29 +223,41 @@ def _wrap_words(text: str, max_chars: int = 44, max_lines: int = 2) -> list[str]
 
 
 def _build_cso_unavailable_slate_command(
-    reason: str, duration_seconds: int = 10, output_target: str = "pipe:1"
+    reason: str, duration_seconds: int = 10, output_target: str = "pipe:1", detail_hint: str = ""
 ) -> list[str]:
-    title, subtitle = _cso_unavailable_slate_message(reason)
+    title, subtitle = _cso_unavailable_slate_message(reason, detail_hint=detail_hint)
     title = _escape_ffmpeg_drawtext_text(title)
-    subtitle_lines = [_escape_ffmpeg_drawtext_text(line) for line in _wrap_words(subtitle, max_chars=46, max_lines=2)]
+    subtitle_lines = [_escape_ffmpeg_drawtext_text(line) for line in _wrap_words(subtitle, max_chars=84, max_lines=4)]
     drawtext_title = "drawtext=" f"text='{title}':" "fontcolor=white:" "fontsize=52:" "x=(w-text_w)/2:y=(h/2)-84"
     drawtext_subtitle_1 = (
         "drawtext="
         f"text='{subtitle_lines[0] if len(subtitle_lines) > 0 else ''}':"
-        "fontcolor=white:fontsize=30:"
+        "fontcolor=white:fontsize=20:"
         "x=(w-text_w)/2:y=(h/2)+2"
     )
     drawtext_subtitle_2 = (
         "drawtext="
         f"text='{subtitle_lines[1] if len(subtitle_lines) > 1 else ''}':"
-        "fontcolor=white:fontsize=30:"
-        "x=(w-text_w)/2:y=(h/2)+44"
+        "fontcolor=white:fontsize=20:"
+        "x=(w-text_w)/2:y=(h/2)+30"
+    )
+    drawtext_subtitle_3 = (
+        "drawtext="
+        f"text='{subtitle_lines[2] if len(subtitle_lines) > 2 else ''}':"
+        "fontcolor=white:fontsize=20:"
+        "x=(w-text_w)/2:y=(h/2)+58"
+    )
+    drawtext_subtitle_4 = (
+        "drawtext="
+        f"text='{subtitle_lines[3] if len(subtitle_lines) > 3 else ''}':"
+        "fontcolor=white:fontsize=20:"
+        "x=(w-text_w)/2:y=(h/2)+86"
     )
     # Animated blurred blobs using TIC frontend palette.
     # Palette refs from frontend/src/css/app.scss:
     # --app-page-bg: #0b0f14, --q-primary: #21a3cf, --q-secondary: #79d2c0, --q-info: #6aa8ff
-    draw_panel = "drawbox=x=110:y=(ih/2)-160:w=1060:h=340:color=0x0B0F14@0.64:t=fill"
-    draw_border = "drawbox=x=110:y=(ih/2)-160:w=1060:h=340:color=0xE2E8F0@0.16:t=2"
+    draw_panel = "drawbox=x=70:y=(ih/2)-160:w=1140:h=340:color=0x0B0F14@0.64:t=fill"
+    draw_border = "drawbox=x=70:y=(ih/2)-160:w=1140:h=340:color=0xE2E8F0@0.16:t=2"
     logo_path = _resolve_cso_unavailable_logo_path()
     filter_steps = [
         "[1:v]format=rgba,colorchannelmixer=aa=0.30,gblur=sigma=90[blob1]",
@@ -224,7 +303,12 @@ def _build_cso_unavailable_slate_command(
         final_video_label = "bg4"
         audio_input_index = 5
     filter_steps.append(
-        f"[{final_video_label}]{draw_panel},{draw_border},{drawtext_title},{drawtext_subtitle_1},{drawtext_subtitle_2},eq=brightness=-0.03:contrast=1.06:saturation=1.18[vout]"
+        (
+            f"[{final_video_label}]"
+            f"{draw_panel},{draw_border},{drawtext_title},"
+            f"{drawtext_subtitle_1},{drawtext_subtitle_2},{drawtext_subtitle_3},{drawtext_subtitle_4},"
+            "eq=brightness=-0.03:contrast=1.06:saturation=1.18[vout]"
+        )
     )
     filter_chain = ";".join(filter_steps)
     command += [
@@ -266,10 +350,13 @@ def _build_cso_unavailable_slate_command(
     return command
 
 
-async def _iter_cso_unavailable_slate_source(reason: str):
+async def _iter_cso_unavailable_slate_source(reason: str, detail_hint: str = ""):
     resolved_duration = _cso_unavailable_duration_seconds(reason)
     config = current_app.config.get("APP_CONFIG") if current_app else None
-    slate_file = await _ensure_cso_unavailable_slate_asset(config, reason, resolved_duration)
+    normalized_detail = str(detail_hint or "").strip()
+    slate_file = None
+    if not normalized_detail:
+        slate_file = await _ensure_cso_unavailable_slate_asset(config, reason, resolved_duration)
     if slate_file and os.path.exists(slate_file):
         proxy_logger.info("Streaming cached CSO unavailable slate reason=%s file=%s", reason, slate_file)
         async with aiofiles.open(slate_file, "rb") as f:
@@ -280,7 +367,11 @@ async def _iter_cso_unavailable_slate_source(reason: str):
                 yield chunk
         return
 
-    command = _build_cso_unavailable_slate_command(reason, duration_seconds=resolved_duration)
+    command = _build_cso_unavailable_slate_command(
+        reason,
+        duration_seconds=resolved_duration,
+        detail_hint=normalized_detail,
+    )
     proxy_logger.info(
         "Starting CSO unavailable slate reason=%s duration=%ss command=%s",
         reason,
@@ -329,9 +420,10 @@ async def _iter_cso_unavailable_slate_source(reason: str):
 async def _cso_unavailable_slate_stream(
     reason: str,
     policy: dict | None = None,
+    detail_hint: str = "",
 ):
     if not policy:
-        async for chunk in _iter_cso_unavailable_slate_source(reason):
+        async for chunk in _iter_cso_unavailable_slate_source(reason, detail_hint=detail_hint):
             yield chunk
         return
 
@@ -361,7 +453,7 @@ async def _cso_unavailable_slate_stream(
 
     async def _writer():
         try:
-            async for chunk in _iter_cso_unavailable_slate_source(reason):
+            async for chunk in _iter_cso_unavailable_slate_source(reason, detail_hint=detail_hint):
                 if not process.stdin:
                     break
                 process.stdin.write(chunk)
@@ -421,7 +513,9 @@ async def _ensure_cso_unavailable_slate_asset(config, reason: str, duration_seco
     cache_dir = Path(config.config_path) / "cache" / "cso_slates"
     cache_dir.mkdir(parents=True, exist_ok=True)
     reason_key = str(reason or "playback_unavailable").strip().lower()
-    out_path = cache_dir / f"{reason_key}_{int(duration_seconds)}s.ts"
+    await _cleanup_cso_unavailable_slate_cache(cache_dir, max_age_seconds=CSO_UNAVAILABLE_SLATE_CACHE_TTL_SECONDS)
+    cache_hash = _cso_unavailable_slate_cache_hash(reason_key, int(duration_seconds))
+    out_path = cache_dir / f"{reason_key}_{int(duration_seconds)}s_{cache_hash}.ts"
     if out_path.exists() and out_path.stat().st_size > 0:
         return str(out_path)
 
@@ -459,6 +553,44 @@ async def _ensure_cso_unavailable_slate_asset(config, reason: str, duration_seco
             pass
         return None
     return str(out_path)
+
+
+def _cso_unavailable_slate_cache_hash(reason: str, duration_seconds: int) -> str:
+    # Use the generated command as cache key input so rendering/layout/text changes
+    # invalidate old files without manual cache clears.
+    command = _build_cso_unavailable_slate_command(
+        reason,
+        duration_seconds=duration_seconds,
+        output_target="pipe:1",
+        detail_hint="",
+    )
+    digest_input = json.dumps(
+        {
+            "version": CSO_UNAVAILABLE_SLATE_CACHE_VERSION,
+            "reason": reason,
+            "duration_seconds": int(duration_seconds),
+            "command": command,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha1(digest_input.encode("utf-8")).hexdigest()[:12]
+
+
+async def _cleanup_cso_unavailable_slate_cache(cache_dir: Path, max_age_seconds: int) -> None:
+    now = time.time()
+    ttl = max(60, int(max_age_seconds or CSO_UNAVAILABLE_SLATE_CACHE_TTL_SECONDS))
+    try:
+        for file_path in cache_dir.glob("*.ts"):
+            try:
+                if not file_path.is_file():
+                    continue
+                age = now - file_path.stat().st_mtime
+                if age > ttl:
+                    file_path.unlink(missing_ok=True)
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 async def cleanup_hls_proxy_state():
@@ -834,10 +966,15 @@ async def stream_channel(channel_id):
         if (status or 500) == 503 and CSO_UNAVAILABLE_SHOW_SLATE:
             lower_message = message.lower()
             reason = "capacity_blocked" if "connection limit" in lower_message else "playback_unavailable"
+            detail_hint = _summarize_playback_issue(message) if reason == "playback_unavailable" else ""
 
             @stream_with_context
             async def generate_unavailable_slate():
-                async for chunk in _cso_unavailable_slate_stream(reason, policy=effective_policy):
+                async for chunk in _cso_unavailable_slate_stream(
+                    reason,
+                    policy=effective_policy,
+                    detail_hint=detail_hint,
+                ):
                     yield chunk
 
             return Response(
@@ -894,7 +1031,15 @@ async def stream_channel(channel_id):
 
             if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE:
                 reason = "playback_unavailable"
-                async for chunk in _cso_unavailable_slate_stream(reason, policy=effective_policy):
+                detail_hint = await _latest_cso_playback_issue_hint(
+                    channel_id_int,
+                    session_id=output_session_key,
+                )
+                async for chunk in _cso_unavailable_slate_stream(
+                    reason,
+                    policy=effective_policy,
+                    detail_hint=detail_hint,
+                ):
                     yield chunk
         finally:
             await stop_stream_activity(
