@@ -905,7 +905,7 @@ async def build_custom_epg(config, throttle=False):
                 "rating_value": programme.rating_value,
             }
             for output_channel_id in output_channels:
-                programmes_by_output_channel[output_channel_id].append(programme_data)
+                programmes_by_output_channel[output_channel_id].append(programme_data.copy())
     phase_seconds["load_programmes"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()

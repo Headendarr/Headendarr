@@ -15,7 +15,7 @@ def _now_ts():
     return int(datetime.now(tz=timezone.utc).timestamp())
 
 
-@blueprint.route('/tic-api/guide/grid', methods=['GET'])
+@blueprint.route("/tic-api/guide/grid", methods=["GET"])
 @streamer_or_admin_required
 async def api_guide_grid():
     start_ts = int(request.args.get("start_ts", _now_ts()))
@@ -39,8 +39,7 @@ async def api_guide_grid():
 
     async with Session() as session:
         result = await session.execute(
-            select(EpgChannels)
-            .where(
+            select(EpgChannels).where(
                 and_(
                     EpgChannels.epg_id.in_(epg_ids),
                     EpgChannels.channel_id.in_(channel_ids),
@@ -56,8 +55,7 @@ async def api_guide_grid():
         programmes = []
         if epg_channel_ids:
             prog_result = await session.execute(
-                select(EpgChannelProgrammes)
-                .where(
+                select(EpgChannelProgrammes).where(
                     and_(
                         EpgChannelProgrammes.epg_channel_id.in_(epg_channel_ids),
                         cast(EpgChannelProgrammes.start_timestamp, Integer) <= end_ts,
@@ -66,38 +64,49 @@ async def api_guide_grid():
                 )
             )
             for programme in prog_result.scalars().all():
-                programmes.append({
-                    "id": programme.id,
-                    "epg_channel_id": programme.epg_channel_id,
-                    "channel_id": programme.channel_id,
-                    "title": programme.title,
-                    "sub_title": programme.sub_title,
-                    "desc": programme.desc,
-                    "icon_url": programme.icon_url,
-                    "start_ts": int(programme.start_timestamp or 0),
-                    "stop_ts": int(programme.stop_timestamp or 0),
-                })
+                programmes.append(
+                    {
+                        "id": programme.id,
+                        "epg_channel_id": programme.epg_channel_id,
+                        "channel_id": programme.channel_id,
+                        "title": programme.title,
+                        "sub_title": programme.sub_title,
+                        "desc": programme.desc,
+                        "icon_url": programme.icon_url,
+                        "start_ts": int(programme.start_timestamp or 0),
+                        "stop_ts": int(programme.stop_timestamp or 0),
+                    }
+                )
 
-    # Map programmes to TIC channel ids
-    channel_pair_map = {}
-    for channel in guide_channels:
-        pair = (channel["guide"]["epg_id"], channel["guide"]["channel_id"])
-        epg_channel_id = epg_by_pair.get(pair)
-        if epg_channel_id:
-            channel_pair_map[epg_channel_id] = channel["id"]
+        # Map programmes to TIC channel ids
+        from collections import defaultdict
 
-    mapped_programmes = []
-    for programme in programmes:
-        channel_id = channel_pair_map.get(programme["epg_channel_id"])
-        if not channel_id:
-            continue
-        programme["channel_id"] = channel_id
-        mapped_programmes.append(programme)
+        channel_pair_map = defaultdict(list)
+        for channel in guide_channels:
+            pair = (channel["guide"]["epg_id"], channel["guide"]["channel_id"])
+            epg_channel_id = epg_by_pair.get(pair)
+            if epg_channel_id:
+                channel_pair_map[epg_channel_id].append(channel["id"])
 
-    return jsonify({
-        "success": True,
-        "channels": guide_channels,
-        "programmes": mapped_programmes,
-        "start_ts": start_ts,
-        "end_ts": end_ts,
-    })
+        mapped_programmes = []
+        for programme in programmes:
+            channel_ids = channel_pair_map.get(programme["epg_channel_id"])
+            if not channel_ids:
+                continue
+            for i, channel_id in enumerate(channel_ids):
+                prog_copy = programme.copy()
+                prog_copy["channel_id"] = channel_id
+                # Ensure each programme object sent to the frontend has a unique ID,
+                # as Vue uses it for list keys.
+                prog_copy["id"] = f"{programme['id']}-{i}"
+                mapped_programmes.append(prog_copy)
+
+        return jsonify(
+            {
+                "success": True,
+                "channels": guide_channels,
+                "programmes": mapped_programmes,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+            }
+        )
