@@ -532,10 +532,13 @@ async def import_epg_data(config, epg_id):
 
 async def import_epg_data_for_all_epgs(config):
     async with Session() as session:
-        result = await session.execute(select(Epg.id))
+        result = await session.execute(select(Epg.id).where(Epg.enabled == True))
         epg_ids = [row[0] for row in result.all()]
     for epg_id in epg_ids:
-        await import_epg_data(config, epg_id)
+        try:
+            await import_epg_data(config, epg_id)
+        except Exception as e:
+            logger.error(f"Failed to import EPG data for EPG ID {epg_id}, continuing to next. Error: {e}")
 
 
 async def read_channels_from_all_epgs(config):
