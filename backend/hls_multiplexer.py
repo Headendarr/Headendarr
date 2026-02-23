@@ -517,7 +517,7 @@ async def handle_m3u8_proxy(
                     return None, None, 502, {"X-Proxy-Error": "upstream-unreachable"}
 
                 response_url = str(resp.url)
-                content_type = resp.headers.get("Content-Type") or "application/vnd.apple.mpegurl"
+                content_type = resp.headers.get("Content-Type") or "text/plain"
 
                 # Logic for determining if we stream or return string
                 content_length = resp.content_length or 0

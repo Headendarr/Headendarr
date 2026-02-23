@@ -72,7 +72,7 @@ async def combined_playlist_m3u():
         requested_profile=profile,
         allow_tvh_profile=is_tvh_backend_stream_user(getattr(request, "_stream_user", None)),
     )
-    response = Response(content, mimetype="application/vnd.apple.mpegurl")
+    response = Response(content, mimetype="text/plain")
     response.headers["Content-Disposition"] = 'attachment; filename="combined.m3u"'
     return response
 

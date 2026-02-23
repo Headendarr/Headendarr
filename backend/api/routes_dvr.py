@@ -329,7 +329,7 @@ async def api_stream_recording_hls(recording_id):
         lines.append("")
         playlist = "\n".join(lines)
 
-    headers = {"Content-Type": "application/vnd.apple.mpegurl"}
+    headers = {"Content-Type": "text/plain"}
     return current_app.response_class(playlist, status=200, headers=headers)
 
 

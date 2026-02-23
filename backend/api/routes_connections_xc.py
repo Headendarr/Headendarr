@@ -172,7 +172,7 @@ async def xc_get():
     cache_key = f"xc_m3u:{user.id}:ts_only"
     cached = _xc_cache.get(cache_key)
     if cached:
-        return Response(cached, mimetype="application/vnd.apple.mpegurl")
+        return Response(cached, mimetype="text/plain")
 
     channels = await _get_enabled_channels()
     categories, _ = _build_category_map(channels)
@@ -200,7 +200,7 @@ async def xc_get():
         include_xtvg=True,
     )
     _xc_cache.set(cache_key, content, ttl_seconds=30)
-    return Response(content, mimetype="application/vnd.apple.mpegurl")
+    return Response(content, mimetype="text/plain")
 
 
 @blueprint.route("/xmltv.php", methods=["GET"])
