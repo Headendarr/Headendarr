@@ -815,6 +815,20 @@ export default defineComponent({
           disable: !this.anyChannelsSelectedInBulkEdit,
         },
         {
+          id: 'bulk-enable',
+          label: 'Enable Channels',
+          icon: 'check_circle',
+          color: 'positive',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+        {
+          id: 'bulk-disable',
+          label: 'Disable Channels',
+          icon: 'block',
+          color: 'warning',
+          disable: !this.anyChannelsSelectedInBulkEdit,
+        },
+        {
           id: 'bulk-refresh-streams',
           label: 'Refresh Channel Streams',
           icon: 'refresh',
@@ -851,6 +865,12 @@ export default defineComponent({
           break;
         case 'bulk-configure-cso':
           this.showBulkEditCsoDialog();
+          break;
+        case 'bulk-enable':
+          this.applyBulkEnabledState(true);
+          break;
+        case 'bulk-disable':
+          this.applyBulkEnabledState(false);
           break;
         case 'bulk-update-epg':
           this.openBulkEpgUpdateDialog();
@@ -1612,6 +1632,67 @@ export default defineComponent({
       console.log('TODO');
       // post this.chanelExportDialogJson
     },
+    buildChannelSavePayload(channel) {
+      const payload = {
+        ...channel,
+        logo_url: channel.source_logo_url ?? channel.logo_url,
+      };
+      delete payload.status;
+      delete payload.selected;
+      return payload;
+    },
+    async applyBulkEnabledState(enabled) {
+      const selected = this.filteredChannels.filter((channel) => channel.selected);
+      if (!selected.length) {
+        this.$q.notify({
+          color: 'warning',
+          icon: 'warning',
+          message: 'Select at least one channel first.',
+        });
+        return;
+      }
+
+      selected.forEach((channel) => {
+        channel.enabled = enabled;
+      });
+      this.$q.loading.show({
+        message: enabled ? 'Enabling selected channels...' : 'Disabling selected channels...',
+      });
+
+      const data = {
+        channels: {},
+      };
+      selected.forEach((channel) => {
+        data.channels[channel.id] = this.buildChannelSavePayload(channel);
+      });
+
+      try {
+        await axios({
+          method: 'POST',
+          url: '/tic-api/channels/settings/multiple/save',
+          data,
+        });
+        this.$q.notify({
+          color: 'positive',
+          icon: enabled ? 'check_circle' : 'block',
+          message: enabled ? 'Selected channels enabled.' : 'Selected channels disabled.',
+          timeout: 2000,
+        });
+        this.fetchChannels();
+      } catch (error) {
+        this.$q.notify({
+          color: 'negative',
+          position: 'top',
+          message: enabled
+            ? 'An error was encountered while enabling the selected channels.'
+            : 'An error was encountered while disabling the selected channels.',
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
+        });
+      } finally {
+        this.$q.loading.hide();
+      }
+    },
     saveChannels: function() {
       this.$q.loading.show({
         message: 'Saving channels...',
@@ -1622,12 +1703,7 @@ export default defineComponent({
       };
       for (let i = 0; i < this.listOfChannels.length; i++) {
         const item = this.listOfChannels[i];
-        const payload = {
-          ...item,
-          logo_url: item.source_logo_url ?? item.logo_url,
-        };
-        delete payload.status;
-        delete payload.selected;
+        const payload = this.buildChannelSavePayload(item);
         data.channels[item.id] = payload;
       }
       axios({
