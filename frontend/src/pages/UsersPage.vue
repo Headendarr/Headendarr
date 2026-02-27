@@ -48,6 +48,15 @@
                         @click="copyStreamingKey(user.streaming_key)"
                       />
                     </q-item-label>
+                    <div class="user-last-login-section">
+                      <q-item-label caption class="text-weight-medium">Last logged in</q-item-label>
+                      <q-item-label caption>
+                        Frontend login: {{ formatDateTime(user.last_login_at) }}
+                      </q-item-label>
+                      <q-item-label caption>
+                        Streaming key use: {{ formatDateTime(user.last_stream_key_used_at) }}
+                      </q-item-label>
+                    </div>
                   </q-item-section>
 
                   <q-item-section side top>
@@ -294,6 +303,7 @@ import {copyToClipboard} from 'quasar';
 import {
   TicActionButton,
   TicButton,
+  TicConfirmDialog,
   TicDialogPopup,
   TicDialogWindow,
   TicListActions,
@@ -556,6 +566,13 @@ export default {
           color: 'warning',
           tooltip: `Reset password for ${user.username}`,
         },
+        {
+          id: 'delete',
+          icon: 'delete',
+          label: 'Delete user',
+          color: 'negative',
+          tooltip: `Delete ${user.username}`,
+        },
       ];
     },
     handleUserAction(action, user) {
@@ -564,6 +581,9 @@ export default {
       }
       if (action.id === 'reset-password') {
         this.openResetPassword(user);
+      }
+      if (action.id === 'delete') {
+        this.confirmDeleteUser(user);
       }
     },
     openCreateDialog() {
@@ -687,6 +707,41 @@ export default {
         }
       });
     },
+    async confirmDeleteUser(user) {
+      if (!user) {
+        return;
+      }
+      const currentUserId = this.$pinia?.state?.value?.auth?.user?.id || null;
+      if (currentUserId && Number(currentUserId) === Number(user.id)) {
+        this.$q.notify({color: 'negative', message: 'You cannot delete your own account'});
+        return;
+      }
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: `Delete User (${user.username})`,
+          message: 'Delete this user account?',
+          details: 'This action is final and cannot be undone.',
+          icon: 'warning',
+          iconColor: 'negative',
+          confirmLabel: 'Delete',
+          confirmIcon: 'delete',
+          confirmColor: 'negative',
+        },
+      }).onOk(async () => {
+        try {
+          await axios.delete(`/tic-api/users/${user.id}`);
+          if (this.editUser && this.editUser.id === user.id) {
+            this.showEdit = false;
+          }
+          await this.loadUsers();
+          this.$q.notify({color: 'positive', message: `Deleted user ${user.username}`});
+        } catch (error) {
+          const message = error?.response?.data?.message || 'Failed to delete user';
+          this.$q.notify({color: 'negative', message});
+        }
+      });
+    },
     async copyStreamingKey(streamingKey) {
       if (!streamingKey) {
         return;
@@ -701,6 +756,22 @@ export default {
     isAdminUser(user) {
       const roles = Array.isArray(user?.roles) ? user.roles : [];
       return roles.includes('admin');
+    },
+    formatDateTime(value) {
+      if (!value) {
+        return 'Never';
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return 'Never';
+      }
+      return parsed.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
     },
   },
   mounted() {
@@ -733,6 +804,10 @@ export default {
 
 .users-edit-separator {
   margin: 8px 0;
+}
+
+.user-last-login-section {
+  margin-top: 4px;
 }
 
 @media (max-width: 1023px) {

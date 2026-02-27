@@ -21,12 +21,19 @@ from backend.users import (
     get_user_by_id,
     set_user_tvh_sync_status,
     user_has_admin_role,
+    delete_user,
 )
 
 
 def _serialize_user(user: User):
     is_admin = user_has_admin_role(user)
     dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+    last_login_at = user.last_login_at
+    last_stream_key_used_at = user.last_stream_key_used_at
+    last_logged_in_at = max(
+        [value for value in (last_login_at, last_stream_key_used_at) if value is not None],
+        default=None,
+    )
     return {
         "id": user.id,
         "username": user.username,
@@ -37,6 +44,9 @@ def _serialize_user(user: User):
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
         "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
+        "last_login_at": to_utc_iso(last_login_at),
+        "last_stream_key_used_at": to_utc_iso(last_stream_key_used_at),
+        "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
     }
@@ -47,15 +57,15 @@ async def _queue_user_sync(user_id: int, username: str):
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.add_task(
         {
-            "name":     f"Sync TVH user {username}",
+            "name": f"Sync TVH user {username}",
             "function": sync_user_to_tvh,
-            "args":     [current_app.config["APP_CONFIG"], user_id],
+            "args": [current_app.config["APP_CONFIG"], user_id],
         },
         priority=25,
     )
 
 
-@blueprint.route('/tic-api/users', methods=['GET'])
+@blueprint.route("/tic-api/users", methods=["GET"])
 @admin_auth_required
 async def list_users():
     async with Session() as session:
@@ -64,7 +74,7 @@ async def list_users():
     return jsonify({"success": True, "data": [_serialize_user(u) for u in users]})
 
 
-@blueprint.route('/tic-api/users', methods=['POST'])
+@blueprint.route("/tic-api/users", methods=["POST"])
 @admin_auth_required
 async def create_user_route():
     data = await request.get_json(force=True, silent=True) or {}
@@ -89,7 +99,7 @@ async def create_user_route():
     return jsonify({"success": True, "user": _serialize_user(user), "streaming_key": stream_key})
 
 
-@blueprint.route('/tic-api/users/<int:user_id>', methods=['PUT'])
+@blueprint.route("/tic-api/users/<int:user_id>", methods=["PUT"])
 @admin_auth_required
 async def update_user_route(user_id):
     data = await request.get_json(force=True, silent=True) or {}
@@ -113,7 +123,21 @@ async def update_user_route(user_id):
     return jsonify({"success": True, "user": _serialize_user(user)})
 
 
-@blueprint.route('/tic-api/users/<int:user_id>/reset-password', methods=['POST'])
+@blueprint.route("/tic-api/users/<int:user_id>", methods=["DELETE"])
+@admin_auth_required
+async def delete_user_route(user_id):
+    requesting_user = await get_user_from_token()
+    if requesting_user and requesting_user.id == user_id:
+        return jsonify({"success": False, "message": "You cannot delete your own account"}), 400
+    deleted_username, error = await delete_user(user_id)
+    if error == "not_found":
+        return jsonify({"success": False, "message": "User not found"}), 404
+    if error == "last_admin":
+        return jsonify({"success": False, "message": "Cannot delete the last admin user"}), 400
+    return jsonify({"success": True, "username": deleted_username})
+
+
+@blueprint.route("/tic-api/users/<int:user_id>/reset-password", methods=["POST"])
 @admin_auth_required
 async def admin_reset_password(user_id):
     data = await request.get_json(force=True, silent=True) or {}
@@ -126,7 +150,7 @@ async def admin_reset_password(user_id):
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/users/<int:user_id>/rotate-stream-key', methods=['POST'])
+@blueprint.route("/tic-api/users/<int:user_id>/rotate-stream-key", methods=["POST"])
 @admin_auth_required
 async def admin_rotate_stream_key(user_id):
     user, stream_key = await rotate_stream_key(user_id)
@@ -136,14 +160,14 @@ async def admin_rotate_stream_key(user_id):
     return jsonify({"success": True, "streaming_key": stream_key})
 
 
-@blueprint.route('/tic-api/users/self', methods=['GET'])
+@blueprint.route("/tic-api/users/self", methods=["GET"])
 @user_auth_required
 async def user_self():
     user = await get_user_from_token()
     return jsonify({"success": True, "user": _serialize_user(user)})
 
 
-@blueprint.route('/tic-api/users/self/change-password', methods=['POST'])
+@blueprint.route("/tic-api/users/self/change-password", methods=["POST"])
 @user_auth_required
 async def user_change_password():
     user = await get_user_from_token()
@@ -160,7 +184,7 @@ async def user_change_password():
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/users/self/rotate-stream-key', methods=['POST'])
+@blueprint.route("/tic-api/users/self/rotate-stream-key", methods=["POST"])
 @user_auth_required
 async def user_rotate_stream_key():
     user = await get_user_from_token()

@@ -38,10 +38,10 @@ async def ensure_default_admin(config):
             if user_count and user_count > 0:
                 return
             settings = config.read_settings()
-            admin_password = settings.get('settings', {}).get('admin_password', 'admin')
+            admin_password = settings.get("settings", {}).get("admin_password", "admin")
             stream_key = generate_stream_key()
             admin_user = User(
-                username='admin',
+                username="admin",
                 password_hash=hash_password(admin_password),
                 is_active=True,
                 streaming_key=stream_key,
@@ -53,17 +53,13 @@ async def ensure_default_admin(config):
 
 async def get_user_by_username(username: str):
     async with Session() as session:
-        result = await session.execute(
-            select(User).where(User.username == username).options(selectinload(User.roles))
-        )
+        result = await session.execute(select(User).where(User.username == username).options(selectinload(User.roles)))
         return result.scalars().first()
 
 
 async def get_user_by_id(user_id: int):
     async with Session() as session:
-        result = await session.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles))
-        )
+        result = await session.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
         return result.scalars().first()
 
 
@@ -107,9 +103,7 @@ async def update_user_roles(user_id: int, role_names):
     async with Session() as session:
         async with session.begin():
             roles = await ensure_roles(session)
-            result = await session.execute(
-                select(User).where(User.id == user_id).options(selectinload(User.roles))
-            )
+            result = await session.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
             user = result.scalars().first()
             if not user:
                 return None
@@ -138,9 +132,7 @@ async def update_user_dvr_settings(
 ):
     async with Session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(User).where(User.id == user_id).options(selectinload(User.roles))
-            )
+            result = await session.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
             user = result.scalars().first()
             if not user:
                 return None
@@ -221,6 +213,39 @@ async def set_user_tvh_sync_status(user_id: int, status: str, error: str = None)
             user.tvh_sync_updated_at = utc_now_naive()
             session.add(user)
             return user
+
+
+async def set_user_stream_key_last_used(user_id: int):
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalars().first()
+            if not user:
+                return None
+            user.last_stream_key_used_at = utc_now_naive()
+            session.add(user)
+            return user
+
+
+async def delete_user(user_id: int):
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
+            user = result.scalars().first()
+            if not user:
+                return None, "not_found"
+
+            if user_has_admin_role(user):
+                admin_users_result = await session.execute(select(User).options(selectinload(User.roles)))
+                admin_count = sum(
+                    1 for existing_user in admin_users_result.scalars().all() if user_has_admin_role(existing_user)
+                )
+                if admin_count <= 1:
+                    return None, "last_admin"
+
+            username = user.username
+            await session.delete(user)
+            return username, None
 
 
 async def verify_user_password_for_login(user: User, password: str):

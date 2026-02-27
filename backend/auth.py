@@ -124,6 +124,25 @@ _token_auth_cache = _TokenAuthCache(ttl_seconds=5)
 _session_last_used_throttle = _SessionLastUsedThrottle(min_interval_seconds=60)
 
 
+class _UserLastUsedThrottle:
+    def __init__(self, min_interval_seconds=60):
+        self.min_interval_seconds = min_interval_seconds
+        self._last_touches = {}
+        self._lock = asyncio.Lock()
+
+    async def should_touch(self, user_id):
+        now = time.time()
+        async with self._lock:
+            last = self._last_touches.get(user_id)
+            if last is not None and (now - last) < self.min_interval_seconds:
+                return False
+            self._last_touches[user_id] = now
+            return True
+
+
+_user_stream_key_last_used_throttle = _UserLastUsedThrottle(min_interval_seconds=60)
+
+
 def unauthorized_response(message="Unauthorized"):
     return jsonify({"success": False, "message": message}), 401
 
@@ -373,6 +392,20 @@ async def get_user_from_stream_key():
     return user
 
 
+async def mark_stream_key_usage(user):
+    if not user or not getattr(user, "id", None) or is_tvh_backend_stream_user(user):
+        return
+    user_id = user.id
+    if not await _user_stream_key_last_used_throttle.should_touch(user_id):
+        return
+    try:
+        from backend.users import set_user_stream_key_last_used
+        await set_user_stream_key_last_used(user_id)
+    except Exception:
+        # Activity tracking is best-effort; do not block stream requests.
+        pass
+
+
 def stream_key_required(func):
     @wraps(func)
     async def decorated_function(*args, **kwargs):
@@ -385,6 +418,7 @@ def stream_key_required(func):
             _, basic_password = _get_basic_auth_credentials()
             stream_key = basic_password
         request._stream_key = stream_key
+        await mark_stream_key_usage(user)
         ip_address = get_request_client_ip()
         user_agent = request.headers.get("User-Agent")
         should_audit = not getattr(func, "_skip_stream_connect_audit", False) and not is_tvh_backend_stream_user(user)

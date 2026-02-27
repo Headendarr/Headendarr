@@ -28,6 +28,12 @@ def _serialize_user(user: User):
     role_names = [role.name for role in user.roles] if user.roles else []
     is_admin = "admin" in role_names
     dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+    last_login_at = user.last_login_at
+    last_stream_key_used_at = user.last_stream_key_used_at
+    last_logged_in_at = max(
+        [value for value in (last_login_at, last_stream_key_used_at) if value is not None],
+        default=None,
+    )
     return {
         "id": user.id,
         "username": user.username,
@@ -38,6 +44,9 @@ def _serialize_user(user: User):
         "tvh_sync_status": user.tvh_sync_status,
         "tvh_sync_error": user.tvh_sync_error,
         "tvh_sync_updated_at": to_utc_iso(user.tvh_sync_updated_at),
+        "last_login_at": to_utc_iso(last_login_at),
+        "last_stream_key_used_at": to_utc_iso(last_stream_key_used_at),
+        "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
     }

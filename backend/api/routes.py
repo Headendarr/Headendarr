@@ -279,6 +279,12 @@ async def api_check_auth():
         role_names = [role.name for role in user.roles] if user.roles else []
         is_admin = "admin" in role_names
         dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+        last_login_at = getattr(user, "last_login_at", None)
+        last_stream_key_used_at = getattr(user, "last_stream_key_used_at", None)
+        last_logged_in_at = max(
+            [value for value in (last_login_at, last_stream_key_used_at) if value is not None],
+            default=None,
+        )
         response = jsonify(
             {
                 "success":     True,
@@ -289,6 +295,9 @@ async def api_check_auth():
                     "username": user.username,
                     "roles": role_names,
                     "streaming_key": user.streaming_key,
+                    "last_login_at": to_utc_iso(last_login_at),
+                    "last_stream_key_used_at": to_utc_iso(last_stream_key_used_at),
+                    "last_logged_in_at": to_utc_iso(last_logged_in_at),
                     "dvr_access_mode": dvr_access_mode,
                     "dvr_retention_policy": user.dvr_retention_policy or "forever",
                 },

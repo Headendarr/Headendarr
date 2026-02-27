@@ -8,7 +8,7 @@ from quart import request, jsonify, Response, redirect, current_app
 from backend.api import blueprint
 from backend.api.connections_common import resolve_channel_stream_url
 from backend.api.routes_connections_epg import build_xmltv_response
-from backend.auth import audit_stream_event
+from backend.auth import audit_stream_event, mark_stream_key_usage
 from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
 from backend.playlists import build_m3u_playlist_content, read_config_all_playlists
 from backend.url_resolver import get_request_base_url, get_request_host_info
@@ -48,6 +48,7 @@ async def _xc_auth_user():
         return None, ("Unauthorized", 401)
     if user.streaming_key != password:
         return None, ("Unauthorized", 401)
+    await mark_stream_key_usage(user)
     return user, None
 
 
@@ -281,6 +282,7 @@ async def xc_stream(username: str, password: str, stream_id: str, ext: str = Non
     user = await get_user_by_username(username)
     if not user or not user.is_active or user.streaming_key != password:
         return jsonify({"error": "Unauthorized"}), 401
+    await mark_stream_key_usage(user)
     await audit_stream_event(user, "xc_stream", request.path)
 
     channel_map = await _get_channel_map()

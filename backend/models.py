@@ -352,6 +352,7 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
     last_login_at = Column(DateTime, nullable=True)
+    last_stream_key_used_at = Column(DateTime, nullable=True)
 
     roles = relationship("Role", secondary=user_roles_association_table, back_populates="users")
     sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
