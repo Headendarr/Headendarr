@@ -1512,6 +1512,26 @@ export default defineComponent({
           newChannelNumber: newChannelNumber,
         },
       }).onOk((payload) => {
+        if (payload?.action === 'deleted' && payload?.channelId) {
+          const deletedId = parseInt(payload.channelId, 10);
+          this.listOfChannels = this.listOfChannels.filter((item) => item.id !== deletedId);
+          this.syncSelectedChannelsFromState();
+          this.fetchChannels({silent: true});
+          return;
+        }
+        if (payload?.action === 'saved' && payload?.channel?.id) {
+          const updatedId = parseInt(payload.channel.id, 10);
+          const target = this.listOfChannels.find((item) => item.id === updatedId);
+          if (target) {
+            const selected = !!target.selected;
+            Object.assign(target, payload.channel);
+            target.selected = selected;
+            this.listOfChannels.sort((a, b) => a.number - b.number);
+            this.syncSelectedChannelsFromState();
+          }
+          this.fetchChannels({silent: true});
+          return;
+        }
         this.fetchChannels();
       }).onDismiss(() => {
       });

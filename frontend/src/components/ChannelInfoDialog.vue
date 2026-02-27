@@ -311,8 +311,10 @@ export default {
       isOpen: false,
       loading: false,
       saving: false,
+      closeResult: null,
       hasSavedInSession: false,
       initialStateSignature: '',
+      initialSourceSignature: '',
       enabled: true,
       number: 0,
       name: '',
@@ -401,6 +403,7 @@ export default {
       this.isOpen = true;
       this.loading = true;
       this.saving = false;
+      this.closeResult = null;
       this.hasSavedInSession = false;
 
       Promise.all([this.fetchEpgData(), this.fetchPlaylistData(), this.fetchCsoProfileOptions()]).then(() => {
@@ -418,8 +421,11 @@ export default {
       this.isOpen = false;
     },
     onDialogHide() {
-      this.$emit('ok', {saved: this.hasSavedInSession});
+      if (this.closeResult) {
+        this.$emit('ok', this.closeResult);
+      }
       this.$emit('hide');
+      this.closeResult = null;
     },
     onDialogAction(action) {
       if (action.id === 'save') {
@@ -471,6 +477,7 @@ export default {
     },
     captureInitialState() {
       this.initialStateSignature = this.currentStateSignature();
+      this.initialSourceSignature = this.currentSourceSignature();
     },
     currentStateSignature() {
       return JSON.stringify({
@@ -492,6 +499,19 @@ export default {
           use_hls_proxy: !!source.use_hls_proxy,
         })),
       });
+    },
+    currentSourceSignature() {
+      return JSON.stringify(
+        (this.listOfChannelSources || []).map((source) => ({
+          source_type: source.source_type || 'playlist',
+          stream_id: source.stream_id || null,
+          playlist_id: source.playlist_id || null,
+          stream_name: source.stream_name || '',
+          stream_url: source.stream_url || '',
+          use_hls_proxy: !!source.use_hls_proxy,
+          xc_account_id: source.xc_account_id || null,
+        })),
+      );
     },
     withLocalKey(source) {
       const currentKey = source.local_key || source.id || source.stream_id;
@@ -990,7 +1010,15 @@ export default {
       }
       this.saving = true;
 
-      const url = this.channelId ? `/tic-api/channels/settings/${this.channelId}/save` : '/tic-api/channels/new';
+      const hasSourceChanges = this.currentSourceSignature() !== this.initialSourceSignature ||
+        (this.listOfChannelSourcesToRefresh || []).length > 0;
+      let url = this.channelId ? `/tic-api/channels/settings/${this.channelId}/save` : '/tic-api/channels/new';
+      if (this.channelId && !hasSourceChanges) {
+        url += '?skip_source_reconcile=true';
+      }
+      this.$q.loading.show({
+        message: hasSourceChanges ? 'Saving channel and syncing updates...' : 'Saving channel...',
+      });
       const data = this.buildChannelPayload(this.listOfChannelSourcesToRefresh);
       axios({
         method: 'POST',
@@ -1006,6 +1034,26 @@ export default {
           message: 'Saved',
           timeout: 300,
         });
+        this.closeResult = {
+          action: 'saved',
+          channel: this.channelId
+            ? {
+              id: this.channelId,
+              enabled: this.enabled,
+              number: this.number,
+              name: this.name,
+              logo_url: this.logoUrl,
+              tags: this.tags,
+              guide: {
+                epg_id: this.epgSourceId,
+                epg_name: this.epgSourceName,
+                channel_id: this.epgChannel,
+              },
+              cso_enabled: this.csoEnabled,
+              cso_profile: this.csoProfile,
+            }
+            : null,
+        };
         this.hide();
       }).catch(() => {
         this.$q.notify({
@@ -1017,6 +1065,7 @@ export default {
         });
       }).finally(() => {
         this.saving = false;
+        this.$q.loading.hide();
       });
     },
     deleteChannel() {
@@ -1041,6 +1090,10 @@ export default {
       });
     },
     deleteChannelConfirmed() {
+      this.saving = true;
+      this.$q.loading.show({
+        message: 'Deleting channel and syncing updates...',
+      });
       axios({
         method: 'DELETE',
         url: `/tic-api/channels/settings/${this.channelId}/delete`,
@@ -1052,6 +1105,10 @@ export default {
           message: 'Channel successfully deleted',
           timeout: 300,
         });
+        this.closeResult = {
+          action: 'deleted',
+          channelId: this.channelId,
+        };
         this.hide();
       }).catch(() => {
         this.$q.notify({
@@ -1061,6 +1118,9 @@ export default {
           icon: 'report_problem',
           actions: [{icon: 'close', color: 'white'}],
         });
+      }).finally(() => {
+        this.saving = false;
+        this.$q.loading.hide();
       });
     },
     filterEpg(value, update) {

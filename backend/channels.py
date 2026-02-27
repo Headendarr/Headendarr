@@ -1269,7 +1269,7 @@ async def update_channels_order(config, data):
                     )
 
 
-async def update_channel(config, channel_id, data):
+async def update_channel(config, channel_id, data, reconcile_sources=True):
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
     async with Session() as session:
@@ -1332,6 +1332,10 @@ async def update_channel(config, channel_id, data):
                     channel.guide_id = None
                     channel.guide_name = None
                     channel.guide_channel_id = None
+
+            if not reconcile_sources:
+                await session.commit()
+                return
 
             # Sources
             new_source_ids = []
@@ -1771,7 +1775,7 @@ async def add_bulk_channels(config, data):
     return added_channel_count
 
 
-async def delete_channel(config, channel_id):
+async def delete_channel(config, channel_id, sync_tvh=True):
     async with Session() as session:
         async with session.begin():
             # Use select() instead of query()
@@ -1786,7 +1790,7 @@ async def delete_channel(config, channel_id):
             await session.execute(delete(RecordingRule).where(RecordingRule.channel_id == channel.id))
 
             # Remove channel from TVHeadend if it has a UUID
-            if channel.tvh_uuid:
+            if sync_tvh and channel.tvh_uuid:
                 async with await get_tvh(config) as tvh:
                     logger.info(f"Removing channel '{channel.name}' (UUID: {channel.tvh_uuid}) from TVHeadend")
                     try:
@@ -1803,7 +1807,7 @@ async def delete_channel(config, channel_id):
             current_sources = result.scalars().all()
 
             for source in current_sources:
-                if source.tvh_uuid:
+                if sync_tvh and source.tvh_uuid:
                     # Delete mux from TVH
                     await delete_channel_muxes(config, source.tvh_uuid)
                 await session.delete(source)
