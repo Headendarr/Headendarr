@@ -884,6 +884,7 @@ async def read_config_all_channels(
                                 "playlist_name": playlist_name,
                                 "priority": source.priority,
                                 "stream_name": source.playlist_stream_name,
+                                "auto_update": bool(getattr(source, "auto_update", False)),
                             }
                         )
                         continue
@@ -895,6 +896,7 @@ async def read_config_all_channels(
                         "stream_name": source.playlist_stream_name,
                         "stream_url": source.playlist_stream_url,
                         "use_hls_proxy": bool(getattr(source, "use_hls_proxy", False)),
+                        "auto_update": bool(getattr(source, "auto_update", False)),
                         "source_type": source_type,
                         "xc_account_id": source.xc_account_id,
                     }
@@ -984,6 +986,7 @@ async def read_config_one_channel(channel_id):
                     "stream_name": source.playlist_stream_name,
                     "stream_url": source.playlist_stream_url,
                     "use_hls_proxy": bool(getattr(source, "use_hls_proxy", False)),
+                    "auto_update": bool(getattr(source, "auto_update", False)),
                     "source_type": source_type,
                     "xc_account_id": source.xc_account_id,
                 }
@@ -1160,6 +1163,7 @@ async def add_new_channel(config, data, commit=True, publish=True):
                         playlist_stream_name=source_info.get("stream_name") or "Manual URL",
                         playlist_stream_url=stream_url,
                         use_hls_proxy=bool(source_info.get("use_hls_proxy", False)),
+                        auto_update=False,
                     )
                 )
                 continue
@@ -1206,6 +1210,7 @@ async def add_new_channel(config, data, commit=True, publish=True):
                             xc_account_id=account.id,
                             playlist_stream_name=source_info["stream_name"],
                             playlist_stream_url=stream_url,
+                            auto_update=bool(source_info.get("auto_update", False)),
                         )
                     )
             else:
@@ -1219,6 +1224,7 @@ async def add_new_channel(config, data, commit=True, publish=True):
                         playlist_id=playlist_info.id,
                         playlist_stream_name=source_info["stream_name"],
                         playlist_stream_url=stream_url,
+                        auto_update=bool(source_info.get("auto_update", False)),
                     )
                 )
 
@@ -1490,6 +1496,7 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                                 )
                             account_source.playlist_stream_name = source_info["stream_name"]
                             account_source.playlist_stream_url = stream_url
+                            account_source.auto_update = bool(source_info.get("auto_update", False))
                             if account_source.id:
                                 new_source_ids.append(account_source.id)
                             account_source.priority = str(priority)
@@ -1511,6 +1518,7 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                             playlist_stream_name=source_info.get("stream_name") or "Manual URL",
                             playlist_stream_url=stream_url,
                             use_hls_proxy=bool(source_info.get("use_hls_proxy", False)),
+                            auto_update=False,
                         )
                     else:
                         logger.info(
@@ -1520,6 +1528,7 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                         channel_source.playlist_stream_name = source_info.get("stream_name") or "Manual URL"
                         channel_source.playlist_stream_url = stream_url
                         channel_source.use_hls_proxy = bool(source_info.get("use_hls_proxy", False))
+                        channel_source.auto_update = False
                     if channel_source.id:
                         new_source_ids.append(channel_source.id)
                 else:
@@ -1562,6 +1571,7 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                             playlist_id=playlist_info.id,
                             playlist_stream_name=source_info["stream_name"],
                             playlist_stream_url=playlist_stream["url"],
+                            auto_update=bool(source_info.get("auto_update", False)),
                         )
                     else:
                         logger.info(
@@ -1627,6 +1637,7 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                                 )
                                 channel_source.playlist_stream_url = playlist_stream["url"]
                                 break
+                        channel_source.auto_update = bool(source_info.get("auto_update", False))
                 # Update source priority (higher means higher priority)
                 channel_source.priority = str(priority)
                 priority -= 1
@@ -2498,6 +2509,71 @@ async def delete_channel_muxes(config, mux_uuid):
             await tvh.delete_mux(mux_uuid)
         except Exception as exc:
             logger.warning("TVH delete mux failed for uuid %s: %s", mux_uuid, exc)
+
+
+async def refresh_auto_update_sources_for_playlists(config, playlist_ids):
+    normalized_playlist_ids = []
+    for playlist_id in playlist_ids or []:
+        try:
+            normalized_playlist_ids.append(int(playlist_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_playlist_ids = sorted(set(normalized_playlist_ids))
+    if not normalized_playlist_ids:
+        return 0
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource.channel_id, ChannelSource.playlist_id)
+            .where(
+                ChannelSource.playlist_id.in_(normalized_playlist_ids),
+                ChannelSource.auto_update.is_(True),
+            )
+            .distinct()
+        )
+        rows = result.all()
+
+    playlist_ids_by_channel = {}
+    for channel_id, playlist_id in rows:
+        if not channel_id or not playlist_id:
+            continue
+        playlist_ids_by_channel.setdefault(int(channel_id), set()).add(int(playlist_id))
+
+    refreshed_channels = 0
+    for channel_id, playlist_id_set in playlist_ids_by_channel.items():
+        channel_payload = await read_config_one_channel(channel_id)
+        if not channel_payload:
+            continue
+
+        refresh_sources = []
+        for source in channel_payload.get("sources", []):
+            if not source.get("playlist_id"):
+                continue
+            if int(source["playlist_id"]) not in playlist_id_set:
+                continue
+            if not source.get("auto_update"):
+                continue
+            refresh_sources.append(
+                {
+                    "playlist_id": source["playlist_id"],
+                    "playlist_name": source.get("playlist_name"),
+                    "stream_name": source.get("stream_name"),
+                }
+            )
+        if not refresh_sources:
+            continue
+
+        channel_payload["refresh_sources"] = refresh_sources
+        await update_channel(config, channel_id, channel_payload, reconcile_sources=True)
+        refreshed_channels += 1
+
+    if refreshed_channels:
+        logger.info(
+            "Auto-refreshed channel sources for %s channel(s) from playlist update(s): %s",
+            refreshed_channels,
+            ",".join(str(playlist_id) for playlist_id in normalized_playlist_ids),
+        )
+    return refreshed_channels
 
 
 async def map_all_services(config):

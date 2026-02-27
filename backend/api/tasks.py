@@ -129,7 +129,26 @@ async def update_playlists(app):
     logger.info("Updating Playlists")
     config = app.config['APP_CONFIG']
     from backend.playlists import import_playlist_data_for_all_playlists
-    await import_playlist_data_for_all_playlists(config)
+    updated_playlist_ids = await import_playlist_data_for_all_playlists(config)
+    if not updated_playlist_ids:
+        logger.info("Skipping channel auto-refresh because no playlists were due")
+        return
+
+    from backend.channels import refresh_auto_update_sources_for_playlists, queue_background_channel_update_tasks
+
+    refreshed_channels = await refresh_auto_update_sources_for_playlists(config, updated_playlist_ids)
+    if refreshed_channels > 0:
+        await queue_background_channel_update_tasks(config)
+    else:
+        logger.info("No channel sources were configured for auto-update")
+
+
+async def refresh_linked_channels_for_playlist(config, playlist_id):
+    from backend.channels import refresh_auto_update_sources_for_playlists, queue_background_channel_update_tasks
+
+    refreshed_channels = await refresh_auto_update_sources_for_playlists(config, [playlist_id])
+    if refreshed_channels > 0:
+        await queue_background_channel_update_tasks(config)
 
 
 async def update_epgs(app):

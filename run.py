@@ -144,8 +144,8 @@ async def every_60_mins():
         }, priority=17)
 
 
-@scheduler.scheduled_job('cron', id='do_job_twice_a_day', hour='0/12', minute=1, misfire_grace_time=900)
-async def every_12_hours():
+@scheduler.scheduled_job('interval', id='hourly_playlist_check', hours=1, misfire_grace_time=900)
+async def hourly_playlist_check():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task({

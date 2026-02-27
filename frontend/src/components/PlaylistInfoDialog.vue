@@ -144,6 +144,16 @@
             description="Live stream URL format used for this Xtream source."
           />
 
+          <TicSelectInput
+            v-model="updateSchedule"
+            :options="updateScheduleOptions"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            label="Update Schedule"
+            description="How often Headendarr should automatically refresh this source."
+          />
+
           <TicToggleInput
             v-model="useHlsProxy"
             label="Use HLS proxy"
@@ -205,6 +215,23 @@ import TicNumberInput from 'components/ui/inputs/TicNumberInput.vue';
 import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
 
+const PLAYLIST_UPDATE_SCHEDULE_OPTIONS = [
+  {label: '1 Hour', value: '1h'},
+  {label: '2 Hours', value: '2h'},
+  {label: '3 Hours', value: '3h'},
+  {label: '6 Hours', value: '6h'},
+  {label: '12 Hours', value: '12h'},
+  {label: '24 Hours', value: '24h'},
+  {label: '2 Days', value: '2d'},
+  {label: '3 Days', value: '3d'},
+  {label: '4 Days', value: '4d'},
+  {label: '5 Days', value: '5d'},
+  {label: '6 Days', value: '6d'},
+  {label: 'Weekly (7 Days)', value: '7d'},
+  {label: 'Every 2 Weeks', value: '14d'},
+  {label: 'Do Not Auto-Update', value: 'off'},
+];
+
 export default {
   name: 'PlaylistInfoDialog',
   components: {
@@ -247,6 +274,8 @@ export default {
       userAgent: null,
       userAgents: [],
       userAgentTouched: false,
+      updateSchedule: 'off',
+      updateScheduleOptions: PLAYLIST_UPDATE_SCHEDULE_OPTIONS,
       useHlsProxy: false,
       useCustomHlsProxy: false,
       chainCustomHlsProxy: false,
@@ -375,6 +404,7 @@ export default {
       this.connections = 1;
       this.userAgent = this.getPreferredUserAgent('VLC');
       this.userAgentTouched = false;
+      this.updateSchedule = 'off';
       this.useHlsProxy = false;
       this.useCustomHlsProxy = false;
       this.chainCustomHlsProxy = false;
@@ -403,6 +433,7 @@ export default {
         xcLiveStreamFormat: this.xcLiveStreamFormat,
         connections: this.connections,
         userAgent: this.userAgent,
+        updateSchedule: this.updateSchedule,
         useHlsProxy: this.useHlsProxy,
         useCustomHlsProxy: this.useCustomHlsProxy,
         chainCustomHlsProxy: this.chainCustomHlsProxy,
@@ -448,6 +479,7 @@ export default {
         this.connections = response.data.data.connections;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('VLC');
         this.userAgentTouched = false;
+        this.updateSchedule = response.data.data.update_schedule || 'off';
         this.useHlsProxy = response.data.data.use_hls_proxy;
         this.useCustomHlsProxy = response.data.data.use_custom_hls_proxy;
         this.chainCustomHlsProxy = response.data.data.chain_custom_hls_proxy;
@@ -521,6 +553,7 @@ export default {
         xc_live_stream_format: this.accountType === 'XC' ? this.xcLiveStreamFormat : undefined,
         connections: this.accountType === 'XC' ? this.totalXcConnections : this.connections,
         user_agent: this.userAgent,
+        update_schedule: this.updateSchedule,
         use_hls_proxy: this.useHlsProxy,
         use_custom_hls_proxy: this.useCustomHlsProxy,
         chain_custom_hls_proxy: this.chainCustomHlsProxy,

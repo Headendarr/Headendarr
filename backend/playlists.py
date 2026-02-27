@@ -28,6 +28,42 @@ M3U_ACCOUNT_TYPE = "M3U"
 XC_LIVE_EXT_TS = "ts"
 XC_LIVE_EXT_M3U8 = "m3u8"
 XC_ALLOWED_LIVE_EXTENSIONS = {XC_LIVE_EXT_TS, XC_LIVE_EXT_M3U8}
+DEFAULT_PLAYLIST_UPDATE_SCHEDULE = "off"
+PLAYLIST_UPDATE_SCHEDULE_SECONDS = {
+    "1h": 3600,
+    "2h": 7200,
+    "3h": 10800,
+    "6h": 21600,
+    "12h": 43200,
+    "24h": 86400,
+    "2d": 172800,
+    "3d": 259200,
+    "4d": 345600,
+    "5d": 432000,
+    "6d": 518400,
+    "7d": 604800,
+    "14d": 1209600,
+    "off": None,
+}
+
+
+def _parsed_playlist_update_schedule(value):
+    schedule = (value or "").strip().lower()
+    aliases = {
+        "manual": "off",
+        "none": "off",
+        "disabled": "off",
+        "never": "off",
+        "weekly": "7d",
+        "2w": "14d",
+        "2weeks": "14d",
+        "14days": "14d",
+        "1d": "24h",
+    }
+    schedule = aliases.get(schedule, schedule)
+    if schedule in PLAYLIST_UPDATE_SCHEDULE_SECONDS:
+        return schedule
+    return DEFAULT_PLAYLIST_UPDATE_SCHEDULE
 
 
 async def build_m3u_playlist_content(
@@ -425,6 +461,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                             "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                             "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                            "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                             "hls_proxy_path": (
                                 result.hls_proxy_path
                                 if result.hls_proxy_path
@@ -449,6 +486,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                         "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                         "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                        "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                         "hls_proxy_path": (
                             result.hls_proxy_path
                             if result.hls_proxy_path
@@ -504,6 +542,7 @@ async def read_config_one_playlist(config, playlist_id):
                     "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                     "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                     "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                    "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                     "hls_proxy_path": (
                         result.hls_proxy_path
                         if result.hls_proxy_path
@@ -533,6 +572,7 @@ async def add_new_playlist(config, data):
                 chain_custom_hls_proxy=data.get("chain_custom_hls_proxy", False),
                 hls_proxy_use_ffmpeg=data.get("hls_proxy_use_ffmpeg", False),
                 hls_proxy_prebuffer=data.get("hls_proxy_prebuffer", "1M"),
+                update_schedule=_parsed_playlist_update_schedule(data.get("update_schedule")),
                 hls_proxy_path=data.get(
                     "hls_proxy_path",
                     "https://proxy.example.com/hls/[B64_URL].m3u8",
@@ -569,6 +609,9 @@ async def update_playlist(config, playlist_id, data):
             playlist.chain_custom_hls_proxy = data.get("chain_custom_hls_proxy", playlist.chain_custom_hls_proxy)
             playlist.hls_proxy_use_ffmpeg = data.get("hls_proxy_use_ffmpeg", playlist.hls_proxy_use_ffmpeg)
             playlist.hls_proxy_prebuffer = data.get("hls_proxy_prebuffer", playlist.hls_proxy_prebuffer)
+            playlist.update_schedule = _parsed_playlist_update_schedule(
+                data.get("update_schedule", playlist.update_schedule)
+            )
             playlist.hls_proxy_path = data.get("hls_proxy_path", playlist.hls_proxy_path)
             if playlist.account_type == XC_ACCOUNT_TYPE:
                 await _upsert_xc_accounts(session, playlist, data)
@@ -893,11 +936,51 @@ async def import_playlist_data(config, playlist_id):
 
 
 async def import_playlist_data_for_all_playlists(config):
+    now_ts = int(time.time())
+    playlist_health_map = _read_playlist_health_map(config)
+    updated_playlist_ids = []
+    skipped_not_due = 0
+    skipped_off = 0
+
     async with Session() as session:
-        result = await session.execute(select(Playlist.id))
-        playlist_ids = [row[0] for row in result.all()]
-    for playlist_id in playlist_ids:
+        result = await session.execute(select(Playlist.id, Playlist.update_schedule).where(Playlist.enabled == True))
+        playlist_rows = result.all()
+
+    for playlist_id, configured_schedule in playlist_rows:
+        schedule = _parsed_playlist_update_schedule(configured_schedule)
+        if schedule == "off":
+            skipped_off += 1
+            logger.debug("Skipping playlist #%s update because update_schedule is off", playlist_id)
+            continue
+
+        interval_seconds = PLAYLIST_UPDATE_SCHEDULE_SECONDS.get(schedule)
+        if interval_seconds is None:
+            skipped_off += 1
+            logger.debug("Skipping playlist #%s update due to invalid schedule '%s'", playlist_id, configured_schedule)
+            continue
+
+        health = playlist_health_map.get(str(playlist_id), {}) or {}
+        last_success_at = health.get("last_success_at")
+        if last_success_at:
+            try:
+                last_success_at = int(last_success_at)
+            except (TypeError, ValueError):
+                last_success_at = None
+
+        if last_success_at and (now_ts - last_success_at) < interval_seconds:
+            skipped_not_due += 1
+            continue
+
         await import_playlist_data(config, playlist_id)
+        updated_playlist_ids.append(int(playlist_id))
+
+    logger.info(
+        "Playlist update check complete updated=%s skipped_not_due=%s skipped_off=%s",
+        len(updated_playlist_ids),
+        skipped_not_due,
+        skipped_off,
+    )
+    return updated_playlist_ids
 
 
 async def read_stream_details_from_all_playlists():

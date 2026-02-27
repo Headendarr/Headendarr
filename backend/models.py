@@ -129,6 +129,7 @@ class Playlist(Base):
     hls_proxy_prebuffer = Column(String(32), nullable=True, unique=False, default="1M")
     user_agent = Column(String(255), nullable=True)
     xc_live_stream_format = Column(String(8), nullable=False, unique=False, default="ts")
+    update_schedule = Column(String(16), nullable=False, default="off")
 
     # Backref to all associated linked sources
     channel_sources = relationship('ChannelSource', backref='playlist', lazy=True, cascade="all, delete-orphan")
@@ -236,6 +237,7 @@ class ChannelSource(Base):
     playlist_stream_name = Column(String(500), index=True, unique=False)
     playlist_stream_url = Column(Text, index=True, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
+    auto_update = Column(Boolean, nullable=False, unique=False, default=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 

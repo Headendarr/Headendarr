@@ -3,7 +3,7 @@
 import os
 from urllib.parse import urlparse
 
-from backend.api.tasks import TaskQueueBroker
+from backend.api.tasks import TaskQueueBroker, refresh_linked_channels_for_playlist
 from backend.auth import admin_auth_required, streamer_or_admin_required
 from backend.channels import queue_background_channel_update_tasks
 from backend.playlists import read_config_all_playlists, add_new_playlist, read_config_one_playlist, update_playlist, \
@@ -169,10 +169,15 @@ async def api_update_playlist(playlist_id):
         'args':     [config, playlist_id],
     }, priority=20)
     await task_broker.add_task({
+        'name':     f'Auto-refresh linked channel streams - Source: {playlist_name or playlist_id}',
+        'function': refresh_linked_channels_for_playlist,
+        'args':     [config, playlist_id],
+    }, priority=21)
+    await task_broker.add_task({
         'name':     f'Publish playlist networks - Name: {playlist_name or playlist_id}',
         'function': publish_playlist_networks,
         'args':     [config],
-    }, priority=21)
+    }, priority=22)
     return jsonify(
         {
             "success": True,

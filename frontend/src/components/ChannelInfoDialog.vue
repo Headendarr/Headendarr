@@ -165,8 +165,18 @@
                     <q-item-label lines="1" class="text-left">
                       <span class="text-weight-medium">{{ element.stream_name }}</span>
                     </q-item-label>
-                    <q-item-label caption lines="1" class="text-left">
-                      {{ element.playlist_name }}
+                    <q-item-label caption class="row items-center justify-between no-wrap q-gutter-sm">
+                      <span class="ellipsis">{{ element.playlist_name }}</span>
+                      <q-btn
+                        dense
+                        flat
+                        no-caps
+                        color="primary"
+                        class="source-settings-toggle"
+                        :label="isSourceConfigOpen(element) ? 'Hide settings' : 'Stream Settings'"
+                        :icon-right="isSourceConfigOpen(element) ? 'expand_less' : 'expand_more'"
+                        @click="toggleSourceConfig(element)"
+                      />
                     </q-item-label>
                     <q-item-label
                       v-if="isChannelSourceDisabled(element)"
@@ -177,19 +187,28 @@
                     </q-item-label>
 
                     <div
-                      v-if="element.source_type === 'manual' || !element.playlist_id"
-                      class="sub-setting manual-stream-form q-mt-md"
+                      v-if="isSourceConfigOpen(element)"
+                      class="sub-setting source-config-panel q-mt-md"
                     >
-                      <TicTextInput
-                        v-model="element.stream_url"
-                        label="Stream URL"
-                        description="Manual stream URL for this source. You can also provide an external HLS proxy URL here."
-                      />
-                      <TicToggleInput
-                        v-model="element.use_hls_proxy"
-                        label="Use HLS Proxy"
-                        description="Route this stream through Headendarr's internal HLS proxy."
-                      />
+                      <template v-if="element.source_type === 'manual' || !element.playlist_id">
+                        <TicTextInput
+                          v-model="element.stream_url"
+                          label="Stream URL"
+                          description="Manual stream URL for this source. You can also provide an external HLS proxy URL here."
+                        />
+                        <TicToggleInput
+                          v-model="element.use_hls_proxy"
+                          label="Use HLS Proxy"
+                          description="Route this stream through Headendarr's internal HLS proxy."
+                        />
+                      </template>
+                      <template v-else>
+                        <TicToggleInput
+                          v-model="element.auto_update"
+                          label="Auto-update from source updates"
+                          description="Refresh this stream URL automatically whenever its source is updated."
+                        />
+                      </template>
                     </div>
 
                     <div
@@ -200,7 +219,7 @@
                     </div>
                   </q-item-section>
 
-                  <q-item-section side class="q-mr-md">
+                  <q-item-section side class="q-mr-md channel-source-actions">
                     <TicListActions
                       :actions="getSourceActions(element, index)"
                       @action="onSourceAction"
@@ -497,6 +516,7 @@ export default {
           stream_name: source.stream_name || '',
           stream_url: source.stream_url || '',
           use_hls_proxy: !!source.use_hls_proxy,
+          auto_update: !!source.auto_update,
         })),
       });
     },
@@ -509,6 +529,7 @@ export default {
           stream_name: source.stream_name || '',
           stream_url: source.stream_url || '',
           use_hls_proxy: !!source.use_hls_proxy,
+          auto_update: !!source.auto_update,
           xc_account_id: source.xc_account_id || null,
         })),
       );
@@ -516,11 +537,20 @@ export default {
     withLocalKey(source) {
       const currentKey = source.local_key || source.id || source.stream_id;
       if (currentKey) {
-        return {...source, local_key: String(currentKey)};
+        return {...source, local_key: String(currentKey), config_open: !!source.config_open};
       }
       const key = `local-${this.nextSourceKey}`;
       this.nextSourceKey += 1;
-      return {...source, local_key: key};
+      return {...source, local_key: key, config_open: !!source.config_open};
+    },
+    isSourceConfigOpen(source) {
+      return !!source?.config_open;
+    },
+    toggleSourceConfig(source) {
+      if (!source) {
+        return;
+      }
+      source.config_open = !source.config_open;
     },
     fetchData() {
       return axios({
@@ -551,6 +581,7 @@ export default {
         this.listOfChannelSources = response.data.data.sources.map((source) => this.withLocalKey({
           ...source,
           use_hls_proxy: !!source.use_hls_proxy,
+          auto_update: !!source.auto_update,
         })).sort((a, b) => b.priority - a.priority);
         this.listOfChannelSourcesToRefresh = [];
         return Promise.all([this.fetchSuggestions()]);
@@ -595,6 +626,7 @@ export default {
         stream_name: suggestion.stream_name,
         stream_url: suggestion.stream_url,
         use_hls_proxy: false,
+        auto_update: false,
         source_type: 'playlist',
         xc_account_id: null,
       }));
@@ -659,29 +691,7 @@ export default {
       });
     },
     getSourceActions(stream, index) {
-      const actions = [
-        {
-          id: 'preview',
-          icon: 'play_arrow',
-          label: 'Preview stream',
-          color: 'primary',
-          payload: {stream, index},
-        },
-        {
-          id: 'copy-url',
-          icon: 'link',
-          label: 'Copy stream URL',
-          color: 'primary',
-          payload: {stream, index},
-        },
-        {
-          id: 'test',
-          icon: 'speed',
-          label: 'Test Stream',
-          color: 'secondary',
-          payload: {stream, index},
-        },
-      ];
+      const actions = [];
       if (stream.source_type !== 'manual' && stream.playlist_id) {
         actions.push({
           id: 'refresh',
@@ -691,6 +701,27 @@ export default {
           payload: {stream, index},
         });
       }
+      actions.push({
+        id: 'preview',
+        icon: 'play_arrow',
+        label: 'Preview stream',
+        color: 'primary',
+        payload: {stream, index},
+      });
+      actions.push({
+        id: 'copy-url',
+        icon: 'link',
+        label: 'Copy stream URL',
+        color: 'primary',
+        payload: {stream, index},
+      });
+      actions.push({
+        id: 'test',
+        icon: 'speed',
+        label: 'Test Stream',
+        color: 'secondary',
+        payload: {stream, index},
+      });
       actions.push({
         id: 'remove',
         icon: 'delete',
@@ -1188,6 +1219,7 @@ export default {
             stream_name: selectedStream.stream_name,
             stream_url: selectedStream.stream_url,
             use_hls_proxy: false,
+            auto_update: false,
           }));
         }
         this.listOfChannelSources = enabledStreams;
@@ -1239,6 +1271,8 @@ export default {
         stream_name: 'Manual URL',
         stream_url: '',
         use_hls_proxy: false,
+        auto_update: false,
+        config_open: true,
       }));
       this.listOfChannelSources = enabledStreams;
     },
@@ -1271,7 +1305,7 @@ export default {
   margin-bottom: 24px;
 }
 
-.manual-stream-form > *:not(:last-child) {
+.source-config-panel > *:not(:last-child) {
   margin-bottom: 24px;
 }
 
@@ -1294,5 +1328,27 @@ export default {
 .channel-source-disabled-label {
   color: var(--q-warning);
   font-weight: 600;
+}
+
+.source-settings-toggle {
+  min-height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.channel-source-actions {
+  width: 190px;
+  min-width: 190px;
+  max-width: 190px;
+  flex: 0 0 190px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 599px) {
+  .channel-source-actions {
+    min-width: auto;
+  }
 }
 </style>
