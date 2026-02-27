@@ -830,8 +830,7 @@ async def api_set_config_channels(channel_id):
         channel_id = int(channel_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
-    skip_source_reconcile = request.args.get("skip_source_reconcile", "false").lower() in ("1", "true", "yes")
-    await update_channel(config, channel_id, json_data, reconcile_sources=not skip_source_reconcile)
+    await update_channel(config, channel_id, json_data)
     await queue_background_channel_update_tasks(config)
     return jsonify({"success": True})
 
@@ -1017,7 +1016,7 @@ async def api_delete_multiple_channels():
     missing = []
     for channel_id in json_data.get("channels", {}):
         normalized = normalize_id(channel_id, "channel")
-        deleted = await delete_channel(config, normalized, sync_tvh=False)
+        deleted = await delete_channel(normalized)
         if not deleted:
             missing.append(normalized)
 
@@ -1035,7 +1034,7 @@ async def api_delete_config_channels(channel_id):
         channel_id = normalize_id(channel_id, "channel")
     except ValueError:
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
-    deleted = await delete_channel(config, channel_id, sync_tvh=False)
+    deleted = await delete_channel(channel_id)
     if deleted:
         await queue_background_channel_update_tasks(config)
     return jsonify({"success": True, "deleted": bool(deleted)})

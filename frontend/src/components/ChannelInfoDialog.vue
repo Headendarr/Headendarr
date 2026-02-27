@@ -1043,10 +1043,7 @@ export default {
 
       const hasSourceChanges = this.currentSourceSignature() !== this.initialSourceSignature ||
         (this.listOfChannelSourcesToRefresh || []).length > 0;
-      let url = this.channelId ? `/tic-api/channels/settings/${this.channelId}/save` : '/tic-api/channels/new';
-      if (this.channelId && !hasSourceChanges) {
-        url += '?skip_source_reconcile=true';
-      }
+      const url = this.channelId ? `/tic-api/channels/settings/${this.channelId}/save` : '/tic-api/channels/new';
       this.$q.loading.show({
         message: hasSourceChanges ? 'Saving channel and syncing updates...' : 'Saving channel...',
       });
@@ -1128,7 +1125,17 @@ export default {
       axios({
         method: 'DELETE',
         url: `/tic-api/channels/settings/${this.channelId}/delete`,
-      }).then(() => {
+      }).then((response) => {
+        if (!response?.data?.deleted) {
+          this.$q.notify({
+            color: 'warning',
+            position: 'top',
+            message: 'Channel was already removed',
+            icon: 'warning',
+            actions: [{icon: 'close', color: 'white'}],
+          });
+          return;
+        }
         this.hasSavedInSession = true;
         this.$q.notify({
           color: 'positive',

@@ -1108,20 +1108,12 @@ async def read_channel_logo(channel_id):
     return image_base64_string, mime_type
 
 
-async def add_new_channel(config, data, commit=True, publish=True):
-    """Create Channel row and optionally publish immediately to TVHeadend.
+async def add_new_channel(config, data, commit=True):
+    """Create a Channel row in the database.
 
-    Returns the Channel ORM object (with tvh_uuid if published).
+    NOTE: TVH synchronization is handled by queued background tasks.
     """
     instance_id = config.ensure_instance_id()
-    app_url = None
-    publish_to_tvh = bool(publish)
-    if publish_to_tvh:
-        try:
-            app_url = await get_tvh_publish_base_url(config)
-        except ValueError as exc:
-            logger.error("Skipping immediate TVH publish for channel '%s': %s", data.get("name"), exc)
-            publish_to_tvh = False
     async with Session() as session:
         cso_enabled, cso_policy = _extract_cso_payload(data)
         channel = Channel(
@@ -1232,25 +1224,6 @@ async def add_new_channel(config, data, commit=True, publish=True):
             channel.sources = new_sources
 
         session.add(channel)
-        if publish_to_tvh:
-            await session.flush()
-
-        if publish_to_tvh:
-            try:
-                async with await get_tvh(config) as tvh:
-                    logo_proxy_url = build_channel_logo_proxy_url(
-                        channel.id if channel.id else "new",
-                        app_url,
-                        channel.logo_url or "",
-                    )
-                    channel_uuid = await publish_channel_to_tvh(
-                        tvh,
-                        channel,
-                        icon_url=logo_proxy_url,
-                    )
-                    channel.tvh_uuid = channel_uuid
-            except Exception as e:
-                logger.error("Immediate publish failed for channel '%s': %s", channel.name, e)
 
         if commit:
             await session.commit()
@@ -1274,14 +1247,10 @@ async def update_channels_order(config, data):
                         number = int(number)
                     except (TypeError, ValueError):
                         number = None
-                    await session.execute(
-                        update(Channel)
-                        .where(Channel.id == normalized)
-                        .values(number=number)
-                    )
+                    await session.execute(update(Channel).where(Channel.id == normalized).values(number=number))
 
 
-async def update_channel(config, channel_id, data, reconcile_sources=True):
+async def update_channel(config, channel_id, data):
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
     async with Session() as session:
@@ -1345,7 +1314,42 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
                     channel.guide_name = None
                     channel.guide_channel_id = None
 
-            if not reconcile_sources:
+            # Skip source reconciliation when the incoming payload has no effective
+            # source changes and there are no explicit source refresh requests.
+            source_refresh_requested = bool(data.get("refresh_sources"))
+            incoming_sources = data.get("sources", [])
+
+            def _source_signature_from_incoming(source):
+                is_manual = source.get("source_type") == "manual" or not source.get("playlist_id")
+                return (
+                    "manual" if is_manual else "playlist",
+                    int(source["playlist_id"]) if source.get("playlist_id") else None,
+                    int(source["stream_id"]) if source.get("stream_id") else None,
+                    int(source["xc_account_id"]) if source.get("xc_account_id") else None,
+                    (source.get("stream_name") or "").strip(),
+                    (source.get("stream_url") or "").strip(),
+                    bool(source.get("use_hls_proxy", False)),
+                    bool(source.get("auto_update", False)),
+                )
+
+            def _source_signature_from_existing(source):
+                is_manual = source.playlist_id is None
+                return (
+                    "manual" if is_manual else "playlist",
+                    int(source.playlist_id) if source.playlist_id else None,
+                    None,
+                    int(source.xc_account_id) if source.xc_account_id else None,
+                    (source.playlist_stream_name or "").strip(),
+                    (source.playlist_stream_url or "").strip(),
+                    bool(source.use_hls_proxy),
+                    bool(source.auto_update),
+                )
+
+            incoming_signature = [_source_signature_from_incoming(source) for source in incoming_sources]
+            existing_signature = [_source_signature_from_existing(source) for source in (channel.sources or [])]
+            should_reconcile_sources = source_refresh_requested or incoming_signature != existing_signature
+
+            if not should_reconcile_sources:
                 await session.commit()
                 return
 
@@ -1648,9 +1652,6 @@ async def update_channel(config, channel_id, data, reconcile_sources=True):
             current_sources = query.scalars().all()
             for source in current_sources:
                 if source.id not in new_source_ids:
-                    if source.tvh_uuid:
-                        # Delete mux from TVH
-                        await delete_channel_muxes(config, source.tvh_uuid)
                     await session.delete(source)
             if new_sources:
                 channel.sources.clear()
@@ -1776,7 +1777,7 @@ async def add_bulk_channels(config, data):
                 "stream_name": playlist_stream.name,
             }
         )
-        channel_obj = await add_new_channel(config, new_channel_data, commit=True, publish=False)
+        channel_obj = await add_new_channel(config, new_channel_data, commit=True)
         new_channels.append(channel_obj)
         added_channel_count += 1
 
@@ -1792,7 +1793,7 @@ async def add_bulk_channels(config, data):
     return added_channel_count
 
 
-async def delete_channel(config, channel_id, sync_tvh=True):
+async def delete_channel(channel_id):
     async with Session() as session:
         async with session.begin():
             # Use select() instead of query()
@@ -1806,27 +1807,11 @@ async def delete_channel(config, channel_id, sync_tvh=True):
             await session.execute(delete(Recording).where(Recording.channel_id == channel.id))
             await session.execute(delete(RecordingRule).where(RecordingRule.channel_id == channel.id))
 
-            # Remove channel from TVHeadend if it has a UUID
-            if sync_tvh and channel.tvh_uuid:
-                async with await get_tvh(config) as tvh:
-                    logger.info(f"Removing channel '{channel.name}' (UUID: {channel.tvh_uuid}) from TVHeadend")
-                    try:
-                        await tvh.delete_channel(channel.tvh_uuid)
-                    except Exception as exc:
-                        logger.warning(
-                            "TVH delete channel failed for uuid %s: %s",
-                            channel.tvh_uuid,
-                            exc,
-                        )
-
             # Remove all source entries in the channel_sources table
             result = await session.execute(select(ChannelSource).filter_by(channel_id=channel.id))
             current_sources = result.scalars().all()
 
             for source in current_sources:
-                if sync_tvh and source.tvh_uuid:
-                    # Delete mux from TVH
-                    await delete_channel_muxes(config, source.tvh_uuid)
                 await session.delete(source)
 
             # Clear out association table. This fixes an issue where if multiple similar entries ended up in that table,
@@ -2564,7 +2549,7 @@ async def refresh_auto_update_sources_for_playlists(config, playlist_ids):
             continue
 
         channel_payload["refresh_sources"] = refresh_sources
-        await update_channel(config, channel_id, channel_payload, reconcile_sources=True)
+        await update_channel(config, channel_id, channel_payload)
         refreshed_channels += 1
 
     if refreshed_channels:
@@ -2767,7 +2752,7 @@ async def add_channels_from_groups(config, groups):
                     }
                 )
 
-                channel_obj = await add_new_channel(config, new_channel_data, commit=True, publish=False)
+                channel_obj = await add_new_channel(config, new_channel_data, commit=True)
                 group_new_channels.append(channel_obj)
                 added_channel_count += 1
 
