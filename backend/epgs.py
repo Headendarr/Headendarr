@@ -27,8 +27,46 @@ from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelPro
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import normalize_id
 
-logger = logging.getLogger('tic.epgs')
+logger = logging.getLogger("tic.epgs")
 XMLTV_UTC_FORMAT = "%Y%m%d%H%M%S +0000"
+DEFAULT_EPG_UPDATE_SCHEDULE = "12h"
+EPG_UPDATE_SCHEDULE_SECONDS = {
+    "1h": 3600,
+    "2h": 7200,
+    "3h": 10800,
+    "6h": 21600,
+    "12h": 43200,
+    "24h": 86400,
+    "2d": 172800,
+    "3d": 259200,
+    "4d": 345600,
+    "5d": 432000,
+    "6d": 518400,
+    "7d": 604800,
+    "14d": 1209600,
+    "off": None,
+}
+
+
+def _parsed_epg_update_schedule(value):
+    if value is None:
+        return DEFAULT_EPG_UPDATE_SCHEDULE
+
+    value_lower = str(value).strip().lower()
+    aliases = {
+        "1d": "24h",
+        "weekly": "7d",
+        "2w": "14d",
+        "2weeks": "14d",
+        "14days": "14d",
+        "manual": "off",
+        "none": "off",
+        "disabled": "off",
+    }
+    value_lower = aliases.get(value_lower, value_lower)
+    if value_lower in EPG_UPDATE_SCHEDULE_SECONDS:
+        return value_lower
+    return DEFAULT_EPG_UPDATE_SCHEDULE
 
 
 def generate_epg_channel_id(number, name):
@@ -87,25 +125,31 @@ async def read_config_all_epgs(output_for_export=False, config=None):
             review_stats_map = await _read_epg_review_stats_map(epg_ids)
             for result in results:
                 if output_for_export:
-                    return_list.append({
-                        'enabled': result.enabled,
-                        'name':    result.name,
-                        'url':     result.url,
-                        'user_agent': result.user_agent,
-                    })
+                    return_list.append(
+                        {
+                            "enabled": result.enabled,
+                            "name": result.name,
+                            "url": result.url,
+                            "user_agent": result.user_agent,
+                            "update_schedule": _parsed_epg_update_schedule(result.update_schedule),
+                        }
+                    )
                     continue
-                return_list.append({
-                    'id':      result.id,
-                    'enabled': result.enabled,
-                    'name':    result.name,
-                    'url':     result.url,
-                    'user_agent': result.user_agent,
-                    'health': epg_health_map.get(str(result.id), {}),
-                    'review': _build_epg_review_payload(
-                        review_stats_map.get(result.id, {}),
-                        epg_health_map.get(str(result.id), {}),
-                    ),
-                })
+                return_list.append(
+                    {
+                        "id": result.id,
+                        "enabled": result.enabled,
+                        "name": result.name,
+                        "url": result.url,
+                        "user_agent": result.user_agent,
+                        "update_schedule": _parsed_epg_update_schedule(result.update_schedule),
+                        "health": epg_health_map.get(str(result.id), {}),
+                        "review": _build_epg_review_payload(
+                            review_stats_map.get(result.id, {}),
+                            epg_health_map.get(str(result.id), {}),
+                        ),
+                    }
+                )
     return return_list
 
 
@@ -120,13 +164,14 @@ async def read_config_one_epg(epg_id, config=None):
             results = query.scalar_one_or_none()
             if results:
                 return_item = {
-                    'id':      results.id,
-                    'enabled': results.enabled,
-                    'name':    results.name,
-                    'url':     results.url,
-                    'user_agent': results.user_agent,
-                    'health': epg_health_map.get(str(results.id), {}),
-                    'review': _build_epg_review_payload(
+                    "id": results.id,
+                    "enabled": results.enabled,
+                    "name": results.name,
+                    "url": results.url,
+                    "user_agent": results.user_agent,
+                    "update_schedule": _parsed_epg_update_schedule(results.update_schedule),
+                    "health": epg_health_map.get(str(results.id), {}),
+                    "review": _build_epg_review_payload(
                         review_stats_map.get(results.id, {}),
                         epg_health_map.get(str(results.id), {}),
                     ),
@@ -135,16 +180,16 @@ async def read_config_one_epg(epg_id, config=None):
 
 
 def _build_epg_review_payload(stats, health):
-    channel_count = int(stats.get('channel_count') or 0)
-    programme_count = int(stats.get('programme_count') or 0)
-    has_successful_update = bool((health or {}).get('last_success_at'))
+    channel_count = int(stats.get("channel_count") or 0)
+    programme_count = int(stats.get("programme_count") or 0)
+    has_successful_update = bool((health or {}).get("last_success_at"))
     has_data = channel_count > 0 and programme_count > 0
     return {
-        'channel_count': channel_count,
-        'programme_count': programme_count,
-        'has_successful_update': has_successful_update,
-        'has_data': has_data,
-        'can_review': has_successful_update and has_data,
+        "channel_count": channel_count,
+        "programme_count": programme_count,
+        "has_successful_update": has_successful_update,
+        "has_data": has_data,
+        "can_review": has_successful_update and has_data,
     }
 
 
@@ -153,25 +198,25 @@ async def _read_epg_review_stats_map(epg_ids):
     if not normalized_ids:
         return {}
 
-    stats_map = {epg_id: {'channel_count': 0, 'programme_count': 0} for epg_id in normalized_ids}
+    stats_map = {epg_id: {"channel_count": 0, "programme_count": 0} for epg_id in normalized_ids}
 
     async with Session() as session:
         async with session.begin():
             channel_rows = await session.execute(
                 select(
                     EpgChannels.epg_id,
-                    func.count(EpgChannels.id).label('channel_count'),
+                    func.count(EpgChannels.id).label("channel_count"),
                 )
                 .where(EpgChannels.epg_id.in_(normalized_ids))
                 .group_by(EpgChannels.epg_id)
             )
             for row in channel_rows.all():
-                stats_map[row.epg_id]['channel_count'] = int(row.channel_count or 0)
+                stats_map[row.epg_id]["channel_count"] = int(row.channel_count or 0)
 
             programme_rows = await session.execute(
                 select(
                     EpgChannels.epg_id,
-                    func.count(EpgChannelProgrammes.id).label('programme_count'),
+                    func.count(EpgChannelProgrammes.id).label("programme_count"),
                 )
                 .select_from(EpgChannels)
                 .join(EpgChannelProgrammes, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
@@ -179,7 +224,7 @@ async def _read_epg_review_stats_map(epg_ids):
                 .group_by(EpgChannels.epg_id)
             )
             for row in programme_rows.all():
-                stats_map[row.epg_id]['programme_count'] = int(row.programme_count or 0)
+                stats_map[row.epg_id]["programme_count"] = int(row.programme_count or 0)
 
     return stats_map
 
@@ -188,10 +233,11 @@ async def add_new_epg(data):
     async with Session() as session:
         async with session.begin():
             epg = Epg(
-                enabled=data.get('enabled'),
-                name=data.get('name'),
-                url=data.get('url'),
-                user_agent=data.get('user_agent'),
+                enabled=data.get("enabled"),
+                name=data.get("name"),
+                url=data.get("url"),
+                user_agent=data.get("user_agent"),
+                update_schedule=_parsed_epg_update_schedule(data.get("update_schedule")),
             )
             # This is a new entry. Add it to the session before commit
             session.add(epg)
@@ -203,10 +249,11 @@ async def update_epg(epg_id, data):
         async with session.begin():
             result = await session.execute(select(Epg).where(Epg.id == epg_id))
             epg = result.scalar_one()
-            epg.enabled = data.get('enabled')
-            epg.name = data.get('name')
-            epg.url = data.get('url')
-            epg.user_agent = data.get('user_agent', epg.user_agent)
+            epg.enabled = data.get("enabled")
+            epg.name = data.get("name")
+            epg.url = data.get("url")
+            epg.user_agent = data.get("user_agent", epg.user_agent)
+            epg.update_schedule = _parsed_epg_update_schedule(data.get("update_schedule", epg.update_schedule))
 
 
 async def delete_epg(config, epg_id):
@@ -220,7 +267,8 @@ async def delete_epg(config, epg_id):
             if channel_ids:
                 # Delete all EpgChannelProgrammes where epg_channel_id is in the list of channel IDs
                 await session.execute(
-                    delete(EpgChannelProgrammes).where(EpgChannelProgrammes.epg_channel_id.in_(channel_ids)))
+                    delete(EpgChannelProgrammes).where(EpgChannelProgrammes.epg_channel_id.in_(channel_ids))
+                )
                 # Delete all EpgChannels where id is in the list of channel IDs
                 await session.execute(delete(EpgChannels).where(EpgChannels.id.in_(channel_ids)))
             # Delete the Epg entry
@@ -228,8 +276,8 @@ async def delete_epg(config, epg_id):
 
     # Remove cached copy of epg
     cache_files = [
-        os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml"),
-        os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.yml"),
+        os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml"),
+        os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.yml"),
     ]
     for f in cache_files:
         if os.path.isfile(f):
@@ -240,9 +288,9 @@ async def delete_epg(config, epg_id):
 def _resolve_user_agent(settings, user_agent):
     if user_agent:
         return user_agent
-    defaults = settings.get('settings', {}).get('user_agents', [])
+    defaults = settings.get("settings", {}).get("user_agents", [])
     if isinstance(defaults, list) and defaults:
-        return defaults[0].get('value') or defaults[0].get('name')
+        return defaults[0].get("value") or defaults[0].get("name")
     return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
 
 
@@ -254,7 +302,7 @@ async def download_xmltv_epg(settings, url, output, user_agent=None):
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             response.raise_for_status()
-            async with aiofiles.open(output, 'wb') as f:
+            async with aiofiles.open(output, "wb") as f:
                 async for chunk in response.content.iter_chunked(8192):
                     await f.write(chunk)
     await try_unzip(output)
@@ -338,9 +386,7 @@ def _clear_epg_channel_data_sync(epg_id):
         db.session.rollback()
         channel_ids_subquery = select(EpgChannels.id).where(EpgChannels.epg_id == epg_id)
         db.session.execute(
-            delete(EpgChannelProgrammes).where(
-                EpgChannelProgrammes.epg_channel_id.in_(channel_ids_subquery)
-            )
+            delete(EpgChannelProgrammes).where(EpgChannelProgrammes.epg_channel_id.in_(channel_ids_subquery))
         )
         db.session.execute(delete(EpgChannels).where(EpgChannels.epg_id == epg_id))
         db.session.commit()
@@ -396,9 +442,7 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
                         "epg_id": epg_id,
                         "channel_id": channel_id,
                         "name": (elem.findtext("display-name", default="") or "").strip(),
-                        "icon_url": (
-                            icon_node.attrib.get("src", "") if icon_node is not None else ""
-                        ),
+                        "icon_url": (icon_node.attrib.get("src", "") if icon_node is not None else ""),
                     }
                 )
                 channel_count += 1
@@ -480,12 +524,12 @@ async def import_epg_data(config, epg_id):
     epg = await read_config_one_epg(epg_id, config=config)
     settings = config.read_settings()
     # Download a new local copy of the EPG
-    logger.info("Downloading updated XMLTV file for EPG #%s from url - '%s'", epg_id, epg['url'])
+    logger.info("Downloading updated XMLTV file for EPG #%s from url - '%s'", epg_id, epg["url"])
     attempt_ts = int(time.time())
     try:
         start_time = time.time()
-        xmltv_file = os.path.join(config.config_path, 'cache', 'epgs', f"{epg_id}.xml")
-        await download_xmltv_epg(settings, epg['url'], xmltv_file, epg.get('user_agent'))
+        xmltv_file = os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml")
+        await download_xmltv_epg(settings, epg["url"], xmltv_file, epg.get("user_agent"))
         execution_time = time.time() - start_time
         logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
         # Read and save EPG data to DB (offloaded to worker thread)
@@ -531,31 +575,74 @@ async def import_epg_data(config, epg_id):
 
 
 async def import_epg_data_for_all_epgs(config):
+    epg_health_map = _read_epg_health_map(config)
+    now_ts = int(time.time())
+    updated_count = 0
+    skipped_not_due = 0
+    skipped_disabled = 0
+
     async with Session() as session:
-        result = await session.execute(select(Epg.id).where(Epg.enabled == True))
-        epg_ids = [row[0] for row in result.all()]
-    for epg_id in epg_ids:
+        result = await session.execute(select(Epg.id, Epg.update_schedule).where(Epg.enabled == True))
+        epg_rows = result.all()
+
+    for epg_id, configured_schedule in epg_rows:
+        schedule = _parsed_epg_update_schedule(configured_schedule)
+        if schedule == "off":
+            skipped_disabled += 1
+            logger.debug("Skipping EPG #%s update because update_schedule is off", epg_id)
+            continue
+
+        health = epg_health_map.get(str(epg_id), {})
+        last_success_at = health.get("last_success_at") if isinstance(health, dict) else None
+        try:
+            last_success_at = int(last_success_at) if last_success_at is not None else None
+        except (TypeError, ValueError):
+            last_success_at = None
+
+        schedule_seconds = EPG_UPDATE_SCHEDULE_SECONDS.get(schedule)
+        is_due = last_success_at is None
+        if not is_due and schedule_seconds is not None:
+            is_due = (now_ts - last_success_at) >= schedule_seconds
+        if not is_due:
+            skipped_not_due += 1
+            logger.debug(
+                "Skipping EPG #%s update because it is not due yet (schedule=%s, last_success_at=%s)",
+                epg_id,
+                schedule,
+                last_success_at,
+            )
+            continue
+
         try:
             await import_epg_data(config, epg_id)
+            updated_count += 1
         except Exception as e:
             logger.error(f"Failed to import EPG data for EPG ID {epg_id}, continuing to next. Error: {e}")
+
+    logger.info(
+        "EPG update check complete updated=%s skipped_not_due=%s skipped_off=%s",
+        updated_count,
+        skipped_not_due,
+        skipped_disabled,
+    )
+    return updated_count
 
 
 async def read_channels_from_all_epgs(config):
     epgs_channels = {}
     async with Session() as session:
-        query = await session.execute(
-            select(Epg).options(joinedload(Epg.epg_channels))
-        )
+        query = await session.execute(select(Epg).options(joinedload(Epg.epg_channels)))
         epg_rows = query.scalars().unique().all()
     for result in epg_rows:
         epgs_channels[result.id] = []
         for epg_channel in result.epg_channels:
-            epgs_channels[result.id].append({
-                "channel_id":   epg_channel.channel_id,
-                "display_name": epg_channel.name,
-                "icon":         epg_channel.icon_url,
-            })
+            epgs_channels[result.id].append(
+                {
+                    "channel_id": epg_channel.channel_id,
+                    "display_name": epg_channel.name,
+                    "icon": epg_channel.icon_url,
+                }
+            )
     return epgs_channels
 
 
@@ -600,9 +687,7 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
 
     async with Session() as session:
         async with session.begin():
-            total_count_result = await session.execute(
-                select(func.count(EpgChannels.id)).where(*filters)
-            )
+            total_count_result = await session.execute(select(func.count(EpgChannels.id)).where(*filters))
             total_count = int(total_count_result.scalar() or 0)
 
             channel_rows_result = await session.execute(
@@ -625,8 +710,7 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
             epg_total_channels = int(epg_total_channels_result.scalar() or 0)
 
             epg_channels_with_data_result = await session.execute(
-                select(func.count(EpgChannels.id))
-                .where(EpgChannels.epg_id == epg_id, future_programme_exists)
+                select(func.count(EpgChannels.id)).where(EpgChannels.epg_id == epg_id, future_programme_exists)
             )
             epg_channels_with_data = int(epg_channels_with_data_result.scalar() or 0)
 
@@ -647,9 +731,7 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
                     select(
                         EpgChannelProgrammes.epg_channel_id.label("epg_channel_id"),
                         func.count(EpgChannelProgrammes.id).label("total_programmes"),
-                        func.count(EpgChannelProgrammes.id)
-                        .filter(stop_ts_expr >= now_ts)
-                        .label("future_programmes"),
+                        func.count(EpgChannelProgrammes.id).filter(stop_ts_expr >= now_ts).label("future_programmes"),
                         func.max(stop_ts_expr).label("max_stop_ts"),
                     )
                     .where(EpgChannelProgrammes.epg_channel_id.in_(row_ids))
@@ -716,12 +798,7 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
         for programme in channel_upcoming:
             start_ts = programme.get("start_ts")
             stop_ts = programme.get("stop_ts")
-            if (
-                now_programme is None
-                and start_ts is not None
-                and stop_ts is not None
-                and start_ts <= now_ts < stop_ts
-            ):
+            if now_programme is None and start_ts is not None and stop_ts is not None and start_ts <= now_ts < stop_ts:
                 now_programme = programme
                 continue
             if len(next_programmes) < 3:
@@ -821,11 +898,7 @@ async def build_custom_epg(config, throttle=False):
     source_key_to_output_channels = defaultdict(list)
     logger.info("   - Loading configured channels and guide mappings.")
     async with Session() as session:
-        query = await session.execute(
-            select(Channel)
-            .options(joinedload(Channel.tags))
-            .order_by(Channel.number.asc())
-        )
+        query = await session.execute(select(Channel).options(joinedload(Channel.tags)).order_by(Channel.number.asc()))
         channel_rows = query.scalars().unique().all()
     for result in channel_rows:
         if not result.enabled:
@@ -834,9 +907,7 @@ async def build_custom_epg(config, throttle=False):
         _, mime_type = await read_base46_image_string(result.logo_base64)
         cache_buster = int(time.time())
         ext = guess_extension(mime_type or "image/png") or ".png"
-        logo_url = (
-            f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
-        )
+        logo_url = f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
         configured_channels.append(
             {
                 "channel_id": channel_id,
@@ -932,60 +1003,60 @@ async def build_custom_epg(config, throttle=False):
         channel_tags = channel_info["tags"]
         for epg_channel_programme in programmes_by_output_channel.get(channel_id, []):
             # Create a <programme> element for the output file and copy the attributes from the input programme
-            output_programme = ET.SubElement(output_root, 'programme')
+            output_programme = ET.SubElement(output_root, "programme")
             # Build programmes from DB data (manually create attributes etc.
             start_value, start_ts = _normalize_xmltv_time(
-                epg_channel_programme.get('start'),
-                epg_channel_programme.get('start_timestamp'),
+                epg_channel_programme.get("start"),
+                epg_channel_programme.get("start_timestamp"),
             )
             stop_value, stop_ts = _normalize_xmltv_time(
-                epg_channel_programme.get('stop'),
-                epg_channel_programme.get('stop_timestamp'),
+                epg_channel_programme.get("stop"),
+                epg_channel_programme.get("stop_timestamp"),
             )
             if start_value:
-                output_programme.set('start', start_value)
+                output_programme.set("start", start_value)
             if stop_value:
-                output_programme.set('stop', stop_value)
+                output_programme.set("stop", stop_value)
             if start_ts:
-                output_programme.set('start_timestamp', start_ts)
+                output_programme.set("start_timestamp", start_ts)
             if stop_ts:
-                output_programme.set('stop_timestamp', stop_ts)
+                output_programme.set("stop_timestamp", stop_ts)
             # Set the "channel" ident here
-            output_programme.set('channel', str(channel_id))
+            output_programme.set("channel", str(channel_id))
             # Loop through all child elements of the input programme and copy them to the output programme
-            for child in ['title', 'sub-title', 'desc', 'series-desc', 'country']:
+            for child in ["title", "sub-title", "desc", "series-desc", "country"]:
                 # Copy all other child elements to the output programme if they exist
                 if child in epg_channel_programme and epg_channel_programme[child] is not None:
                     output_child = ET.SubElement(output_programme, child)
                     output_child.text = epg_channel_programme[child]
-                    output_child.set('lang', 'en')
+                    output_child.set("lang", "en")
             # Optional summary
-            if epg_channel_programme.get('summary'):
-                c = ET.SubElement(output_programme, 'summary')
-                c.text = epg_channel_programme['summary']
-                c.set('lang', 'en')
+            if epg_channel_programme.get("summary"):
+                c = ET.SubElement(output_programme, "summary")
+                c.text = epg_channel_programme["summary"]
+                c.set("lang", "en")
             # If we have a programme icon, add it
-            if epg_channel_programme['icon_url']:
-                output_child = ET.SubElement(output_programme, 'icon')
-                output_child.set('src', epg_channel_programme['icon_url'])
-                output_child.set('height', "")
-                output_child.set('width', "")
+            if epg_channel_programme["icon_url"]:
+                output_child = ET.SubElement(output_programme, "icon")
+                output_child.set("src", epg_channel_programme["icon_url"])
+                output_child.set("height", "")
+                output_child.set("width", "")
             # Keywords
-            if epg_channel_programme.get('keywords'):
+            if epg_channel_programme.get("keywords"):
                 try:
-                    for kw in json.loads(epg_channel_programme['keywords']):
+                    for kw in json.loads(epg_channel_programme["keywords"]):
                         if kw:
-                            kc = ET.SubElement(output_programme, 'keyword')
+                            kc = ET.SubElement(output_programme, "keyword")
                             kc.text = kw
-                            kc.set('lang', 'en')
+                            kc.set("lang", "en")
                 except Exception:
                     pass
             # Credits
-            if epg_channel_programme.get('credits_json'):
+            if epg_channel_programme.get("credits_json"):
                 try:
-                    credits_data = json.loads(epg_channel_programme['credits_json'])
+                    credits_data = json.loads(epg_channel_programme["credits_json"])
                     if isinstance(credits_data, dict) and credits_data:
-                        credits_el = ET.SubElement(output_programme, 'credits')
+                        credits_el = ET.SubElement(output_programme, "credits")
                         for role, people in credits_data.items():
                             if not people:
                                 continue
@@ -995,73 +1066,73 @@ async def build_custom_epg(config, throttle=False):
                 except Exception:
                     pass
             # Video
-            if any(epg_channel_programme.get(k) for k in ['video_colour', 'video_aspect', 'video_quality']):
-                video_el = ET.SubElement(output_programme, 'video')
-                if epg_channel_programme.get('video_colour'):
-                    c = ET.SubElement(video_el, 'colour')
-                    c.text = epg_channel_programme['video_colour']
-                if epg_channel_programme.get('video_aspect'):
-                    a = ET.SubElement(video_el, 'aspect')
-                    a.text = epg_channel_programme['video_aspect']
-                if epg_channel_programme.get('video_quality'):
-                    q = ET.SubElement(video_el, 'quality')
-                    q.text = epg_channel_programme['video_quality']
+            if any(epg_channel_programme.get(k) for k in ["video_colour", "video_aspect", "video_quality"]):
+                video_el = ET.SubElement(output_programme, "video")
+                if epg_channel_programme.get("video_colour"):
+                    c = ET.SubElement(video_el, "colour")
+                    c.text = epg_channel_programme["video_colour"]
+                if epg_channel_programme.get("video_aspect"):
+                    a = ET.SubElement(video_el, "aspect")
+                    a.text = epg_channel_programme["video_aspect"]
+                if epg_channel_programme.get("video_quality"):
+                    q = ET.SubElement(video_el, "quality")
+                    q.text = epg_channel_programme["video_quality"]
             # Subtitles
-            if epg_channel_programme.get('subtitles_type'):
-                subs = ET.SubElement(output_programme, 'subtitles')
-                subs.set('type', epg_channel_programme['subtitles_type'])
+            if epg_channel_programme.get("subtitles_type"):
+                subs = ET.SubElement(output_programme, "subtitles")
+                subs.set("type", epg_channel_programme["subtitles_type"])
             # Audio described
-            if epg_channel_programme.get('audio_described'):
-                ET.SubElement(output_programme, 'audio-described')
+            if epg_channel_programme.get("audio_described"):
+                ET.SubElement(output_programme, "audio-described")
             # Previously shown
-            if epg_channel_programme.get('previously_shown_date'):
-                ps = ET.SubElement(output_programme, 'previously-shown')
-                ps.set('start', epg_channel_programme['previously_shown_date'])
+            if epg_channel_programme.get("previously_shown_date"):
+                ps = ET.SubElement(output_programme, "previously-shown")
+                ps.set("start", epg_channel_programme["previously_shown_date"])
             # Premiere / New
-            if epg_channel_programme.get('premiere'):
-                ET.SubElement(output_programme, 'premiere')
-            if epg_channel_programme.get('is_new'):
-                ET.SubElement(output_programme, 'new')
+            if epg_channel_programme.get("premiere"):
+                ET.SubElement(output_programme, "premiere")
+            if epg_channel_programme.get("is_new"):
+                ET.SubElement(output_programme, "new")
             # Episode numbers
-            if epg_channel_programme.get('epnum_onscreen'):
-                e1 = ET.SubElement(output_programme, 'episode-num')
-                e1.set('system', 'onscreen')
-                e1.text = epg_channel_programme['epnum_onscreen']
-            if epg_channel_programme.get('epnum_xmltv_ns'):
-                e2 = ET.SubElement(output_programme, 'episode-num')
-                e2.set('system', 'xmltv_ns')
-                e2.text = epg_channel_programme['epnum_xmltv_ns']
-            if epg_channel_programme.get('epnum_dd_progid'):
-                e3 = ET.SubElement(output_programme, 'episode-num')
-                e3.set('system', 'dd_progid')
-                e3.text = epg_channel_programme['epnum_dd_progid']
+            if epg_channel_programme.get("epnum_onscreen"):
+                e1 = ET.SubElement(output_programme, "episode-num")
+                e1.set("system", "onscreen")
+                e1.text = epg_channel_programme["epnum_onscreen"]
+            if epg_channel_programme.get("epnum_xmltv_ns"):
+                e2 = ET.SubElement(output_programme, "episode-num")
+                e2.set("system", "xmltv_ns")
+                e2.text = epg_channel_programme["epnum_xmltv_ns"]
+            if epg_channel_programme.get("epnum_dd_progid"):
+                e3 = ET.SubElement(output_programme, "episode-num")
+                e3.set("system", "dd_progid")
+                e3.text = epg_channel_programme["epnum_dd_progid"]
             # Star rating
-            if epg_channel_programme.get('star_rating'):
-                sr = ET.SubElement(output_programme, 'star-rating')
-                val = ET.SubElement(sr, 'value')
-                val.text = epg_channel_programme['star_rating']
+            if epg_channel_programme.get("star_rating"):
+                sr = ET.SubElement(output_programme, "star-rating")
+                val = ET.SubElement(sr, "value")
+                val.text = epg_channel_programme["star_rating"]
             # Production year
-            if epg_channel_programme.get('production_year'):
-                d = ET.SubElement(output_programme, 'date')
-                d.text = epg_channel_programme['production_year']
+            if epg_channel_programme.get("production_year"):
+                d = ET.SubElement(output_programme, "date")
+                d.text = epg_channel_programme["production_year"]
             # Rating system
-            if epg_channel_programme.get('rating_value'):
-                rating_el = ET.SubElement(output_programme, 'rating')
-                if epg_channel_programme.get('rating_system'):
-                    rating_el.set('system', epg_channel_programme['rating_system'])
-                rv = ET.SubElement(rating_el, 'value')
-                rv.text = epg_channel_programme['rating_value']
+            if epg_channel_programme.get("rating_value"):
+                rating_el = ET.SubElement(output_programme, "rating")
+                if epg_channel_programme.get("rating_system"):
+                    rating_el.set("system", epg_channel_programme["rating_system"])
+                rv = ET.SubElement(rating_el, "value")
+                rv.text = epg_channel_programme["rating_value"]
             # Loop through all categories for this programme and add them as "category" child elements
-            if epg_channel_programme['categories']:
-                for category in epg_channel_programme['categories']:
-                    output_child = ET.SubElement(output_programme, 'category')
+            if epg_channel_programme["categories"]:
+                for category in epg_channel_programme["categories"]:
+                    output_child = ET.SubElement(output_programme, "category")
                     output_child.text = category
-                    output_child.set('lang', 'en')
+                    output_child.set("lang", "en")
             # Loop through all tags for this channel and add them as "category" child elements
             for tag in channel_tags:
-                output_child = ET.SubElement(output_programme, 'category')
+                output_child = ET.SubElement(output_programme, "category")
                 output_child.text = tag
-                output_child.set('lang', 'en')
+                output_child.set("lang", "en")
         await maybe_yield()
     phase_seconds["generate_xml_tree"] = time.perf_counter() - t0
 
@@ -1069,9 +1140,7 @@ async def build_custom_epg(config, throttle=False):
     logger.info("   - Writing out XMLTV file.")
     output_tree = ET.ElementTree(output_root)
     custom_epg_file = os.path.join(config.config_path, "epg.xml")
-    await loop.run_in_executor(
-        None, lambda: output_tree.write(custom_epg_file, encoding="UTF-8", xml_declaration=True)
-    )
+    await loop.run_in_executor(None, lambda: output_tree.write(custom_epg_file, encoding="UTF-8", xml_declaration=True))
     phase_seconds["write_xml_file"] = time.perf_counter() - t0
     execution_time = time.perf_counter() - total_start
     logger.info(
@@ -1085,23 +1154,23 @@ async def build_custom_epg(config, throttle=False):
 async def search_tmdb_for_movie(api_key, title, cache, lock, semaphore):
     async with semaphore:
         async with lock:
-            if 'tmdb' not in cache:
-                cache['tmdb'] = {}
-            if title in cache['tmdb']:
+            if "tmdb" not in cache:
+                cache["tmdb"] = {}
+            if title in cache["tmdb"]:
                 logger.debug("       - Fetching data for program '%s' from TMDB. [CACHED]", title)
-                return cache['tmdb'][title]
-        search_url = f'https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={title}'
+                return cache["tmdb"][title]
+        search_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={title}"
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url) as response:
                 if response.status == 200:
-                    results = (await response.json()).get('results', [])
+                    results = (await response.json()).get("results", [])
                     if results:
                         async with lock:
-                            cache['tmdb'][title] = results[0]  # Cache the first search result
+                            cache["tmdb"][title] = results[0]  # Cache the first search result
                         logger.debug("       - Fetching data for program '%s' from TMDB. [FETCHED]", title)
                         return results[0]
         async with lock:
-            cache['tmdb'][title] = None  # Cache None if no results found
+            cache["tmdb"][title] = None  # Cache None if no results found
         logger.debug("       - Fetching data for program '%s' from TMDB. [NONE]", title)
         return None
 
@@ -1109,33 +1178,33 @@ async def search_tmdb_for_movie(api_key, title, cache, lock, semaphore):
 async def search_google_images(title, cache, lock, semaphore):
     async with semaphore:
         async with lock:
-            if 'google_images' not in cache:
-                cache['google_images'] = {}
-            if title in cache['google_images']:
+            if "google_images" not in cache:
+                cache["google_images"] = {}
+            if title in cache["google_images"]:
                 logger.debug("       - Fetching data for program '%s' from Google Images. [CACHED]", title)
-                return cache['google_images'][title]
+                return cache["google_images"][title]
 
         search_query = f'"{title}" television show'
         encoded_query = quote(search_query)
-        search_url = f'https://www.google.com/search?tbm=isch&safe=active&tbs=isz:m&q={encoded_query}'
+        search_url = f"https://www.google.com/search?tbm=isch&safe=active&tbs=isz:m&q={encoded_query}"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url, headers=headers) as response:
                 if response.status == 200:
-                    soup = BeautifulSoup(await response.text(), 'html.parser')
-                    images = soup.find_all('img')
+                    soup = BeautifulSoup(await response.text(), "html.parser")
+                    images = soup.find_all("img")
                     if images:
                         # The first image might be the Google logo, so we take the second one
-                        image_url = images[1]['src']
+                        image_url = images[1]["src"]
                         async with lock:
-                            cache['google_images'][title] = image_url  # Cache the first image URL
+                            cache["google_images"][title] = image_url  # Cache the first image URL
                         logger.debug("       - Fetching data for program '%s' from Google Images. [FETCHED]", title)
                         return image_url
 
         async with lock:
-            cache['google_images'][title] = None  # Cache None if no results found
+            cache["google_images"][title] = None  # Cache None if no results found
         logger.debug("       - Fetching data for program '%s' from Google Images. [NONE]", title)
         return None
 
@@ -1147,21 +1216,21 @@ async def update_programme_with_online_data(settings, programme, categories, cac
 
     # Fetch updated data from TMDB
     if not (programme.sub_title or programme.desc or programme.icon_url):
-        if settings['settings'].get('epgs', {}).get('enable_tmdb_metadata'):
-            api_key = settings['settings'].get('epgs', {}).get('tmdb_api_key', '')
+        if settings["settings"].get("epgs", {}).get("enable_tmdb_metadata"):
+            api_key = settings["settings"].get("epgs", {}).get("tmdb_api_key", "")
             tmdb_data = await search_tmdb_for_movie(api_key, title, cache, lock, semaphore)
             if tmdb_data:
                 # Update programme with fetched data if fields are missing
                 if not programme.sub_title:
-                    programme.sub_title = tmdb_data.get('title')
+                    programme.sub_title = tmdb_data.get("title")
                 if not programme.desc:
-                    programme.desc = tmdb_data.get('overview')
+                    programme.desc = tmdb_data.get("overview")
                 if not programme.icon_url:
                     programme.icon_url = f"https://image.tmdb.org/t/p/w500{tmdb_data.get('poster_path')}"
 
     # Fetch icon_url from Google Images if still missing
     if not programme.icon_url:
-        if settings['settings'].get('epgs', {}).get('enable_google_image_search_metadata'):
+        if settings["settings"].get("epgs", {}).get("enable_google_image_search_metadata"):
             image_url = await search_google_images(title, cache, lock, semaphore)
             if image_url:
                 programme.icon_url = image_url
@@ -1191,9 +1260,9 @@ async def update_programmes_concurrently(settings, programmes, cache, lock):
 async def update_channel_epg_with_online_data(config):
     settings = config.read_settings()
     update_with_online_data = False
-    if settings['settings'].get('epgs', {}).get('enable_tmdb_metadata'):
+    if settings["settings"].get("epgs", {}).get("enable_tmdb_metadata"):
         update_with_online_data = True
-    if settings['settings'].get('epgs', {}).get('enable_google_image_search_metadata'):
+    if settings["settings"].get("epgs", {}).get("enable_google_image_search_metadata"):
         update_with_online_data = True
     if not update_with_online_data:
         return
@@ -1202,9 +1271,7 @@ async def update_channel_epg_with_online_data(config):
     lock = asyncio.Lock()
     logger.info("Update EPG with missing data from online sources for each configured channel.")
     async with Session() as session:
-        channels_query = await session.execute(
-            select(Channel).order_by(Channel.number.asc())
-        )
+        channels_query = await session.execute(select(Channel).order_by(Channel.number.asc()))
         channels = channels_query.scalars().all()
         for result in channels:
             if result.enabled:
@@ -1215,9 +1282,7 @@ async def update_channel_epg_with_online_data(config):
                     .where(
                         and_(
                             EpgChannelProgrammes.channel.has(epg_id=result.guide_id),
-                            EpgChannelProgrammes.channel.has(
-                                channel_id=result.guide_channel_id
-                            ),
+                            EpgChannelProgrammes.channel.has(channel_id=result.guide_channel_id),
                         )
                     )
                     .order_by(

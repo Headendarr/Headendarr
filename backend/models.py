@@ -25,6 +25,7 @@ class Epg(Base):
     name = Column(String(500), index=True, unique=False)
     url = Column(Text, index=True, unique=False)
     user_agent = Column(String(255), nullable=True)
+    update_schedule = Column(String(16), nullable=False, default="12h")
 
     # Backref to all associated linked channels
     epg_channels = relationship('EpgChannels', backref='guide', lazy=True, cascade="all, delete-orphan")

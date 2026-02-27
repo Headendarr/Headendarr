@@ -135,8 +135,13 @@ async def update_playlists(app):
 async def update_epgs(app):
     logger.info("Updating EPGs")
     config = app.config['APP_CONFIG']
-    from backend.epgs import import_epg_data_for_all_epgs
-    await import_epg_data_for_all_epgs(config)
+    from backend.epgs import import_epg_data_for_all_epgs, build_custom_epg_subprocess
+    updated_count = await import_epg_data_for_all_epgs(config)
+    if updated_count > 0:
+        logger.info("Rebuilding custom EPG after %s source update(s)", updated_count)
+        await build_custom_epg_subprocess(config)
+    else:
+        logger.info("Skipping custom EPG rebuild because no EPG sources were due")
 
 
 async def scan_tvh_muxes(app):

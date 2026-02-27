@@ -47,6 +47,16 @@
             label="User Agent"
             description="User-Agent header used when Headendarr fetches this source."
           />
+
+          <TicSelectInput
+            v-model="updateSchedule"
+            :options="updateScheduleOptions"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            label="Update Schedule"
+            description="How often Headendarr should automatically refresh this EPG source."
+          />
         </template>
       </q-form>
     </div>
@@ -70,6 +80,23 @@ const FALLBACK_USER_AGENTS = [
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.3',
   },
   {name: 'TiviMate', value: 'TiviMate/5.1.6 (Android 12)'},
+];
+
+const EPG_UPDATE_SCHEDULE_OPTIONS = [
+  {label: '1 Hour', value: '1h'},
+  {label: '2 Hours', value: '2h'},
+  {label: '3 Hours', value: '3h'},
+  {label: '6 Hours', value: '6h'},
+  {label: '12 Hours', value: '12h'},
+  {label: '24 Hours', value: '24h'},
+  {label: '2 Days', value: '2d'},
+  {label: '3 Days', value: '3d'},
+  {label: '4 Days', value: '4d'},
+  {label: '5 Days', value: '5d'},
+  {label: '6 Days', value: '6d'},
+  {label: 'Weekly (7 Days)', value: '7d'},
+  {label: 'Every 2 Weeks', value: '14d'},
+  {label: 'Do Not Auto-Update', value: 'off'},
 ];
 
 export default {
@@ -98,6 +125,8 @@ export default {
       url: '',
       userAgent: null,
       userAgents: [],
+      updateSchedule: '12h',
+      updateScheduleOptions: EPG_UPDATE_SCHEDULE_OPTIONS,
       initialStateSignature: '',
       hasSavedInSession: false,
     };
@@ -183,6 +212,7 @@ export default {
       this.name = '';
       this.url = '';
       this.userAgent = this.getPreferredUserAgent('Chrome');
+      this.updateSchedule = '12h';
     },
     captureInitialState() {
       this.initialStateSignature = this.currentStateSignature();
@@ -193,6 +223,7 @@ export default {
         name: this.name,
         url: this.url,
         userAgent: this.userAgent,
+        updateSchedule: this.updateSchedule,
       });
     },
     fetchEpgData() {
@@ -204,6 +235,7 @@ export default {
         this.name = response.data.data.name;
         this.url = response.data.data.url;
         this.userAgent = response.data.data.user_agent || this.getPreferredUserAgent('Chrome');
+        this.updateSchedule = response.data.data.update_schedule || '12h';
       });
     },
     fetchUserAgents() {
@@ -244,6 +276,7 @@ export default {
         name: this.name,
         url: this.url,
         user_agent: this.userAgent,
+        update_schedule: this.updateSchedule,
       };
 
       axios({

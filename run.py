@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, rebuild_custom_epg, \
+from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, \
     update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
     TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status, \
     sync_all_users_to_tvh
@@ -153,16 +153,17 @@ async def every_12_hours():
             'function': update_playlists,
             'args':     [app],
         }, priority=100)
+
+
+@scheduler.scheduled_job('interval', id='hourly_epg_check', hours=1, misfire_grace_time=900)
+async def hourly_epg_check():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task({
-            'name':     f'Updating all EPGs',
+            'name':     'Updating all EPGs',
             'function': update_epgs,
             'args':     [app],
         }, priority=100)
-        await task_broker.add_task({
-            'name':     'Recreating static XMLTV file',
-            'function': rebuild_custom_epg,
-            'args':     [app],
-        }, priority=200)
 
 
 async def main():
