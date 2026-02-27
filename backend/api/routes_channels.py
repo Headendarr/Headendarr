@@ -341,6 +341,19 @@ async def api_get_channel_stream_suggestions(channel_id):
             .order_by(ChannelSuggestion.score.desc())
         )
         suggestions = result.scalars().all()
+
+    # XC and similar providers may expose the same stream URL under multiple groups.
+    # Keep the top-scored suggestion per URL so the UI only shows unique stream URLs.
+    deduplicated_suggestions = []
+    seen_stream_urls = set()
+    for suggestion in suggestions:
+        stream_url = (suggestion.stream_url or "").strip()
+        if stream_url and stream_url in seen_stream_urls:
+            continue
+        if stream_url:
+            seen_stream_urls.add(stream_url)
+        deduplicated_suggestions.append(suggestion)
+
     return jsonify(
         {
             "success": True,
@@ -357,7 +370,7 @@ async def api_get_channel_stream_suggestions(channel_id):
                     "source_type": suggestion.source_type,
                     "score": suggestion.score,
                 }
-                for suggestion in suggestions
+                for suggestion in deduplicated_suggestions
             ],
         }
     )
