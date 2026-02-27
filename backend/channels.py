@@ -43,7 +43,6 @@ from backend.playlists import (
     _get_enabled_xc_accounts_async,
     _normalize_xc_host,
 )
-from backend.config import flask_run_port
 from backend.cso import (
     build_cso_stream_query,
     cso_runtime_capabilities,
@@ -58,6 +57,7 @@ from backend.streaming import (
     normalize_local_proxy_url,
 )
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.url_resolver import get_tvh_publish_base_url
 from backend.utils import normalize_id
 
 logger = logging.getLogger("tic.channels")
@@ -1110,9 +1110,15 @@ async def add_new_channel(config, data, commit=True, publish=True):
 
     Returns the Channel ORM object (with tvh_uuid if published).
     """
-    settings = config.read_settings()
     instance_id = config.ensure_instance_id()
-    app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
+    app_url = None
+    publish_to_tvh = bool(publish)
+    if publish_to_tvh:
+        try:
+            app_url = await get_tvh_publish_base_url(config)
+        except ValueError as exc:
+            logger.error("Skipping immediate TVH publish for channel '%s': %s", data.get("name"), exc)
+            publish_to_tvh = False
     async with Session() as session:
         cso_enabled, cso_policy = _extract_cso_payload(data)
         channel = Channel(
@@ -1220,10 +1226,10 @@ async def add_new_channel(config, data, commit=True, publish=True):
             channel.sources = new_sources
 
         session.add(channel)
-        if publish:
+        if publish_to_tvh:
             await session.flush()
 
-        if publish:
+        if publish_to_tvh:
             try:
                 async with await get_tvh(config) as tvh:
                     logo_proxy_url = build_channel_logo_proxy_url(
@@ -1926,8 +1932,11 @@ async def batch_publish_new_channels_to_tvh(config, channels):
     """
     if not channels:
         return
-    settings = config.read_settings()
-    app_url = settings["settings"].get("app_url") or LOCAL_PROXY_HOST_PLACEHOLDER
+    try:
+        app_url = await get_tvh_publish_base_url(config)
+    except ValueError as exc:
+        logger.error("Skipping batch TVH channel publish: %s", exc)
+        return
     async with await get_tvh(config) as tvh:
         logger.info("Batch publishing %d new channels to TVH", len(channels))
         existing_channels = await tvh.list_all_channels()
@@ -2019,8 +2028,11 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
     def _count(name):
         api_calls[name] = api_calls.get(name, 0) + 1
 
-    settings = config.read_settings()
-    tic_base_url = settings["settings"]["app_url"]
+    try:
+        tic_base_url = await get_tvh_publish_base_url(config)
+    except ValueError as exc:
+        logger.error("Skipping TVH channel publish (trigger=%s): %s", trigger, exc)
+        return
     sync_state_path = _channel_sync_state_path(config)
     logo_source_state_path = _logo_source_state_path(config)
     logo_health_state_path = _logo_health_state_path(config)
@@ -2214,12 +2226,11 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
 
 async def publish_channel_muxes(config):
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
-    settings = config.read_settings()
-    conn_settings = await config.tvh_connection_settings()
-    if conn_settings.get("tvh_local"):
-        tic_base_url = f"http://127.0.0.1:{flask_run_port}"
-    else:
-        tic_base_url = settings["settings"].get("app_url") or ""
+    try:
+        tic_base_url = await get_tvh_publish_base_url(config)
+    except ValueError as exc:
+        logger.error("Skipping TVH mux publish: %s", exc)
+        return
     async with await get_tvh(config) as tvh:
         # Fetch results with relationships
         async with Session() as session:

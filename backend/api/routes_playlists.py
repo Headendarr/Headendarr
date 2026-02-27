@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from backend.api import blueprint
+from backend.url_resolver import get_request_base_url
 from quart import request, jsonify, current_app
 
 frontend_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), 'frontend')
@@ -187,7 +188,7 @@ async def api_get_filtered_playlist_streams():
     stream_key = user.streaming_key if user else None
     config = current_app.config['APP_CONFIG']
     instance_id = config.ensure_instance_id()
-    base_url = request.host_url.rstrip("/")
+    base_url = get_request_base_url(request)
     results = await read_filtered_stream_details_from_all_playlists(
         json_data,
         base_url=base_url,
@@ -254,7 +255,7 @@ async def api_get_playlist_stream_preview(playlist_stream_id):
 
     config = current_app.config['APP_CONFIG']
     instance_id = config.ensure_instance_id()
-    base_url = request.host_url.rstrip("/")
+    base_url = get_request_base_url(request)
     preview_url = await resolve_playlist_stream_url(
         playlist_stream,
         base_url=base_url,

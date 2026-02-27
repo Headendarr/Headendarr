@@ -5,16 +5,16 @@ import json
 import logging
 import os
 import re
-import aiohttp
 import asyncio
+import aiohttp
 
-from backend.config import flask_run_port
 from backend.dvr_profiles import normalize_retention_policy, retention_policy_to_tvh_days
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
     append_stream_key,
     get_tvh_stream_auth,
 )
+from backend.url_resolver import get_tvh_publish_base_url
 
 logger = logging.getLogger('tic.tvh_requests')
 
@@ -1013,11 +1013,7 @@ async def get_tvh_with_credentials(config, username, password):
 async def configure_tvh(config):
     settings = config.read_settings()
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
-    conn_settings = await config.tvh_connection_settings()
-    if conn_settings.get("tvh_local"):
-        resolved_base_url = f"http://127.0.0.1:{flask_run_port}"
-    else:
-        resolved_base_url = settings["settings"].get("app_url") or ""
+    resolved_base_url = await get_tvh_publish_base_url(config)
     async with await get_tvh(config) as tvh:
         # Update Base Config
         await tvh.save_tvh_config(tvh_config)

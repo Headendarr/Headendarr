@@ -30,16 +30,18 @@
 
                 <h5 class="text-primary q-mt-none q-mb-none">Connections</h5>
 
-                <q-skeleton
-                  v-if="appUrl === null"
-                  type="QInput" />
-                <TicTextInput
-                  v-else
-                  v-model="appUrl"
-                  @blur="triggerImmediateAutoSave"
-                  label="Headendarr Host"
-                  description="External host and port clients use to reach Headendarr."
-                />
+                <template v-if="!tvhLocal">
+                  <q-skeleton
+                    v-if="appUrl === null"
+                    type="QInput" />
+                  <TicTextInput
+                    v-else
+                    v-model="appUrl"
+                    @blur="triggerImmediateAutoSave"
+                    label="Headendarr Host"
+                    description="Required only when TVHeadend is remote. Used for URLs stored in TVHeadend (EPG and proxied streams)."
+                  />
+                </template>
 
                 <div>
                   <TicToggleInput
@@ -293,9 +295,13 @@
 
               <q-item>
                 <q-item-section>
-                  <q-item-label>
+                  <q-item-label v-if="!tvhLocal">
                     1. Set <b>Headendarr Host</b> to the address and port your clients should use to reach Headendarr.
                     This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
+                  </q-item-label>
+                  <q-item-label v-else>
+                    1. In AIO mode, Headendarr derives external URLs from each incoming request host (for example local
+                    LAN IP, domain, or Tailscale host), so no Host setting is required.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -331,10 +337,14 @@
 
               <q-item>
                 <q-item-section>
-                  <q-item-label>
+                  <q-item-label v-if="!tvhLocal">
                     Headendarr Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an
                     address
                     other devices can reach.
+                  </q-item-label>
+                  <q-item-label v-else>
+                    With AIO/local TVHeadend, Headendarr Host is ignored. URLs are generated from the request host and
+                    TVHeadend callbacks use `127.0.0.1`.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -427,6 +437,7 @@ export default defineComponent({
     return {
       // UI Elements
       aioMode: ref(null),
+      tvhLocal: ref(false),
 
       // Application Settings
       appUrl: ref(null),
@@ -451,7 +462,7 @@ export default defineComponent({
 
       // Defaults
       defSet: ref({
-        appUrl: window.location.origin,
+        appUrl: null,
         routePlaylistsThroughCso: false,
         routePlaylistsThroughTvh: false,
         streamProfiles: {},
@@ -517,6 +528,9 @@ export default defineComponent({
   computed: {},
   watch: {
     appUrl() {
+      if (this.tvhLocal) {
+        return;
+      }
       this.queueAutoSave();
     },
     routePlaylistsThroughCso() {
@@ -750,7 +764,11 @@ export default defineComponent({
       };
       Object.keys(this.defSet).forEach((key) => {
         const snakeCaseKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-        postData.settings[snakeCaseKey] = this[key] ?? this.defSet[key];
+        if (key === 'appUrl' && this.tvhLocal) {
+          postData.settings[snakeCaseKey] = null;
+        } else {
+          postData.settings[snakeCaseKey] = this[key] ?? this.defSet[key];
+        }
       });
       postData.settings.user_agents = this.userAgents.map((agent) => ({
         name: agent.name,
@@ -853,6 +871,7 @@ export default defineComponent({
       }).then((response) => {
         // All other application settings are here
         const appSettings = response.data.data;
+        this.tvhLocal = Boolean(appSettings.tvh_local);
         this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
           appSettings.stream_profile_definitions,
           appSettings.stream_profiles ?? this.defSet.streamProfiles,
@@ -864,6 +883,9 @@ export default defineComponent({
             this[camelCaseKey] = value;
           }
         });
+        if (this.tvhLocal) {
+          this.appUrl = null;
+        }
         this.userAgents = this.normalizeUserAgents(appSettings.user_agents ?? this.defSet.userAgents);
         this.streamProfiles = this.normalizeStreamProfiles(appSettings.stream_profiles ?? this.defSet.streamProfiles);
         this.auditLogRetentionDays = Number(

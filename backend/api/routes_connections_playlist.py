@@ -9,6 +9,7 @@ from backend.api.connections_common import get_channels_for_playlist, resolve_ch
 from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
 from backend.epgs import generate_epg_channel_id
 from backend.playlists import build_tic_playlist_with_epg_content
+from backend.url_resolver import get_request_base_url
 
 
 def _requested_profile():
@@ -17,7 +18,7 @@ def _requested_profile():
 
 async def _playlist_m3u_lines(playlist_id, *, stream_key=None, username=None, requested_profile="default"):
     config = current_app.config["APP_CONFIG"]
-    base_url = request.host_url.rstrip("/")
+    base_url = get_request_base_url(request)
     epg_url = f"{base_url}/tic-api/epg/xmltv.xml"
     if stream_key:
         if username:
@@ -65,7 +66,7 @@ async def combined_playlist_m3u():
 
     content = await build_tic_playlist_with_epg_content(
         current_app.config["APP_CONFIG"],
-        base_url=request.url_root.rstrip("/"),
+        base_url=get_request_base_url(request),
         stream_key=stream_key,
         username=username,
         include_xtvg=True,

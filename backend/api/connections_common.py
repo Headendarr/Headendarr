@@ -5,9 +5,9 @@ import re
 import sqlalchemy.exc
 from quart import current_app
 
-from backend.config import is_tvh_process_running_locally
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profile_name
+from backend.url_resolver import get_tvh_publish_base_url
 
 
 def build_proxy_stream_url(base_url, source_url, stream_key, instance_id, username=None):
@@ -23,17 +23,18 @@ def build_proxy_stream_url(base_url, source_url, stream_key, instance_id, userna
 async def get_tvh_settings(include_auth=True, stream_profile="pass", stream_username=None, stream_key=None):
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    tic_base_url = settings["settings"]["app_url"]
-    protocol_match = re.match(r"^(https?)://", settings["settings"]["app_url"])
+    tic_base_url = await get_tvh_publish_base_url(config)
+    protocol_match = re.match(r"^(https?)://", tic_base_url)
     tic_base_url_protocol = protocol_match.group(1) if protocol_match else "http"
 
     tvh_host = settings["settings"]["tvheadend"]["host"]
     tvh_port = settings["settings"]["tvheadend"]["port"]
     tvh_path = settings["settings"]["tvheadend"]["path"]
     tvh_base_url = f"{tvh_host}:{tvh_port}{tvh_path}"
-    if await is_tvh_process_running_locally():
+    conn = await config.tvh_connection_settings()
+    if conn.get("tvh_local"):
         tvh_path = "/tic-tvh"
-        app_url = re.sub(r"^https?://", "", settings["settings"]["app_url"])
+        app_url = re.sub(r"^https?://", "", tic_base_url)
         tvh_base_url = f"{app_url}{tvh_path}"
 
     tvh_api_url = f"{tic_base_url_protocol}://{tvh_base_url}/api"

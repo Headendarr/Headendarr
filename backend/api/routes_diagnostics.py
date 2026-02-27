@@ -5,6 +5,7 @@ from backend.api import blueprint
 from backend.stream_diagnostics import start_probe, get_probe_status, delete_probe
 from backend.auth import admin_auth_required
 from backend.streaming import append_stream_key, is_tic_stream_url
+from backend.url_resolver import get_request_origin
 
 
 @blueprint.route('/tic-api/diagnostics/stream/test', methods=['POST'])
@@ -27,7 +28,7 @@ async def test_stream():
     task_id = await start_probe(
         stream_url,
         bypass_proxies=bypass_proxies,
-        request_host_url=request.host_url,
+        request_host_url=f"{get_request_origin(request)}/",
         preferred_user_agent=preferred_user_agent,
     )
     return jsonify({"success": True, "task_id": task_id})

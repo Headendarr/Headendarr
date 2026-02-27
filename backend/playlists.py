@@ -88,7 +88,7 @@ async def build_tic_playlist_with_epg_content(
     # Combined playlist routing is controlled by CSO routing settings and does not inherit per-source TVH routing.
     use_tvh_source = False
     instance_id = config.ensure_instance_id()
-    base_url = (base_url or "").rstrip("/") or settings["settings"].get("app_url") or ""
+    base_url = (base_url or "").rstrip("/")
 
     epg_url = f"{base_url}/tic-api/epg/xmltv.xml"
     if stream_key:

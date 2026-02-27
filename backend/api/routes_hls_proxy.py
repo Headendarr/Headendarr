@@ -44,6 +44,7 @@ from backend.stream_activity import (
     upsert_stream_activity,
 )
 from backend.models import Session, CsoEventLog
+from backend.url_resolver import get_request_base_url, get_request_origin
 
 # Global cache instance (short default TTL for HLS segments)
 hls_segment_cache = SegmentCache(ttl=120)
@@ -656,7 +657,7 @@ def _build_proxy_base_url(instance_id=None):
                 protocol = "https"
             host_port = f":{hls_proxy_port}"
         return f"{protocol}://{hls_proxy_host_ip}{host_port}{base_path}"
-    return f"{request.host_url.rstrip('/')}{base_path}"
+    return f"{get_request_base_url(request)}{base_path}"
 
 
 def _get_connection_id(default_new=False):
@@ -696,7 +697,7 @@ async def proxy_m3u8(instance_id, encoded_url):
 
     body, content_type, status, res_headers = await handle_m3u8_proxy(
         decoded_url,
-        request_host_url=request.host_url,
+        request_host_url=f"{get_request_origin(request)}/",
         hls_proxy_prefix=hls_proxy_prefix,
         headers=headers,
         instance_id=instance_id,
@@ -978,7 +979,7 @@ async def stream_channel(channel_id):
         profile=effective_profile,
         connection_id=connection_id,
         prebuffer_bytes=prebuffer_bytes,
-        request_base_url=request.host_url.rstrip("/"),
+        request_base_url=get_request_base_url(request),
     )
     if not generator:
         message = (error_message or "").strip()

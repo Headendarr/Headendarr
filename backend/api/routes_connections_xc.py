@@ -11,6 +11,7 @@ from backend.api.routes_connections_epg import build_xmltv_response
 from backend.auth import audit_stream_event
 from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
 from backend.playlists import build_m3u_playlist_content, read_config_all_playlists
+from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username
 
 
@@ -50,10 +51,6 @@ async def _xc_auth_user():
     return user, None
 
 
-def _build_base_url() -> str:
-    return request.host_url.rstrip("/")
-
-
 def _xc_channel_profile(channel: Dict[str, Any]) -> str:
     profile = str(channel.get("cso_profile") or "").strip().lower()
     if not profile:
@@ -67,7 +64,7 @@ def _xc_channel_profile(channel: Dict[str, Any]) -> str:
 
 async def _get_enabled_channels() -> List[Dict[str, Any]]:
     channels = await read_config_all_channels()
-    base_url = _build_base_url()
+    base_url = get_request_base_url(request)
     enabled = []
     for channel in channels:
         if not channel.get("enabled"):
@@ -130,12 +127,7 @@ async def _get_max_connections() -> str:
 
 
 def _build_xc_server_info(user, include_categories=False):
-    raw_host = request.host
-    if ":" in raw_host:
-        hostname, port = raw_host.split(":", 1)
-    else:
-        hostname = raw_host
-        port = "443" if request.scheme == "https" else "80"
+    hostname, port, scheme = get_request_host_info(request)
     info = {
         "user_info": {
             "username": user.username,
@@ -149,7 +141,7 @@ def _build_xc_server_info(user, include_categories=False):
         },
         "server_info": {
             "url": hostname,
-            "server_protocol": request.scheme,
+            "server_protocol": scheme,
             "port": port,
             "timezone": time.tzname[0],
             "timestamp_now": int(time.time()),
@@ -178,7 +170,7 @@ async def xc_get():
     categories, _ = _build_category_map(channels)
     _xc_cache.set("xc_categories", categories, ttl_seconds=60)
 
-    base_url = request.url_root.rstrip("/")
+    base_url = get_request_base_url(request)
     epg_url = f"{base_url}/tic-api/epg/xmltv.xml?username={user.username}&password={user.streaming_key}"
 
     async def _resolve_stream_url(channel):
@@ -299,7 +291,7 @@ async def xc_stream(username: str, password: str, stream_id: str, ext: str = Non
     target, _, _ = await resolve_channel_stream_url(
         config=current_app.config["APP_CONFIG"],
         channel_details=channel,
-        base_url=_build_base_url(),
+        base_url=get_request_base_url(request),
         stream_key=user.streaming_key,
         username=user.username,
         requested_profile=_xc_channel_profile(channel),

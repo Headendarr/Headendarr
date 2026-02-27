@@ -8,13 +8,13 @@ from backend.api import blueprint
 from backend.api.connections_common import (
     get_channels_for_playlist,
     get_playlist_connection_count,
-    get_tvh_settings,
     resolve_channel_stream_url,
 )
 from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
 from backend.channels import read_config_all_channels
 from backend.epgs import generate_epg_channel_id
 from backend.playlists import read_config_all_playlists
+from backend.url_resolver import get_request_base_url
 
 
 device_xml_template = """<?xml version="1.0" encoding="UTF-8"?>
@@ -42,19 +42,15 @@ def _requested_profile(path_profile=None):
 
 async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=None):
     config = current_app.config["APP_CONFIG"]
-    tvh_settings = await get_tvh_settings(
-        include_auth=True,
-        stream_username=stream_username,
-        stream_key=stream_key,
-    )
+    external_base_url = get_request_base_url(request)
     device_name = f"Headendarr-{playlist_id}"
     tuner_count = await get_playlist_connection_count(config, playlist_id)
     device_id = f"tic-12345678-{playlist_id}"
     device_auth = f"tic-{playlist_id}"
     if stream_key:
-        base_url = f'{tvh_settings["tic_base_url"]}/tic-api/hdhr_device/{stream_key}/{playlist_id}'
+        base_url = f"{external_base_url}/tic-api/hdhr_device/{stream_key}/{playlist_id}"
     else:
-        base_url = f'{tvh_settings["tic_base_url"]}/tic-api/hdhr_device/{playlist_id}'
+        base_url = f"{external_base_url}/tic-api/hdhr_device/{playlist_id}"
     return {
         "FriendlyName": device_name,
         "Manufacturer": "Tvheadend",
@@ -71,7 +67,7 @@ async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=Non
 
 async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None, requested_profile="default"):
     config = current_app.config["APP_CONFIG"]
-    base_url = request.host_url.rstrip("/")
+    base_url = get_request_base_url(request)
     lineup_list = []
     for channel_details in await get_channels_for_playlist(playlist_id):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
@@ -113,7 +109,7 @@ async def _get_combined_tuner_count(config):
 
 async def _get_combined_lineup_list(stream_username=None, stream_key=None, requested_profile="default"):
     config = current_app.config["APP_CONFIG"]
-    base_url = request.host_url.rstrip("/")
+    base_url = get_request_base_url(request)
     channels = await read_config_all_channels()
     lineup_list = []
     for channel_details in channels:
@@ -143,17 +139,13 @@ async def _get_combined_lineup_list(stream_username=None, stream_key=None, reque
 
 async def _get_combined_discover_data(stream_username=None, stream_key=None, profile=None):
     config = current_app.config["APP_CONFIG"]
-    tvh_settings = await get_tvh_settings(
-        include_auth=True,
-        stream_username=stream_username,
-        stream_key=stream_key,
-    )
+    external_base_url = get_request_base_url(request)
     tuner_count = await _get_combined_tuner_count(config)
     profile_suffix = f"/{profile}" if profile else ""
     if stream_key:
-        base_url = f'{tvh_settings["tic_base_url"]}/tic-api/hdhr_device/{stream_key}/combined{profile_suffix}'
+        base_url = f"{external_base_url}/tic-api/hdhr_device/{stream_key}/combined{profile_suffix}"
     else:
-        base_url = f'{tvh_settings["tic_base_url"]}/tic-api/hdhr_device/combined{profile_suffix}'
+        base_url = f"{external_base_url}/tic-api/hdhr_device/combined{profile_suffix}"
     return {
         "FriendlyName": "Headendarr-Combined",
         "Manufacturer": "Tvheadend",

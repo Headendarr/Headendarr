@@ -396,6 +396,9 @@ async def api_save_config():
 
     settings_payload = json_data.get("settings") if isinstance(json_data, dict) else None
     if isinstance(settings_payload, dict):
+        if await is_tvh_process_running_locally():
+            # In AIO mode, app_url is intentionally ignored for runtime URL generation and TVH callbacks.
+            settings_payload["app_url"] = None
         dvr_payload = settings_payload.get("dvr")
         if isinstance(dvr_payload, dict):
             settings_payload["dvr"] = {
@@ -446,6 +449,7 @@ async def api_get_config_tvheadend():
     config = current_app.config['APP_CONFIG']
     settings = config.read_settings()
     return_data = dict(settings.get('settings', {}) or {})
+    return_data["tvh_local"] = await is_tvh_process_running_locally()
     return_data["stream_profile_definitions"] = get_stream_profile_definitions()
     return jsonify(
         {

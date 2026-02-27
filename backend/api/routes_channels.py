@@ -30,6 +30,7 @@ from backend.channels import (
 from backend.cso import policy_content_type
 from backend.stream_profiles import resolve_cso_profile_name, generate_cso_policy_from_profile
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
+from backend.url_resolver import get_request_base_url
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
@@ -298,7 +299,7 @@ async def _fetch_channel_suggestion_counts():
 async def api_get_channels():
     include_status = request.args.get("include_status") == "true"
     channels_config = await read_config_all_channels(include_status=include_status)
-    request_base_url = request.host_url.rstrip("/")
+    request_base_url = get_request_base_url(request)
     for channel in channels_config:
         source_logo_url = channel.get("logo_url")
         channel["source_logo_url"] = source_logo_url
@@ -575,7 +576,7 @@ async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
 @streamer_or_admin_required
 async def api_get_channels_basic():
     channels_config = await read_config_all_channels()
-    request_base_url = request.host_url.rstrip("/")
+    request_base_url = get_request_base_url(request)
     basic = []
     for channel in channels_config:
         if not channel.get("enabled"):
@@ -672,7 +673,7 @@ async def api_get_channel_preview(channel_id):
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
         if bool(getattr(channel, "cso_enabled", False)):
-            request_base_url = request.host_url.rstrip("/")
+            request_base_url = get_request_base_url(request)
             preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
             return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
 
@@ -686,7 +687,7 @@ async def api_get_channel_preview(channel_id):
 
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    request_base_url = request.host_url.rstrip("/")
+    request_base_url = get_request_base_url(request)
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,
@@ -723,7 +724,7 @@ async def api_get_channel_source_preview(channel_id, source_id):
 
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    request_base_url = request.host_url.rstrip("/")
+    request_base_url = get_request_base_url(request)
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,

@@ -82,7 +82,6 @@ function createAioStartupTasks() {
     let postData = {
       settings: {
         first_run: true,
-        app_url: window.location.origin,
       },
     };
     axios({
