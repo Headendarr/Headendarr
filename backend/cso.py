@@ -111,7 +111,7 @@ def _priority_value(value):
         return 0
 
 
-def _capacity_key_for_source(source):
+def source_capacity_key(source):
     xc_account_id = getattr(source, "xc_account_id", None)
     playlist_id = getattr(source, "playlist_id", None)
     if xc_account_id:
@@ -121,7 +121,7 @@ def _capacity_key_for_source(source):
     return f"source:{int(getattr(source, 'id', 0) or 0)}"
 
 
-def _capacity_limit_for_source(source):
+def source_capacity_limit(source):
     xc_account = getattr(source, "xc_account", None)
     if xc_account:
         try:
@@ -135,6 +135,13 @@ def _capacity_limit_for_source(source):
         except Exception:
             return 0
     return 1_000_000
+
+
+def source_should_use_cso_buffer(source, force_tvh_remux=False):
+    if force_tvh_remux:
+        return True
+    playlist = getattr(source, "playlist", None)
+    return bool(getattr(source, "use_hls_proxy", False) and playlist and getattr(playlist, "hls_proxy_use_ffmpeg", False))
 
 
 def _source_event_context(source, source_url=None):
@@ -220,6 +227,20 @@ class CsoCapacityRegistry:
                     normalized[str(key)] = value
             self._external_counts = normalized
 
+    async def get_usage(self, key):
+        key_name = str(key or "")
+        if not key_name:
+            return {"allocations": 0, "external": 0, "total": 0}
+        async with self._lock:
+            current = self._allocations.get(key_name, {})
+            allocations = sum(len(slots) for slots in current.values())
+            external = int(self._external_counts.get(key_name) or 0)
+            return {
+                "allocations": int(allocations),
+                "external": int(external),
+                "total": int(allocations + external),
+            }
+
 
 cso_capacity_registry = CsoCapacityRegistry()
 
@@ -298,6 +319,16 @@ def _resolve_source_url(source_url, base_url, instance_id, stream_key=None, user
     return normalized
 
 
+def resolve_source_url_for_stream(source_url, base_url, instance_id, stream_key=None, username=None):
+    return _resolve_source_url(
+        source_url,
+        base_url,
+        instance_id,
+        stream_key=stream_key,
+        username=username,
+    )
+
+
 async def emit_channel_stream_event(
     *,
     channel_id=None,
@@ -349,7 +380,7 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
         return int(result.rowcount or 0)
 
 
-def _build_ingest_ffmpeg_command(source_url, program_index=0):
+def _build_ingest_ffmpeg_command(source_url, program_index=0, user_agent=None):
     map_program = max(0, int(program_index or 0))
     is_hls_input = (urlparse(str(source_url or "")).path or "").lower().endswith(".m3u8")
     command = [
@@ -373,6 +404,12 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0):
         "-reconnect_delay_max",
         str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
     ]
+    user_agent_value = str(user_agent or "").strip()
+    if user_agent_value:
+        command += [
+            "-user_agent",
+            user_agent_value,
+        ]
     # For HLS, we let the smart HLS demuxer handle playlist retries to avoid manifest
     # spam/IP bans. For direct streams (non-HLS), we use socket-level reconnection.
     if not is_hls_input:
@@ -422,6 +459,28 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0):
         "pipe:1",
     ]
     return command
+
+
+def _resolve_cso_ingest_user_agent(config, source):
+    playlist = getattr(source, "playlist", None) if source is not None else None
+    playlist_user_agent = str(getattr(playlist, "user_agent", "") or "").strip()
+    if playlist_user_agent:
+        return playlist_user_agent
+
+    settings = {}
+    try:
+        settings = config.read_settings() if config else {}
+    except Exception:
+        settings = {}
+    defaults = settings.get("settings", {}).get("user_agents", [])
+    if isinstance(defaults, list):
+        for item in defaults:
+            if not isinstance(item, dict):
+                continue
+            candidate = str(item.get("value") or item.get("name") or "").strip()
+            if candidate:
+                return candidate
+    return "VLC/3.0.23 LibVLC/3.0.23"
 
 
 def _policy_log_label(policy):
@@ -566,6 +625,8 @@ class CsoIngestSession:
         capacity_owner_key,
         stream_key=None,
         username=None,
+        allow_failover=True,
+        ingest_user_agent=None,
     ):
         self.key = key
         self.channel_id = channel_id
@@ -575,6 +636,8 @@ class CsoIngestSession:
         self.capacity_owner_key = capacity_owner_key
         self.stream_key = stream_key
         self.username = username
+        self.allow_failover = bool(allow_failover)
+        self.ingest_user_agent = str(ingest_user_agent or "").strip()
         self.process = None
         self.read_task = None
         self.stderr_task = None
@@ -623,7 +686,13 @@ class CsoIngestSession:
                 return
 
     async def _spawn_ingest_process(self, source_url, program_index, source=None):
-        command = _build_ingest_ffmpeg_command(source_url, program_index=program_index)
+        playlist = getattr(source, "playlist", None) if source is not None else None
+        source_user_agent = str(getattr(playlist, "user_agent", "") or "").strip() or self.ingest_user_agent
+        command = _build_ingest_ffmpeg_command(
+            source_url,
+            program_index=program_index,
+            user_agent=source_user_agent,
+        )
         logger.info(
             "Starting CSO ingest channel=%s source=%s command=%s",
             self.channel_id,
@@ -684,8 +753,8 @@ class CsoIngestSession:
             if not stream_url:
                 continue
 
-            capacity_key = _capacity_key_for_source(source)
-            capacity_limit = _capacity_limit_for_source(source)
+            capacity_key = source_capacity_key(source)
+            capacity_limit = source_capacity_limit(source)
             reserved = await cso_capacity_registry.try_reserve(
                 capacity_key,
                 self.capacity_owner_key,
@@ -868,6 +937,8 @@ class CsoIngestSession:
         return " | ".join(selected)
 
     async def _health_loop(self, token):
+        if not self.allow_failover:
+            return
         while self.running and token == self.process_token:
             await asyncio.sleep(1.0)
             now = time.time()
@@ -1097,6 +1168,27 @@ class CsoIngestSession:
                     self.capacity_owner_key,
                     slot_id=failed_source_id,
                 )
+
+        if not self.allow_failover:
+            event_type = "capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable"
+            await emit_channel_stream_event(
+                channel_id=self.channel_id,
+                source_id=failed_source_id,
+                playlist_id=getattr(failed_source, "playlist_id", None),
+                session_id=self.key,
+                event_type=event_type,
+                severity="warning",
+                details={
+                    "reason": reason,
+                    "return_code": return_code,
+                    "saw_data": saw_data,
+                    "pipeline": "ingest",
+                    "ffmpeg_error": ffmpeg_error or None,
+                    **(details or {}),
+                    **_source_event_context(failed_source),
+                },
+            )
+            return False
 
         await emit_channel_stream_event(
             channel_id=self.channel_id,
@@ -1688,7 +1780,7 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
         endpoint = str(session.get("endpoint") or "")
         display_url = str(session.get("display_url") or "").lower()
         # CSO endpoint usage is already tracked via in-process allocations.
-        if "/tic-hls-proxy/channel/" in endpoint:
+        if "/tic-api/cso/channel/" in endpoint:
             continue
         # TVH subscriptions against CSO mux should not count as additional external usage.
         if endpoint.startswith("/tic-tvh/") and "tic-cso-" in display_url:
@@ -1742,7 +1834,7 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
                 stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
                 if not stream_url:
                     continue
-                key = _capacity_key_for_source(source)
+                key = source_capacity_key(source)
                 _increment_external_count(external_counts, key)
                 break
     await cso_capacity_registry.set_external_counts(external_counts)
@@ -1873,6 +1965,7 @@ async def subscribe_channel_stream(
     output_session_key = f"cso-output-{channel.id}-{profile}"
     capacity_owner_key = f"cso-channel-{channel.id}"
     username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, sources[0] if sources else None)
 
     def _ingest_factory():
         return CsoIngestSession(
@@ -1884,6 +1977,7 @@ async def subscribe_channel_stream(
             capacity_owner_key=capacity_owner_key,
             stream_key=stream_key,
             username=username,
+            ingest_user_agent=ingest_user_agent,
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -1959,6 +2053,145 @@ async def subscribe_channel_stream(
                 channel_id=channel.id,
                 source_id=getattr(ingest_session.current_source, "id", None),
                 playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+                session_id=output_session_key,
+                event_type="session_end",
+                severity="info",
+                details={
+                    "profile": profile,
+                    "connection_id": connection_id,
+                    **_source_event_context(
+                        ingest_session.current_source,
+                        source_url=getattr(ingest_session, "current_source_url", None),
+                    ),
+                },
+            )
+
+    return _generator(), content_type, None, 200
+
+
+async def subscribe_source_stream(
+    config,
+    source,
+    stream_key,
+    profile,
+    connection_id,
+    prebuffer_bytes=0,
+    request_base_url="",
+):
+    """Subscribe a playback client to a single-source CSO output session."""
+    if not source:
+        return None, None, "Source not found", 404
+
+    playlist = getattr(source, "playlist", None)
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return None, None, "Source playlist is disabled", 404
+
+    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+    if not stream_url:
+        return None, None, "No available stream source for this channel", 503
+
+    source_id = int(getattr(source, "id", 0) or 0)
+    channel_id = int(getattr(source, "channel_id", 0) or 0) or source_id
+    sources = [source]
+
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-source-ingest-{source_id}"
+    output_session_key = f"cso-source-output-{source_id}-{profile}"
+    capacity_owner_key = f"cso-source-{source_id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, source)
+
+    def _ingest_factory():
+        return CsoIngestSession(
+            ingest_key,
+            channel_id,
+            sources,
+            request_base_url=(request_base_url or "").rstrip("/"),
+            instance_id=config.ensure_instance_id(),
+            capacity_owner_key=capacity_owner_key,
+            stream_key=stream_key,
+            username=username,
+            allow_failover=False,
+            ingest_user_agent=ingest_user_agent,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_available_source"
+        await emit_channel_stream_event(
+            channel_id=channel_id,
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=ingest_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        message = (
+            "Channel unavailable due to connection limits"
+            if reason == "capacity_blocked"
+            else "Channel unavailable because playback could not be started"
+        )
+        return None, None, message, 503
+
+    def _output_factory():
+        return CsoOutputSession(
+            output_session_key,
+            channel_id,
+            policy,
+            ingest_session,
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        reason = output_session.last_error or "output_not_running"
+        await emit_channel_stream_event(
+            channel_id=channel_id,
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return None, None, "Channel unavailable because output pipeline could not be started", 503
+
+    queue = await output_session.add_client(connection_id, prebuffer_bytes=prebuffer_bytes)
+    content_type = policy_content_type(policy)
+    await emit_channel_stream_event(
+        channel_id=channel_id,
+        source_id=source_id,
+        playlist_id=getattr(source, "playlist_id", None),
+        session_id=output_session_key,
+        event_type="session_start",
+        severity="info",
+        details={
+            "profile": profile,
+            "connection_id": connection_id,
+            **_source_event_context(
+                ingest_session.current_source,
+                source_url=getattr(ingest_session, "current_source_url", None),
+            ),
+        },
+    )
+
+    async def _generator():
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    if output_session.last_error == "output_reader_ended":
+                        raise CsoOutputReaderEnded("output_reader_ended")
+                    break
+                yield chunk
+        finally:
+            await output_session.remove_client(connection_id)
+            await emit_channel_stream_event(
+                channel_id=channel_id,
+                source_id=source_id,
+                playlist_id=getattr(source, "playlist_id", None),
                 session_id=output_session_key,
                 event_type="session_end",
                 severity="info",

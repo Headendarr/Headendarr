@@ -47,16 +47,24 @@
                   <TicToggleInput
                     v-model="routePlaylistsThroughCso"
                     @update:model-value="triggerImmediateAutoSave"
-                    label="Route combined playlists, XC, & HDHomeRun through CSO"
-                    description="When enabled, combined playlist/XC/combined-HDHomeRun stream URLs are routed through Channel Stream Organiser (CSO)."
+                    label="Use CSO for combined playlists, XC, & combined HDHomeRun"
+                    description="Applies only to Headendarr combined endpoints (combined M3U, combined XC, and combined HDHomeRun). Does not change per-source playlist or per-source HDHomeRun URLs."
+                  />
+                </div>
+                <div>
+                  <TicToggleInput
+                    v-model="routeAllTvhThroughCsoStreamBuffer"
+                    @update:model-value="triggerImmediateAutoSave"
+                    label="Use CSO stream buffer for TVHeadend mux streams"
+                    description="Applies to streams published to TVHeadend mux URLs. TVHeadend pulls channel streams through the CSO channel-stream endpoint with TVH remux behaviour."
                   />
                 </div>
                 <div>
                   <TicToggleInput
                     v-model="routePlaylistsThroughTvh"
                     @update:model-value="triggerImmediateAutoSave"
-                    label="Route playlists & HDHomeRun through TVHeadend"
-                    description="When enabled, per-source playlist and HDHomeRun stream URLs are routed through TVHeadend so TVH can enforce stream profiles and stream policies."
+                    label="Route per-source playlists & per-source HDHomeRun via TVHeadend"
+                    description="Applies only to per-source endpoints (for example /playlist/<id>.m3u and /hdhr_device/.../<id>). Clients connect to TVHeadend first, then TVHeadend fetches streams from Headendarr."
                   />
                 </div>
                 <div class="text-caption text-grey-7">
@@ -296,8 +304,8 @@
               <q-item>
                 <q-item-section>
                   <q-item-label v-if="!tvhLocal">
-                    1. Set <b>Headendarr Host</b> to the address and port your clients should use to reach Headendarr.
-                    This is applied to generated playlist, XMLTV, and HDHomeRun URLs.
+                    1. Set <b>Headendarr Host</b> only when using a remote TVHeadend backend (Lite deployment).
+                    It is used for URLs stored in TVHeadend (for example XMLTV and proxied stream callbacks).
                   </q-item-label>
                   <q-item-label v-else>
                     1. In AIO mode, Headendarr derives external URLs from each incoming request host (for example local
@@ -338,9 +346,8 @@
               <q-item>
                 <q-item-section>
                   <q-item-label v-if="!tvhLocal">
-                    Headendarr Host is used to generate external XMLTV, playlist, and HDHomeRun URLs. Set it to an
-                    address
-                    other devices can reach.
+                    Headendarr Host is only used for external TVHeadend (Lite) callback URLs written into TVHeadend
+                    config (for example XMLTV and stream callback URLs).
                   </q-item-label>
                   <q-item-label v-else>
                     With AIO/local TVHeadend, Headendarr Host is ignored. URLs are generated from the request host and
@@ -442,6 +449,7 @@ export default defineComponent({
       // Application Settings
       appUrl: ref(null),
       routePlaylistsThroughCso: ref(false),
+      routeAllTvhThroughCsoStreamBuffer: ref(false),
       routePlaylistsThroughTvh: ref(false),
       streamProfiles: ref({}),
       userAgents: ref([]),
@@ -464,6 +472,7 @@ export default defineComponent({
       defSet: ref({
         appUrl: null,
         routePlaylistsThroughCso: false,
+        routeAllTvhThroughCsoStreamBuffer: false,
         routePlaylistsThroughTvh: false,
         streamProfiles: {},
         auditLogRetentionDays: 7,
@@ -534,6 +543,9 @@ export default defineComponent({
       this.queueAutoSave();
     },
     routePlaylistsThroughCso() {
+      this.queueAutoSave();
+    },
+    routeAllTvhThroughCsoStreamBuffer() {
       this.queueAutoSave();
     },
     routePlaylistsThroughTvh() {

@@ -86,14 +86,6 @@ async def get_playlist_connection_count(config, playlist_id):
         return 1
 
 
-def _should_use_cso_for_channel(channel_details, resolved_profile, force_cso=False):
-    if force_cso:
-        return True
-    if channel_details.get("cso_enabled"):
-        return True
-    return resolved_profile != "default"
-
-
 async def resolve_channel_stream_url(
     *,
     config,
@@ -105,12 +97,10 @@ async def resolve_channel_stream_url(
     allow_tvh_profile=False,
     route_scope="source",
 ):
-    from backend.channels import build_cso_channel_stream_url
+    from backend.channels import build_cso_source_stream_url
 
     settings = config.read_settings()
     use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
-    use_cso_combined = settings["settings"].get("route_playlists_through_cso", False)
-    force_cso = bool(route_scope == "combined" and use_cso_combined)
     if route_scope == "combined":
         # Combined endpoints have their own CSO routing switch and are independent from per-source TVH routing.
         use_tvh_source = False
@@ -124,15 +114,7 @@ async def resolve_channel_stream_url(
     tvh_stream_profile = resolve_tvh_profile_name(config, cso_profile=resolved_profile)
 
     channel_url = None
-    if _should_use_cso_for_channel(channel_details, resolved_profile, force_cso=force_cso):
-        channel_url = build_cso_channel_stream_url(
-            base_url=base_url,
-            channel_id=channel_details.get("id"),
-            stream_key=stream_key,
-            username=username,
-            profile=resolved_profile,
-        )
-    elif use_tvh_source and channel_details.get("tvh_uuid"):
+    if use_tvh_source and channel_details.get("tvh_uuid"):
         channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_details['tvh_uuid']}"
         path_args = f"?profile={tvh_stream_profile}&weight=300"
         channel_url = f"{channel_url}{path_args}"
@@ -140,8 +122,18 @@ async def resolve_channel_stream_url(
             channel_url = append_stream_key(channel_url, stream_key=stream_key)
     else:
         source = channel_details["sources"][0] if channel_details.get("sources") else None
+        source_id = source.get("id") if source else None
         source_url = source.get("stream_url") if source else None
-        if source_url:
+        should_route_via_source_gate = bool(source_id and source_url)
+        if should_route_via_source_gate:
+            channel_url = build_cso_source_stream_url(
+                base_url=base_url,
+                stream_id=source_id,
+                stream_key=stream_key,
+                username=username,
+                profile=resolved_profile,
+            )
+        elif source_url:
             is_manual = source.get("source_type") == "manual"
             use_hls_proxy = bool(source.get("use_hls_proxy", False))
             if is_manual and not use_hls_proxy:

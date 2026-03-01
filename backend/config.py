@@ -163,6 +163,7 @@ class Config:
                 },
                 "app_url": None,
                 "route_playlists_through_cso": True,
+                "route_all_tvh_through_cso_stream_buffer": True,
                 "route_playlists_through_tvh": False,
                 "stream_profiles": {
                     profile_key: {"enabled": True, "hwaccel": False, "deinterlace": False}

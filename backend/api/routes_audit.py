@@ -159,7 +159,7 @@ def _serialize_channel_stream_row(row):
         if ffmpeg_error:
             segments.append(f"ffmpeg_error={ffmpeg_error}")
         details_text = " | ".join(segments) if segments else json.dumps(details_payload, sort_keys=True)
-    endpoint = f"/tic-hls-proxy/channel/{row.get('channel_id')}" if row.get("channel_id") else "/tic-hls-proxy/channel"
+    endpoint = f"/tic-api/cso/channel/{row.get('channel_id')}" if row.get("channel_id") else "/tic-api/cso/channel"
     event_type = row.get("event_type")
     return {
         "id": entry_id,

@@ -73,13 +73,6 @@ def _extract_cso_payload(data, current_enabled=False, current_policy=None):
     return cso_enabled, cso_policy
 
 
-def _resolve_hls_proxy_prefix():
-    prefix = os.environ.get("HLS_PROXY_PREFIX", "/")
-    if not prefix.startswith("/"):
-        prefix = "/" + prefix
-    return prefix.rstrip("/")
-
-
 def build_cso_channel_stream_url(
     *,
     base_url,
@@ -89,8 +82,28 @@ def build_cso_channel_stream_url(
     profile="tvh",
     connection_id=None,
 ):
-    prefix = _resolve_hls_proxy_prefix()
-    path = f"{prefix}/channel/{channel_id}"
+    path = f"/tic-api/cso/channel/{channel_id}"
+    query = build_cso_stream_query(
+        profile=profile,
+        connection_id=connection_id,
+        stream_key=stream_key,
+        username=username,
+    )
+    if query:
+        return f"{base_url.rstrip('/')}{path}?{query}"
+    return f"{base_url.rstrip('/')}{path}"
+
+
+def build_cso_source_stream_url(
+    *,
+    base_url,
+    stream_id,
+    stream_key=None,
+    username=None,
+    connection_id=None,
+    profile=None,
+):
+    path = f"/tic-api/cso/channel_stream/{int(stream_id)}"
     query = build_cso_stream_query(
         profile=profile,
         connection_id=connection_id,
@@ -2221,6 +2234,10 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
 
 
 async def publish_channel_muxes(config):
+    settings = config.read_settings()
+    route_all_tvh_through_cso_stream_buffer = bool(
+        settings.get("settings", {}).get("route_all_tvh_through_cso_stream_buffer", False)
+    )
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
     try:
         tic_base_url = await get_tvh_publish_base_url(config)
@@ -2341,19 +2358,31 @@ async def publish_channel_muxes(config):
                     mux_name = f"{mux_name} [{url_hash}]"
                 if not mux_name.lower().startswith("tic-"):
                     mux_name = f"tic-{mux_name}"
-                stream_url = source_obj.playlist_stream_url
-                if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
-                    stream_url = normalize_local_proxy_url(
-                        stream_url,
+                if route_all_tvh_through_cso_stream_buffer and source_obj.id:
+                    stream_url = build_cso_source_stream_url(
                         base_url=tic_base_url,
-                        instance_id=instance_id,
+                        stream_id=source_obj.id,
                         stream_key=tvh_stream_key,
                         username=tvh_stream_username,
+                        connection_id="tvh",
+                        profile="tvh",
                     )
+                else:
+                    stream_url = source_obj.playlist_stream_url
+                    if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
+                        stream_url = normalize_local_proxy_url(
+                            stream_url,
+                            base_url=tic_base_url,
+                            instance_id=instance_id,
+                            stream_key=tvh_stream_key,
+                            username=tvh_stream_username,
+                        )
                 iptv_url = generate_iptv_url(
                     config,
                     url=stream_url,
                     service_name=service_name,
+                    use_buffer_wrapper=True,
+                    force_buffer_wrapper=True,
                 )
                 channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
                 mux_conf = {
@@ -2388,6 +2417,20 @@ async def publish_channel_muxes(config):
                     logger.error("Failed resolving CSO network for channel '%s'", channel_obj.name)
                     return
 
+                eligible_sources = []
+                for source_obj in sorted(channel_obj.sources or [], key=_channel_source_sort_key):
+                    stream_url = str(getattr(source_obj, "playlist_stream_url", "") or "").strip()
+                    if not stream_url:
+                        continue
+                    playlist_obj = getattr(source_obj, "playlist", None)
+                    if playlist_obj is not None and not bool(getattr(playlist_obj, "enabled", False)):
+                        continue
+                    eligible_sources.append(source_obj)
+                primary_source = eligible_sources[0] if eligible_sources else None
+                if not primary_source or not primary_source.id:
+                    logger.error("No eligible source available for CSO channel '%s'", channel_obj.name)
+                    return
+
                 mux_name = f"tic-cso-{channel_obj.id}-{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
                 existing = next((m for m in existing_muxes if (m.get("iptv_muxname") or "") == mux_name), None)
                 mux_uuid = existing.get("uuid") if existing else None
@@ -2400,19 +2443,20 @@ async def publish_channel_muxes(config):
                         logger.error("Failed creating CSO mux for channel '%s': %s", channel_obj.name, exc)
                         return
 
-                cso_url = build_cso_channel_stream_url(
+                cso_url = build_cso_source_stream_url(
                     base_url=tic_base_url,
-                    channel_id=channel_obj.id,
+                    stream_id=primary_source.id,
                     stream_key=tvh_stream_key,
                     username=tvh_stream_username,
-                    profile="tvh",
                     connection_id="tvh",
+                    profile="tvh",
                 )
                 iptv_url = generate_iptv_url(
                     config,
                     url=cso_url,
                     service_name=f"CSO - {channel_obj.name}",
-                    use_buffer_wrapper=False,
+                    use_buffer_wrapper=True,
+                    force_buffer_wrapper=True,
                 )
                 channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
                 mux_conf = {

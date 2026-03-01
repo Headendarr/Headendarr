@@ -12,7 +12,9 @@ For best compatibility, make sure Plex receives MPEG-TS (`.ts`) streams for thos
 
 For Plex, the recommended workarounds are:
 
-1. **Option #1 (most reliable):** Enable **Route playlists & HDHomeRun through TVHeadend** in **Application Settings**.
+1. **Option #1 (most reliable):** Enable **Route per-source playlists & per-source HDHomeRun via TVHeadend** in **Application Settings**.
+   This applies to per-source endpoints and makes TVHeadend the stream client for those routes.
+   For best stability with CSO-backed mux paths, also enable **Use CSO stream buffer for TVHeadend mux streams**.
    Ensure **TVHeadend Settings** has an FFmpeg stream buffer enabled, for example:
 
 ```bash

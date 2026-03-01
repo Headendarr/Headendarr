@@ -427,7 +427,7 @@ async def api_save_config():
     # Store settings for TVH service (async via task queue)
     tvh_update_requested = any(
         key in (json_data.get('settings') or {})
-        for key in ('tvheadend', 'dvr', 'route_playlists_through_tvh')
+        for key in ('tvheadend', 'dvr', 'route_playlists_through_tvh', 'route_all_tvh_through_cso_stream_buffer')
     )
     tvh_cfg = config.read_settings().get('settings', {}).get('tvheadend', {})
     tvh_is_configured = bool(tvh_cfg.get('host')) or bool(tvh_cfg.get('port')) or bool(tvh_cfg.get('path'))

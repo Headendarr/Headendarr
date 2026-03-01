@@ -16,7 +16,7 @@ from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
-from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profile_name
+from backend.stream_profiles import resolve_cso_profile_name
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
 from backend.utils import convert_to_int
@@ -114,16 +114,10 @@ async def build_tic_playlist_with_epg_content(
     # Local imports to avoid circular import issues.
     from backend.channels import (
         build_channel_logo_proxy_url,
-        build_cso_channel_stream_url,
         read_config_all_channels,
     )
-    from backend.streaming import append_stream_key, build_local_hls_proxy_url, normalize_local_proxy_url
+    from backend.api.connections_common import resolve_channel_stream_url
 
-    settings = config.read_settings()
-    use_cso_combined = settings["settings"].get("route_playlists_through_cso", False)
-    # Combined playlist routing is controlled by CSO routing settings and does not inherit per-source TVH routing.
-    use_tvh_source = False
-    instance_id = config.ensure_instance_id()
     base_url = (base_url or "").rstrip("/")
 
     epg_url = f"{base_url}/tic-api/epg/xmltv.xml"
@@ -147,46 +141,16 @@ async def build_tic_playlist_with_epg_content(
             requested_profile,
             channel=channel,
         )
-        tvh_stream_profile = resolve_tvh_profile_name(config, cso_profile=resolved_profile)
-        channel_url = None
-        channel_uuid = channel.get("tvh_uuid")
-        if use_cso_combined or channel.get("cso_enabled"):
-            channel_url = build_cso_channel_stream_url(
-                base_url=base_url,
-                channel_id=channel.get("id"),
-                stream_key=stream_key,
-                username=username,
-                profile=resolved_profile,
-            )
-        elif use_tvh_source and channel_uuid:
-            channel_url = (
-                f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_uuid}"
-                f"?profile={tvh_stream_profile}&weight=300"
-            )
-            if stream_key:
-                channel_url = append_stream_key(channel_url, stream_key=stream_key)
-        else:
-            source = channel["sources"][0] if channel.get("sources") else None
-            source_url = source.get("stream_url") if source else None
-            if source_url:
-                is_manual = source.get("source_type") == "manual"
-                use_hls_proxy = bool(source.get("use_hls_proxy", False))
-                if is_manual and use_hls_proxy:
-                    channel_url = build_local_hls_proxy_url(
-                        base_url,
-                        instance_id,
-                        source_url,
-                        stream_key=stream_key,
-                        username=username,
-                    )
-                else:
-                    channel_url = normalize_local_proxy_url(
-                        source_url,
-                        base_url=base_url,
-                        instance_id=instance_id,
-                        stream_key=stream_key,
-                        username=username,
-                    )
+        channel_url, _, _ = await resolve_channel_stream_url(
+            config=config,
+            channel_details=channel,
+            base_url=base_url,
+            stream_key=stream_key,
+            username=username,
+            requested_profile=resolved_profile,
+            allow_tvh_profile=allow_tvh_profile,
+            route_scope="combined",
+        )
         return channel_url
 
     return await build_m3u_playlist_content(

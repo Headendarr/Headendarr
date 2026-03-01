@@ -193,6 +193,8 @@ def is_tic_stream_url(url: str, instance_id: str | None = None) -> bool:
             "/tic-api/epg/",
             "/tic-api/playlist/",
             "/tic-api/hdhr_device/",
+            "/tic-api/cso/channel_stream/",
+            "/tic-api/cso/channel/",
             "/xmltv.php",
             "/get.php",
         )

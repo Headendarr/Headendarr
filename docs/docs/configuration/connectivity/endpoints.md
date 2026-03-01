@@ -12,9 +12,29 @@ This page lists all client-facing connectivity endpoints and how `profile` and r
 - **Combined playlist**: `/tic-api/playlist/combined.m3u`
 - **Per-source playlist**: `/tic-api/playlist/<source_id>.m3u`
 - **Per-source playlist (compat alias)**: `/tic-api/tvh_playlist/<source_id>/channels.m3u`
-- **CSO channel playback**: `/<hls_proxy_prefix>/channel/<channel_id>` (default: `/tic-hls-proxy/channel/<channel_id>`)
+- **CSO channel playback**: `/tic-api/cso/channel/<channel_id>`
+- **CSO channel stream gate**: `/tic-api/cso/channel_stream/<stream_id>`
 
-All stream/playlist endpoints support `stream_key` auth and accept optional `profile=<profile_id>`.
+Connectivity endpoints support `stream_key` authentication. Profile overrides are supported where noted below.
+
+CSO endpoint notes:
+
+- `/tic-api/cso/channel/<channel_id>` supports `profile=<profile_id>`.
+- `/tic-api/cso/channel_stream/<stream_id>` supports `profile=<profile_id>`.
+- Without `profile`, stream config controls whether the endpoint redirects or uses CSO buffering.
+
+## HLS Proxy Endpoints
+
+All HLS proxy endpoints are scoped by instance:
+
+- `/<hls_proxy_prefix>/<instance_id>/<encoded_url>.m3u8`
+- `/<hls_proxy_prefix>/<instance_id>/proxy.m3u8?url=<upstream_url>`
+- `/<hls_proxy_prefix>/<instance_id>/<encoded_url>.key`
+- `/<hls_proxy_prefix>/<instance_id>/<encoded_url>.ts`
+- `/<hls_proxy_prefix>/<instance_id>/<encoded_url>.vtt`
+- `/<hls_proxy_prefix>/<instance_id>/stream/<encoded_url>`
+
+Default prefix is `/tic-hls-proxy`.
 
 ## HDHomeRun Endpoints
 
@@ -98,29 +118,61 @@ When enabled:
 
 When disabled:
 
-- Per-source playlist/HDHR endpoints can emit CSO channel URLs when CSO is forced on a channel or when a non-default profile is requested.
-- Otherwise, they emit direct/proxy source URLs based on source configuration.
+- Per-source playlist/HDHR endpoints emit channel stream CSO gate URLs:
+  - `/tic-api/cso/channel_stream/<stream_id>`
+- The stream gate enforces source connection limits before redirecting.
+- For external/non-monitorable targets (for example external proxy/upstream URLs), the source gate redirects directly.
+
+Why you would enable this:
+
+- You use TVHeadend clients and want TVHeadend to be the primary stream consumer.
+- You prefer per-source playlist/HDHR traffic to be mediated by TVHeadend behaviour/policies.
 
 ## Route Combined Playlists, XC, & HDHomeRun Through CSO (Combined Only)
 
 When enabled:
 
-- Combined playlist (`/tic-api/playlist/combined.m3u`) channel URLs are forced through CSO.
-- XC combined routes (`/get.php`, XC stream routes) are forced through CSO.
-- Combined HDHR lineup URLs are forced through CSO.
+- Combined playlist (`/tic-api/playlist/combined.m3u`) channel URLs are resolved through per-source gate URLs.
+- XC combined routes (`/get.php`, XC stream routes) are resolved through per-source gate URLs.
+- Combined HDHR lineup URLs are resolved through per-source gate URLs.
 
 When disabled:
 
-- Combined endpoints still use CSO when a channel explicitly has CSO enabled or when a non-default profile is requested.
-- Otherwise, combined endpoints resolve to direct/proxy source URLs.
+- Combined endpoints still resolve through per-source gate URLs.
+- Per-channel CSO profile behaviour applies to direct CSO channel requests (`/tic-api/cso/channel/<channel_id>`).
 
 This setting is independent from per-source TVHeadend routing. Both toggles can be enabled at the same time because they target different endpoint families.
+
+Why you would enable this:
+
+- You want combined outputs to use CSO routing semantics.
+- You want a single combined entrypoint for non-TVHeadend clients (for example Plex/Emby/Jellyfin playlist or HDHomeRun-style setups) while keeping CSO behaviour.
+
+## Route All TVHeadend Mux Streams Through CSO Stream Buffer
+
+When enabled:
+
+- TVHeadend mux URLs published by Headendarr use `/tic-api/cso/channel_stream/<stream_id>?profile=tvh...`.
+- TVHeadend pulls channel streams through the CSO channel-stream path with TVH remux profile behaviour.
+
+When disabled:
+
+- TVHeadend mux URLs are published using the standard per-source URL path strategy (local proxy/direct source based on source settings).
+
+Why you would enable this:
+
+- You want TVHeadend pulls to participate in CSO stream handling (buffering/remux/limit response behaviour).
+- You want more consistent source-limit handling across mixed client types.
+
+Trade-off:
+
+- On exhausted limits or unavailable upstream, CSO returns an unavailable/limit response rather than allowing over-subscription.
 
 ## Channel Stream Organiser (CSO)
 
 Channel setting:
 
 - **Enable Channel Stream Organiser**: force this channel to use CSO pipeline routing.
-- **Preferred Stream Profile**: default profile used for generated channel CSO URLs.
+- **Preferred Stream Profile**: default profile used for direct channel CSO playback URLs.
 
 Client requests can still override with `profile=<profile_id>` per request.

@@ -18,8 +18,11 @@ These settings control the behaviour and appearance of the Headendarr web interf
 
 These settings define how Headendarr interacts with external services and how clients connect to Headendarr.
 
-- **Headendarr Host**: This is the external host and port that client applications (like M3U players, HDHomeRun emulators, etc.) use to reach your Headendarr instance. It is used to generate correct URLs for playlist, XMLTV, and HDHomeRun endpoints. Ensure this is set to an address accessible by your clients.
-- **Route playlists & HDHomeRun through TVHeadend**: When this setting is enabled, all playlist and HDHomeRun streams are routed through the integrated TVHeadend server. This allows TVHeadend to enforce its own stream policies (e.g., connection limits, buffering) and can improve compatibility with certain clients. When disabled, clients connect directly to Headendarr for streams.
+- **Headendarr Host**: Callback base URL used when TVHeadend is external (Lite deployment). Headendarr writes this into TVHeadend for XMLTV and stream callback URLs.
+  - Availability: shown only for Lite/external-TVHeadend deployments.
+  - In AIO/local-TVHeadend deployments this setting is hidden/ignored.
+  - Purpose: provide the callback base URL written into TVHeadend for XMLTV and stream callback URLs when TVHeadend is external.
+  - Client-facing playlist/XMLTV/HDHomeRun URLs are derived from the request host in AIO mode.
 - Transcoding behavior is controlled per profile in **Stream Profiles**. Disable a transcoding profile there to prevent its use.
 - **Stream Profiles table**:
   - Enable/disable each supported `profile` value exposed on stream and playlist URLs.
@@ -28,6 +31,53 @@ These settings define how Headendarr interacts with external services and how cl
   - `Deinterlace` adds a small processing overhead when enabled.
   - If a stream is not interlaced, enabling `Deinterlace` does not materially change visual output.
   - If a client requests a disabled profile, Headendarr falls back to `default`.
+
+### Routing Toggles Explained
+
+Headendarr exposes three routing toggles because they control different traffic families.
+They are designed to be combined based on your playback setup.
+
+1. **Use CSO for combined playlists, XC, & combined HDHomeRun**
+
+- Scope: combined endpoints only (`/tic-api/playlist/combined.m3u`, XC combined output, combined HDHomeRun lineups).
+- Use this when clients connect directly to Headendarr and you want CSO channel ordering/failover behaviour on combined outputs.
+- This is useful for Plex, Emby, Jellyfin, and playlist clients that should use one combined entrypoint without relying on TVHeadend.
+
+2. **Route per-source playlists & per-source HDHomeRun via TVHeadend**
+
+- Scope: per-source endpoints only (for example `/tic-api/playlist/<id>.m3u` and `/tic-api/hdhr_device/<stream_key>/<id>/...`).
+- Use this when your playback stack is TVHeadend-centric and you want TVHeadend to be the main streaming client.
+- Benefit: TVHeadend applies its own buffering/scanning behaviour and centralises stream handling for TVH clients.
+- Trade-off: adds an extra hop (client -> TVH -> Headendarr/upstream) and depends on TVHeadend reachability.
+
+3. **Use CSO stream buffer for TVHeadend mux streams**
+
+- Scope: TVHeadend mux URLs published by Headendarr.
+- Use this when you want TVHeadend pulls to go through the CSO stream path (including TVH remux profile), not directly to source/HLS-proxy URLs.
+- Benefit: connection-limit tracking and buffering behaviour are handled in the CSO stream path for TVHeadend pulls.
+- Trade-off: when limits are exhausted, playback fails fast with a CSO unavailable/limit response rather than silently over-consuming upstream sessions.
+
+### How To Choose
+
+- **Direct clients, no TVHeadend required**:
+  - Enable combined-through-CSO.
+  - Disable per-source-through-TVHeadend.
+  - Optional: disable TVH-through-CSO if TVHeadend is not in use.
+
+- **TVHeadend-first deployment (most clients connect to TVHeadend)**:
+  - Enable per-source-through-TVHeadend.
+  - Optionally enable TVH-through-CSO for CSO-managed buffering/limit handling on TVH pulls.
+  - Combined-through-CSO is optional for direct combined endpoints.
+
+- **Mixed clients (TVHeadend + direct combined playlists/HDHomeRun)**:
+  - Enable combined-through-CSO and per-source-through-TVHeadend together.
+  - Enable TVH-through-CSO if you want TVH pulls and direct CSO paths to share CSO-side limit enforcement behaviour.
+
+### Connection-Limit Behaviour Notes
+
+- Without TVHeadend routing, direct per-source/combined clients are governed by Headendarr routing and CSO/source checks.
+- With per-source-through-TVHeadend enabled, per-source client playback is mediated by TVHeadend.
+- With TVH-through-CSO also enabled, TVHeadend pulls go through CSO stream handling, improving consistency for mixed-client limit enforcement.
 
 ## User Agents
 
