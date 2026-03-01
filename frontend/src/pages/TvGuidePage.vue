@@ -601,6 +601,11 @@ export default defineComponent({
       return formatDisplayTime(ts);
     };
 
+    const getProgrammeEpgId = (programme) => {
+      if (!programme) return null;
+      return programme.epg_programme_id ?? programme.id ?? null;
+    };
+
     const mergeProgrammes = (incoming) => {
       const map = new Map(programmes.value.map((programme) => [programme.id, programme]));
       for (const programme of incoming || []) {
@@ -878,7 +883,7 @@ export default defineComponent({
           description: programme.desc,
           start_ts: programme.start_ts,
           stop_ts: programme.stop_ts,
-          epg_programme_id: programme.id,
+          epg_programme_id: getProgrammeEpgId(programme),
           recording_profile_key: recordingProfileKey,
         });
         $q.notify({color: 'positive', message: 'Recording scheduled'});
@@ -1319,7 +1324,8 @@ export default defineComponent({
 
     const getRecordingForProgramme = (programme, channel) => {
       if (!programme) return null;
-      const byEpg = recordingsIndex.value.get(`epg:${programme.id}`);
+      const epgProgrammeId = getProgrammeEpgId(programme);
+      const byEpg = epgProgrammeId ? recordingsIndex.value.get(`epg:${epgProgrammeId}`) : null;
       if (byEpg) return byEpg;
       if (channel?.id && programme.start_ts && programme.stop_ts) {
         return recordingsIndex.value.get(`slot:${channel.id}:${programme.start_ts}:${programme.stop_ts}`) || null;

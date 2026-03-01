@@ -96,6 +96,7 @@ async def api_guide_grid():
             for i, channel_id in enumerate(channel_ids):
                 prog_copy = programme.copy()
                 prog_copy["channel_id"] = channel_id
+                prog_copy["epg_programme_id"] = programme["id"]
                 # Ensure each programme object sent to the frontend has a unique ID,
                 # as Vue uses it for list keys.
                 prog_copy["id"] = f"{programme['id']}-{i}"

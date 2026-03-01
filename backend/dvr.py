@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import logging
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -22,6 +23,28 @@ logger = logging.getLogger('tic.dvr')
 
 def _now_ts():
     return int(datetime.now(tz=timezone.utc).timestamp())
+
+
+def _coerce_epg_programme_id(raw_value):
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, int):
+        return raw_value
+
+    value = str(raw_value).strip()
+    if not value:
+        return None
+
+    if value.isdigit():
+        return int(value)
+
+    # Guide rows use a UI-unique pattern like "<programme_id>-<copy_index>".
+    match = re.match(r"^(\d+)-\d+$", value)
+    if match:
+        return int(match.group(1))
+
+    return None
 
 
 def _serialize_recording(rec: Recording):
@@ -108,6 +131,7 @@ async def create_recording(
     owner_user_id=None,
     recording_profile_key="default",
 ):
+    coerced_epg_programme_id = _coerce_epg_programme_id(epg_programme_id)
     async with Session() as session:
         async with session.begin():
             recording = Recording(
@@ -116,7 +140,7 @@ async def create_recording(
                 description=description,
                 start_ts=start_ts,
                 stop_ts=stop_ts,
-                epg_programme_id=epg_programme_id,
+                epg_programme_id=coerced_epg_programme_id,
                 rule_id=rule_id,
                 owner_user_id=owner_user_id,
                 recording_profile_key=recording_profile_key or "default",
