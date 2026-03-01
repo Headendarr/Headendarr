@@ -13,11 +13,23 @@ logger = logging.getLogger("tic.stream_diagnostics")
 
 
 class StreamProbe:
-    def __init__(self, url, bypass_proxies=False, request_host_url=None, preferred_user_agent=None):
+    def __init__(
+        self,
+        url,
+        bypass_proxies=False,
+        request_host_url=None,
+        preferred_user_agent=None,
+        probe_window_seconds=12,
+        hard_timeout_seconds=45,
+        include_geo_lookup=True,
+    ):
         self.url = url
         self.bypass_proxies = bypass_proxies
         self.request_host_url = request_host_url
         self.preferred_user_agent = (preferred_user_agent or "").strip() or None
+        self.probe_window_seconds = max(5, int(probe_window_seconds or 12))
+        self.hard_timeout_seconds = max(self.probe_window_seconds + 5, int(hard_timeout_seconds or 45))
+        self.include_geo_lookup = bool(include_geo_lookup)
         self.task_id = None
         self.status = "pending"
         self.report = {
@@ -28,16 +40,24 @@ class StreamProbe:
             "proxy_chain": [],
             "dns": {},
             "geo": {},
-            "probe": {
-                "avg_speed": 0,
-                "avg_bitrate": 0,
-                "health": "unknown",
-                "summary": ""
-            },
+            "probe": {"avg_speed": 0, "avg_bitrate": 0, "health": "unknown", "summary": ""},
             "errors": [],
-            "logs": []
+            "logs": [],
         }
         self._running = False
+        self._cancel_requested = False
+        self._cancel_reason = ""
+        self._ffmpeg_process = None
+
+    def cancel(self, reason="cancelled"):
+        self._cancel_requested = True
+        self._cancel_reason = str(reason or "cancelled")
+        process = self._ffmpeg_process
+        if process and process.returncode is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
 
     def log(self, message):
         timestamp = time.strftime("%H:%M:%S")
@@ -205,7 +225,7 @@ class StreamProbe:
         self._running = True
         try:
             # Absolute hard limit for the entire diagnostic run (Dead-man's switch)
-            async with asyncio.timeout(45):
+            async with asyncio.timeout(self.hard_timeout_seconds):
                 self._normalize_localhost_proxy_url()
                 self._build_proxy_chain()
                 if self.bypass_proxies and self.report.get("final_url"):
@@ -221,11 +241,16 @@ class StreamProbe:
                 route_url = self.report.get("final_url") or self.url
                 await self._resolve_dns(route_url)
 
-                self.status = "geo"
-                await self._fetch_geo()
+                if self.include_geo_lookup:
+                    self.status = "geo"
+                    await self._fetch_geo()
 
                 self.status = "probing"
                 await self._run_hybrid_probe()
+                if self._cancel_requested:
+                    self.status = "cancelled"
+                    self.log(f"Diagnostic was cancelled: {self._cancel_reason}")
+                    return
 
                 self._generate_summary()
                 self.status = "finished"
@@ -253,10 +278,7 @@ class StreamProbe:
             raise ValueError("Invalid URL")
         try:
             loop = asyncio.get_running_loop()
-            ip = await asyncio.wait_for(
-                loop.run_in_executor(None, socket.gethostbyname, hostname),
-                timeout=10.0
-            )
+            ip = await asyncio.wait_for(loop.run_in_executor(None, socket.gethostbyname, hostname), timeout=10.0)
             self.report["dns"] = {"hostname": hostname, "ip": ip}
             self.log(f"Resolved to {ip}")
         except asyncio.TimeoutError:
@@ -276,8 +298,11 @@ class StreamProbe:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("status") == "success":
-                            self.report["geo"] = {"country": data.get(
-                                "country"), "city": data.get("city"), "isp": data.get("isp")}
+                            self.report["geo"] = {
+                                "country": data.get("country"),
+                                "city": data.get("city"),
+                                "isp": data.get("isp"),
+                            }
                             self.log(f"Location: {data.get('city')}, {data.get('country')} ({data.get('isp')})")
         except:
             pass
@@ -295,7 +320,7 @@ class StreamProbe:
             return None
 
     async def _run_hybrid_probe(self):
-        self.log("Starting hybrid FFmpeg/Python probe (20s wall-clock limit)...")
+        self.log(f"Starting hybrid FFmpeg/Python probe ({int(self.probe_window_seconds)}s wall-clock limit)...")
         default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         user_agent_candidates = []
         if self.preferred_user_agent:
@@ -341,8 +366,7 @@ class StreamProbe:
                 except Exception as exc:
                     last_preflight_error = exc
                     self.log(
-                        "Preflight request failed with configured user-agent candidate: "
-                        f"{type(exc).__name__}: {exc}"
+                        "Preflight request failed with configured user-agent candidate: " f"{type(exc).__name__}: {exc}"
                     )
 
         if not user_agent:
@@ -363,21 +387,27 @@ class StreamProbe:
         cmd = [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel", "error",
-            "-user_agent", user_agent,
-            "-probesize", "500k",
-            "-analyzeduration", "500k",
-            "-i", self.url,
-            "-c", "copy",
-            "-f", "mpegts",
-            "pipe:1"
+            "-loglevel",
+            "error",
+            "-user_agent",
+            user_agent,
+            "-probesize",
+            "500k",
+            "-analyzeduration",
+            "500k",
+            "-i",
+            self.url,
+            "-c",
+            "copy",
+            "-f",
+            "mpegts",
+            "pipe:1",
         ]
 
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
+        self._ffmpeg_process = process
 
         start_time = time.time()
         total_bytes = 0
@@ -385,8 +415,10 @@ class StreamProbe:
         buffer = bytearray()
 
         try:
-            # Strictly enforce a 25s window
-            while (time.time() - start_time) < 25:
+            # Strictly enforce probe window.
+            while (time.time() - start_time) < self.probe_window_seconds:
+                if self._cancel_requested:
+                    break
                 try:
                     # Read chunk with timeout to ensure loop doesn't block
                     chunk = await asyncio.wait_for(process.stdout.read(65536), timeout=1.0)
@@ -446,6 +478,8 @@ class StreamProbe:
                 except:
                     pass
             elif process.returncode != 0:
+                if self._cancel_requested and process.returncode in (-15, 255):
+                    return
                 try:
                     stderr_output = await process.stderr.read()
                     stderr_text = stderr_output.decode("utf-8", errors="replace").strip()
@@ -472,13 +506,22 @@ class StreamProbe:
                     await process.wait()
                 except:
                     pass
+        finally:
+            self._ffmpeg_process = None
 
 
 _active_probes = {}
 
 
-async def start_probe(url, bypass_proxies=False, request_host_url=None, preferred_user_agent=None):
+async def start_probe(
+    url,
+    bypass_proxies=False,
+    request_host_url=None,
+    preferred_user_agent=None,
+    on_complete=None,
+):
     import uuid
+
     task_id = str(uuid.uuid4())
     probe = StreamProbe(
         url,
@@ -488,7 +531,18 @@ async def start_probe(url, bypass_proxies=False, request_host_url=None, preferre
     )
     probe.task_id = task_id
     _active_probes[task_id] = probe
-    asyncio.create_task(probe.run())
+
+    async def _run_and_complete():
+        try:
+            await probe.run()
+        finally:
+            if on_complete is not None:
+                try:
+                    await on_complete(probe)
+                except Exception as exc:
+                    logger.exception("Failed to execute stream diagnostics completion hook: %s", exc)
+
+    asyncio.create_task(_run_and_complete())
     return task_id
 
 

@@ -106,11 +106,6 @@
                   />
                 </div>
 
-                <TicToggleInput
-                  v-model="periodicMuxScan"
-                  label="Enable Periodic Stream Health Scans"
-                  description="Every 6 hours Headendarr marks TVHeadend muxes as pending so TVH scans them. Failed scans disable the mux and surface channel warnings."
-                />
               </q-form>
             </q-card-section>
           </q-card>
@@ -204,7 +199,6 @@ export default defineComponent({
       appUrl: ref(null),
       enableStreamBuffer: ref(null),
       defaultFfmpegPipeArgs: ref(null),
-      periodicMuxScan: ref(null),
 
       // Defaults
       defSet: ref({
@@ -215,7 +209,6 @@ export default defineComponent({
         appUrl: window.location.origin,
         enableStreamBuffer: true,
         defaultFfmpegPipeArgs: '-hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1',
-        periodicMuxScan: false,
       }),
       isHydratingSettings: true,
       autoSaveTimer: null,
@@ -242,9 +235,6 @@ export default defineComponent({
       this.queueAutoSave();
     },
     defaultFfmpegPipeArgs() {
-      this.queueAutoSave();
-    },
-    periodicMuxScan() {
       this.queueAutoSave();
     },
   },

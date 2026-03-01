@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
-from backend.api.tasks import scheduler, update_playlists, map_new_tvh_services, update_epgs, \
-    update_tvh_muxes, configure_tvh_with_defaults, update_tvh_channels, update_tvh_networks, update_tvh_epg, \
-    TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules, scan_tvh_muxes, poll_tvh_subscription_status, \
-    sync_all_users_to_tvh
+from backend.api.tasks import (
+    scheduler,
+    update_playlists,
+    map_new_tvh_services,
+    update_epgs,
+    update_tvh_muxes,
+    configure_tvh_with_defaults,
+    update_tvh_channels,
+    update_tvh_networks,
+    update_tvh_epg,
+    TaskQueueBroker,
+    reconcile_dvr_recordings,
+    apply_dvr_rules,
+    poll_tvh_subscription_status,
+    sync_all_users_to_tvh,
+    run_periodic_channel_stream_health_checks,
+)
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
 from backend.auth import cleanup_stream_audit_logs
@@ -14,156 +27,198 @@ import asyncio
 # Create app
 app = create_app()
 if config.enable_app_debugging:
-    app.logger.info(' DEBUGGING   = ' + str(config.enable_app_debugging))
-    app.logger.debug('DBMS        = ' + config.sqlalchemy_database_uri)
-    app.logger.debug('ASSETS_ROOT = ' + config.assets_root)
+    app.logger.info(" DEBUGGING   = " + str(config.enable_app_debugging))
+    app.logger.debug("DBMS        = " + config.sqlalchemy_database_uri)
+    app.logger.debug("ASSETS_ROOT = " + config.assets_root)
 
-task_logger = app.logger.getChild('tasks')
+task_logger = app.logger.getChild("tasks")
 TaskQueueBroker.initialize(task_logger)
 
 
-@scheduler.scheduled_job('interval', id='background_tasks', seconds=10)
+@scheduler.scheduled_job("interval", id="background_tasks", seconds=10)
 async def background_tasks():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.execute_tasks()
 
 
-@scheduler.scheduled_job('interval', id='hls_proxy_cleanup', seconds=15, misfire_grace_time=60)
+@scheduler.scheduled_job("interval", id="hls_proxy_cleanup", seconds=15, misfire_grace_time=60)
 async def every_15_seconds_hls_cleanup():
     async with app.app_context():
         await cleanup_hls_proxy_state()
         await persist_stream_activity_state()
 
 
-@scheduler.scheduled_job('interval', id='do_15_seconds', seconds=15, misfire_grace_time=15)
+@scheduler.scheduled_job("interval", id="do_15_seconds", seconds=15, misfire_grace_time=15)
 async def every_15_seconds():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Polling TVHeadend subscription status',
-            'function': poll_tvh_subscription_status,
-            'args':     [app],
-        }, priority=5)
+        await task_broker.add_task(
+            {
+                "name": "Polling TVHeadend subscription status",
+                "function": poll_tvh_subscription_status,
+                "args": [app],
+            },
+            priority=5,
+        )
 
 
-@scheduler.scheduled_job('interval', id='do_30_seconds', seconds=30, misfire_grace_time=15)
+@scheduler.scheduled_job("interval", id="do_30_seconds", seconds=30, misfire_grace_time=15)
 async def every_30_seconds():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Reconciling DVR recordings',
-            'function': reconcile_dvr_recordings,
-            'args':     [app],
-        }, priority=20)
+        await task_broker.add_task(
+            {
+                "name": "Reconciling DVR recordings",
+                "function": reconcile_dvr_recordings,
+                "args": [app],
+            },
+            priority=20,
+        )
 
 
-@scheduler.scheduled_job('interval', id='audit_log_cleanup', hours=6, misfire_grace_time=300)
+@scheduler.scheduled_job("interval", id="audit_log_cleanup", hours=6, misfire_grace_time=300)
 async def every_6_hours():
     async with app.app_context():
         await cleanup_stream_audit_logs()
 
 
-@scheduler.scheduled_job('interval', id='tvh_periodic_mux_scan', hours=6, misfire_grace_time=300)
-async def every_6_hours_mux_scan():
-    async with app.app_context():
-        task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Scheduling TVH mux scans',
-            'function': scan_tvh_muxes,
-            'args':     [app],
-        }, priority=25)
-
-
-@scheduler.scheduled_job('interval', id='tvh_networks_minutely', seconds=60, misfire_grace_time=30)
+@scheduler.scheduled_job("interval", id="tvh_networks_minutely", seconds=60, misfire_grace_time=30)
 async def every_60_seconds_networks():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Configuring TVH networks (periodic)',
-            'function': update_tvh_networks,
-            'args':     [app],
-        }, priority=12)
+        await task_broker.add_task(
+            {
+                "name": "Configuring TVH networks (periodic)",
+                "function": update_tvh_networks,
+                "args": [app],
+            },
+            priority=12,
+        )
 
 
-@scheduler.scheduled_job('interval', id='do_5_mins', minutes=5, misfire_grace_time=60)
+@scheduler.scheduled_job("interval", id="do_5_mins", minutes=5, misfire_grace_time=60)
 async def every_5_mins():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Mapping all TVH services',
-            'function': map_new_tvh_services,
-            'args':     [app],
-        }, priority=10)
+        await task_broker.add_task(
+            {
+                "name": "Mapping all TVH services",
+                "function": map_new_tvh_services,
+                "args": [app],
+            },
+            priority=10,
+        )
 
 
-@scheduler.scheduled_job('interval', id='do_15_mins', minutes=15, misfire_grace_time=120)
+@scheduler.scheduled_job("interval", id="do_15_mins", minutes=15, misfire_grace_time=120)
 async def every_15_mins():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Applying DVR recording rules',
-            'function': apply_dvr_rules,
-            'args':     [app],
-        }, priority=19)
+        await task_broker.add_task(
+            {
+                "name": "Applying DVR recording rules",
+                "function": apply_dvr_rules,
+                "args": [app],
+            },
+            priority=19,
+        )
 
 
-@scheduler.scheduled_job('interval', id='do_60_mins', minutes=60, misfire_grace_time=300)
+@scheduler.scheduled_job("interval", id="do_5_mins_health_checks", minutes=5, misfire_grace_time=90)
+async def every_5_mins_health_checks():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task(
+            {
+                "name": "Periodic channel stream health checks",
+                "function": run_periodic_channel_stream_health_checks,
+                "args": [app],
+            },
+            priority=22,
+        )
+
+
+@scheduler.scheduled_job("interval", id="do_60_mins", minutes=60, misfire_grace_time=300)
 async def every_60_mins():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Configuring TVH with global default',
-            'function': configure_tvh_with_defaults,
-            'args':     [app],
-        }, priority=11)
-        await task_broker.add_task({
-            'name':     'Configuring TVH networks',
-            'function': update_tvh_networks,
-            'args':     [app],
-        }, priority=12)
-        await task_broker.add_task({
-            'name':     'Configuring TVH channels',
-            'function': update_tvh_channels,
-            'args':     [app],
-        }, priority=13)
-        await task_broker.add_task({
-            'name':     'Configuring TVH muxes',
-            'function': update_tvh_muxes,
-            'args':     [app],
-        }, priority=14)
-        await task_broker.add_task({
-            'name':     'Triggering an update in TVH to fetch the latest XMLTV',
-            'function': update_tvh_epg,
-            'args':     [app],
-        }, priority=30)
-        await task_broker.add_task({
-            'name':     'Syncing all users to TVH',
-            'function': sync_all_users_to_tvh,
-            'args':     [app.config['APP_CONFIG']],
-        }, priority=17)
+        await task_broker.add_task(
+            {
+                "name": "Configuring TVH with global default",
+                "function": configure_tvh_with_defaults,
+                "args": [app],
+            },
+            priority=11,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Configuring TVH networks",
+                "function": update_tvh_networks,
+                "args": [app],
+            },
+            priority=12,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Configuring TVH channels",
+                "function": update_tvh_channels,
+                "args": [app],
+            },
+            priority=13,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Configuring TVH muxes",
+                "function": update_tvh_muxes,
+                "args": [app],
+            },
+            priority=14,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Triggering an update in TVH to fetch the latest XMLTV",
+                "function": update_tvh_epg,
+                "args": [app],
+            },
+            priority=30,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Syncing all users to TVH",
+                "function": sync_all_users_to_tvh,
+                "args": [app.config["APP_CONFIG"]],
+            },
+            priority=17,
+        )
 
 
-@scheduler.scheduled_job('interval', id='hourly_playlist_check', hours=1, misfire_grace_time=900)
+@scheduler.scheduled_job("interval", id="hourly_playlist_check", hours=1, misfire_grace_time=900)
 async def hourly_playlist_check():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     f'Updating all playlists',
-            'function': update_playlists,
-            'args':     [app],
-        }, priority=100)
+        await task_broker.add_task(
+            {
+                "name": f"Updating all playlists",
+                "function": update_playlists,
+                "args": [app],
+            },
+            priority=100,
+        )
 
 
-@scheduler.scheduled_job('interval', id='hourly_epg_check', hours=1, misfire_grace_time=900)
+@scheduler.scheduled_job("interval", id="hourly_epg_check", hours=1, misfire_grace_time=900)
 async def hourly_epg_check():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Updating all EPGs',
-            'function': update_epgs,
-            'args':     [app],
-        }, priority=100)
+        await task_broker.add_task(
+            {
+                "name": "Updating all EPGs",
+                "function": update_epgs,
+                "args": [app],
+            },
+            priority=100,
+        )
 
 
 async def main():
@@ -178,11 +233,7 @@ async def main():
     try:
         # Start Quart server
         app.logger.info("Starting Quart server...")
-        await app.run_task(
-            host=config.flask_run_host,
-            port=config.flask_run_port,
-            debug=config.enable_app_debugging
-        )
+        await app.run_task(host=config.flask_run_host, port=config.flask_run_port, debug=config.enable_app_debugging)
         app.logger.info("Quart server completed.")
     finally:
         async with app.app_context():

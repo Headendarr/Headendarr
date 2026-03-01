@@ -163,13 +163,13 @@ class Config:
                 },
                 "app_url": None,
                 "route_playlists_through_cso": True,
+                "periodic_channel_stream_health_checks": True,
                 "route_all_tvh_through_cso_stream_buffer": True,
                 "route_playlists_through_tvh": False,
                 "stream_profiles": {
                     profile_key: {"enabled": True, "hwaccel": False, "deinterlace": False}
                     for profile_key in SUPPORTED_STREAM_PROFILES.keys()
                 },
-                "periodic_mux_scan": False,
                 "audit_log_retention_days": 7,
                 "user_agents": [
                     {

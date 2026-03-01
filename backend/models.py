@@ -238,6 +238,10 @@ class ChannelSource(Base):
     playlist_stream_url = Column(Text, index=True, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     auto_update = Column(Boolean, nullable=False, unique=False, default=False)
+    last_health_check_at = Column(DateTime, nullable=True, unique=False)
+    last_health_check_status = Column(String(32), nullable=True, unique=False)
+    last_health_check_reason = Column(String(64), nullable=True, unique=False)
+    last_health_check_metrics = Column(Text, nullable=True, unique=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 

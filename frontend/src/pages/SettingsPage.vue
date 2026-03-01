@@ -45,6 +45,14 @@
 
                 <div>
                   <TicToggleInput
+                    v-model="periodicChannelStreamHealthChecks"
+                    @update:model-value="triggerImmediateAutoSave"
+                    label="Enable periodic channel stream health checks"
+                    description="Runs diagnostics-style health checks for channel streams in the background when sources are idle. Checks stop immediately if playback needs the source."
+                  />
+                </div>
+                <div>
+                  <TicToggleInput
                     v-model="routePlaylistsThroughCso"
                     @update:model-value="triggerImmediateAutoSave"
                     label="Use CSO for combined playlists, XC, & combined HDHomeRun"
@@ -448,6 +456,7 @@ export default defineComponent({
 
       // Application Settings
       appUrl: ref(null),
+      periodicChannelStreamHealthChecks: ref(true),
       routePlaylistsThroughCso: ref(false),
       routeAllTvhThroughCsoStreamBuffer: ref(false),
       routePlaylistsThroughTvh: ref(false),
@@ -471,6 +480,7 @@ export default defineComponent({
       // Defaults
       defSet: ref({
         appUrl: null,
+        periodicChannelStreamHealthChecks: true,
         routePlaylistsThroughCso: false,
         routeAllTvhThroughCsoStreamBuffer: false,
         routePlaylistsThroughTvh: false,
@@ -543,6 +553,9 @@ export default defineComponent({
       this.queueAutoSave();
     },
     routePlaylistsThroughCso() {
+      this.queueAutoSave();
+    },
+    periodicChannelStreamHealthChecks() {
       this.queueAutoSave();
     },
     routeAllTvhThroughCsoStreamBuffer() {

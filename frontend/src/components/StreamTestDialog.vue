@@ -54,7 +54,7 @@
           Running Diagnostics...
         </div>
         <div class="text-subtitle1 text-grey-7 q-mb-lg text-center">
-          Analysing stream performance and routing over 20 seconds. Please wait...
+          Analysing stream performance and routing over {{ manualSampleSeconds }} seconds. Please wait...
         </div>
         <div class="full-width q-px-md">
           <q-linear-progress
@@ -225,6 +225,10 @@ export default {
       type: String,
       default: '',
     },
+    channelSourceId: {
+      type: [Number, String],
+      default: null,
+    },
   },
   emits: ['hide'],
   data() {
@@ -239,6 +243,7 @@ export default {
       testProgress: 0,
       progressInterval: null,
       bypassProxies: false,
+      manualSampleSeconds: 12,
     };
   },
   watch: {
@@ -326,6 +331,7 @@ export default {
         stream_url: this.localStreamUrl,
         bypass_proxies: this.bypassProxies,
         user_agent: this.localUserAgent,
+        channel_source_id: this.channelSourceId,
       }).then(response => {
         if (response.data.success) {
           this.taskId = response.data.task_id;
@@ -343,12 +349,14 @@ export default {
     },
     startProgress() {
       this.stopProgress();
-      // Test is ~20s. We'll advance 1% every 200ms.
+      // Manual diagnostics runs for ~12s by default.
+      const stepIntervalMs = 200;
+      const progressStep = stepIntervalMs / (this.manualSampleSeconds * 1000);
       this.progressInterval = setInterval(() => {
         if (this.testProgress < 0.95) {
-          this.testProgress += 0.01;
+          this.testProgress += progressStep;
         }
-      }, 200);
+      }, stepIntervalMs);
     },
     stopProgress() {
       if (this.progressInterval) {
@@ -361,7 +369,7 @@ export default {
       this.pollInterval = setInterval(() => {
         axios.get(`/tic-api/diagnostics/stream/test/${this.taskId}`).then(response => {
           const data = response.data.data;
-          if (data.status === 'finished' || data.status === 'error') {
+          if (data.status === 'finished' || data.status === 'error' || data.status === 'cancelled') {
             this.stopPolling();
             this.stopProgress();
             this.testProgress = 1.0;

@@ -281,6 +281,7 @@
       ref="streamTestDialogRef"
       :stream-url="testStreamUrl"
       :user-agent="testStreamUserAgent"
+      :channel-source-id="testStreamSourceId"
     />
   </TicDialogWindow>
 </template>
@@ -359,6 +360,7 @@ export default {
       nextSourceKey: 1,
       testStreamUrl: '',
       testStreamUserAgent: '',
+      testStreamSourceId: null,
     };
   },
   computed: {
@@ -671,17 +673,9 @@ export default {
       }).onOk(() => dismiss());
     },
     async openStreamTestDialog(stream) {
-      let testUrl = null;
-      try {
-        const preview = await this.resolvePreviewUrl(stream, {useChannelSource: true});
-        if (preview?.preview_url) {
-          testUrl = preview.preview_url;
-        }
-      } catch (error) {
-        console.error('Resolve stream URL for test error:', error);
-      }
-      this.testStreamUrl = this.normalizeStreamUrl(testUrl || stream?.stream_url);
+      this.testStreamUrl = this.cleanStreamUrl(stream?.stream_url);
       this.testStreamUserAgent = (stream?.playlist_user_agent || '').trim();
+      this.testStreamSourceId = stream?.id || null;
       if (!this.testStreamUrl) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
@@ -789,7 +783,7 @@ export default {
         this.dismissSuggestedStream(suggestion);
       }
     },
-    normalizeStreamUrl(streamUrl) {
+    cleanStreamUrl(streamUrl) {
       if (!streamUrl) {
         return streamUrl;
       }
@@ -842,7 +836,7 @@ export default {
           return;
         }
       }
-      const url = this.normalizeStreamUrl(stream?.stream_url);
+      const url = this.cleanStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
@@ -868,7 +862,7 @@ export default {
           return;
         }
       }
-      const url = this.normalizeStreamUrl(stream?.stream_url);
+      const url = this.cleanStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;

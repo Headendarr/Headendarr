@@ -36,6 +36,11 @@ from backend.stream_activity import (
 from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.streaming import normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
+from backend.channel_stream_health import (
+    cancel_background_health_checks_for_capacity_key,
+    has_background_health_check_for_capacity_key,
+    preempt_background_health_checks_for_channel,
+)
 
 CONNECTION_LIMIT_REACHED_MESSAGE = "Channel unavailable due to connection limits"
 logger = logging.getLogger("cso.api")
@@ -223,6 +228,16 @@ async def stream_from_source_gate(stream_id):
             effective_profile=effective_profile,
         )
 
+    usage = await cso_capacity_registry.get_usage(capacity_key_name)
+    if (
+        await has_background_health_check_for_capacity_key(capacity_key_name)
+        and int(usage.get("total") or 0) >= capacity_limit
+    ):
+        await cancel_background_health_checks_for_capacity_key(
+            capacity_key_name,
+            reason="source_stream_playback_priority",
+        )
+
     if source_should_use_cso_buffer(source, force_tvh_remux=force_cso_buffer):
         effective_policy = generate_cso_policy_from_profile(config, effective_profile)
         prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
@@ -360,6 +375,17 @@ async def stream_from_source_gate(stream_id):
     external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
     active_connections = int(usage.get("allocations") or 0) + int(external_count)
     if active_connections >= capacity_limit:
+        if await has_background_health_check_for_capacity_key(capacity_key_name):
+            await cancel_background_health_checks_for_capacity_key(
+                capacity_key_name,
+                reason="source_redirect_playback_priority",
+            )
+            usage = await cso_capacity_registry.get_usage(capacity_key_name)
+            activity_sessions = await get_stream_activity_snapshot()
+            external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+            active_connections = int(usage.get("allocations") or 0) + int(external_count)
+            if active_connections < capacity_limit:
+                return redirect(target_url, code=302)
         return await _connection_limit_blocked_response(
             config,
             channel,
@@ -415,6 +441,7 @@ async def stream_channel(channel_id):
     requested_profile = (request.args.get("profile") or "").strip().lower()
     prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
     channel = await resolve_channel_for_stream(channel_id_int)
+    await preempt_background_health_checks_for_channel(channel)
     effective_profile = resolve_cso_profile_name(
         config,
         requested_profile,

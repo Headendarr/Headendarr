@@ -79,6 +79,7 @@ async def _fetch_cso_attention_map(channel_ids):
                         "playback_unavailable",
                         "capacity_blocked",
                         "health_actioned",
+                        "health_recovered",
                         "switch_success",
                         "session_start",
                     ]
@@ -107,7 +108,7 @@ async def _fetch_cso_attention_map(channel_ids):
         severity = str(row.severity or "warning").strip().lower()
         created_at = row.created_at
 
-        if event_type in {"switch_success", "session_start"}:
+        if event_type in {"switch_success", "session_start", "health_recovered"}:
             latest_recovery = channel_state.get("latest_recovery_at")
             if latest_recovery is None or created_at > latest_recovery:
                 channel_state["latest_recovery_at"] = created_at
@@ -130,7 +131,7 @@ async def _fetch_cso_attention_map(channel_ids):
             if current is None or created_at > current.get("_created_at"):
                 channel_state["connection_issue"] = payload
 
-        if event_type == "health_actioned" or reason in {"under_speed", "stall_timeout"}:
+        if event_type == "health_actioned" or reason in {"under_speed", "stall_timeout", "too_slow", "unreachable", "unstable"}:
             current = channel_state.get("unhealthy_issue")
             if current is None or created_at > current.get("_created_at"):
                 channel_state["unhealthy_issue"] = payload

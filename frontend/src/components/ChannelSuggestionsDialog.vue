@@ -188,7 +188,7 @@ export default {
       this.$emit('ok', {openSettings: true, channelId: this.channelId});
       this.hide();
     },
-    normalizeStreamUrl(streamUrl) {
+    cleanStreamUrl(streamUrl) {
       if (!streamUrl) {
         return streamUrl;
       }
@@ -217,7 +217,7 @@ export default {
           return;
         }
       }
-      const url = this.normalizeStreamUrl(stream?.stream_url);
+      const url = this.cleanStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;
@@ -245,7 +245,7 @@ export default {
           return;
         }
       }
-      const url = this.normalizeStreamUrl(stream?.stream_url);
+      const url = this.cleanStreamUrl(stream?.stream_url);
       if (!url) {
         this.$q.notify({color: 'negative', message: 'Stream URL missing'});
         return;

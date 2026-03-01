@@ -11,11 +11,10 @@ import aiofiles
 from types import SimpleNamespace
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
-from backend.utils import is_truthy
 
 scheduler = AsyncIOScheduler()
 
-logger = logging.getLogger('tic.tasks')
+logger = logging.getLogger("tic.tasks")
 
 
 class TaskQueueBroker:
@@ -65,18 +64,18 @@ class TaskQueueBroker:
 
     async def add_task(self, task, priority=100):
         async with self._queue_lock:
-            if task['name'] in self.__task_names:
+            if task["name"] in self.__task_names:
                 self.__logger.debug("Task already queued. Ignoring.")
                 return
             await self.__task_queue.put((priority, next(self.__priority_counter), task))
-            self.__task_names.add(task['name'])
+            self.__task_names.add(task["name"])
 
     async def get_next_task(self):
         async with self._queue_lock:
             # Get the next task from the queue
             if not self.__task_queue.empty():
                 priority, i, task_data = await self.__task_queue.get()
-                self.__task_names.discard(task_data['name'])
+                self.__task_names.discard(task_data["name"])
                 return priority, i, task_data
             else:
                 return None
@@ -97,15 +96,15 @@ class TaskQueueBroker:
                         self.__logger.debug("No pending tasks found.")
                     break
                 priority, i, task = await self.__task_queue.get()
-                self.__task_names.discard(task['name'])
+                self.__task_names.discard(task["name"])
             first_loop = False
-            self.__running_task = task['name']
+            self.__running_task = task["name"]
             # Execute task here
             try:
-                self.__logger.info("Executing task - %s.", task['name'])
-                await task['function'](*task['args'])
+                self.__logger.info("Executing task - %s.", task["name"])
+                await task["function"](*task["args"])
             except Exception as e:
-                self.__logger.exception("Failed to run task %s - %s", task['name'], str(e))
+                self.__logger.exception("Failed to run task %s - %s", task["name"], str(e))
         self.__running_task = None
 
     async def get_currently_running_task(self):
@@ -115,20 +114,22 @@ class TaskQueueBroker:
         async with self._queue_lock:
             # Non-destructive snapshot in execution order.
             snapshot = sorted(list(self.__task_queue._queue), key=lambda item: (item[0], item[1]))
-        return [task_data['name'] for _, _, task_data in snapshot]
+        return [task_data["name"] for _, _, task_data in snapshot]
 
 
 async def configure_tvh_with_defaults(app):
     logger.info("Configuring TVH")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.tvheadend.tvh_requests import configure_tvh
+
     await configure_tvh(config)
 
 
 async def update_playlists(app):
     logger.info("Updating Playlists")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.playlists import import_playlist_data_for_all_playlists
+
     updated_playlist_ids = await import_playlist_data_for_all_playlists(config)
     if not updated_playlist_ids:
         logger.info("Skipping channel auto-refresh because no playlists were due")
@@ -153,8 +154,9 @@ async def refresh_linked_channels_for_playlist(config, playlist_id):
 
 async def update_epgs(app):
     logger.info("Updating EPGs")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.epgs import import_epg_data_for_all_epgs, build_custom_epg_subprocess
+
     updated_count = await import_epg_data_for_all_epgs(config)
     if updated_count > 0:
         logger.info("Rebuilding custom EPG after %s source update(s)", updated_count)
@@ -163,74 +165,64 @@ async def update_epgs(app):
         logger.info("Skipping custom EPG rebuild because no EPG sources were due")
 
 
-async def scan_tvh_muxes(app):
-    config = app.config['APP_CONFIG']
-    settings = config.read_settings().get("settings", {})
-    if not settings.get("periodic_mux_scan", False):
-        logger.debug("Periodic TVH mux scanning is disabled.")
-        return
+async def run_periodic_channel_stream_health_checks(app):
+    logger.info("Triggering periodic channel stream health checks")
+    from backend.channel_stream_health import run_periodic_channel_stream_health_checks as run_health_checks
 
-    logger.info("Scheduling TVH mux scans")
-    from backend.tvheadend.tvh_requests import get_tvh
-    try:
-        async with await get_tvh(config) as tvh:
-            muxes = await tvh.list_all_muxes()
-            updated = 0
-            for mux in muxes:
-                mux_uuid = mux.get("uuid")
-                if not mux_uuid:
-                    continue
-                if "enabled" in mux and not is_truthy(mux.get("enabled")):
-                    continue
-                scan_state = mux.get("scan_state")
-                pending_state = "PEND" if isinstance(scan_state, str) else 1
-                await tvh.idnode_save({"uuid": mux_uuid, "scan_state": pending_state})
-                updated += 1
-        logger.info("Queued scans for %s TVH muxes", updated)
-    except Exception as exc:
-        logger.exception("Failed to queue TVH mux scans: %s", exc)
+    started = await run_health_checks(app)
+    if started:
+        logger.info("Periodic channel stream health checks started in background worker")
+    else:
+        logger.debug("Periodic channel stream health checks worker already active")
 
 
 async def rebuild_custom_epg(app):
     logger.info("Rebuilding custom EPG (subprocess)")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.epgs import build_custom_epg_subprocess
+
     await build_custom_epg_subprocess(config)
 
 
 async def update_tvh_epg(app):
     logger.info("Triggering update of TVH EPG")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.epgs import run_tvh_epg_grabbers
+
     await run_tvh_epg_grabbers(config)
 
 
 async def update_tvh_networks(app):
     logger.info("Updating channels in TVH")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.playlists import publish_playlist_networks
+
     await publish_playlist_networks(config)
 
 
 async def update_tvh_channels(app):
     logger.info("Updating channels in TVH")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.channels import publish_bulk_channels_to_tvh_and_m3u
+
     await publish_bulk_channels_to_tvh_and_m3u(config, False, "periodic")
 
 
 async def update_tvh_muxes(app):
     logger.info("Updating muxes in TVH")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.channels import publish_channel_muxes
+
     await publish_channel_muxes(config)
 
 
 async def sync_user_to_tvh(config, user_id):
     logger.info("Syncing user to TVH - user_id=%s", user_id)
     from backend.users import set_user_tvh_sync_status
+
     await set_user_tvh_sync_status(user_id, "running", None)
     from backend.users import get_user_by_id
+
     user = await get_user_by_id(user_id)
     if not user:
         logger.warning("User not found for TVH sync - user_id=%s", user_id)
@@ -255,6 +247,7 @@ async def sync_user_to_tvh(config, user_id):
         normalize_retention_policy,
         read_recording_profiles_from_settings,
     )
+
     try:
         settings = config.read_settings()
         dvr_settings = settings.get("settings", {}).get("dvr", {}) or {}
@@ -305,6 +298,7 @@ async def sync_user_to_tvh(config, user_id):
 async def sync_all_users_to_tvh(config):
     logger.info("Syncing all users to TVH")
     from backend.models import Session, User
+
     async with Session() as session:
         result = await session.execute(select(User.id))
         user_ids = [row[0] for row in result.all()]
@@ -314,9 +308,10 @@ async def sync_all_users_to_tvh(config):
 
 async def map_new_tvh_services(app):
     logger.info("Mapping new services in TVH")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     # Map any new services
     from backend.channels import map_all_services, cleanup_old_channels
+
     await map_all_services(config)
     # Clear out old channels
     await cleanup_old_channels(config)
@@ -324,15 +319,17 @@ async def map_new_tvh_services(app):
 
 async def reconcile_dvr_recordings(app):
     logger.info("Reconciling DVR recordings")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.dvr import reconcile_tvh_recordings
+
     await reconcile_tvh_recordings(config)
 
 
 async def apply_dvr_rules(app):
     logger.info("Applying DVR recording rules")
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.dvr import apply_recurring_rules
+
     await apply_recurring_rules(config)
 
 
@@ -350,7 +347,7 @@ async def _load_tvh_poll_state(config):
     if not os.path.exists(path):
         return
     try:
-        async with aiofiles.open(path, mode='r') as f:
+        async with aiofiles.open(path, mode="r") as f:
             content = await f.read()
             _TVH_ACTIVE_SUBSCRIPTIONS = json.loads(content)
     except Exception as e:
@@ -364,7 +361,7 @@ async def _save_tvh_poll_state(config):
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        async with aiofiles.open(path, mode='w') as f:
+        async with aiofiles.open(path, mode="w") as f:
             await f.write(json.dumps(_TVH_ACTIVE_SUBSCRIPTIONS))
     except Exception as e:
         logger.warning("Failed to save TVH poll state: %s", e)
@@ -469,7 +466,7 @@ def _is_tvh_backend_username(username):
 
 
 async def poll_tvh_subscription_status(app):
-    config = app.config['APP_CONFIG']
+    config = app.config["APP_CONFIG"]
     from backend.tvheadend.tvh_requests import get_tvh
     from backend.users import get_user_by_username
     from backend.stream_activity import get_stream_activity_snapshot, stop_stream_activity, upsert_stream_activity
@@ -496,8 +493,8 @@ async def poll_tvh_subscription_status(app):
 
         # Build a map of TVH UUIDs and names to TIC channel names for better identity resolution
         channels_config = await read_config_all_channels()
-        tvh_uuid_map = {c.get('tvh_uuid'): c for c in channels_config if c.get('tvh_uuid')}
-        channel_name_map = {c.get('name'): c for c in channels_config if c.get('name')}
+        tvh_uuid_map = {c.get("tvh_uuid"): c for c in channels_config if c.get("tvh_uuid")}
+        channel_name_map = {c.get("name"): c for c in channels_config if c.get("name")}
 
         recording_channel_ids, recording_channel_names = _build_active_recording_index(dvr_entries)
         observed = {}
@@ -536,11 +533,7 @@ async def poll_tvh_subscription_status(app):
             resolved_channel = tvh_uuid_map.get(tvh_channel_id) or channel_name_map.get(tvh_channel_id)
             resolved_channel_name = resolved_channel.get("name") if resolved_channel else None
             details = _build_subscription_details(
-                entry,
-                username,
-                state,
-                is_recording,
-                channel_name=resolved_channel_name
+                entry, username, state, is_recording, channel_name=resolved_channel_name
             )
             endpoint = f"/tic-tvh/api/status/subscriptions/{subscription_id}"
 

@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+# -*- coding:utf-8 -*-
+import asyncio
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass
+from datetime import timedelta
+
+from sqlalchemy import or_, select
+from sqlalchemy.orm import joinedload
+
+from backend.cso import (
+    cso_capacity_registry,
+    emit_channel_stream_event,
+    resolve_source_url_for_stream,
+    source_capacity_key,
+    source_capacity_limit,
+)
+from backend.datetime_utils import utc_now_naive
+from backend.models import Channel, ChannelSource, Session
+from backend.stream_activity import get_stream_activity_snapshot
+from backend.stream_diagnostics import StreamProbe
+
+logger = logging.getLogger("tic.channel_stream_health")
+
+CHANNEL_STREAM_HEALTH_CHECK_INTERVAL_HOURS = int(os.environ.get("CHANNEL_STREAM_HEALTH_CHECK_INTERVAL_HOURS", "6") or 6)
+CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS = int(os.environ.get("CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS", "7") or 7)
+CHANNEL_STREAM_HEALTH_CHECK_MAX_PER_RUN = int(os.environ.get("CHANNEL_STREAM_HEALTH_CHECK_MAX_PER_RUN", "10") or 10)
+CHANNEL_STREAM_HEALTH_CHECK_CONCURRENCY = int(os.environ.get("CHANNEL_STREAM_HEALTH_CHECK_CONCURRENCY", "2") or 2)
+CHANNEL_STREAM_HEALTH_CHECK_KILL_WAIT_SECONDS = float(
+    os.environ.get("CHANNEL_STREAM_HEALTH_CHECK_KILL_WAIT_SECONDS", "2.0") or 2.0
+)
+_HEALTH_OWNER_PREFIX = "health-check-source-"
+
+
+@dataclass
+class ActiveHealthCheck:
+    source_id: int
+    channel_id: int
+    capacity_key: str
+    capacity_owner_key: str
+    slot_id: int
+    probe: StreamProbe
+    started_monotonic: float
+
+
+_active_health_checks_by_source: dict[int, ActiveHealthCheck] = {}
+_health_checks_lock = asyncio.Lock()
+_health_run_lock = asyncio.Lock()
+_health_run_task: asyncio.Task | None = None
+
+
+def _request_base_url():
+    port = int(os.environ.get("FLASK_RUN_PORT", "9985") or 9985)
+    return f"http://127.0.0.1:{port}"
+
+
+def _count_external_source_connections(activity_sessions, source, capacity_key_name: str) -> int:
+    count = 0
+    expected_playlist_key = f"playlist:{int(source.playlist_id)}" if getattr(source, "playlist_id", None) else None
+    expected_source_key = f"source:{int(source.id)}"
+    expected_xc_key = f"xc:{int(source.xc_account_id)}" if getattr(source, "xc_account_id", None) else None
+
+    for session in activity_sessions or []:
+        if not isinstance(session, dict):
+            continue
+        endpoint = str(session.get("endpoint") or "")
+        display_url = str(session.get("display_url") or "").lower()
+        if "/tic-api/cso/channel/" in endpoint:
+            continue
+        if endpoint.startswith("/tic-tvh/") and "tic-cso-" in display_url:
+            continue
+
+        session_key = None
+        xc_account_id = session.get("xc_account_id")
+        playlist_id = session.get("playlist_id")
+        source_id = session.get("source_id")
+        if xc_account_id:
+            session_key = f"xc:{int(xc_account_id)}"
+        elif playlist_id:
+            session_key = f"playlist:{int(playlist_id)}"
+        elif source_id:
+            session_key = f"source:{int(source_id)}"
+        if not session_key:
+            continue
+        if session_key != capacity_key_name:
+            continue
+
+        if expected_xc_key and session_key == expected_xc_key:
+            count += 1
+            continue
+        if expected_playlist_key and session_key == expected_playlist_key:
+            count += 1
+            continue
+        if session_key == expected_source_key:
+            count += 1
+    return count
+
+
+def _classify_health_result(probe: StreamProbe):
+    report = probe.report or {}
+    probe_data = report.get("probe") or {}
+    avg_speed = float(probe_data.get("avg_speed") or 0)
+    avg_bitrate = float(probe_data.get("avg_bitrate") or 0)
+    errors = [str(item).strip() for item in (report.get("errors") or []) if str(item).strip()]
+    probe_health = str(probe_data.get("health") or "").strip().lower()
+
+    if str(getattr(probe, "status", "")).strip().lower() == "cancelled":
+        return "cancelled", "preempted", avg_speed, avg_bitrate, errors
+    if errors:
+        return "unhealthy", "unreachable", avg_speed, avg_bitrate, errors
+    if avg_speed > 0 and avg_speed < 0.9:
+        return "unhealthy", "too_slow", avg_speed, avg_bitrate, errors
+    if probe_health in {"poor", "critical"}:
+        return "unhealthy", "too_slow", avg_speed, avg_bitrate, errors
+    if avg_bitrate <= 50_000:
+        return "unhealthy", "unstable", avg_speed, avg_bitrate, errors
+    return "healthy", "healthy", avg_speed, avg_bitrate, errors
+
+
+def _same_stream_url(left: str, right: str) -> bool:
+    return str(left or "").strip() == str(right or "").strip()
+
+
+async def apply_stream_probe_result_to_source(
+    source_id,
+    probe: StreamProbe,
+    health_check_type="manual",
+    tested_stream_url: str | None = None,
+    require_exact_source_url_match: bool = False,
+):
+    try:
+        source_id = int(source_id)
+    except Exception:
+        return False
+    if source_id <= 0 or probe is None:
+        return False
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource)
+            .options(
+                joinedload(ChannelSource.channel),
+                joinedload(ChannelSource.playlist),
+            )
+            .where(ChannelSource.id == source_id)
+        )
+        source = result.scalars().first()
+    if not source:
+        return False
+    source_stream_url = str(getattr(source, "playlist_stream_url", "") or "").strip()
+    if require_exact_source_url_match and not _same_stream_url(source_stream_url, tested_stream_url):
+        logger.info(
+            "Skipping diagnostics health-state write for source_id=%s because tested URL does not match source URL",
+            source_id,
+        )
+        return False
+
+    status, reason, avg_speed, avg_bitrate, errors = _classify_health_result(probe)
+    if status == "cancelled":
+        return False
+
+    metrics_payload = {
+        "avg_speed": avg_speed,
+        "avg_bitrate": avg_bitrate,
+        "probe_health": str((probe.report or {}).get("probe", {}).get("health") or ""),
+        "errors": errors[:5],
+        "health_check_type": str(health_check_type or "manual"),
+    }
+    now_dt = utc_now_naive()
+    async with Session() as session:
+        async with session.begin():
+            current = await session.get(ChannelSource, source_id)
+            if current:
+                current.last_health_check_at = now_dt
+                current.last_health_check_status = status
+                current.last_health_check_reason = reason
+                current.last_health_check_metrics = json.dumps(metrics_payload, sort_keys=True)
+
+    playlist = getattr(source, "playlist", None)
+    event_details = {
+        "reason": reason,
+        "source_id": source_id,
+        "playlist_id": getattr(source, "playlist_id", None),
+        "playlist_name": str(getattr(playlist, "name", "") or "").strip() or None,
+        "stream_name": str(getattr(source, "playlist_stream_name", "") or "").strip() or None,
+        "source_priority": getattr(source, "priority", None),
+        "health_check_type": str(health_check_type or "manual"),
+        "metrics": metrics_payload,
+    }
+    if status == "unhealthy":
+        await emit_channel_stream_event(
+            channel_id=int(getattr(source, "channel_id", 0) or 0),
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=f"health-check-source-{source_id}",
+            event_type="health_actioned",
+            severity="warning",
+            details=event_details,
+        )
+    elif status == "healthy":
+        await emit_channel_stream_event(
+            channel_id=int(getattr(source, "channel_id", 0) or 0),
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=f"health-check-source-{source_id}",
+            event_type="health_recovered",
+            severity="info",
+            details=event_details,
+        )
+    return True
+
+
+async def _active_health_checks_for_capacity_key(capacity_key_name: str) -> list[ActiveHealthCheck]:
+    async with _health_checks_lock:
+        return [entry for entry in _active_health_checks_by_source.values() if entry.capacity_key == capacity_key_name]
+
+
+async def has_background_health_check_for_capacity_key(capacity_key_name: str) -> bool:
+    checks = await _active_health_checks_for_capacity_key(capacity_key_name)
+    return bool(checks)
+
+
+async def cancel_background_health_checks_for_capacity_key(capacity_key_name: str, reason="playback_priority") -> int:
+    checks = await _active_health_checks_for_capacity_key(capacity_key_name)
+    if not checks:
+        return 0
+
+    logger.info(
+        "Pre-empting %s background stream health check(s) for capacity key=%s reason=%s",
+        len(checks),
+        capacity_key_name,
+        reason,
+    )
+    for check in checks:
+        try:
+            check.probe.cancel(reason=reason)
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + max(0.1, float(CHANNEL_STREAM_HEALTH_CHECK_KILL_WAIT_SECONDS))
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+        if not await has_background_health_check_for_capacity_key(capacity_key_name):
+            break
+
+    # Defensive release if cancellation path has not finished yet.
+    remaining = await _active_health_checks_for_capacity_key(capacity_key_name)
+    for check in remaining:
+        await cso_capacity_registry.release(
+            check.capacity_key,
+            check.capacity_owner_key,
+            slot_id=check.slot_id,
+        )
+    return len(checks)
+
+
+async def preempt_background_health_checks_for_channel(channel) -> int:
+    if not channel:
+        return 0
+    cancelled = 0
+    seen_keys = set()
+    for source in list(getattr(channel, "sources", []) or []):
+        key_name = source_capacity_key(source)
+        if key_name in seen_keys:
+            continue
+        seen_keys.add(key_name)
+        usage = await cso_capacity_registry.get_usage(key_name)
+        capacity_limit = int(source_capacity_limit(source) or 0)
+        if capacity_limit <= 0:
+            continue
+        if not await has_background_health_check_for_capacity_key(key_name):
+            continue
+        if int(usage.get("total") or 0) >= capacity_limit:
+            cancelled += await cancel_background_health_checks_for_capacity_key(
+                key_name,
+                reason="channel_playback_priority",
+            )
+    return cancelled
+
+
+async def _run_source_health_check(config, source):
+    channel = getattr(source, "channel", None)
+    if not channel or not bool(getattr(channel, "enabled", False)):
+        return "skipped", "channel_disabled"
+    playlist = getattr(source, "playlist", None)
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return "skipped", "playlist_disabled"
+
+    capacity_key_name = source_capacity_key(source)
+    capacity_limit = int(source_capacity_limit(source) or 0)
+    if capacity_limit <= 0:
+        return "skipped", "capacity_limit_zero"
+
+    usage = await cso_capacity_registry.get_usage(capacity_key_name)
+    activity_sessions = await get_stream_activity_snapshot()
+    external_count = _count_external_source_connections(activity_sessions, source, capacity_key_name)
+    active_checks = await _active_health_checks_for_capacity_key(capacity_key_name)
+    diagnostic_allocations = len(active_checks)
+    non_diagnostic_allocations = max(0, int(usage.get("allocations") or 0) - diagnostic_allocations)
+    if (non_diagnostic_allocations + external_count) > 0:
+        return "skipped", "source_busy"
+
+    owner_key = f"{_HEALTH_OWNER_PREFIX}{int(source.id)}"
+    reserved = await cso_capacity_registry.try_reserve(
+        capacity_key_name,
+        owner_key,
+        capacity_limit,
+        slot_id=int(source.id),
+    )
+    if not reserved:
+        return "skipped", "capacity_blocked"
+
+    check_url = resolve_source_url_for_stream(
+        str(getattr(source, "playlist_stream_url", "") or ""),
+        _request_base_url(),
+        config.ensure_instance_id(),
+    )
+    if not check_url:
+        await cso_capacity_registry.release(capacity_key_name, owner_key, slot_id=int(source.id))
+        return "skipped", "invalid_stream_url"
+
+    preferred_user_agent = str(getattr(playlist, "user_agent", "") or "").strip() or None
+    probe = StreamProbe(
+        check_url,
+        bypass_proxies=False,
+        request_host_url=f"{_request_base_url()}/",
+        preferred_user_agent=preferred_user_agent,
+        probe_window_seconds=CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS,
+        hard_timeout_seconds=max(10, CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS + 15),
+        include_geo_lookup=False,
+    )
+
+    active_entry = ActiveHealthCheck(
+        source_id=int(source.id),
+        channel_id=int(getattr(source, "channel_id", 0) or 0),
+        capacity_key=capacity_key_name,
+        capacity_owner_key=owner_key,
+        slot_id=int(source.id),
+        probe=probe,
+        started_monotonic=time.monotonic(),
+    )
+    async with _health_checks_lock:
+        _active_health_checks_by_source[int(source.id)] = active_entry
+
+    try:
+        await probe.run()
+        status, reason, _, _, _ = _classify_health_result(probe)
+        if status != "cancelled":
+            await apply_stream_probe_result_to_source(
+                int(source.id),
+                probe,
+                health_check_type="periodic_background",
+            )
+        return status, reason
+    finally:
+        async with _health_checks_lock:
+            _active_health_checks_by_source.pop(int(source.id), None)
+        await cso_capacity_registry.release(capacity_key_name, owner_key, slot_id=int(source.id))
+
+
+async def run_periodic_channel_stream_health_checks(app):
+    global _health_run_task
+    async with _health_run_lock:
+        if _health_run_task and not _health_run_task.done():
+            logger.debug("Periodic channel stream health checks already running; skipping duplicate trigger.")
+            return False
+        loop = asyncio.get_running_loop()
+        _health_run_task = loop.create_task(_run_periodic_channel_stream_health_checks_worker(app))
+        return True
+
+
+async def _run_periodic_channel_stream_health_checks_worker(app):
+    config = app.config["APP_CONFIG"]
+    settings = (config.read_settings() or {}).get("settings", {})
+    if not bool(settings.get("periodic_channel_stream_health_checks", True)):
+        logger.debug("Periodic channel stream health checks are disabled.")
+        return
+
+    max_checks = max(1, int(CHANNEL_STREAM_HEALTH_CHECK_MAX_PER_RUN))
+    max_parallel = max(1, min(int(CHANNEL_STREAM_HEALTH_CHECK_CONCURRENCY), max_checks))
+    now_dt = utc_now_naive()
+    cutoff_dt = now_dt - timedelta(hours=max(1, int(CHANNEL_STREAM_HEALTH_CHECK_INTERVAL_HOURS)))
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource)
+            .options(
+                joinedload(ChannelSource.channel),
+                joinedload(ChannelSource.playlist),
+                joinedload(ChannelSource.xc_account),
+            )
+            .join(Channel, Channel.id == ChannelSource.channel_id)
+            .where(
+                Channel.enabled.is_(True),
+                or_(
+                    ChannelSource.last_health_check_at.is_(None),
+                    ChannelSource.last_health_check_at < cutoff_dt,
+                ),
+            )
+            .order_by(ChannelSource.last_health_check_at.asc().nullsfirst(), ChannelSource.id.asc())
+            .limit(max_checks * 6)
+        )
+        sources = result.scalars().unique().all()
+
+    selected_sources = []
+    selected_capacity_keys = set()
+    for source in sources:
+        if len(selected_sources) >= max_checks:
+            break
+        capacity_key_name = source_capacity_key(source)
+        if capacity_key_name in selected_capacity_keys:
+            continue
+        selected_sources.append(source)
+        selected_capacity_keys.add(capacity_key_name)
+
+    healthy = 0
+    unhealthy = 0
+    skipped = 0
+    cancelled = 0
+    selected = len(selected_sources)
+    sem = asyncio.Semaphore(max_parallel)
+
+    async def _run_one(source):
+        source_id = int(getattr(source, "id", 0) or 0)
+        channel_id = int(getattr(source, "channel_id", 0) or 0)
+        if source_id <= 0:
+            return "skipped", "invalid_source_id", source_id, channel_id
+        async with sem:
+            status, reason = await _run_source_health_check(config, source)
+            return status, reason, source_id, channel_id
+
+    results = await asyncio.gather(*[_run_one(source) for source in selected_sources], return_exceptions=True)
+    for item in results:
+        if isinstance(item, Exception):
+            logger.exception("Periodic channel stream health check worker failed: %s", item)
+            skipped += 1
+            continue
+        status, reason, source_id, channel_id = item
+        if status == "healthy":
+            healthy += 1
+        elif status == "unhealthy":
+            unhealthy += 1
+        elif status == "cancelled":
+            cancelled += 1
+        else:
+            skipped += 1
+        logger.info(
+            "Periodic channel stream health check source_id=%s channel_id=%s status=%s reason=%s",
+            source_id,
+            channel_id,
+            status,
+            reason,
+        )
+
+    logger.info(
+        "Periodic channel stream health checks complete selected=%s parallel=%s healthy=%s unhealthy=%s cancelled=%s skipped=%s",
+        selected,
+        max_parallel,
+        healthy,
+        unhealthy,
+        cancelled,
+        skipped,
+    )

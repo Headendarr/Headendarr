@@ -178,7 +178,7 @@ export default {
         cso_stream_unhealthy: {
           title: 'Channel Stream Organiser unhealthy stream',
           description:
-            'CSO detected unstable stream health (for example buffering/underspeed) and triggered failover attempts. Review source quality and priority.',
+            'CSO detected an unhealthy stream (for example unreachable, too slow, or unstable). Review source quality, credentials, and stream priority.',
           csoDetails: this.csoIssueDetails,
           actions: [actions.openAuditLogs, actions.openSettings],
         },
