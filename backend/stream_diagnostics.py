@@ -20,6 +20,7 @@ class StreamProbe:
         request_host_url=None,
         preferred_user_agent=None,
         probe_window_seconds=12,
+        no_data_timeout_seconds=30,
         hard_timeout_seconds=45,
         include_geo_lookup=True,
     ):
@@ -28,6 +29,7 @@ class StreamProbe:
         self.request_host_url = request_host_url
         self.preferred_user_agent = (preferred_user_agent or "").strip() or None
         self.probe_window_seconds = max(5, int(probe_window_seconds or 12))
+        self.no_data_timeout_seconds = max(5, int(no_data_timeout_seconds or 30))
         self.hard_timeout_seconds = max(self.probe_window_seconds + 5, int(hard_timeout_seconds or 45))
         self.include_geo_lookup = bool(include_geo_lookup)
         self.task_id = None
@@ -99,7 +101,12 @@ class StreamProbe:
     @staticmethod
     def _is_streaming_proxy_endpoint(raw_url: str) -> bool:
         path = (urlparse(raw_url).path or "").lower()
-        return "/tic-hls-proxy/" in path and "/stream/" in path
+        return (
+            "/tic-hls-proxy/" in path
+            or path.startswith("/tic-api/cso/channel_stream/")
+            or path.startswith("/tic-api/cso/channel/")
+            or path.startswith("/tic-api/tvh_stream/stream/channel/")
+        )
 
     def _normalize_localhost_url(self, raw_url: str, log: bool = False) -> str:
         parsed = urlparse(raw_url)
@@ -332,9 +339,11 @@ class StreamProbe:
             # Stream proxy endpoints may intentionally delay first-byte delivery (e.g. prebuffer),
             # which can make HTTP preflight produce false negatives. Trust FFmpeg probe instead.
             user_agent = user_agent_candidates[0]
+            preflight_skipped = True
             self.log("Skipping HTTP preflight for TIC stream proxy endpoint; validating via FFmpeg probe.")
         else:
             user_agent = None
+            preflight_skipped = False
 
         # Fast preflight helps catch auth/routing issues before FFmpeg runs.
         last_preflight_error = None
@@ -379,7 +388,12 @@ class StreamProbe:
             self.log(f"Preflight request failed: {message}")
             return
 
-        if self.preferred_user_agent and user_agent == self.preferred_user_agent:
+        if preflight_skipped:
+            if self.preferred_user_agent and user_agent == self.preferred_user_agent:
+                self.log("Using source-configured user-agent for FFmpeg probe.")
+            elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
+                self.log("Using fallback browser user-agent for FFmpeg probe.")
+        elif self.preferred_user_agent and user_agent == self.preferred_user_agent:
             self.log("Preflight succeeded using source-configured user-agent.")
         elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
             self.log("Preflight succeeded using fallback browser user-agent.")
@@ -410,14 +424,27 @@ class StreamProbe:
         self._ffmpeg_process = process
 
         start_time = time.time()
+        sample_start_time = None
         total_bytes = 0
         first_pcr, last_pcr, pcr_pid = None, None, None
         buffer = bytearray()
 
         try:
-            # Strictly enforce probe window.
-            while (time.time() - start_time) < self.probe_window_seconds:
+            # Wait up to no_data_timeout_seconds for first media bytes.
+            # Once bytes arrive, run probe_window_seconds of sampling.
+            while True:
                 if self._cancel_requested:
+                    break
+                now = time.time()
+                if sample_start_time is None:
+                    if (now - start_time) >= self.no_data_timeout_seconds:
+                        if not self.report["errors"]:
+                            self.report["errors"].append(
+                                f"No media bytes received within {self.no_data_timeout_seconds}s."
+                            )
+                        self.log(f"No media bytes received within {self.no_data_timeout_seconds}s; stopping probe.")
+                        break
+                elif (now - sample_start_time) >= self.probe_window_seconds:
                     break
                 try:
                     # Read chunk with timeout to ensure loop doesn't block
@@ -426,6 +453,9 @@ class StreamProbe:
                         break
 
                     now = time.time()
+                    if sample_start_time is None:
+                        sample_start_time = now
+                        self.log(f"First media bytes received; sampling for {int(self.probe_window_seconds)}s.")
                     total_bytes += len(chunk)
                     buffer.extend(chunk)
 
@@ -452,7 +482,7 @@ class StreamProbe:
                         del buffer[:188]
 
                     # Update live stats
-                    elapsed = now - start_time
+                    elapsed = now - sample_start_time if sample_start_time else 0
                     if elapsed > 0:
                         self.report["probe"]["avg_bitrate"] = (total_bytes * 8) / elapsed
                         if first_pcr is not None and last_pcr is not None:

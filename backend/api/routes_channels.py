@@ -25,11 +25,8 @@ from backend.channels import (
     read_epg_match_candidate_preview,
     apply_bulk_epg_matches,
     apply_bulk_cso_settings,
-    build_cso_channel_stream_url,
 )
-from backend.cso import policy_content_type
-from backend.stream_profiles import resolve_cso_profile_name, generate_cso_policy_from_profile
-from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
+from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
 from backend.utils import normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
@@ -131,7 +128,13 @@ async def _fetch_cso_attention_map(channel_ids):
             if current is None or created_at > current.get("_created_at"):
                 channel_state["connection_issue"] = payload
 
-        if event_type == "health_actioned" or reason in {"under_speed", "stall_timeout", "too_slow", "unreachable", "unstable"}:
+        if event_type == "health_actioned" or reason in {
+            "under_speed",
+            "stall_timeout",
+            "too_slow",
+            "unreachable",
+            "unstable",
+        }:
             current = channel_state.get("unhealthy_issue")
             if current is None or created_at > current.get("_created_at"):
                 channel_state["unhealthy_issue"] = payload
@@ -622,16 +625,8 @@ def _infer_stream_type(url):
     return "auto"
 
 
-def _build_preview_url_for_source(source, user, settings, config, request_base_url):
-    use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
+def _build_preview_url_for_source(source, user, config, request_base_url):
     instance_id = config.ensure_instance_id()
-    if use_tvh_source and source.tvh_uuid:
-        preview_url = (
-            f"{request_base_url}/tic-api/tvh_stream/stream/channel/{source.tvh_uuid}" "?profile=pass&weight=300"
-        )
-        preview_url = append_stream_key(preview_url, stream_key=user.streaming_key)
-        stream_type = "mpegts"
-        return preview_url, stream_type
 
     is_manual = not source.playlist_id
     use_hls_proxy = bool(getattr(source, "use_hls_proxy", False)) if is_manual else False
@@ -653,27 +648,6 @@ def _build_preview_url_for_source(source, user, settings, config, request_base_u
     return preview_url, stream_type
 
 
-def _build_cso_preview_url(channel, user, request_base_url):
-    config = current_app.config["APP_CONFIG"]
-    preview_url = build_cso_channel_stream_url(
-        base_url=request_base_url,
-        channel_id=channel.id,
-        stream_key=user.streaming_key,
-        username=user.username,
-        profile="default",
-    )
-    profile = resolve_cso_profile_name(config, requested_profile="default", channel=channel)
-    policy = generate_cso_policy_from_profile(config, profile)
-    content_type = policy_content_type(policy)
-    if content_type == "video/mp2t":
-        stream_type = "mpegts"
-    elif content_type == "video/x-matroska":
-        stream_type = "mkv"
-    else:
-        stream_type = "auto"
-    return preview_url, stream_type
-
-
 @blueprint.route("/tic-api/channels/<int:channel_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_preview(channel_id):
@@ -686,11 +660,6 @@ async def api_get_channel_preview(channel_id):
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
-        if bool(getattr(channel, "cso_enabled", False)):
-            request_base_url = get_request_base_url(request)
-            preview_url, stream_type = _build_cso_preview_url(channel, user, request_base_url)
-            return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
-
         result = await session.execute(
             select(ChannelSource).where(ChannelSource.channel_id == channel_id).order_by(ChannelSource.id.asc())
         )
@@ -700,12 +669,10 @@ async def api_get_channel_preview(channel_id):
         return jsonify({"success": False, "message": "Channel has no source URL"}), 404
 
     config = current_app.config["APP_CONFIG"]
-    settings = config.read_settings()
     request_base_url = get_request_base_url(request)
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,
-        settings=settings,
         config=config,
         request_base_url=request_base_url,
     )
@@ -737,12 +704,10 @@ async def api_get_channel_source_preview(channel_id, source_id):
         return jsonify({"success": False, "message": "Channel source not found"}), 404
 
     config = current_app.config["APP_CONFIG"]
-    settings = config.read_settings()
     request_base_url = get_request_base_url(request)
     preview_url, stream_type = _build_preview_url_for_source(
         source=source,
         user=user,
-        settings=settings,
         config=config,
         request_base_url=request_base_url,
     )
