@@ -1,5 +1,13 @@
 <template>
   <q-card class="my-card" flat bordered>
+    <q-card-section class="q-pb-none">
+      <TicButton
+        color="primary"
+        icon="auto_awesome"
+        label="Client Connection Wizard"
+        @click="$emit('open-wizard')"
+      />
+    </q-card-section>
     <q-banner
       v-if="showTopHelpHint"
       class="bg-blue-1 text-blue-10 q-mx-sm q-mt-sm q-mb-none"
@@ -246,6 +254,7 @@
 <script setup>
 import {computed} from 'vue';
 import {useQuasar} from 'quasar';
+import {TicButton} from 'components/ui';
 
 defineProps({
   enabledPlaylists: {
@@ -274,7 +283,7 @@ defineProps({
   },
 });
 
-defineEmits(['copy-url']);
+defineEmits(['copy-url', 'open-wizard']);
 
 const $q = useQuasar();
 const isCompact = computed(() => $q.screen.width <= 1023);

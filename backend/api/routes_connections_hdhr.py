@@ -40,17 +40,18 @@ def _requested_profile(path_profile=None):
     return (path_profile or request.args.get("profile") or "default").strip().lower()
 
 
-async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=None):
+async def _get_discover_data(playlist_id=0, stream_username=None, stream_key=None, profile=None):
     config = current_app.config["APP_CONFIG"]
     external_base_url = get_request_base_url(request)
     device_name = f"Headendarr-{playlist_id}"
     tuner_count = await get_playlist_connection_count(config, playlist_id)
     device_id = f"tic-12345678-{playlist_id}"
     device_auth = f"tic-{playlist_id}"
+    profile_suffix = f"/{profile}" if profile else ""
     if stream_key:
-        base_url = f"{external_base_url}/tic-api/hdhr_device/{stream_key}/{playlist_id}"
+        base_url = f"{external_base_url}/tic-api/hdhr_device/{stream_key}/{playlist_id}{profile_suffix}"
     else:
-        base_url = f"{external_base_url}/tic-api/hdhr_device/{playlist_id}"
+        base_url = f"{external_base_url}/tic-api/hdhr_device/{playlist_id}{profile_suffix}"
     return {
         "FriendlyName": device_name,
         "Manufacturer": "Tvheadend",
@@ -161,33 +162,38 @@ async def _get_combined_discover_data(stream_username=None, stream_key=None, pro
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/discover.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/discover.json", methods=["GET"])
 @stream_key_required
-async def discover_json(playlist_id, stream_key=None):
+async def discover_json(playlist_id, stream_key=None, profile=None):
     await audit_stream_event(request._stream_user, "hdhr_discover", request.path)
+    selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id=playlist_id,
         stream_username=request._stream_user.username if request._stream_user else None,
         stream_key=request._stream_key,
+        profile=selected_profile,
     )
     return jsonify(discover_data)
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup.json", methods=["GET"])
 @stream_key_required
-async def lineup_json(playlist_id, stream_key=None):
+async def lineup_json(playlist_id, stream_key=None, profile=None):
     await audit_stream_event(request._stream_user, "hdhr_lineup", request.path)
     lineup_list = await _get_lineup_list(
         playlist_id,
         stream_username=request._stream_user.username if request._stream_user else None,
         stream_key=request._stream_key,
-        requested_profile=_requested_profile(),
+        requested_profile=_requested_profile(profile),
     )
     return jsonify(lineup_list)
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup_status.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup_status.json", methods=["GET"])
 @stream_key_required
-async def lineup_status_json(playlist_id=None, stream_key=None):
+async def lineup_status_json(playlist_id=None, stream_key=None, profile=None):
     await audit_stream_event(request._stream_user, "hdhr_lineup_status", request.path)
     return jsonify(
         {
@@ -200,20 +206,24 @@ async def lineup_status_json(playlist_id=None, stream_key=None):
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup.post", methods=["GET", "POST"])
+@blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup.post", methods=["GET", "POST"])
 @stream_key_required
-async def lineup_post(playlist_id=None, stream_key=None):
+async def lineup_post(playlist_id=None, stream_key=None, profile=None):
     await audit_stream_event(request._stream_user, "hdhr_lineup_post", request.path)
     return ""
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/device.xml", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/device.xml", methods=["GET"])
 @stream_key_required
-async def device_xml(playlist_id, stream_key=None):
+async def device_xml(playlist_id, stream_key=None, profile=None):
     await audit_stream_event(request._stream_user, "hdhr_device_xml", request.path)
+    selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id,
         stream_username=request._stream_user.username if request._stream_user else None,
         stream_key=request._stream_key,
+        profile=selected_profile,
     )
     xml_content = await render_template_string(device_xml_template, data=discover_data)
     return Response(xml_content, mimetype="application/xml")

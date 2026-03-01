@@ -11,7 +11,7 @@
 </template>
 
 <script>
-import { defineComponent } from 'vue';
+import {defineComponent} from 'vue';
 
 const TYPE_FALLBACK_TITLE = {
   note: 'Note',
@@ -30,11 +30,11 @@ const TYPE_ICON = {
 };
 
 const TYPE_COLOR = {
-  note: { color: 'var(--q-info)', background: 'rgba(3, 169, 244, 0.10)' },
-  tip: { color: 'var(--q-positive)', background: 'rgba(33, 186, 69, 0.10)' },
-  warning: { color: 'var(--q-warning)', background: 'rgba(242, 192, 55, 0.16)' },
-  caution: { color: 'var(--q-negative)', background: 'rgba(193, 0, 21, 0.10)' },
-  important: { color: 'var(--q-accent)', background: 'rgba(156, 39, 176, 0.10)' },
+  note: {color: 'var(--q-info)', background: 'rgba(3, 169, 244, 0.10)'},
+  tip: {color: 'var(--q-positive)', background: 'rgba(33, 186, 69, 0.10)'},
+  warning: {color: 'var(--q-warning)', background: 'rgba(242, 192, 55, 0.16)'},
+  caution: {color: 'var(--q-negative)', background: 'rgba(193, 0, 21, 0.10)'},
+  important: {color: 'var(--q-accent)', background: 'rgba(156, 39, 176, 0.10)'},
 };
 
 export default defineComponent({
@@ -96,5 +96,26 @@ export default defineComponent({
 
 .admonition-banner__content :deep(:last-child) {
   margin-bottom: 0;
+}
+
+/* Improve warning readability in light theme and keep strong contrast in dark theme. */
+.admonition-banner--warning .admonition-banner__heading,
+.admonition-banner--warning .admonition-banner__content {
+  color: #6b4300;
+}
+
+:global(body.body--dark) .admonition-banner--warning .admonition-banner__heading,
+:global(body.body--dark) .admonition-banner--warning .admonition-banner__content {
+  color: #ffe7a6;
+}
+
+.admonition-banner--note .admonition-banner__heading,
+.admonition-banner--note .admonition-banner__content {
+  color: #0e4d63;
+}
+
+:global(body.body--dark) .admonition-banner--note .admonition-banner__heading,
+:global(body.body--dark) .admonition-banner--note .admonition-banner__content {
+  color: #bfefff;
 }
 </style>

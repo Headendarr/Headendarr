@@ -24,7 +24,7 @@ Use a Headendarr TVHeadend playlist URL and force the TVHeadend stream profile t
 1. In Headendarr **Application Settings**, enable **Route per-source playlists & per-source HDHomeRun via TVHeadend**.
    This applies to per-source endpoints (for example `/tic-api/playlist/<id>.m3u`).
 2. Optional but recommended: enable **Use CSO stream buffer for TVHeadend mux streams** for CSO-managed buffering/limit behaviour on TVHeadend pulls.
-3. In Headendarr, open **Show Connection Details**.
+3. In Headendarr, open **Client Setup Guide** in the header.
 4. Copy a **M3U Playlists** URL such as:
    `/tic-api/playlist/<source_id>.m3u?stream_key=<key>`
 5. Append `&profile=aac-matroska` to the URL.
@@ -34,7 +34,7 @@ Use a Headendarr TVHeadend playlist URL and force the TVHeadend stream profile t
 7. Choose **M3U Tuner**.
 8. Paste the updated M3U URL.
 9. Save the tuner.
-10. In Headendarr, copy the **XMLTV Guide** URL from **Show Connection Details**.
+10. In Headendarr, copy the **XMLTV Guide** URL from **Client Setup Guide**.
 11. In Jellyfin **Live TV**, add the XMLTV guide source and paste that URL.
 12. Run channel/guide mapping in Jellyfin and verify playback.
 

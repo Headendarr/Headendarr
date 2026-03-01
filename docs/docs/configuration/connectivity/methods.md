@@ -5,7 +5,8 @@ title: Connectivity Methods
 # Connectivity Methods
 
 :::tip Accessing Client Links
-For quick access to the URLs and connection details described below, simply click the "Show connection details" dropdown located in the header of the Headendarr frontend. This feature provides direct links you can copy and paste into your client applications.
+For quick setup, open the **Client Setup Guide** from the header in the Headendarr frontend.  
+It provides a guided wizard for Plex, Jellyfin, Sparkle TV, TiviMate, and an **Other / Direct Links** mode for manual URL copy with profile overrides.
 :::
 
 Headendarr is a powerful "man-in-the-middle", and it offers several ways for client applications to access your curated channel list. The best method depends on the client you are using and the features you need.
@@ -95,7 +96,7 @@ This method generates a unique M3U playlist for each of your channel sources. It
 ### Connection Details
 
 :::tip Easy Copy
-You can quickly copy the specific URL for each source from the "Show connection details" dropdown in the Headendarr frontend.
+Use the **Client Setup Guide** and select the relevant client and method to copy per-source URLs.
 :::
 
 -   **Per-Source M3U URL**: `http://<your-ip>:9985/tic-api/playlist/<source_id>.m3u?stream_key=<user_stream_key>`
@@ -126,7 +127,7 @@ Headendarr can pretend to be an HDHomeRun network tuner. This is an excellent me
 ### How It Works
 
 :::tip Easy Copy
-You can quickly copy the specific HDHomeRun Device URL for each source from the "Show connection details" dropdown in the Headendarr frontend.
+Use the **Client Setup Guide** and select an HDHomeRun method to copy combined or per-source device URLs.
 :::
 
 For clients like Plex, the most reliable way to add the emulated tuner is to do it manually by providing its network address.

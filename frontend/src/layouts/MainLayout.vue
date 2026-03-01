@@ -83,6 +83,7 @@
               :epg-url="epgUrl"
               :xc-playlist-url="xcPlaylistUrl"
               @copy-url="copyUrlToClipboard"
+              @open-wizard="openConnectionWizard"
             />
           </q-btn-dropdown>
           <q-btn
@@ -111,8 +112,26 @@
               :xc-playlist-url="xcPlaylistUrl"
               :show-top-help-hint="true"
               @copy-url="copyUrlToClipboard"
+              @open-wizard="openConnectionWizard"
             />
           </TicDialogWindow>
+          <ClientConnectionWizardDialog
+            v-if="showConnectionDetailsActions"
+            v-model="showConnectionWizardDialog"
+            width="90vw"
+            :enabled-playlists="enabledPlaylistsForConnectionDetails"
+            :connection-base-url="connectionBaseUrl"
+            :current-streaming-key="currentStreamingKey"
+            :current-username="currentUsername"
+            :epg-url="epgUrl"
+            :xc-playlist-url="xcPlaylistUrl"
+            :stream-profile-definitions="streamProfileDefinitions"
+            :stream-profiles="streamProfiles"
+            :route-per-source-through-tvh="routePerSourceThroughTvh"
+            :route-combined-through-cso="routeCombinedThroughCso"
+            :tvh-compatible-profile-ids="tvhCompatibleProfileIds"
+            @copy-url="copyUrlToClipboard"
+          />
           <q-separator v-if="showConnectionDetailsActions" dark vertical inset />
           <q-btn
             id="header-help-toggle"
@@ -379,6 +398,7 @@ import {defineComponent, onMounted, ref, computed, watch} from 'vue';
 import EssentialLink from 'components/EssentialLink.vue';
 import FloatingPlayer from 'components/FloatingPlayer.vue';
 import ConnectionDetailsPanel from 'components/ConnectionDetailsPanel.vue';
+import ClientConnectionWizardDialog from 'components/ClientConnectionWizardDialog.vue';
 import {TicDialogWindow} from 'components/ui';
 import pollForBackgroundTasks from 'src/mixins/backgroundTasksMixin';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
@@ -469,6 +489,7 @@ export default defineComponent({
     EssentialLink,
     FloatingPlayer,
     ConnectionDetailsPanel,
+    ClientConnectionWizardDialog,
     TicDialogWindow,
   },
 
@@ -508,6 +529,11 @@ export default defineComponent({
     const connectionBaseUrl = computed(() => window.location.origin);
 
     const enabledPlaylists = ref([]);
+    const streamProfileDefinitions = ref([]);
+    const streamProfiles = ref({});
+    const routePerSourceThroughTvh = ref(false);
+    const routeCombinedThroughCso = ref(false);
+    const tvhCompatibleProfileIds = ref([]);
 
     const copyUrlToClipboard = (textToCopy) => {
       copyToClipboard(textToCopy).then(() => {
@@ -555,6 +581,7 @@ export default defineComponent({
     const compactHeader = computed(() => $q.screen.width <= 1024);
     const isConnectionDialogCompact = computed(() => $q.screen.width <= 1023);
     const showConnectionDetailsDialog = ref(false);
+    const showConnectionWizardDialog = ref(false);
     const showTvhBackendButton = computed(() => isAdmin.value && aioMode.value);
     const showConnectionDetailsActions = computed(() => canViewConnectionDetails.value);
     const showHeaderActions = computed(
@@ -589,13 +616,28 @@ export default defineComponent({
       const theme = uiStore.loadThemeForUser(authStore.user?.username);
       uiStore.loadTimeFormatForUser(authStore.user?.username);
       $q.dark.set(theme === 'dark');
-      if (isAdmin.value) {
+      if (isAdmin.value || canViewConnectionDetails.value) {
         axios({
           method: 'get',
           url: '/tic-api/get-settings',
         }).then((response) => {
-          appUrl.value = response.data.data.app_url;
+          const settings = response?.data?.data || {};
+          appUrl.value = settings.app_url;
+          streamProfiles.value = settings.stream_profiles || {};
+          streamProfileDefinitions.value = Array.isArray(settings.stream_profile_definitions)
+            ? settings.stream_profile_definitions
+            : [];
+          routePerSourceThroughTvh.value = Boolean(settings.route_playlists_through_tvh);
+          routeCombinedThroughCso.value = Boolean(settings.route_playlists_through_cso);
+          tvhCompatibleProfileIds.value = Array.isArray(settings.tvh_compatible_profile_ids)
+            ? settings.tvh_compatible_profile_ids
+            : [];
         }).catch(() => {
+          streamProfiles.value = {};
+          streamProfileDefinitions.value = [];
+          routePerSourceThroughTvh.value = false;
+          routeCombinedThroughCso.value = false;
+          tvhCompatibleProfileIds.value = [];
         });
       }
       if (canViewConnectionDetails.value) {
@@ -689,6 +731,9 @@ export default defineComponent({
     const toggleHelp = () => {
       uiStore.toggleHelp();
     };
+    const openConnectionWizard = () => {
+      showConnectionWizardDialog.value = true;
+    };
 
     return {
       firstRun,
@@ -697,6 +742,11 @@ export default defineComponent({
       showTvheadendAdmin,
       enabledPlaylists,
       enabledPlaylistsForConnectionDetails,
+      streamProfileDefinitions,
+      streamProfiles,
+      routePerSourceThroughTvh,
+      routeCombinedThroughCso,
+      tvhCompatibleProfileIds,
       appUrl,
       appVersionDisplay,
       buildVersionDisplay,
@@ -736,10 +786,12 @@ export default defineComponent({
       compactHeader,
       isConnectionDialogCompact,
       showConnectionDetailsDialog,
+      showConnectionWizardDialog,
       showTvhBackendButton,
       showConnectionDetailsActions,
       showHeaderActions,
       isAdmin,
+      openConnectionWizard,
     };
   },
 });
