@@ -97,10 +97,11 @@ async def resolve_channel_stream_url(
     allow_tvh_profile=False,
     route_scope="source",
 ):
-    from backend.channels import build_cso_source_stream_url
+    from backend.channels import build_cso_channel_stream_url, build_cso_source_stream_url
 
     settings = config.read_settings()
     use_tvh_source = settings["settings"].get("route_playlists_through_tvh", False)
+    use_combined_cso = settings["settings"].get("route_playlists_through_cso", True)
     if route_scope == "combined":
         # Combined endpoints have their own CSO routing switch and are independent from per-source TVH routing.
         use_tvh_source = False
@@ -124,8 +125,17 @@ async def resolve_channel_stream_url(
         source = channel_details["sources"][0] if channel_details.get("sources") else None
         source_id = source.get("id") if source else None
         source_url = source.get("stream_url") if source else None
-        should_route_via_source_gate = bool(source_id and source_url)
-        if should_route_via_source_gate:
+        should_route_via_channel_cso = bool(route_scope == "combined" and use_combined_cso and channel_details.get("id"))
+        should_route_via_source_gate = bool(source_id and source_url and not should_route_via_channel_cso)
+        if should_route_via_channel_cso:
+            channel_url = build_cso_channel_stream_url(
+                base_url=base_url,
+                channel_id=channel_details["id"],
+                stream_key=stream_key,
+                username=username,
+                profile=resolved_profile,
+            )
+        elif should_route_via_source_gate:
             channel_url = build_cso_source_stream_url(
                 base_url=base_url,
                 stream_id=source_id,

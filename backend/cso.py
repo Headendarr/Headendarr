@@ -141,7 +141,9 @@ def source_should_use_cso_buffer(source, force_tvh_remux=False):
     if force_tvh_remux:
         return True
     playlist = getattr(source, "playlist", None)
-    return bool(getattr(source, "use_hls_proxy", False) and playlist and getattr(playlist, "hls_proxy_use_ffmpeg", False))
+    return bool(
+        getattr(source, "use_hls_proxy", False) and playlist and getattr(playlist, "hls_proxy_use_ffmpeg", False)
+    )
 
 
 def _source_event_context(source, source_url=None):
@@ -1420,6 +1422,7 @@ class CsoOutputSession:
         self.last_error = None
         self.ingest_queue = None
         self._recent_ffmpeg_stderr = deque(maxlen=30)
+        self.client_drop_state = {}
 
     def _ffmpeg_error_summary(self):
         lines = [line for line in self._recent_ffmpeg_stderr if line]
@@ -1572,19 +1575,28 @@ class CsoOutputSession:
         if not chunk:
             return
         self.last_activity = time.time()
+        now = time.time()
         async with self.lock:
             self.history.append(chunk)
             self.history_bytes += len(chunk)
             while self.history_bytes > self.max_history_bytes and self.history:
                 old = self.history.popleft()
                 self.history_bytes -= len(old)
-            for q in list(self.clients.values()):
+            for connection_id, q in list(self.clients.items()):
                 try:
                     q.put_nowait(chunk)
+                    self.client_drop_state.pop(connection_id, None)
                 except asyncio.QueueFull:
                     try:
                         q.get_nowait()
                         q.put_nowait(chunk)
+                        state = self.client_drop_state.get(connection_id)
+                        if not state:
+                            state = {"first_ts": now, "last_ts": now, "count": 1}
+                            self.client_drop_state[connection_id] = state
+                        else:
+                            state["last_ts"] = now
+                            state["count"] = int(state.get("count") or 0) + 1
                     except Exception:
                         pass
 
@@ -1605,6 +1617,7 @@ class CsoOutputSession:
                     except asyncio.QueueFull:
                         break
             self.clients[connection_id] = q
+            self.client_drop_state.pop(connection_id, None)
             client_count = len(self.clients)
         logger.info(
             "CSO output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
@@ -1619,6 +1632,7 @@ class CsoOutputSession:
     async def remove_client(self, connection_id):
         async with self.lock:
             self.clients.pop(connection_id, None)
+            self.client_drop_state.pop(connection_id, None)
             remaining = len(self.clients)
         logger.info(
             "CSO output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
@@ -1631,6 +1645,31 @@ class CsoOutputSession:
         if remaining == 0:
             await self.stop(force=True)
         return remaining
+
+    async def drop_backpressured_clients(self, min_elapsed_seconds=0.5, min_drop_count=3):
+        now = time.time()
+        candidates = []
+        async with self.lock:
+            for connection_id, state in list(self.client_drop_state.items()):
+                if str(connection_id) not in self.clients:
+                    continue
+                elapsed = float(now - float(state.get("first_ts") or now))
+                count = int(state.get("count") or 0)
+                if elapsed >= float(min_elapsed_seconds) and count >= int(min_drop_count):
+                    candidates.append(connection_id)
+        removed = 0
+        for connection_id in candidates:
+            logger.warning(
+                "CSO output preemptively dropping backpressured client channel=%s output_key=%s connection_id=%s reason=capacity_handover elapsed_threshold=%.2fs count_threshold=%s",
+                self.channel_id,
+                self.key,
+                connection_id,
+                float(min_elapsed_seconds),
+                int(min_drop_count),
+            )
+            await self.remove_client(connection_id)
+            removed += 1
+        return removed
 
     async def stop(self, force=False):
         async with self.lock:
@@ -1681,6 +1720,7 @@ class CsoOutputSession:
                     q.put_nowait(None)
                 except Exception:
                     pass
+            self.client_drop_state.clear()
 
 
 class _SessionMap:
@@ -2230,6 +2270,39 @@ async def disconnect_output_client(output_session_key, connection_id):
             exc,
             exc_info=True,
         )
+
+
+async def preempt_backpressured_clients_for_capacity_key(capacity_key_name, min_elapsed_seconds=0.5, min_drop_count=3):
+    if not capacity_key_name:
+        return 0
+
+    removed = 0
+    async with cso_session_manager.output.lock:
+        sessions = list(cso_session_manager.output.sessions.values())
+
+    for session in sessions:
+        try:
+            source = getattr(session.ingest_session, "current_source", None)
+            if source is None:
+                continue
+            if source_capacity_key(source) != str(capacity_key_name):
+                continue
+            removed += int(
+                await session.drop_backpressured_clients(
+                    min_elapsed_seconds=min_elapsed_seconds,
+                    min_drop_count=min_drop_count,
+                )
+                or 0
+            )
+        except Exception as exc:
+            logger.error(
+                "Error preempting backpressured clients key=%s output_key=%s error=%s",
+                capacity_key_name,
+                getattr(session, "key", None),
+                exc,
+                exc_info=True,
+            )
+    return removed
 
 
 def build_cso_stream_query(profile=None, connection_id=None, stream_key=None, username=None):

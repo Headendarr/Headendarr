@@ -12,6 +12,35 @@ const ESLintPlugin = require('eslint-webpack-plugin');
 
 const {configure} = require('quasar/wrappers');
 
+const devApiTarget = process.env.QUASAR_DEV_API_TARGET || 'http://localhost:9985';
+
+function createDevProxyConfig(target, options = {}) {
+  const ws = Boolean(options.ws);
+  return {
+    target,
+    ws,
+    xfwd: true,
+    // Keep long-running stream responses alive and let application code decide lifetime.
+    proxyTimeout: 0,
+    timeout: 0,
+    onProxyRes(proxyRes, _req, res) {
+      // The webpack dev proxy can keep upstream stream sockets open after the downstream
+      // client is gone. Ensure we always tear down the upstream side on client close.
+      const abortUpstream = () => {
+        try {
+          if (proxyRes && typeof proxyRes.destroy === 'function') {
+            proxyRes.destroy();
+          }
+        } catch (error) {
+          // Best-effort cleanup only.
+        }
+      };
+      res.on('close', abortUpstream);
+      res.on('aborted', abortUpstream);
+    },
+  };
+}
+
 module.exports = configure(function(ctx) {
   return {
     // https://v2.quasar.dev/quasar-cli-webpack/supporting-ts
@@ -86,14 +115,11 @@ module.exports = configure(function(ctx) {
       host: process.env.QUASAR_DEV_HOST || '127.0.0.1',
       port: Number(process.env.QUASAR_DEV_PORT || 8080),
       proxy: {
-        '/tic-api': 'http://localhost:9985',
-        '/get.php': 'http://localhost:9985',
-        '/xmltv.php': 'http://localhost:9985',
-        '/tic-hls-proxy': 'http://localhost:9985',
-        '/tic-tvh': {
-          target: 'http://localhost:9985',
-          ws: true,
-        },
+        '/tic-api': createDevProxyConfig(devApiTarget),
+        '/get.php': createDevProxyConfig(devApiTarget),
+        '/xmltv.php': createDevProxyConfig(devApiTarget),
+        '/tic-hls-proxy': createDevProxyConfig(devApiTarget),
+        '/tic-tvh': createDevProxyConfig(devApiTarget, {ws: true}),
       },
       open: false, // opens browser window automatically
     },

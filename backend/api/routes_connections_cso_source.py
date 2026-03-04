@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+import asyncio
 import logging
+import hashlib
 import time
 import uuid
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -12,10 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from backend.api import blueprint
-from backend.auth import skip_stream_connect_audit, stream_key_required
+from backend.auth import get_request_client_ip, skip_stream_connect_audit, stream_key_required
 from backend.cso import (
     cso_capacity_registry,
     cso_session_manager,
+    preempt_backpressured_clients_for_capacity_key,
     policy_content_type,
     resolve_channel_for_stream,
     subscribe_channel_stream,
@@ -52,6 +55,93 @@ def _get_connection_id(default_new=False):
         return value
     if default_new:
         return uuid.uuid4().hex
+    return None
+
+
+def _client_fingerprint(stream_key, ip_address, user_agent):
+    payload = f"{str(stream_key or '').strip()}|{str(ip_address or '').strip()}|{str(user_agent or '').strip()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _session_capacity_key(session):
+    if not isinstance(session, dict):
+        return None
+    xc_account_id = session.get("xc_account_id")
+    playlist_id = session.get("playlist_id")
+    source_id = session.get("source_id")
+    if xc_account_id:
+        return f"xc:{int(xc_account_id)}"
+    if playlist_id:
+        return f"playlist:{int(playlist_id)}"
+    if source_id:
+        return f"source:{int(source_id)}"
+    return None
+
+
+def _same_client_session_for_capacity(activity_sessions, *, capacity_key_name, client_fingerprint, exclude_connection_id=None):
+    for session in activity_sessions or []:
+        if not isinstance(session, dict):
+            continue
+        if exclude_connection_id and str(session.get("connection_id") or "") == str(exclude_connection_id):
+            continue
+        session_capacity_key = _session_capacity_key(session)
+        if session_capacity_key != capacity_key_name:
+            continue
+        session_fingerprint = _client_fingerprint(
+            session.get("stream_key"),
+            session.get("ip_address"),
+            session.get("user_agent"),
+        )
+        if session_fingerprint == client_fingerprint:
+            return True
+    return False
+
+
+async def _wait_for_source_handover_window(
+    *,
+    source,
+    capacity_key_name,
+    capacity_limit,
+    client_fingerprint,
+    exclude_connection_id,
+    timeout_seconds=5.0,
+    poll_interval_seconds=0.5,
+):
+    deadline = time.time() + float(timeout_seconds)
+    while time.time() < deadline:
+        usage = await cso_capacity_registry.get_usage(capacity_key_name)
+        activity_sessions = await get_stream_activity_snapshot()
+        external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+        active_connections = int(usage.get("allocations") or 0) + int(external_count)
+        if active_connections < int(capacity_limit):
+            return True
+        if not _same_client_session_for_capacity(
+            activity_sessions,
+            capacity_key_name=capacity_key_name,
+            client_fingerprint=client_fingerprint,
+            exclude_connection_id=exclude_connection_id,
+        ):
+            return False
+        await asyncio.sleep(float(poll_interval_seconds))
+    return False
+
+
+def _select_primary_source_for_capacity(channel):
+    if not channel:
+        return None
+    candidates = sorted(
+        list(getattr(channel, "sources", []) or []),
+        key=lambda item: int(getattr(item, "priority", 0) or 0),
+        reverse=True,
+    )
+    for source in candidates:
+        playlist = getattr(source, "playlist", None)
+        if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+            continue
+        stream_url = str(getattr(source, "playlist_stream_url", "") or "").strip()
+        if not stream_url:
+            continue
+        return source
     return None
 
 
@@ -188,6 +278,9 @@ async def stream_from_source_gate(stream_id):
     stream_key = request._stream_key
     username = request._stream_user.username if request._stream_user else request.args.get("username")
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    client_ip = get_request_client_ip()
+    user_agent = request.headers.get("User-Agent")
+    client_fingerprint = _client_fingerprint(stream_key, client_ip, user_agent)
 
     async with Session() as session:
         result = await session.execute(
@@ -239,6 +332,54 @@ async def stream_from_source_gate(stream_id):
         )
 
     if source_should_use_cso_buffer(source, force_tvh_remux=force_cso_buffer):
+        activity_sessions = await get_stream_activity_snapshot()
+        external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+        active_connections = int(usage.get("allocations") or 0) + int(external_count)
+        if active_connections >= capacity_limit:
+            preempted = await preempt_backpressured_clients_for_capacity_key(capacity_key_name)
+            if preempted > 0:
+                logger.info(
+                    "CSO source handover preempted backpressured client(s) source_id=%s key=%s count=%s",
+                    getattr(source, "id", None),
+                    capacity_key_name,
+                    preempted,
+                )
+                usage = await cso_capacity_registry.get_usage(capacity_key_name)
+                activity_sessions = await get_stream_activity_snapshot()
+                external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+                active_connections = int(usage.get("allocations") or 0) + int(external_count)
+
+        if active_connections >= capacity_limit:
+            waited = await _wait_for_source_handover_window(
+                source=source,
+                capacity_key_name=capacity_key_name,
+                capacity_limit=capacity_limit,
+                client_fingerprint=client_fingerprint,
+                exclude_connection_id=connection_id,
+            )
+            if waited:
+                logger.info(
+                    "CSO source handover grace cleared capacity source_id=%s key=%s",
+                    getattr(source, "id", None),
+                    capacity_key_name,
+                )
+            else:
+                logger.info(
+                    "CSO source handover grace exhausted source_id=%s key=%s",
+                    getattr(source, "id", None),
+                    capacity_key_name,
+                )
+                usage = await cso_capacity_registry.get_usage(capacity_key_name)
+                activity_sessions = await get_stream_activity_snapshot()
+                external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+                active_connections = int(usage.get("allocations") or 0) + int(external_count)
+                if active_connections >= capacity_limit:
+                    return await _connection_limit_blocked_response(
+                        config,
+                        channel,
+                        effective_profile=effective_profile,
+                    )
+
         effective_policy = generate_cso_policy_from_profile(config, effective_profile)
         prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
 
@@ -344,6 +485,12 @@ async def stream_from_source_gate(stream_id):
                     ):
                         yield chunk
             finally:
+                try:
+                    close = getattr(generator, "aclose", None)
+                    if close is not None:
+                        await close()
+                except Exception:
+                    pass
                 await stop_stream_activity(
                     "",
                     connection_id=connection_id,
@@ -375,6 +522,15 @@ async def stream_from_source_gate(stream_id):
     external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
     active_connections = int(usage.get("allocations") or 0) + int(external_count)
     if active_connections >= capacity_limit:
+        waited = await _wait_for_source_handover_window(
+            source=source,
+            capacity_key_name=capacity_key_name,
+            capacity_limit=capacity_limit,
+            client_fingerprint=client_fingerprint,
+            exclude_connection_id=connection_id,
+        )
+        if waited:
+            return redirect(target_url, code=302)
         if await has_background_health_check_for_capacity_key(capacity_key_name):
             await cancel_background_health_checks_for_capacity_key(
                 capacity_key_name,
@@ -459,10 +615,71 @@ async def stream_channel(channel_id):
             connection_id,
             channel_id_int,
         )
+    stream_key = getattr(request, "_stream_key", None)
+    client_ip = get_request_client_ip()
+    user_agent = request.headers.get("User-Agent")
+    client_fingerprint = _client_fingerprint(stream_key, client_ip, user_agent)
+
+    primary_source = _select_primary_source_for_capacity(channel)
+    if primary_source is not None:
+        capacity_key_name = source_capacity_key(primary_source)
+        capacity_limit = int(source_capacity_limit(primary_source) or 0)
+        if capacity_limit > 0:
+            usage = await cso_capacity_registry.get_usage(capacity_key_name)
+            activity_sessions = await get_stream_activity_snapshot()
+            external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+            active_connections = int(usage.get("allocations") or 0) + int(external_count)
+            if active_connections >= capacity_limit:
+                preempted = await preempt_backpressured_clients_for_capacity_key(capacity_key_name)
+                if preempted > 0:
+                    logger.info(
+                        "CSO channel handover preempted backpressured client(s) channel=%s source_id=%s key=%s count=%s",
+                        channel_id_int,
+                        getattr(primary_source, "id", None),
+                        capacity_key_name,
+                        preempted,
+                    )
+                    usage = await cso_capacity_registry.get_usage(capacity_key_name)
+                    activity_sessions = await get_stream_activity_snapshot()
+                    external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+                    active_connections = int(usage.get("allocations") or 0) + int(external_count)
+
+            if active_connections >= capacity_limit:
+                waited = await _wait_for_source_handover_window(
+                    source=primary_source,
+                    capacity_key_name=capacity_key_name,
+                    capacity_limit=capacity_limit,
+                    client_fingerprint=client_fingerprint,
+                    exclude_connection_id=connection_id,
+                )
+                if waited:
+                    logger.info(
+                        "CSO channel handover grace cleared capacity channel=%s source_id=%s key=%s",
+                        channel_id_int,
+                        getattr(primary_source, "id", None),
+                        capacity_key_name,
+                    )
+                else:
+                    logger.info(
+                        "CSO channel handover grace exhausted channel=%s source_id=%s key=%s",
+                        channel_id_int,
+                        getattr(primary_source, "id", None),
+                        capacity_key_name,
+                    )
+                    usage = await cso_capacity_registry.get_usage(capacity_key_name)
+                    activity_sessions = await get_stream_activity_snapshot()
+                    external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+                    active_connections = int(usage.get("allocations") or 0) + int(external_count)
+                    if active_connections >= capacity_limit:
+                        return await _connection_limit_blocked_response(
+                            config,
+                            channel,
+                            effective_profile=effective_profile,
+                        )
     generator, content_type, error_message, status = await subscribe_channel_stream(
         config=config,
         channel=channel,
-        stream_key=getattr(request, "_stream_key", None),
+        stream_key=stream_key,
         profile=effective_profile,
         connection_id=connection_id,
         prebuffer_bytes=prebuffer_bytes,
@@ -561,6 +778,12 @@ async def stream_channel(channel_id):
                 ):
                     yield chunk
         finally:
+            try:
+                close = getattr(generator, "aclose", None)
+                if close is not None:
+                    await close()
+            except Exception:
+                pass
             await stop_stream_activity(
                 "",
                 connection_id=connection_id,
