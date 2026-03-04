@@ -14,6 +14,7 @@ from sqlalchemy.orm import joinedload
 from backend.cso import (
     cso_capacity_registry,
     emit_channel_stream_event,
+    is_internal_cso_activity,
     resolve_source_url_for_stream,
     source_capacity_key,
     source_capacity_limit,
@@ -68,9 +69,7 @@ def _count_external_source_connections(activity_sessions, source, capacity_key_n
             continue
         endpoint = str(session.get("endpoint") or "")
         display_url = str(session.get("display_url") or "").lower()
-        if "/tic-api/cso/channel/" in endpoint:
-            continue
-        if endpoint.startswith("/tic-tvh/") and "tic-cso-" in display_url:
+        if is_internal_cso_activity(endpoint, display_url):
             continue
 
         session_key = None

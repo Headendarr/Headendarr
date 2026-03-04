@@ -1805,6 +1805,16 @@ def _increment_external_count(external_counts, key):
     external_counts[key] = int(external_counts.get(key) or 0) + 1
 
 
+def is_internal_cso_activity(endpoint: str, display_url: str = "") -> bool:
+    endpoint_value = str(endpoint or "")
+    display_url_value = str(display_url or "").lower()
+    if "/tic-api/cso/channel/" in endpoint_value or "/tic-api/cso/channel_stream/" in endpoint_value:
+        return True
+    if endpoint_value.startswith("/tic-tvh/") and "tic-cso-" in display_url_value:
+        return True
+    return False
+
+
 async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_sessions=None):
     external_counts = {}
     fallback_channel_ids = set()
@@ -1820,10 +1830,8 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
         endpoint = str(session.get("endpoint") or "")
         display_url = str(session.get("display_url") or "").lower()
         # CSO endpoint usage is already tracked via in-process allocations.
-        if "/tic-api/cso/channel/" in endpoint:
-            continue
         # TVH subscriptions against CSO mux should not count as additional external usage.
-        if endpoint.startswith("/tic-tvh/") and "tic-cso-" in display_url:
+        if is_internal_cso_activity(endpoint, display_url):
             continue
 
         xc_account_id = _safe_int(session.get("xc_account_id"))

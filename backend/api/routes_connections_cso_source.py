@@ -18,6 +18,7 @@ from backend.auth import get_request_client_ip, skip_stream_connect_audit, strea
 from backend.cso import (
     cso_capacity_registry,
     cso_session_manager,
+    is_internal_cso_activity,
     preempt_backpressured_clients_for_capacity_key,
     policy_content_type,
     resolve_channel_for_stream,
@@ -216,9 +217,7 @@ def _active_external_count_for_source(activity_sessions, source, capacity_key_na
             continue
         endpoint = str(session.get("endpoint") or "")
         display_url = str(session.get("display_url") or "").lower()
-        if "/tic-api/cso/channel/" in endpoint:
-            continue
-        if endpoint.startswith("/tic-tvh/") and "tic-cso-" in display_url:
+        if is_internal_cso_activity(endpoint, display_url):
             continue
 
         session_key = None
