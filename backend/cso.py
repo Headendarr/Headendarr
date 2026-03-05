@@ -2711,8 +2711,8 @@ async def subscribe_channel_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
-                await output_session.touch_client(connection_id)
                 yield chunk
+                await output_session.touch_client(connection_id)
         finally:
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
@@ -2851,8 +2851,8 @@ async def subscribe_source_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
-                await output_session.touch_client(connection_id)
                 yield chunk
+                await output_session.touch_client(connection_id)
         finally:
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
