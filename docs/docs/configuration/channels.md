@@ -120,7 +120,7 @@ For detailed performance analysis, use the built-in **Stream Diagnostics** tool.
 
 <ZoomImage src="/img/screenshots/channels-page-channel-settings-streams-action-buttons-desktop.png" alt="Test Stream Action Button" className="screenshot" />
 
-2.  The diagnostic tool will run a 20-second sample of the stream.
+2.  The diagnostic tool will run a 12-second sample of the stream after first media bytes are received.
 3.  **Bypass HLS Proxies**: If your channel is configured to use an HLS proxy, checking this box allows you to test the **original source** directly. This is an excellent way to compare performance (e.g., comparing a VPN-routed proxy against a direct local connection) to see exactly where a bottleneck is occurring.
 
 <ZoomImage src="/img/screenshots/channels-page-channel-settings-test-stream-results-desktop.png" alt="Stream Diagnostics Results" className="screenshot" />

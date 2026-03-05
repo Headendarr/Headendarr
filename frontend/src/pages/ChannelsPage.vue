@@ -433,6 +433,9 @@
                                   >
                                     <q-icon name="warning" class="q-mr-xs" />
                                     <span class="gt-xs">Needs attention</span>
+                                    <q-tooltip class="bg-white text-primary">
+                                      {{ channelIssueFirstLabel(element.status) }}
+                                    </q-tooltip>
                                   </q-chip>
                                   <q-chip
                                     v-if="
@@ -1434,7 +1437,33 @@ export default defineComponent({
     },
     channelIssueFirstLabel: function(status) {
       const labels = this.channelIssueLabels(status);
-      return labels.length ? labels[0] : '';
+      const baseLabel = labels.length ? labels[0] : '';
+      if (!baseLabel) {
+        return '';
+      }
+      const csoHealth = status?.cso_health || {};
+      const sourceIssues = Array.isArray(csoHealth?.source_issues) ? csoHealth.source_issues : [];
+      const firstUnhealthy = sourceIssues[0] || null;
+      if (!firstUnhealthy) {
+        return baseLabel;
+      }
+      const details = firstUnhealthy.details || {};
+      const metrics = details.metrics || {};
+      const reason = details.reason || firstUnhealthy.reason || '';
+      const sourceId = details.source_id || firstUnhealthy.source_id || null;
+      const avgSpeed = Number(metrics.avg_speed || 0);
+      const avgBitrate = Number(metrics.avg_bitrate || 0);
+      const metricParts = [];
+      if (avgSpeed > 0) {
+        metricParts.push(`${avgSpeed.toFixed(2)}x`);
+      }
+      if (avgBitrate > 0) {
+        metricParts.push(`${(avgBitrate / 1000000).toFixed(2)} Mbps`);
+      }
+      const sourceLabel = sourceId ? `Source ${sourceId}` : 'Source';
+      const reasonLabel = reason ? ` ${reason}` : '';
+      const metricsLabel = metricParts.length ? ` (${metricParts.join(', ')})` : '';
+      return `${baseLabel}: ${sourceLabel}${reasonLabel}${metricsLabel}`;
     },
     streamSourceNames: function(channel) {
       if (!channel?.sources) {

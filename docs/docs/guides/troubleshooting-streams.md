@@ -10,7 +10,7 @@ Headendarr includes a built-in **Stream Diagnostics** tool that automates the te
 
 ## 1. Using Stream Diagnostics
 
-The diagnostic tool can be accessed directly from any channel's settings. It runs a 20-second sampling of the stream to determine its health.
+The diagnostic tool can be accessed directly from any channel's settings. It runs a 12-second sampling window after media data starts flowing, with startup/no-data guards to avoid false failures.
 
 ### How to Start a Test
 
@@ -26,7 +26,7 @@ When the test runs, Headendarr performs several checks:
 
 - **Hostname Resolution:** Verifies that your server can find the provider's IP.
 - **Geolocation:** Identifies where the stream is physically originating from.
-- **Performance Sample:** Downloads 20 seconds of stream data to calculate bitrate and speed.
+- **Performance Sample:** Samples 12 seconds of stream data (after first media bytes) to calculate bitrate and speed.
 
 ![Diagnostics in Progress](/img/screenshots/channels-page-channel-settings-test-stream-in-progress-desktop.png)
 

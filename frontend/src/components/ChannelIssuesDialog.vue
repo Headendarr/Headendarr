@@ -251,13 +251,24 @@ export default {
       }
       return entries.map((entry) => {
         const details = entry.details || {};
+        const metrics = details.metrics || {};
         const reason = details.reason || entry.reason || 'unknown';
         const sourceId = details.source_id || entry.source_id || 'unknown';
         const streamName = details.stream_name || 'Unknown stream';
         const playlistName = details.playlist_name || 'Unknown playlist';
         const createdAt = entry.created_at || '';
+        const avgSpeed = Number(metrics.avg_speed || 0);
+        const avgBitrate = Number(metrics.avg_bitrate || 0);
+        const metricParts = [];
+        if (avgSpeed > 0) {
+          metricParts.push(`${avgSpeed.toFixed(2)}x`);
+        }
+        if (avgBitrate > 0) {
+          metricParts.push(`${(avgBitrate / 1000000).toFixed(2)} Mbps`);
+        }
+        const metricLabel = metricParts.length ? ` [${metricParts.join(', ')}]` : '';
         const when = createdAt ? ` at ${createdAt}` : '';
-        return `Source ${sourceId}: ${streamName} (${playlistName}) - ${reason}${when}`;
+        return `Source ${sourceId}: ${streamName} (${playlistName}) - ${reason}${metricLabel}${when}`;
       });
     },
   },

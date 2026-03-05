@@ -24,6 +24,14 @@ These settings define how Headendarr interacts with external services and how cl
   - Purpose: provide the callback base URL written into TVHeadend for XMLTV and stream callback URLs when TVHeadend is external.
   - Client-facing playlist/XMLTV/HDHomeRun URLs are derived from the request host in AIO mode.
 - Transcoding behavior is controlled per profile in **Stream Profiles**. Disable a transcoding profile there to prevent its use.
+- **Enable periodic channel stream health checks**: Runs CSO-managed background diagnostics for channel streams when sources are idle.
+  - Scheduler cadence: every 5 minutes.
+  - Per-stream cooldown: 6 hours (a stream is skipped if it was checked within the last 6 hours).
+  - Background sample window: 7 seconds of media sampling after first media bytes are received.
+  - Startup guard: sampling does not begin until first media data arrives; checks abort if no media arrives within 30 seconds.
+  - Parallelism: checks run in bounded parallel workers (default 2), capped per run (default 10 streams).
+  - Playback priority: any background diagnostic using source capacity is pre-empted when real playback needs that capacity.
+  - No-overlap worker: a new scheduler tick does not start a second worker while the previous health-check worker is still running.
 - **Stream Profiles table**:
   - Enable/disable each supported `profile` value exposed on stream and playlist URLs.
   - Configure per-profile hardware acceleration preference (`HW Accel`, VAAPI encode path) for transcoding profiles.
