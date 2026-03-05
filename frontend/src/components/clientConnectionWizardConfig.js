@@ -19,13 +19,18 @@ const CLIENT_PRESETS = {
     },
   },
   jellyfin: {
-    methodOrder: ['m3u_per_source', 'm3u_combined', 'hdhr_per_source'],
+    methodOrder: ['hdhr_per_source', 'm3u_per_source', 'm3u_combined'],
     recommendedProfiles: {
+      hdhr_per_source: {
+        routedThroughTvh: ['none'],
+        direct: ['mpegts', 'aac-mpegts', 'tvh'],
+      },
+      hdhr_combined: ['mpegts', 'aac-mpegts',  'tvh'],
       m3u_per_source: {
         routedThroughTvh: ['none'],
-        direct: ['aac-matroska', 'matroska', 'h264-aac-mpegts'],
+        direct: ['aac-matroska', 'mpegts', 'aac-mpegts'],
       },
-      m3u_combined: ['aac-matroska', 'matroska', 'h264-aac-mpegts'],
+      m3u_combined: ['aac-matroska', 'mpegts', 'aac-mpegts'],
     },
   },
   vlc: {
