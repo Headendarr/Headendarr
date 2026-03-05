@@ -14,7 +14,8 @@ COPY ./frontend/package-lock.json /build/
 
 WORKDIR /build
 
-RUN \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo "** Install node build dependencies **" \
         && apt-get update \
         && apt-get install -y --no-install-recommends \
@@ -26,8 +27,9 @@ RUN \
             python3-pip \
             python3-setuptools \
             python3-venv \
-            python3-wheel \
-    && \
+            python3-wheel
+
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     echo "** Install node dependencies **" \
         && npm ci --include dev \
     && \
@@ -70,8 +72,7 @@ RUN \
     echo
 
 # Reduce pip noise & ensure deterministic, faster installs
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -112,6 +112,9 @@ jobs:
           echo "service_name:${SERVICE_NAME:?}"
           echo "service_name=${SERVICE_NAME:?}" >> $GITHUB_OUTPUT
 
+          echo "sha_short:${SHA_SHORT:?}"
+          echo "sha_short=${SHA_SHORT:?}" >> $GITHUB_OUTPUT
+
           echo "docker_image:${DOCKER_HUB_IMAGE:?}"
           echo "docker_image=${DOCKER_HUB_IMAGE:?}" >> $GITHUB_OUTPUT
 
@@ -120,6 +123,13 @@ jobs:
 
           echo "docker_push:${DOCKER_PUSH:?}"
           echo "docker_push=${DOCKER_PUSH:?}" >> $GITHUB_OUTPUT
+
+          DOCKER_PULL="false"
+          if [[ ${GITHUB_REF} == refs/heads/master ]] || [[ "${{ github.event_name }}" == "schedule" ]]; then
+            DOCKER_PULL="true"
+          fi
+          echo "docker_pull:${DOCKER_PULL:?}"
+          echo "docker_pull=${DOCKER_PULL:?}" >> $GITHUB_OUTPUT
 
           echo "docker_build_date:${BUILD_DATE:?}" 
           echo "docker_build_date=${BUILD_DATE:?}" >> $GITHUB_OUTPUT
@@ -161,43 +171,17 @@ jobs:
 
       # ---
       - name: Build Frontend Cache
-        if: success()
+        if: success() && matrix.base-image == 'python:3.12-trixie'
         uses: docker/build-push-action@b32b51a8eda65d6793cd0494a773d4f6bcef32dc #v6.11.0
         with:
           context: .
           file: docker/Dockerfile
           target: frontend_build_stage
-          build-args: |
-            VERSION=${{ github.sha }}
-            BUILD_DATE=${{ steps.prepare.outputs.docker_build_date }}
-            BASE_IMAGE=${{ matrix.base-image }}
           platforms: linux/amd64,linux/arm64
-          pull: "true"
+          pull: ${{ steps.prepare.outputs.docker_pull }}
           push: "false"
-          tags: |
-            ${{ steps.prepare.outputs.ghcr_image }}:build-cache-frontend-build-stage
-          cache-from: type=gha,scope=${{ steps.prepare.outputs.service_name }}-frontend-build-stage
-          cache-to: type=gha,scope=${{ steps.prepare.outputs.service_name }}-frontend-build-stage,mode=max
-
-      # ---
-      - name: Build Backend Cache
-        if: success()
-        uses: docker/build-push-action@b32b51a8eda65d6793cd0494a773d4f6bcef32dc #v6.11.0
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: backend_build_stage
-          build-args: |
-            VERSION=${{ github.sha }}
-            BUILD_DATE=${{ steps.prepare.outputs.docker_build_date }}
-            BASE_IMAGE=${{ matrix.base-image }}
-          platforms: linux/amd64,linux/arm64
-          pull: "true"
-          push: "false"
-          tags: |
-            ${{ steps.prepare.outputs.ghcr_image }}:build-cache-backend-build-stage
-          cache-from: type=gha,scope=${{ steps.prepare.outputs.service_name }}-backend-build-stage
-          cache-to: type=gha,scope=${{ steps.prepare.outputs.service_name }}-backend-build-stage,mode=max
+          cache-from: type=gha,scope=frontend-build-stage
+          cache-to: type=gha,scope=frontend-build-stage,mode=max
 
       # ---
       - name: Build Main Image
@@ -211,7 +195,7 @@ jobs:
             BUILD_DATE=${{ steps.prepare.outputs.docker_build_date }}
             BASE_IMAGE=${{ matrix.base-image }}
           platforms: linux/amd64,linux/arm64
-          pull: "true"
+          pull: ${{ steps.prepare.outputs.docker_pull }}
           push: ${{ steps.prepare.outputs.docker_push }}
           tags: |
             ${{ steps.prepare.outputs.docker_tags }}
@@ -219,8 +203,7 @@ jobs:
             ${{ steps.meta.outputs.labels }}
           cache-from: |
             type=gha,scope=${{ steps.prepare.outputs.service_name }}-main
-            type=gha,scope=${{ steps.prepare.outputs.service_name }}-frontend-build-stage
-            type=gha,scope=${{ steps.prepare.outputs.service_name }}-backend-build-stage
+            type=gha,scope=frontend-build-stage
           cache-to: type=gha,scope=${{ steps.prepare.outputs.service_name }}-main,mode=max
 
       # ---
