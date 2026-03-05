@@ -50,6 +50,7 @@ CSO_SPEED_STALE_SECONDS_DEFAULT = int(os.environ.get("CSO_SPEED_STALE_SECONDS", 
 CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = int(os.environ.get("CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS", "2") or 2)
 CSO_INGEST_RW_TIMEOUT_US = int(os.environ.get("CSO_INGEST_RW_TIMEOUT_US", "15000000") or 15000000)
 CSO_INGEST_TIMEOUT_US = int(os.environ.get("CSO_INGEST_TIMEOUT_US", "10000000") or 10000000)
+CSO_OUTPUT_CLIENT_STALE_SECONDS = float(os.environ.get("CSO_OUTPUT_CLIENT_STALE_SECONDS", "8") or 8)
 CSO_HLS_SEGMENT_SECONDS = int(os.environ.get("CSO_HLS_SEGMENT_SECONDS", "3") or 3)
 CSO_HLS_LIST_SIZE = int(os.environ.get("CSO_HLS_LIST_SIZE", "8") or 8)
 CSO_HLS_CLIENT_IDLE_SECONDS = min(10, max(1, int(CSO_HLS_SEGMENT_SECONDS) * 3))
@@ -1464,6 +1465,7 @@ class CsoOutputSession:
         self.ingest_queue = None
         self._recent_ffmpeg_stderr = deque(maxlen=30)
         self.client_drop_state = {}
+        self.client_last_touch = {}
 
     def _ffmpeg_error_summary(self):
         lines = [line for line in self._recent_ffmpeg_stderr if line]
@@ -1617,6 +1619,7 @@ class CsoOutputSession:
             return
         self.last_activity = time.time()
         now = time.time()
+        stale_clients = []
         async with self.lock:
             self.history.append(chunk)
             self.history_bytes += len(chunk)
@@ -1624,6 +1627,10 @@ class CsoOutputSession:
                 old = self.history.popleft()
                 self.history_bytes -= len(old)
             for connection_id, q in list(self.clients.items()):
+                last_touch = float(self.client_last_touch.get(connection_id, now) or now)
+                if (now - last_touch) >= float(CSO_OUTPUT_CLIENT_STALE_SECONDS):
+                    stale_clients.append(connection_id)
+                    continue
                 try:
                     q.put_nowait(chunk)
                     self.client_drop_state.pop(connection_id, None)
@@ -1640,6 +1647,15 @@ class CsoOutputSession:
                             state["count"] = int(state.get("count") or 0) + 1
                     except Exception:
                         pass
+        for connection_id in stale_clients:
+            logger.warning(
+                "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=no_consumer_progress stale_seconds=%s",
+                self.channel_id,
+                self.key,
+                connection_id,
+                int(CSO_OUTPUT_CLIENT_STALE_SECONDS),
+            )
+            await self.remove_client(connection_id)
 
     async def add_client(self, connection_id, prebuffer_bytes=0):
         async with self.lock:
@@ -1659,6 +1675,7 @@ class CsoOutputSession:
                         break
             self.clients[connection_id] = q
             self.client_drop_state.pop(connection_id, None)
+            self.client_last_touch[connection_id] = time.time()
             client_count = len(self.clients)
         logger.info(
             "CSO output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
@@ -1670,11 +1687,34 @@ class CsoOutputSession:
         )
         return q
 
-    async def remove_client(self, connection_id):
+    async def touch_client(self, connection_id):
         async with self.lock:
-            self.clients.pop(connection_id, None)
+            if connection_id in self.clients:
+                self.client_last_touch[connection_id] = time.time()
+                self.last_activity = time.time()
+
+    async def remove_client(self, connection_id):
+        removed_queue = None
+        async with self.lock:
+            removed_queue = self.clients.pop(connection_id, None)
             self.client_drop_state.pop(connection_id, None)
+            self.client_last_touch.pop(connection_id, None)
             remaining = len(self.clients)
+        if removed_queue is not None:
+            try:
+                removed_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                for _ in range(3):
+                    try:
+                        removed_queue.get_nowait()
+                    except Exception:
+                        break
+                try:
+                    removed_queue.put_nowait(None)
+                except Exception:
+                    pass
+            except Exception:
+                pass
         logger.info(
             "CSO output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
             self.channel_id,
@@ -1762,6 +1802,7 @@ class CsoOutputSession:
                 except Exception:
                     pass
             self.client_drop_state.clear()
+            self.client_last_touch.clear()
 
 
 class CsoHlsOutputSession:
@@ -2670,6 +2711,7 @@ async def subscribe_channel_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
+                await output_session.touch_client(connection_id)
                 yield chunk
         finally:
             await output_session.remove_client(connection_id)
@@ -2809,6 +2851,7 @@ async def subscribe_source_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
+                await output_session.touch_client(connection_id)
                 yield chunk
         finally:
             await output_session.remove_client(connection_id)
