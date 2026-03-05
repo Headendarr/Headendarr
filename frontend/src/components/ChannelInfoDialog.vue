@@ -673,7 +673,16 @@ export default {
       }).onOk(() => dismiss());
     },
     async openStreamTestDialog(stream) {
-      this.testStreamUrl = this.cleanStreamUrl(stream?.stream_url);
+      let resolvedTestUrl = null;
+      try {
+        const preview = await this.resolvePreviewUrl(stream, {useChannelSource: true});
+        if (preview?.preview_url) {
+          resolvedTestUrl = this.cleanStreamUrl(preview.preview_url);
+        }
+      } catch (error) {
+        console.warn('Failed to resolve diagnostics preview URL, falling back to stored stream URL:', error);
+      }
+      this.testStreamUrl = resolvedTestUrl || this.cleanStreamUrl(stream?.stream_url);
       this.testStreamUserAgent = (stream?.playlist_user_agent || '').trim();
       this.testStreamSourceId = stream?.id || null;
       if (!this.testStreamUrl) {
