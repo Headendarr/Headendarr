@@ -70,7 +70,7 @@ class StreamActivityTracker:
 
     def __init__(self, activity_ttl=20, history_ttl=3600):
         self.sessions = {}  # connection_id -> session_dict
-        self.history = {}   # connection_id -> { 'last_seen': float, 'entry': dict }
+        self.history = {}  # connection_id -> { 'last_seen': float, 'entry': dict }
         self.playlist_parents = {}  # child_url -> parent_url (short-lived)
         self.lock = asyncio.Lock()
         self.activity_ttl = activity_ttl
@@ -82,6 +82,41 @@ class StreamActivityTracker:
             return getattr(request, "_stream_user", None) or getattr(request, "_current_user", None)
         except Exception:
             return None
+
+    @staticmethod
+    def _request_client_hints():
+        try:
+            headers = request.headers
+        except Exception:
+            return None
+        if not headers:
+            return None
+
+        # Capture custom X-* headers generically for client detection.
+        # Keep payload bounded and avoid persisting secret-like values.
+        hints = {}
+        max_headers = 64
+        for raw_key, raw_value in headers.items():
+            key_text = str(raw_key or "").strip()
+            if not key_text:
+                continue
+            if not key_text.lower().startswith("x-"):
+                continue
+            value_text = str(raw_value or "").strip()
+            if not value_text:
+                continue
+            key_norm = key_text.lower().replace("-", "_")
+
+            # Do not persist sensitive secrets/tokens from custom headers.
+            if any(term in key_norm for term in ("token", "secret", "password", "key", "authorization", "cookie")):
+                value_text = "[redacted]"
+            elif len(value_text) > 256:
+                value_text = f"{value_text[:256]}…"
+
+            hints[key_norm] = value_text
+            if len(hints) >= max_headers:
+                break
+        return hints or None
 
     def _resolve_playlist_root(self, url: str) -> str:
         current = url
@@ -96,6 +131,7 @@ class StreamActivityTracker:
         if not url:
             return False
         from backend.channels import normalize_url
+
         normalized = normalize_url(url)
         path = urlparse(normalized).path.lower()
         return path.endswith((".ts", ".vtt", ".key"))
@@ -120,6 +156,7 @@ class StreamActivityTracker:
         source_id=None,
         playlist_id=None,
         xc_account_id=None,
+        client_hints=None,
     ):
         if not user:
             user = self._request_user()
@@ -138,11 +175,14 @@ class StreamActivityTracker:
                 user_agent = request.headers.get("User-Agent")
             except Exception:
                 user_agent = None
+        if client_hints is None:
+            client_hints = self._request_client_hints()
 
         if not connection_id:
             connection_id = uuid.uuid4().hex
 
         from backend.channels import build_stream_source_index, normalize_url, resolve_stream_target
+
         normalized_identity = normalize_url(identity)
         # Resolve authoritative identity (playlist > segment)
         canonical_identity = self._resolve_playlist_root(normalized_identity)
@@ -184,13 +224,22 @@ class StreamActivityTracker:
                 session["last_seen"] = now
                 session["ip_address"] = ip_address
                 session["user_agent"] = user_agent
+                if client_hints:
+                    existing_hints = session.get("client_hints") or {}
+                    if isinstance(existing_hints, dict):
+                        merged_hints = dict(existing_hints)
+                        merged_hints.update(client_hints)
+                        session["client_hints"] = merged_hints
+                    else:
+                        session["client_hints"] = dict(client_hints)
                 if details_override:
                     session["details"] = details_override
 
                 # Update identity only if the new one is "better" (not a segment) or we don't have one
                 # OR if the new one resolves to a channel and the current one doesn't.
-                is_better = canonical_identity and (not session.get(
-                    "identity") or self._is_segment(session.get("identity")))
+                is_better = canonical_identity and (
+                    not session.get("identity") or self._is_segment(session.get("identity"))
+                )
                 if is_better and not self._is_segment(canonical_identity):
                     session["identity"] = canonical_identity
 
@@ -227,6 +276,14 @@ class StreamActivityTracker:
                 session["last_seen"] = now
                 session["ip_address"] = ip_address
                 session["user_agent"] = user_agent
+                if client_hints:
+                    existing_hints = session.get("client_hints") or {}
+                    if isinstance(existing_hints, dict):
+                        merged_hints = dict(existing_hints)
+                        merged_hints.update(client_hints)
+                        session["client_hints"] = merged_hints
+                    else:
+                        session["client_hints"] = dict(client_hints)
                 if details_override:
                     session["details"] = details_override
 
@@ -289,6 +346,7 @@ class StreamActivityTracker:
                 "endpoint": base_endpoint,
                 "ip_address": ip_address,
                 "user_agent": user_agent,
+                "client_hints": dict(client_hints) if isinstance(client_hints, dict) else None,
                 "related_identities": [normalized_identity] if normalized_identity else [],
                 "channel_id": channel_id,
                 "channel_name": channel_name,
@@ -386,6 +444,7 @@ class StreamActivityTracker:
                         "details": s.get("details"),
                         "ip_address": s.get("ip_address"),
                         "user_agent": s.get("user_agent"),
+                        "client_hints": s.get("client_hints"),
                         "started_at": started_at,
                         "last_seen": s.get("last_seen"),
                         "active_seconds": max(int(now - started_at), 0),
@@ -556,6 +615,7 @@ async def upsert_stream_activity(
     source_id=None,
     playlist_id=None,
     xc_account_id=None,
+    client_hints=None,
 ):
     return await _stream_activity_tracker.mark(
         identity,
@@ -576,6 +636,7 @@ async def upsert_stream_activity(
         source_id=source_id,
         playlist_id=playlist_id,
         xc_account_id=xc_account_id,
+        client_hints=client_hints,
     )
 
 

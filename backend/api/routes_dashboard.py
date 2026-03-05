@@ -205,6 +205,7 @@ async def api_dashboard_activity():
     for row in activity_rows:
         ip_address = row.get("ip_address")
         user_agent = row.get("user_agent")
+        client_hints = row.get("client_hints")
 
         # Prioritize metadata already in the tracker session (enriched during mark/upsert)
         channel_id = row.get("channel_id")
@@ -242,7 +243,8 @@ async def api_dashboard_activity():
                 "source_url": source_url,
                 "ip_address": ip_address,
                 "user_agent": user_agent,
-                "device_label": build_device_label(user_agent),
+                "client_hints": client_hints,
+                "device_label": build_device_label(user_agent, client_hints),
                 "started_at": row.get("started_at"),
                 "last_seen": row.get("last_seen"),
                 "active_seconds": row.get("active_seconds"),

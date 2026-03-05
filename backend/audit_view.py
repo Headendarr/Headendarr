@@ -19,8 +19,18 @@ def derive_audit_mode(event_type: str | None, endpoint: str | None) -> str | Non
     return None
 
 
-def build_device_label(user_agent: str | None) -> str:
+def build_device_label(user_agent: str | None, client_hints: dict | None = None) -> str:
     ua = (user_agent or "").strip()
+    hints = client_hints if isinstance(client_hints, dict) else {}
+    hint_blob_lc = " ".join(
+        [str(key).lower() for key in hints.keys()] + [str(value).lower() for value in hints.values() if value]
+    )
+
+    # Parse clients from header hints
+    if "plex" in hint_blob_lc:
+        return "Plex"
+
+    # Parse clients from user agent specifically
     if not ua:
         return "Unknown"
     ua_lc = ua.lower()
@@ -28,6 +38,8 @@ def build_device_label(user_agent: str | None) -> str:
         return "TiviMate"
     if "vlc" in ua_lc or "libvlc" in ua_lc:
         return "VLC"
+    if "lavf/" in ua_lc or "libavformat" in ua_lc:
+        return "FFmpeg (Lavf)"
     if "tvheadend" in ua_lc:
         return "TVHeadend"
     if "firefox" in ua_lc:
@@ -108,6 +120,6 @@ def serialize_audit_row(row: dict[str, Any]) -> dict[str, Any]:
         "user_id": row.get("user_id"),
         "username": row.get("username"),
         "activity_label": build_activity_label(event_type, endpoint, details),
-        "device_label": build_device_label(user_agent),
+        "device_label": build_device_label(user_agent, row.get("client_hints")),
         "audit_mode": derive_audit_mode(event_type, endpoint),
     }
