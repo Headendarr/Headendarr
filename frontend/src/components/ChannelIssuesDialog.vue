@@ -172,14 +172,14 @@ export default {
           title: 'Channel Stream Organiser connection issue',
           description:
             'CSO could not connect to an upstream source or maintain output playback. Check source availability, connection limits, and channel stream ordering.',
-          csoDetails: this.csoIssueDetails,
+          csoDetails: this.csoConnectionIssueDetails,
           actions: [actions.openAuditLogs, actions.openSettings],
         },
         cso_stream_unhealthy: {
           title: 'Channel Stream Organiser unhealthy stream',
           description:
             'CSO detected an unhealthy stream (for example unreachable, too slow, or unstable). Review source quality, credentials, and stream priority.',
-          csoDetails: this.csoIssueDetails,
+          csoDetails: this.csoUnhealthyIssueDetails,
           actions: [actions.openAuditLogs, actions.openSettings],
         },
       };
@@ -211,7 +211,11 @@ export default {
     csoLatestEvent() {
       return this.channel?.status?.cso_health?.latest_event || null;
     },
-    csoIssueDetails() {
+    csoSourceIssues() {
+      const sourceIssues = this.channel?.status?.cso_health?.source_issues;
+      return Array.isArray(sourceIssues) ? sourceIssues : [];
+    },
+    csoConnectionIssueDetails() {
       const event = this.csoLatestEvent || {};
       const details = event.details || {};
       const lines = [];
@@ -239,6 +243,22 @@ export default {
         lines.push(`At: ${event.created_at}`);
       }
       return lines;
+    },
+    csoUnhealthyIssueDetails() {
+      const entries = this.csoSourceIssues;
+      if (!entries.length) {
+        return this.csoConnectionIssueDetails;
+      }
+      return entries.map((entry) => {
+        const details = entry.details || {};
+        const reason = details.reason || entry.reason || 'unknown';
+        const sourceId = details.source_id || entry.source_id || 'unknown';
+        const streamName = details.stream_name || 'Unknown stream';
+        const playlistName = details.playlist_name || 'Unknown playlist';
+        const createdAt = entry.created_at || '';
+        const when = createdAt ? ` at ${createdAt}` : '';
+        return `Source ${sourceId}: ${streamName} (${playlistName}) - ${reason}${when}`;
+      });
     },
   },
   methods: {

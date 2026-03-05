@@ -82,7 +82,7 @@ async def _fetch_cso_attention_map(channel_ids):
                     ]
                 ),
             )
-            .order_by(CsoEventLog.created_at.desc())
+            .order_by(CsoEventLog.created_at.asc())
         )
         rows = result.scalars().all()
 
@@ -94,9 +94,9 @@ async def _fetch_cso_attention_map(channel_ids):
         channel_state = state.setdefault(
             channel_id,
             {
-                "latest_recovery_at": None,
+                "latest_connection_recovery_at": None,
                 "connection_issue": None,
-                "unhealthy_issue": None,
+                "health_by_source": {},
             },
         )
         details = _parse_cso_event_details(row.details_json)
@@ -105,12 +105,6 @@ async def _fetch_cso_attention_map(channel_ids):
         severity = str(row.severity or "warning").strip().lower()
         created_at = row.created_at
 
-        if event_type in {"switch_success", "session_start", "health_recovered"}:
-            latest_recovery = channel_state.get("latest_recovery_at")
-            if latest_recovery is None or created_at > latest_recovery:
-                channel_state["latest_recovery_at"] = created_at
-            continue
-
         payload = {
             "event_type": event_type,
             "severity": severity,
@@ -118,7 +112,14 @@ async def _fetch_cso_attention_map(channel_ids):
             "details": details,
             "created_at": to_utc_iso(created_at),
             "_created_at": created_at,
+            "source_id": int(getattr(row, "source_id", 0) or 0),
         }
+
+        if event_type in {"switch_success", "session_start"}:
+            latest_recovery = channel_state.get("latest_connection_recovery_at")
+            if latest_recovery is None or created_at > latest_recovery:
+                channel_state["latest_connection_recovery_at"] = created_at
+            continue
 
         if event_type in {
             "playback_unavailable",
@@ -135,13 +136,35 @@ async def _fetch_cso_attention_map(channel_ids):
             "unreachable",
             "unstable",
         }:
-            current = channel_state.get("unhealthy_issue")
+            source_id = int(payload.get("source_id") or int(details.get("source_id") or 0) or 0)
+            health_state = channel_state["health_by_source"].setdefault(
+                source_id,
+                {
+                    "latest_unhealthy": None,
+                    "latest_recovery_at": None,
+                },
+            )
+            current = health_state.get("latest_unhealthy")
             if current is None or created_at > current.get("_created_at"):
-                channel_state["unhealthy_issue"] = payload
+                health_state["latest_unhealthy"] = payload
+            continue
+
+        if event_type == "health_recovered":
+            source_id = int(payload.get("source_id") or int(details.get("source_id") or 0) or 0)
+            health_state = channel_state["health_by_source"].setdefault(
+                source_id,
+                {
+                    "latest_unhealthy": None,
+                    "latest_recovery_at": None,
+                },
+            )
+            latest_recovery = health_state.get("latest_recovery_at")
+            if latest_recovery is None or created_at > latest_recovery:
+                health_state["latest_recovery_at"] = created_at
 
     attention_map = {}
     for channel_id, channel_state in state.items():
-        recovery_at = channel_state.get("latest_recovery_at")
+        recovery_at = channel_state.get("latest_connection_recovery_at")
         issues = []
         latest_event = None
 
@@ -152,24 +175,43 @@ async def _fetch_cso_attention_map(channel_ids):
                 issues.append("cso_connection_issue")
                 latest_event = connection_issue
 
-        unhealthy_issue = channel_state.get("unhealthy_issue")
-        if unhealthy_issue:
+        unresolved_source_issues = []
+        for source_state in (channel_state.get("health_by_source") or {}).values():
+            unhealthy_issue = source_state.get("latest_unhealthy")
+            if not unhealthy_issue:
+                continue
             issue_at = unhealthy_issue.get("_created_at")
-            if recovery_at is None or (issue_at and issue_at > recovery_at):
-                issues.append("cso_stream_unhealthy")
+            source_recovery_at = source_state.get("latest_recovery_at")
+            if source_recovery_at is not None and issue_at and issue_at <= source_recovery_at:
+                continue
+            unresolved_source_issues.append(unhealthy_issue)
+
+        if unresolved_source_issues:
+            issues.append("cso_stream_unhealthy")
+            for unresolved_issue in unresolved_source_issues:
                 if latest_event is None or (
-                    unhealthy_issue.get("_created_at")
-                    and unhealthy_issue.get("_created_at") > latest_event.get("_created_at")
+                    unresolved_issue.get("_created_at")
+                    and unresolved_issue.get("_created_at") > latest_event.get("_created_at")
                 ):
-                    latest_event = unhealthy_issue
+                    latest_event = unresolved_issue
 
         if not issues:
             continue
         if latest_event:
             latest_event.pop("_created_at", None)
+        source_issues = []
+        for unresolved_issue in sorted(
+            unresolved_source_issues,
+            key=lambda item: item.get("_created_at") or 0,
+            reverse=True,
+        ):
+            payload = dict(unresolved_issue)
+            payload.pop("_created_at", None)
+            source_issues.append(payload)
         attention_map[channel_id] = {
             "issues": sorted(set(issues)),
             "latest_event": latest_event or {},
+            "source_issues": source_issues,
         }
     for payload in attention_map.values():
         payload["issues"] = sorted(payload["issues"])
