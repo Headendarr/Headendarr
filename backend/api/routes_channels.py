@@ -85,6 +85,16 @@ async def _fetch_cso_attention_map(channel_ids):
             .order_by(CsoEventLog.created_at.asc())
         )
         rows = result.scalars().all()
+        sources_result = await session.execute(
+            select(ChannelSource.channel_id, ChannelSource.id).where(ChannelSource.channel_id.in_(normalized_ids))
+        )
+        active_sources_by_channel = {}
+        for channel_id, source_id in sources_result.all():
+            channel_key = int(channel_id or 0)
+            source_key = int(source_id or 0)
+            if channel_key <= 0 or source_key <= 0:
+                continue
+            active_sources_by_channel.setdefault(channel_key, set()).add(source_key)
 
     state = {}
     for row in rows:
@@ -164,6 +174,7 @@ async def _fetch_cso_attention_map(channel_ids):
 
     attention_map = {}
     for channel_id, channel_state in state.items():
+        active_source_ids = active_sources_by_channel.get(channel_id, set())
         recovery_at = channel_state.get("latest_connection_recovery_at")
         issues = []
         latest_event = None
@@ -176,7 +187,10 @@ async def _fetch_cso_attention_map(channel_ids):
                 latest_event = connection_issue
 
         unresolved_source_issues = []
-        for source_state in (channel_state.get("health_by_source") or {}).values():
+        for source_id, source_state in (channel_state.get("health_by_source") or {}).items():
+            source_key = int(source_id or 0)
+            if source_key <= 0 or source_key not in active_source_ids:
+                continue
             unhealthy_issue = source_state.get("latest_unhealthy")
             if not unhealthy_issue:
                 continue
