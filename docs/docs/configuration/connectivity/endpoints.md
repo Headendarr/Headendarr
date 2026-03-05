@@ -21,6 +21,11 @@ CSO endpoint notes:
 
 - `/tic-api/cso/channel/<channel_id>` supports `profile=<profile_id>`.
 - `/tic-api/cso/channel_stream/<stream_id>` supports `profile=<profile_id>`.
+- For HLS profiles, CSO exposes playlist + segment paths:
+  - `/tic-api/cso/channel/<channel_id>/hls/<connection_id>/index.m3u8`
+  - `/tic-api/cso/channel/<channel_id>/hls/<connection_id>/<segment_name>`
+  - `/tic-api/cso/channel_stream/<stream_id>/hls/<connection_id>/index.m3u8`
+  - `/tic-api/cso/channel_stream/<stream_id>/hls/<connection_id>/<segment_name>`
 - Without `profile`, stream config controls whether the endpoint redirects or uses CSO buffering.
 
 ## HLS Proxy Endpoints
@@ -100,6 +105,8 @@ Configurable profiles (Application Settings -> Connections):
 - `h264-aac-matroska`
 - `h264-aac-mp4`
 - `vp8-vorbis-webm`
+- `hls`
+- `aac-hls`
 - `h265-aac-mp4`
 - `h265-aac-matroska`
 - `h265-ac3-mp4`

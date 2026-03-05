@@ -18,11 +18,14 @@ from backend.auth import get_request_client_ip, skip_stream_connect_audit, strea
 from backend.cso import (
     cso_capacity_registry,
     cso_session_manager,
+    emit_channel_stream_event,
     is_internal_cso_activity,
     preempt_backpressured_clients_for_capacity_key,
     policy_content_type,
     resolve_channel_for_stream,
+    subscribe_channel_hls,
     subscribe_channel_stream,
+    subscribe_source_hls,
     subscribe_source_stream,
     source_capacity_key,
     source_capacity_limit,
@@ -79,7 +82,9 @@ def _session_capacity_key(session):
     return None
 
 
-def _same_client_session_for_capacity(activity_sessions, *, capacity_key_name, client_fingerprint, exclude_connection_id=None):
+def _same_client_session_for_capacity(
+    activity_sessions, *, capacity_key_name, client_fingerprint, exclude_connection_id=None
+):
     for session in activity_sessions or []:
         if not isinstance(session, dict):
             continue
@@ -105,7 +110,7 @@ async def _wait_for_source_handover_window(
     capacity_limit,
     client_fingerprint,
     exclude_connection_id,
-    timeout_seconds=5.0,
+    timeout_seconds=12.0,
     poll_interval_seconds=0.5,
 ):
     deadline = time.time() + float(timeout_seconds)
@@ -159,6 +164,53 @@ def _append_or_replace_query_param(url, key, value):
     query_items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k != key]
     query_items.append((str(key), str(value)))
     return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+
+def _build_hls_query_string(*, stream_key=None, username=None, profile=None):
+    query_items = []
+    if stream_key:
+        query_items.append(("stream_key", str(stream_key)))
+    if username:
+        query_items.append(("username", str(username)))
+    if profile:
+        query_items.append(("profile", str(profile)))
+    if not query_items:
+        return ""
+    return urlencode(query_items)
+
+
+def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_string: str = "") -> str:
+    lines = []
+    suffix = f"?{query_string}" if query_string else ""
+    for raw_line in str(playlist_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            lines.append(raw_line)
+            continue
+        segment_name = line.split("?", 1)[0]
+        lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}{suffix}")
+    return "\n".join(lines) + "\n"
+
+
+async def _hls_output_has_client(output_session_key: str, connection_id: str) -> bool:
+    session = await cso_session_manager.get_output_session(output_session_key)
+    if not session:
+        return False
+    prune_hook = getattr(session, "prune_idle_clients", None)
+    if callable(prune_hook):
+        try:
+            await prune_hook(time.time())
+        except Exception as exc:
+            logger.warning("CSO HLS idle-prune failed output_key=%s error=%s", output_session_key, exc)
+    has_client_hook = getattr(session, "has_client", None)
+    if callable(has_client_hook):
+        try:
+            return bool(await has_client_hook(connection_id))
+        except Exception:
+            return False
+    return False
 
 
 async def _connection_limit_blocked_response(config, channel, effective_profile="default"):
@@ -305,6 +357,8 @@ async def stream_from_source_gate(stream_id):
         config,
         requested_profile=requested_profile or "default",
     )
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    use_hls_output = str(effective_policy.get("container") or "").strip().lower() == "hls"
     force_cso_buffer = effective_profile != "default"
 
     connection_id = _get_connection_id(default_new=True)
@@ -379,7 +433,18 @@ async def stream_from_source_gate(stream_id):
                         effective_profile=effective_profile,
                     )
 
-        effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+        if use_hls_output:
+            hls_query = _build_hls_query_string(
+                stream_key=stream_key,
+                username=username,
+                profile=effective_profile,
+            )
+            target_path = f"/tic-api/cso/channel_stream/{int(source.id)}/hls/{connection_id}/index.m3u8"
+            target_url = f"{request_base_url.rstrip('/')}{target_path}"
+            if hls_query:
+                target_url = f"{target_url}?{hls_query}"
+            return redirect(target_url, code=302)
+
         prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
 
         generator, content_type, error_message, status = await subscribe_source_stream(
@@ -603,6 +668,7 @@ async def stream_channel(channel_id):
         channel=channel,
     )
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    use_hls_output = str(effective_policy.get("container") or "").strip().lower() == "hls"
 
     connection_id = _get_connection_id(default_new=True)
     if connection_id == "tvh":
@@ -640,7 +706,9 @@ async def stream_channel(channel_id):
                     )
                     usage = await cso_capacity_registry.get_usage(capacity_key_name)
                     activity_sessions = await get_stream_activity_snapshot()
-                    external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+                    external_count = _active_external_count_for_source(
+                        activity_sessions, primary_source, capacity_key_name
+                    )
                     active_connections = int(usage.get("allocations") or 0) + int(external_count)
 
             if active_connections >= capacity_limit:
@@ -667,7 +735,9 @@ async def stream_channel(channel_id):
                     )
                     usage = await cso_capacity_registry.get_usage(capacity_key_name)
                     activity_sessions = await get_stream_activity_snapshot()
-                    external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+                    external_count = _active_external_count_for_source(
+                        activity_sessions, primary_source, capacity_key_name
+                    )
                     active_connections = int(usage.get("allocations") or 0) + int(external_count)
                     if active_connections >= capacity_limit:
                         return await _connection_limit_blocked_response(
@@ -675,6 +745,17 @@ async def stream_channel(channel_id):
                             channel,
                             effective_profile=effective_profile,
                         )
+    if use_hls_output:
+        hls_query = _build_hls_query_string(
+            stream_key=stream_key,
+            username=getattr(getattr(request, "_stream_user", None), "username", None),
+            profile=effective_profile,
+        )
+        target_path = f"/tic-api/cso/channel/{channel_id_int}/hls/{connection_id}/index.m3u8"
+        target_url = f"{get_request_base_url(request).rstrip('/')}{target_path}"
+        if hls_query:
+            target_url = f"{target_url}?{hls_query}"
+        return redirect(target_url, code=302)
     generator, content_type, error_message, status = await subscribe_channel_stream(
         config=config,
         channel=channel,
@@ -794,3 +875,457 @@ async def stream_channel(channel_id):
     response = Response(generate_stream(), content_type=content_type or "application/octet-stream")
     response.timeout = None
     return response
+
+
+async def _wait_for_hls_playlist(output_session, timeout_seconds=8.0):
+    deadline = time.time() + float(timeout_seconds)
+    while time.time() < deadline:
+        playlist_text = await output_session.read_playlist_text()
+        if playlist_text:
+            return playlist_text
+        await asyncio.sleep(0.25)
+    return None
+
+
+async def _hls_start_failure_response(config, channel, effective_profile, error_message, status):
+    message = (error_message or "").strip()
+    if int(status or 500) == 503 and "connection limit" in message.lower():
+        return await _connection_limit_blocked_response(
+            config,
+            channel,
+            effective_profile=effective_profile,
+        )
+    return Response(message or "Unable to start CSO HLS stream", status=status or 500)
+
+
+@blueprint.route("/tic-api/cso/channel/<int:channel_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_channel_hls_playlist(channel_id, connection_id):
+    config = current_app.config["APP_CONFIG"]
+    requested_profile = str(request.args.get("profile") or "hls").strip().lower()
+    request_base_url = get_request_base_url(request)
+    stream_key = request._stream_key
+
+    channel = await resolve_channel_for_stream(int(channel_id))
+    await preempt_background_health_checks_for_channel(channel)
+    if not channel or not bool(getattr(channel, "enabled", False)):
+        return Response("Channel is disabled", status=404)
+    effective_profile = resolve_cso_profile_name(config, requested_profile, channel=channel)
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() != "hls":
+        return Response("Requested profile is not HLS output", status=400)
+    output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    existing_client = await _hls_output_has_client(output_session_key, connection_id)
+
+    primary_source = _select_primary_source_for_capacity(channel)
+    if primary_source is not None and not existing_client:
+        capacity_key_name = source_capacity_key(primary_source)
+        capacity_limit = int(source_capacity_limit(primary_source) or 0)
+        if capacity_limit > 0:
+            usage = await cso_capacity_registry.get_usage(capacity_key_name)
+            activity_sessions = await get_stream_activity_snapshot()
+            external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+            active_connections = int(usage.get("allocations") or 0) + int(external_count)
+            if active_connections >= capacity_limit:
+                waited = await _wait_for_source_handover_window(
+                    source=primary_source,
+                    capacity_key_name=capacity_key_name,
+                    capacity_limit=capacity_limit,
+                    client_fingerprint=_client_fingerprint(
+                        stream_key,
+                        get_request_client_ip(),
+                        request.headers.get("User-Agent"),
+                    ),
+                    exclude_connection_id=connection_id,
+                )
+                if not waited:
+                    return await _connection_limit_blocked_response(
+                        config,
+                        channel,
+                        effective_profile=effective_profile,
+                    )
+
+    async def _on_disconnect(client_id):
+        await stop_stream_activity(
+            "",
+            connection_id=client_id,
+            event_type="stream_stop",
+            endpoint_override=f"/tic-api/cso/channel/{int(channel_id)}/hls/{client_id}",
+            user=None,
+        )
+        await emit_channel_stream_event(
+            channel_id=int(channel_id),
+            source_id=None,
+            playlist_id=None,
+            session_id=output_session_key,
+            event_type="session_end",
+            severity="info",
+            details={"profile": effective_profile, "connection_id": str(client_id)},
+        )
+
+    output_session, error_message, status = await subscribe_channel_hls(
+        config=config,
+        channel=channel,
+        stream_key=stream_key,
+        profile=effective_profile,
+        connection_id=connection_id,
+        request_base_url=request_base_url,
+        on_disconnect=_on_disconnect,
+    )
+    if not output_session:
+        return await _hls_start_failure_response(
+            config,
+            channel,
+            effective_profile,
+            error_message,
+            status,
+        )
+
+    await output_session.touch_client(connection_id)
+    playlist_text = await _wait_for_hls_playlist(output_session)
+    if not playlist_text:
+        return Response("HLS playlist not ready", status=503)
+
+    query_string = _build_hls_query_string(
+        stream_key=stream_key,
+        username=getattr(getattr(request, "_stream_user", None), "username", None),
+        profile=effective_profile,
+    )
+    segment_base_path = request.path.rsplit("/", 1)[0]
+    rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+    await upsert_stream_activity(
+        f"/tic-api/cso/channel/{int(channel_id)}",
+        connection_id=str(connection_id),
+        endpoint_override=request.path,
+        start_event_type="stream_start",
+        user=getattr(request, "_stream_user", None),
+        details_override=f"{getattr(channel, 'name', '')}\n/tic-api/cso/channel/{int(channel_id)}".strip(),
+        channel_id=int(channel_id),
+        channel_name=getattr(channel, "name", None) if channel else None,
+        channel_logo_url=getattr(channel, "logo_url", None) if channel else None,
+        stream_name=getattr(channel, "name", None) if channel else None,
+        display_url=f"/tic-api/cso/channel/{int(channel_id)}",
+    )
+    return Response(rendered_playlist, content_type="application/vnd.apple.mpegurl")
+
+
+@blueprint.route("/tic-api/cso/channel/<int:channel_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_channel_hls_segment(channel_id, connection_id, segment_name):
+    config = current_app.config["APP_CONFIG"]
+    requested_profile = str(request.args.get("profile") or "hls").strip().lower()
+    request_base_url = get_request_base_url(request)
+    stream_key = request._stream_key
+
+    channel = await resolve_channel_for_stream(int(channel_id))
+    if not channel or not bool(getattr(channel, "enabled", False)):
+        return Response("Channel is disabled", status=404)
+    effective_profile = resolve_cso_profile_name(config, requested_profile, channel=channel)
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() != "hls":
+        return Response("Requested profile is not HLS output", status=400)
+    output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    existing_client = await _hls_output_has_client(output_session_key, connection_id)
+    primary_source = _select_primary_source_for_capacity(channel)
+    if primary_source is not None and not existing_client:
+        capacity_key_name = source_capacity_key(primary_source)
+        capacity_limit = int(source_capacity_limit(primary_source) or 0)
+        if capacity_limit > 0:
+            usage = await cso_capacity_registry.get_usage(capacity_key_name)
+            activity_sessions = await get_stream_activity_snapshot()
+            external_count = _active_external_count_for_source(activity_sessions, primary_source, capacity_key_name)
+            active_connections = int(usage.get("allocations") or 0) + int(external_count)
+            if active_connections >= capacity_limit:
+                return await _connection_limit_blocked_response(
+                    config,
+                    channel,
+                    effective_profile=effective_profile,
+                )
+
+    async def _on_disconnect(client_id):
+        await stop_stream_activity(
+            "",
+            connection_id=client_id,
+            event_type="stream_stop",
+            endpoint_override=f"/tic-api/cso/channel/{int(channel_id)}/hls/{client_id}",
+            user=None,
+        )
+        await emit_channel_stream_event(
+            channel_id=int(channel_id),
+            source_id=None,
+            playlist_id=None,
+            session_id=output_session_key,
+            event_type="session_end",
+            severity="info",
+            details={"profile": effective_profile, "connection_id": str(client_id)},
+        )
+
+    output_session, error_message, status = await subscribe_channel_hls(
+        config=config,
+        channel=channel,
+        stream_key=stream_key,
+        profile=effective_profile,
+        connection_id=connection_id,
+        request_base_url=request_base_url,
+        on_disconnect=_on_disconnect,
+    )
+    if not output_session:
+        return await _hls_start_failure_response(
+            config,
+            channel,
+            effective_profile,
+            error_message,
+            status,
+        )
+    await output_session.touch_client(connection_id)
+    await touch_stream_activity(str(connection_id), identity=f"/tic-api/cso/channel/{int(channel_id)}")
+
+    payload = await output_session.read_segment_bytes(segment_name)
+    if payload is None:
+        return Response("HLS segment not found", status=404)
+    return Response(payload, content_type="video/mp2t")
+
+
+@blueprint.route("/tic-api/cso/channel_stream/<int:stream_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_source_hls_playlist(stream_id, connection_id):
+    config = current_app.config["APP_CONFIG"]
+    requested_profile = str(request.args.get("profile") or "hls").strip().lower()
+    request_base_url = get_request_base_url(request)
+    stream_key = request._stream_key
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource)
+            .options(
+                joinedload(ChannelSource.playlist),
+                joinedload(ChannelSource.xc_account),
+                joinedload(ChannelSource.channel),
+            )
+            .where(ChannelSource.id == int(stream_id))
+        )
+        source = result.scalars().first()
+
+    if not source:
+        return Response("Stream not found", status=404)
+    channel = getattr(source, "channel", None)
+    if not channel or not bool(getattr(channel, "enabled", False)):
+        return Response("Channel is disabled", status=404)
+    playlist = getattr(source, "playlist", None)
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return Response("Stream playlist is disabled", status=404)
+    await preempt_background_health_checks_for_channel(channel)
+    effective_profile = _resolve_cso_profile_for_source_request(
+        config,
+        requested_profile=requested_profile or "hls",
+    )
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() != "hls":
+        return Response("Requested profile is not HLS output", status=400)
+    output_session_key = f"cso-source-hls-output-{int(source.id)}-{effective_profile}"
+    existing_client = await _hls_output_has_client(output_session_key, connection_id)
+    capacity_key_name = source_capacity_key(source)
+    capacity_limit = int(source_capacity_limit(source) or 0)
+    if capacity_limit <= 0 and not existing_client:
+        return await _connection_limit_blocked_response(
+            config,
+            channel,
+            effective_profile=effective_profile,
+        )
+    if not existing_client:
+        usage = await cso_capacity_registry.get_usage(capacity_key_name)
+        activity_sessions = await get_stream_activity_snapshot()
+        external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+        active_connections = int(usage.get("allocations") or 0) + int(external_count)
+        if active_connections >= capacity_limit:
+            waited = await _wait_for_source_handover_window(
+                source=source,
+                capacity_key_name=capacity_key_name,
+                capacity_limit=capacity_limit,
+                client_fingerprint=_client_fingerprint(
+                    stream_key,
+                    get_request_client_ip(),
+                    request.headers.get("User-Agent"),
+                ),
+                exclude_connection_id=connection_id,
+            )
+            if not waited:
+                return await _connection_limit_blocked_response(
+                    config,
+                    channel,
+                    effective_profile=effective_profile,
+                )
+
+    async def _on_disconnect(client_id):
+        await stop_stream_activity(
+            "",
+            connection_id=client_id,
+            event_type="stream_stop",
+            endpoint_override=f"/tic-api/cso/channel_stream/{int(stream_id)}/hls/{client_id}",
+            user=None,
+        )
+        await emit_channel_stream_event(
+            channel_id=getattr(channel, "id", None),
+            source_id=getattr(source, "id", None),
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="session_end",
+            severity="info",
+            details={"profile": effective_profile, "connection_id": str(client_id)},
+        )
+
+    output_session, error_message, status = await subscribe_source_hls(
+        config=config,
+        source=source,
+        stream_key=stream_key,
+        profile=effective_profile,
+        connection_id=connection_id,
+        request_base_url=request_base_url,
+        on_disconnect=_on_disconnect,
+    )
+    if not output_session:
+        return await _hls_start_failure_response(
+            config,
+            channel,
+            effective_profile,
+            error_message,
+            status,
+        )
+
+    await output_session.touch_client(connection_id)
+    playlist_text = await _wait_for_hls_playlist(output_session)
+    if not playlist_text:
+        return Response("HLS playlist not ready", status=503)
+
+    query_string = _build_hls_query_string(
+        stream_key=stream_key,
+        username=getattr(getattr(request, "_stream_user", None), "username", None),
+        profile=effective_profile,
+    )
+    segment_base_path = request.path.rsplit("/", 1)[0]
+    rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+    source_identity = f"/tic-api/cso/channel_stream/{int(stream_id)}"
+    source_name = str(getattr(source, "playlist_stream_name", "") or getattr(channel, "name", "") or "").strip()
+    details_override = source_identity if not source_name else f"{source_name}\n{source_identity}"
+    await upsert_stream_activity(
+        source_identity,
+        connection_id=str(connection_id),
+        endpoint_override=request.path,
+        start_event_type="stream_start",
+        user=getattr(request, "_stream_user", None),
+        details_override=details_override,
+        channel_id=getattr(channel, "id", None),
+        channel_name=getattr(channel, "name", None),
+        channel_logo_url=getattr(channel, "logo_url", None),
+        stream_name=source_name,
+        display_url=source_identity,
+        source_id=getattr(source, "id", None),
+        playlist_id=getattr(source, "playlist_id", None),
+        xc_account_id=getattr(source, "xc_account_id", None),
+    )
+    return Response(rendered_playlist, content_type="application/vnd.apple.mpegurl")
+
+
+@blueprint.route("/tic-api/cso/channel_stream/<int:stream_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_source_hls_segment(stream_id, connection_id, segment_name):
+    config = current_app.config["APP_CONFIG"]
+    requested_profile = str(request.args.get("profile") or "hls").strip().lower()
+    request_base_url = get_request_base_url(request)
+    stream_key = request._stream_key
+
+    async with Session() as session:
+        result = await session.execute(
+            select(ChannelSource)
+            .options(
+                joinedload(ChannelSource.playlist),
+                joinedload(ChannelSource.xc_account),
+                joinedload(ChannelSource.channel),
+            )
+            .where(ChannelSource.id == int(stream_id))
+        )
+        source = result.scalars().first()
+
+    if not source:
+        return Response("Stream not found", status=404)
+    channel = getattr(source, "channel", None)
+    if not channel or not bool(getattr(channel, "enabled", False)):
+        return Response("Channel is disabled", status=404)
+    playlist = getattr(source, "playlist", None)
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return Response("Stream playlist is disabled", status=404)
+    effective_profile = _resolve_cso_profile_for_source_request(
+        config,
+        requested_profile=requested_profile or "hls",
+    )
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() != "hls":
+        return Response("Requested profile is not HLS output", status=400)
+    output_session_key = f"cso-source-hls-output-{int(source.id)}-{effective_profile}"
+    existing_client = await _hls_output_has_client(output_session_key, connection_id)
+    capacity_key_name = source_capacity_key(source)
+    capacity_limit = int(source_capacity_limit(source) or 0)
+    if capacity_limit <= 0 and not existing_client:
+        return await _connection_limit_blocked_response(
+            config,
+            channel,
+            effective_profile=effective_profile,
+        )
+    if not existing_client:
+        usage = await cso_capacity_registry.get_usage(capacity_key_name)
+        activity_sessions = await get_stream_activity_snapshot()
+        external_count = _active_external_count_for_source(activity_sessions, source, capacity_key_name)
+        active_connections = int(usage.get("allocations") or 0) + int(external_count)
+        if active_connections >= capacity_limit:
+            return await _connection_limit_blocked_response(
+                config,
+                channel,
+                effective_profile=effective_profile,
+            )
+
+    async def _on_disconnect(client_id):
+        await stop_stream_activity(
+            "",
+            connection_id=client_id,
+            event_type="stream_stop",
+            endpoint_override=f"/tic-api/cso/channel_stream/{int(stream_id)}/hls/{client_id}",
+            user=None,
+        )
+        await emit_channel_stream_event(
+            channel_id=getattr(channel, "id", None),
+            source_id=getattr(source, "id", None),
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="session_end",
+            severity="info",
+            details={"profile": effective_profile, "connection_id": str(client_id)},
+        )
+
+    output_session, error_message, status = await subscribe_source_hls(
+        config=config,
+        source=source,
+        stream_key=stream_key,
+        profile=effective_profile,
+        connection_id=connection_id,
+        request_base_url=request_base_url,
+        on_disconnect=_on_disconnect,
+    )
+    if not output_session:
+        return await _hls_start_failure_response(
+            config,
+            channel,
+            effective_profile,
+            error_message,
+            status,
+        )
+    await output_session.touch_client(connection_id)
+    await touch_stream_activity(str(connection_id), identity=f"/tic-api/cso/channel_stream/{int(stream_id)}")
+
+    payload = await output_session.read_segment_bytes(segment_name)
+    if payload is None:
+        return Response("HLS segment not found", status=404)
+    return Response(payload, content_type="video/mp2t")

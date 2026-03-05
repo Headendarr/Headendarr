@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -49,11 +50,15 @@ CSO_SPEED_STALE_SECONDS_DEFAULT = int(os.environ.get("CSO_SPEED_STALE_SECONDS", 
 CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = int(os.environ.get("CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS", "2") or 2)
 CSO_INGEST_RW_TIMEOUT_US = int(os.environ.get("CSO_INGEST_RW_TIMEOUT_US", "15000000") or 15000000)
 CSO_INGEST_TIMEOUT_US = int(os.environ.get("CSO_INGEST_TIMEOUT_US", "10000000") or 10000000)
+CSO_HLS_SEGMENT_SECONDS = int(os.environ.get("CSO_HLS_SEGMENT_SECONDS", "3") or 3)
+CSO_HLS_LIST_SIZE = int(os.environ.get("CSO_HLS_LIST_SIZE", "8") or 8)
+CSO_HLS_CLIENT_IDLE_SECONDS = min(10, max(1, int(CSO_HLS_SEGMENT_SECONDS) * 3))
 _FFMPEG_SPEED_RE = re.compile(r"speed=\s*([0-9.]+)x")
 _HTTP_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
 _HLS_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
 _HLS_RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
 _HLS_STARTUP_RAMP_INTERVAL_SECONDS = 4
+_SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 CONTAINER_TO_FORMAT = {
     "mpegts": "mpegts",
@@ -62,6 +67,7 @@ CONTAINER_TO_FORMAT = {
     "mkv": "matroska",
     "mp4": "mp4",
     "webm": "webm",
+    "hls": "hls",
 }
 
 CONTAINER_TO_CONTENT_TYPE = {
@@ -71,6 +77,7 @@ CONTAINER_TO_CONTENT_TYPE = {
     "mkv": "video/x-matroska",
     "mp4": "video/mp4",
     "webm": "video/webm",
+    "hls": "application/vnd.apple.mpegurl",
 }
 
 
@@ -612,6 +619,40 @@ class CsoOutputFfmpegCommandBuilder:
             # Fragmented MP4 is required for live streaming to a pipe.
             command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
         command += ["-f", ffmpeg_format, "pipe:1"]
+        return command
+
+    def build_hls_output_command(self, output_dir: Path):
+        command = self._base()
+        subtitle_mode = self._apply_stream_selection(command)
+        mode = self.policy.get("output_mode") or "force_remux"
+
+        if mode == "force_transcode":
+            self._apply_transcode_options(command, subtitle_mode)
+        else:
+            command += ["-c", "copy"]
+            if subtitle_mode == "drop":
+                command.append("-sn")
+
+        command.append("-dn")
+        segment_pattern = str(output_dir / "seg_%06d.ts")
+        playlist_path = str(output_dir / "index.m3u8")
+        command += [
+            "-f",
+            "hls",
+            "-hls_time",
+            str(max(1, int(CSO_HLS_SEGMENT_SECONDS))),
+            "-hls_segment_type",
+            "mpegts",
+            "-hls_list_size",
+            str(max(3, int(CSO_HLS_LIST_SIZE))),
+            "-hls_flags",
+            "delete_segments+append_list+independent_segments+omit_endlist+temp_file",
+            "-hls_delete_threshold",
+            "2",
+            "-hls_segment_filename",
+            segment_pattern,
+            playlist_path,
+        ]
         return command
 
 
@@ -1723,6 +1764,303 @@ class CsoOutputSession:
             self.client_drop_state.clear()
 
 
+class CsoHlsOutputSession:
+    def __init__(self, key, channel_id, policy, ingest_session, cache_root_dir):
+        self.key = key
+        self.channel_id = channel_id
+        self.policy = policy
+        self.ingest_session = ingest_session
+        self.cache_root_dir = Path(cache_root_dir)
+        self.output_dir = self.cache_root_dir / self.key
+        self.playlist_path = self.output_dir / "index.m3u8"
+        self.process = None
+        self.write_task = None
+        self.stderr_task = None
+        self.wait_task = None
+        self.running = False
+        self.lock = asyncio.Lock()
+        self.last_activity = time.time()
+        self.last_error = None
+        self.ingest_queue = None
+        self._recent_ffmpeg_stderr = deque(maxlen=30)
+        self.clients = {}
+
+    def _ffmpeg_error_summary(self):
+        lines = [line for line in self._recent_ffmpeg_stderr if line]
+        if not lines:
+            return ""
+        error_lines = [
+            line
+            for line in lines
+            if any(token in line.lower() for token in ("error", "invalid", "failed", "could not", "unsupported"))
+        ]
+        selected = error_lines[-3:] if error_lines else lines[-3:]
+        return " | ".join(selected)
+
+    async def _prepare_output_dir(self):
+        if self.output_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    async def start(self):
+        async with self.lock:
+            if self.running:
+                return
+            await self.ingest_session.start()
+            if not self.ingest_session.running:
+                self.last_error = self.ingest_session.last_error or "ingest_not_running"
+                return
+
+            await self._prepare_output_dir()
+            self.ingest_queue = await self.ingest_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
+            command = CsoOutputFfmpegCommandBuilder(self.policy).build_hls_output_command(self.output_dir)
+            logger.info(
+                "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
+                self.channel_id,
+                self.key,
+                _policy_log_label(self.policy),
+                command,
+            )
+            self.process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self.running = True
+            self.last_error = None
+            self.last_activity = time.time()
+            self.write_task = asyncio.create_task(self._write_loop())
+            self.stderr_task = asyncio.create_task(self._stderr_loop())
+            self.wait_task = asyncio.create_task(self._wait_loop())
+
+    async def _write_loop(self):
+        try:
+            while self.running and self.process and self.process.stdin and self.ingest_queue:
+                chunk = await self.ingest_queue.get()
+                if chunk is None:
+                    break
+                try:
+                    self.process.stdin.write(chunk)
+                    await self.process.stdin.drain()
+                except Exception:
+                    break
+        finally:
+            try:
+                if self.process and self.process.stdin:
+                    self.process.stdin.close()
+            except Exception:
+                pass
+
+    async def _stderr_loop(self):
+        if not self.process:
+            return
+        text_buffer = ""
+        while True:
+            try:
+                chunk = await self.process.stderr.read(4096)
+            except Exception:
+                break
+            if not chunk:
+                break
+            text_buffer += chunk.decode("utf-8", errors="replace")
+            lines = re.split(r"[\r\n]+", text_buffer)
+            text_buffer = lines.pop() if lines else ""
+            for rendered in lines:
+                rendered = rendered.strip()
+                if not rendered:
+                    continue
+                self._recent_ffmpeg_stderr.append(rendered)
+                if enable_cso_command_debug_logging:
+                    logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
+        rendered = text_buffer.strip()
+        if rendered:
+            self._recent_ffmpeg_stderr.append(rendered)
+            if enable_cso_command_debug_logging:
+                logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
+
+    async def _wait_loop(self):
+        return_code = None
+        try:
+            if self.process:
+                return_code = await self.process.wait()
+        except Exception:
+            return_code = None
+        finally:
+            async with self.lock:
+                client_count = len(self.clients)
+                still_running = bool(self.running)
+            if still_running and client_count > 0:
+                self.last_error = "output_reader_ended"
+                logger.warning(
+                    "CSO HLS output ended unexpectedly channel=%s output_key=%s return_code=%s stderr=%s",
+                    self.channel_id,
+                    self.key,
+                    return_code,
+                    self._ffmpeg_error_summary() or "n/a",
+                )
+            await self.stop(force=True)
+
+    async def add_client(self, connection_id, on_disconnect=None):
+        async with self.lock:
+            key = str(connection_id)
+            existed = key in self.clients
+            previous = self.clients.get(key) or {}
+            self.clients[key] = {
+                "last_touch": time.time(),
+                "on_disconnect": on_disconnect if on_disconnect is not None else previous.get("on_disconnect"),
+            }
+            client_count = len(self.clients)
+            self.last_activity = time.time()
+        if not existed:
+            logger.info(
+                "CSO HLS output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
+                self.channel_id,
+                self.key,
+                connection_id,
+                client_count,
+                _policy_log_label(self.policy),
+            )
+        return not existed
+
+    async def has_client(self, connection_id):
+        async with self.lock:
+            return str(connection_id) in self.clients
+
+    async def _invoke_disconnect_hook(self, connection_id, disconnect_hook):
+        if not callable(disconnect_hook):
+            return
+        try:
+            await disconnect_hook(str(connection_id))
+        except Exception as exc:
+            logger.warning(
+                "CSO HLS output disconnect hook failed channel=%s output_key=%s connection_id=%s error=%s",
+                self.channel_id,
+                self.key,
+                connection_id,
+                exc,
+            )
+
+    async def touch_client(self, connection_id):
+        async with self.lock:
+            key = str(connection_id)
+            entry = self.clients.get(key)
+            if not isinstance(entry, dict):
+                entry = {"last_touch": time.time(), "on_disconnect": None}
+                self.clients[key] = entry
+            entry["last_touch"] = time.time()
+            self.last_activity = time.time()
+
+    async def remove_client(self, connection_id):
+        disconnect_hook = None
+        async with self.lock:
+            removed = self.clients.pop(str(connection_id), None)
+            if isinstance(removed, dict):
+                disconnect_hook = removed.get("on_disconnect")
+            remaining = len(self.clients)
+        await self._invoke_disconnect_hook(connection_id, disconnect_hook)
+        logger.info(
+            "CSO HLS output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
+            self.channel_id,
+            self.key,
+            connection_id,
+            remaining,
+            _policy_log_label(self.policy),
+        )
+        if remaining == 0:
+            await self.stop(force=True)
+        return remaining
+
+    async def prune_idle_clients(self, now_ts=None):
+        now_value = float(now_ts if now_ts is not None else time.time())
+        stale_ids = []
+        async with self.lock:
+            for connection_id, entry in list(self.clients.items()):
+                last_touch = 0.0
+                if isinstance(entry, dict):
+                    last_touch = float(entry.get("last_touch") or 0.0)
+                if (now_value - last_touch) >= float(CSO_HLS_CLIENT_IDLE_SECONDS):
+                    stale_ids.append(connection_id)
+        for connection_id in stale_ids:
+            logger.info(
+                "CSO HLS output dropping idle client channel=%s output_key=%s connection_id=%s idle_seconds=%s",
+                self.channel_id,
+                self.key,
+                connection_id,
+                int(CSO_HLS_CLIENT_IDLE_SECONDS),
+            )
+            await self.remove_client(connection_id)
+
+    async def read_playlist_text(self):
+        if not self.playlist_path.exists():
+            return None
+        return await asyncio.to_thread(self.playlist_path.read_text, "utf-8")
+
+    async def read_segment_bytes(self, segment_name):
+        name = str(segment_name or "").strip()
+        if not name or not _SAFE_HLS_SEGMENT_RE.match(name):
+            return None
+        segment_path = (self.output_dir / name).resolve()
+        if not str(segment_path).startswith(str(self.output_dir.resolve())):
+            return None
+        if not segment_path.exists() or not segment_path.is_file():
+            return None
+        return await asyncio.to_thread(segment_path.read_bytes)
+
+    async def stop(self, force=False):
+        async with self.lock:
+            if not self.running and not self.process and not self.clients:
+                return
+            if not force and self.clients:
+                return
+            self.running = False
+            process = self.process
+            self.process = None
+            ingest_queue = self.ingest_queue
+            self.ingest_queue = None
+            client_count = len(self.clients)
+            disconnected_clients = list(self.clients.items())
+            self.clients = {}
+        logger.info(
+            "Stopping CSO HLS output channel=%s output_key=%s clients=%s force=%s policy=(%s)",
+            self.channel_id,
+            self.key,
+            client_count,
+            force,
+            _policy_log_label(self.policy),
+        )
+        for disconnected_id, disconnected_entry in disconnected_clients:
+            disconnect_hook = None
+            if isinstance(disconnected_entry, dict):
+                disconnect_hook = disconnected_entry.get("on_disconnect")
+            await self._invoke_disconnect_hook(disconnected_id, disconnect_hook)
+            logger.info(
+                "CSO HLS output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
+                self.channel_id,
+                self.key,
+                disconnected_id,
+                0,
+                _policy_log_label(self.policy),
+            )
+        try:
+            if ingest_queue is not None:
+                await self.ingest_session.remove_subscriber(self.key)
+        except Exception:
+            pass
+        if process:
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except Exception:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+        if self.output_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
+
+
 class _SessionMap:
     def __init__(self):
         self.sessions = {}
@@ -1742,6 +2080,12 @@ class _SessionMap:
         async with self.lock:
             items = list(self.sessions.items())
         for key, session in items:
+            prune_hook = getattr(session, "prune_idle_clients", None)
+            if callable(prune_hook):
+                try:
+                    await prune_hook(now)
+                except Exception as exc:
+                    logger.warning("CSO session idle-prune failed key=%s error=%s", key, exc)
             if session.running and (now - session.last_activity) < idle_timeout:
                 continue
             async with session.lock:
@@ -1974,6 +2318,238 @@ async def _resolve_username_for_stream_key(config, stream_key):
     except Exception:
         pass
     return None
+
+
+async def subscribe_channel_hls(
+    config,
+    channel,
+    stream_key,
+    profile,
+    connection_id,
+    request_base_url="",
+    on_disconnect=None,
+):
+    """Attach client to a channel CSO HLS output session."""
+    if not channel:
+        return None, "Channel not found", 404
+    if not channel.enabled:
+        return None, "Channel is disabled", 404
+
+    sources = list(channel.sources or [])
+    if not sources:
+        return None, "No available stream source for this channel", 503
+
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-ingest-{channel.id}"
+    output_session_key = f"cso-hls-output-{channel.id}-{profile}"
+    capacity_owner_key = f"cso-channel-{channel.id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, sources[0] if sources else None)
+
+    def _ingest_factory():
+        return CsoIngestSession(
+            ingest_key,
+            channel.id,
+            sources,
+            request_base_url=(request_base_url or "").rstrip("/"),
+            instance_id=config.ensure_instance_id(),
+            capacity_owner_key=capacity_owner_key,
+            stream_key=stream_key,
+            username=username,
+            ingest_user_agent=ingest_user_agent,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_available_source"
+        await emit_channel_stream_event(
+            channel_id=channel.id,
+            source_id=getattr(sources[0], "id", None) if sources else None,
+            playlist_id=getattr(sources[0], "playlist_id", None) if sources else None,
+            session_id=ingest_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return (
+            None,
+            (
+                "Channel unavailable due to connection limits"
+                if reason == "capacity_blocked"
+                else "Channel unavailable because playback could not be started"
+            ),
+            503,
+        )
+
+    def _output_factory():
+        return CsoHlsOutputSession(
+            output_session_key,
+            channel.id,
+            policy,
+            ingest_session,
+            cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        reason = output_session.last_error or "output_not_running"
+        logger.warning(
+            "CSO HLS output failed to start channel=%s output_key=%s reason=%s",
+            channel.id,
+            output_session_key,
+            reason,
+        )
+        await emit_channel_stream_event(
+            channel_id=channel.id,
+            source_id=getattr(ingest_session.current_source, "id", None),
+            playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return None, "Channel unavailable because output pipeline could not be started", 503
+
+    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    if is_new_client:
+        await emit_channel_stream_event(
+            channel_id=channel.id,
+            source_id=getattr(ingest_session.current_source, "id", None),
+            playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="session_start",
+            severity="info",
+            details={
+                "profile": profile,
+                "connection_id": connection_id,
+                **_source_event_context(
+                    ingest_session.current_source,
+                    source_url=getattr(ingest_session, "current_source_url", None),
+                ),
+            },
+        )
+    return output_session, None, 200
+
+
+async def subscribe_source_hls(
+    config,
+    source,
+    stream_key,
+    profile,
+    connection_id,
+    request_base_url="",
+    on_disconnect=None,
+):
+    """Attach client to a source CSO HLS output session."""
+    if not source:
+        return None, "Stream not found", 404
+
+    playlist = getattr(source, "playlist", None)
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return None, "Stream playlist is disabled", 404
+    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+    if not stream_url:
+        return None, "No available stream source for this channel", 503
+
+    source_id = int(getattr(source, "id", 0) or 0)
+    channel_id = int(getattr(source, "channel_id", 0) or 0) or source_id
+    sources = [source]
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-source-ingest-{source_id}"
+    output_session_key = f"cso-source-hls-output-{source_id}-{profile}"
+    capacity_owner_key = f"cso-source-{source_id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, source)
+
+    def _ingest_factory():
+        return CsoIngestSession(
+            ingest_key,
+            channel_id,
+            sources,
+            request_base_url=(request_base_url or "").rstrip("/"),
+            instance_id=config.ensure_instance_id(),
+            capacity_owner_key=capacity_owner_key,
+            stream_key=stream_key,
+            username=username,
+            allow_failover=False,
+            ingest_user_agent=ingest_user_agent,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_available_source"
+        await emit_channel_stream_event(
+            channel_id=channel_id,
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=ingest_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return (
+            None,
+            (
+                "Channel unavailable due to connection limits"
+                if reason == "capacity_blocked"
+                else "Channel unavailable because playback could not be started"
+            ),
+            503,
+        )
+
+    def _output_factory():
+        return CsoHlsOutputSession(
+            output_session_key,
+            channel_id,
+            policy,
+            ingest_session,
+            cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        reason = output_session.last_error or "output_not_running"
+        logger.warning(
+            "CSO source HLS output failed to start channel=%s source_id=%s output_key=%s reason=%s",
+            channel_id,
+            source_id,
+            output_session_key,
+            reason,
+        )
+        await emit_channel_stream_event(
+            channel_id=channel_id,
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return None, "Channel unavailable because output pipeline could not be started", 503
+
+    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    if is_new_client:
+        await emit_channel_stream_event(
+            channel_id=channel_id,
+            source_id=source_id,
+            playlist_id=getattr(source, "playlist_id", None),
+            session_id=output_session_key,
+            event_type="session_start",
+            severity="info",
+            details={
+                "profile": profile,
+                "connection_id": connection_id,
+                **_source_event_context(
+                    ingest_session.current_source,
+                    source_url=getattr(ingest_session, "current_source_url", None),
+                ),
+            },
+        )
+    return output_session, None, 200
 
 
 async def subscribe_channel_stream(
