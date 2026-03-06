@@ -132,11 +132,33 @@ async def _wait_for_source_handover_window(
     return False
 
 
-def _select_primary_source_for_capacity(channel):
+async def _select_primary_source_for_capacity(channel):
     if not channel:
         return None
+
+    channel_id = int(channel if isinstance(channel, int) else (getattr(channel, "id", 0) or 0))
+    if channel_id <= 0:
+        return None
+
+    sources = []
+    if not isinstance(channel, int):
+        # Avoid lazy-loading on detached channel instances.
+        sources = list((getattr(channel, "__dict__", {}) or {}).get("sources") or [])
+
+    if not sources:
+        async with Session() as session:
+            result = await session.execute(
+                select(ChannelSource)
+                .options(
+                    joinedload(ChannelSource.playlist),
+                    joinedload(ChannelSource.xc_account),
+                )
+                .where(ChannelSource.channel_id == channel_id)
+            )
+            sources = list(result.scalars().all())
+
     candidates = sorted(
-        list(getattr(channel, "sources", []) or []),
+        sources,
         key=lambda item: int(getattr(item, "priority", 0) or 0),
         reverse=True,
     )
@@ -661,7 +683,7 @@ async def stream_channel(channel_id):
     requested_profile = (request.args.get("profile") or "").strip().lower()
     prebuffer_bytes = parse_size(request.args.get("prebuffer"), default=0)
     channel = await resolve_channel_for_stream(channel_id_int)
-    await preempt_background_health_checks_for_channel(channel)
+    await preempt_background_health_checks_for_channel(channel_id_int)
     effective_profile = resolve_cso_profile_name(
         config,
         requested_profile,
@@ -685,7 +707,7 @@ async def stream_channel(channel_id):
     user_agent = request.headers.get("User-Agent")
     client_fingerprint = _client_fingerprint(stream_key, client_ip, user_agent)
 
-    primary_source = _select_primary_source_for_capacity(channel)
+    primary_source = await _select_primary_source_for_capacity(channel)
     if primary_source is not None:
         capacity_key_name = source_capacity_key(primary_source)
         capacity_limit = int(source_capacity_limit(primary_source) or 0)
@@ -908,9 +930,9 @@ async def stream_channel_hls_playlist(channel_id, connection_id):
     stream_key = request._stream_key
 
     channel = await resolve_channel_for_stream(int(channel_id))
-    await preempt_background_health_checks_for_channel(channel)
     if not channel or not bool(getattr(channel, "enabled", False)):
         return Response("Channel is disabled", status=404)
+    await preempt_background_health_checks_for_channel(int(channel_id))
     effective_profile = resolve_cso_profile_name(config, requested_profile, channel=channel)
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
@@ -918,7 +940,7 @@ async def stream_channel_hls_playlist(channel_id, connection_id):
     output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
     existing_client = await _hls_output_has_client(output_session_key, connection_id)
 
-    primary_source = _select_primary_source_for_capacity(channel)
+    primary_source = await _select_primary_source_for_capacity(channel)
     if primary_source is not None and not existing_client:
         capacity_key_name = source_capacity_key(primary_source)
         capacity_limit = int(source_capacity_limit(primary_source) or 0)
@@ -1028,7 +1050,7 @@ async def stream_channel_hls_segment(channel_id, connection_id, segment_name):
         return Response("Requested profile is not HLS output", status=400)
     output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
     existing_client = await _hls_output_has_client(output_session_key, connection_id)
-    primary_source = _select_primary_source_for_capacity(channel)
+    primary_source = await _select_primary_source_for_capacity(channel)
     if primary_source is not None and not existing_client:
         capacity_key_name = source_capacity_key(primary_source)
         capacity_limit = int(source_capacity_limit(primary_source) or 0)
@@ -1117,7 +1139,7 @@ async def stream_source_hls_playlist(stream_id, connection_id):
     playlist = getattr(source, "playlist", None)
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return Response("Stream playlist is disabled", status=404)
-    await preempt_background_health_checks_for_channel(channel)
+    await preempt_background_health_checks_for_channel(int(getattr(source, "channel_id", 0) or 0))
     effective_profile = _resolve_cso_profile_for_source_request(
         config,
         requested_profile=requested_profile or "hls",
