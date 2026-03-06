@@ -394,7 +394,7 @@
 </style>
 
 <script>
-import {defineComponent, onMounted, ref, computed, watch} from 'vue';
+import {defineComponent, onBeforeUnmount, onMounted, ref, computed, watch} from 'vue';
 import EssentialLink from 'components/EssentialLink.vue';
 import FloatingPlayer from 'components/FloatingPlayer.vue';
 import ConnectionDetailsPanel from 'components/ConnectionDetailsPanel.vue';
@@ -535,6 +535,39 @@ export default defineComponent({
     const routeCombinedThroughCso = ref(false);
     const tvhCompatibleProfileIds = ref([]);
 
+    const loadConnectionDetailsSettings = async () => {
+      if (!(isAdmin.value || canViewConnectionDetails.value)) {
+        return;
+      }
+      try {
+        const response = await axios({
+          method: 'get',
+          url: '/tic-api/get-settings',
+        });
+        const settings = response?.data?.data || {};
+        appUrl.value = settings.app_url;
+        streamProfiles.value = settings.stream_profiles || {};
+        streamProfileDefinitions.value = Array.isArray(settings.stream_profile_definitions)
+          ? settings.stream_profile_definitions
+          : [];
+        routePerSourceThroughTvh.value = Boolean(settings.route_playlists_through_tvh);
+        routeCombinedThroughCso.value = Boolean(settings.route_playlists_through_cso);
+        tvhCompatibleProfileIds.value = Array.isArray(settings.tvh_compatible_profile_ids)
+          ? settings.tvh_compatible_profile_ids
+          : [];
+      } catch {
+        streamProfiles.value = {};
+        streamProfileDefinitions.value = [];
+        routePerSourceThroughTvh.value = false;
+        routeCombinedThroughCso.value = false;
+        tvhCompatibleProfileIds.value = [];
+      }
+    };
+
+    const handleSettingsUpdated = () => {
+      loadConnectionDetailsSettings();
+    };
+
     const copyUrlToClipboard = (textToCopy) => {
       copyToClipboard(textToCopy).then(() => {
         // Notify user of success
@@ -616,29 +649,9 @@ export default defineComponent({
       const theme = uiStore.loadThemeForUser(authStore.user?.username);
       uiStore.loadTimeFormatForUser(authStore.user?.username);
       $q.dark.set(theme === 'dark');
+      window.addEventListener('tic:settings-updated', handleSettingsUpdated);
       if (isAdmin.value || canViewConnectionDetails.value) {
-        axios({
-          method: 'get',
-          url: '/tic-api/get-settings',
-        }).then((response) => {
-          const settings = response?.data?.data || {};
-          appUrl.value = settings.app_url;
-          streamProfiles.value = settings.stream_profiles || {};
-          streamProfileDefinitions.value = Array.isArray(settings.stream_profile_definitions)
-            ? settings.stream_profile_definitions
-            : [];
-          routePerSourceThroughTvh.value = Boolean(settings.route_playlists_through_tvh);
-          routeCombinedThroughCso.value = Boolean(settings.route_playlists_through_cso);
-          tvhCompatibleProfileIds.value = Array.isArray(settings.tvh_compatible_profile_ids)
-            ? settings.tvh_compatible_profile_ids
-            : [];
-        }).catch(() => {
-          streamProfiles.value = {};
-          streamProfileDefinitions.value = [];
-          routePerSourceThroughTvh.value = false;
-          routeCombinedThroughCso.value = false;
-          tvhCompatibleProfileIds.value = [];
-        });
+        loadConnectionDetailsSettings();
       }
       if (canViewConnectionDetails.value) {
         axios({
@@ -661,6 +674,10 @@ export default defineComponent({
         appGitSha.value = null;
         appBuild.value = null;
       });
+    });
+
+    onBeforeUnmount(() => {
+      window.removeEventListener('tic:settings-updated', handleSettingsUpdated);
     });
 
     watch([isMobileDrawer, isCompactDrawer], () => {

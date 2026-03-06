@@ -866,6 +866,9 @@ export default defineComponent({
           data: postData,
         });
         this.lastSavedSettingsSignature = signature;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('tic:settings-updated'));
+        }
         if (this.prevAdminPassword !== this.adminPassword) {
           this.$router.replace({name: 'login'});
           return;
