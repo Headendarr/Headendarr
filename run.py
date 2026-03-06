@@ -45,8 +45,18 @@ async def background_tasks():
 @scheduler.scheduled_job("interval", id="hls_proxy_cleanup", seconds=15, misfire_grace_time=60)
 async def every_15_seconds_hls_cleanup():
     async with app.app_context():
-        await cleanup_hls_proxy_state()
-        await persist_stream_activity_state()
+        try:
+            await asyncio.wait_for(cleanup_hls_proxy_state(), timeout=10.0)
+        except asyncio.TimeoutError:
+            app.logger.warning("HLS cleanup tick timed out after 10s")
+        except Exception:
+            app.logger.exception("HLS cleanup tick failed")
+        try:
+            await asyncio.wait_for(persist_stream_activity_state(), timeout=4.0)
+        except asyncio.TimeoutError:
+            app.logger.warning("Stream activity persist tick timed out after 4s")
+        except Exception:
+            app.logger.exception("Stream activity persist tick failed")
 
 
 @scheduler.scheduled_job("interval", id="do_15_seconds", seconds=15, misfire_grace_time=15)

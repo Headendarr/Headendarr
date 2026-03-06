@@ -89,6 +89,12 @@ class CsoOutputReaderEnded(Exception):
     """Raised when CSO output ended unexpectedly while clients were still attached."""
 
 
+async def _wait_process_exit_with_timeout(process, timeout_seconds=2.0):
+    if not process:
+        return None
+    return await asyncio.wait_for(process.wait(), timeout=float(timeout_seconds))
+
+
 class ByteBudgetQueue:
     """Leaky async queue bounded by payload bytes instead of item count."""
 
@@ -1510,12 +1516,17 @@ class CsoIngestSession:
         if process:
             try:
                 process.terminate()
-                return_code = await asyncio.wait_for(process.wait(), timeout=2.0)
+                return_code = await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
             except Exception:
                 try:
                     process.kill()
-                    return_code = await process.wait()
+                    return_code = await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
                 except Exception:
+                    logger.warning(
+                        "CSO ingest process did not exit after kill channel=%s ingest_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
                     pass
         health_task = self.health_task
         self.health_task = None
@@ -1893,12 +1904,17 @@ class CsoOutputSession:
         if process:
             try:
                 process.terminate()
-                return_code = await asyncio.wait_for(process.wait(), timeout=2.0)
+                return_code = await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
             except Exception:
                 try:
                     process.kill()
-                    return_code = await process.wait()
+                    return_code = await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
                 except Exception:
+                    logger.warning(
+                        "CSO output process did not exit after kill channel=%s output_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
                     pass
         logger.info(
             "CSO output stopped channel=%s output_key=%s return_code=%s policy=(%s)",
@@ -2200,12 +2216,17 @@ class CsoHlsOutputSession:
         if process:
             try:
                 process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=2.0)
+                await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
             except Exception:
                 try:
                     process.kill()
-                    await process.wait()
+                    await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
                 except Exception:
+                    logger.warning(
+                        "CSO HLS output process did not exit after kill channel=%s output_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
                     pass
         if self.output_dir.exists():
             await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
