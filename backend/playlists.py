@@ -19,7 +19,7 @@ from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
 from backend.stream_profiles import resolve_cso_profile_name
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
-from backend.utils import convert_to_int
+from backend.utils import convert_to_int, fast_url_hash
 
 logger = logging.getLogger("tic.playlists")
 
@@ -379,6 +379,7 @@ async def _import_xc_playlist_streams(settings, playlist):
                 "playlist_id": playlist.id,
                 "name": stream.get("name"),
                 "url": template_url,
+                "url_hash": fast_url_hash(template_url),
                 "channel_id": stream.get("epg_channel_id") or stream.get("tvg_id"),
                 "group_title": category_map.get(str(category_id)),
                 "tvg_chno": tvg_chno,
@@ -784,6 +785,7 @@ async def store_playlist_streams(config, playlist_id):
                         "playlist_id": playlist_id,
                         "name": stream.name,
                         "url": stream.url,
+                        "url_hash": fast_url_hash(stream.url),
                         "channel_id": stream.attributes.get("channel-id"),
                         "group_title": stream.attributes.get("group-title"),
                         "tvg_chno": int(tvg_channel_number) if tvg_channel_number is not None else None,

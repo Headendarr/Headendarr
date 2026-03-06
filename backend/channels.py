@@ -58,7 +58,7 @@ from backend.streaming import (
 )
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.url_resolver import get_tvh_publish_base_url
-from backend.utils import normalize_id
+from backend.utils import fast_url_hash, normalize_id
 
 logger = logging.getLogger("tic.channels")
 
@@ -421,7 +421,11 @@ async def build_bulk_epg_match_preview(
             if url_pairs:
                 url_condition = or_(
                     *[
-                        and_(PlaylistStreams.playlist_id == playlist_id, PlaylistStreams.url == stream_url)
+                        and_(
+                            PlaylistStreams.playlist_id == playlist_id,
+                            PlaylistStreams.url_hash == fast_url_hash(stream_url),
+                            PlaylistStreams.url == stream_url,
+                        )
                         for playlist_id, stream_url in url_pairs
                     ]
                 )
@@ -1402,9 +1406,11 @@ async def update_channel(config, channel_id, data):
                     if row:
                         return _playlist_stream_from_model(row)
                 if stream_url:
+                    stream_url_hash = fast_url_hash(stream_url)
                     query = await session.execute(
                         select(PlaylistStreams).where(
                             PlaylistStreams.playlist_id == playlist_info.id,
+                            PlaylistStreams.url_hash == stream_url_hash,
                             PlaylistStreams.url == stream_url,
                         )
                     )
@@ -1689,7 +1695,10 @@ async def update_channel(config, channel_id, data):
                 if stream_names:
                     match_clauses.append(PlaylistStreams.name.in_(stream_names))
                 if stream_urls:
-                    match_clauses.append(PlaylistStreams.url.in_(stream_urls))
+                    stream_url_hashes = [fast_url_hash(url) for url in stream_urls]
+                    stream_url_hashes = [url_hash for url_hash in stream_url_hashes if url_hash]
+                    if stream_url_hashes:
+                        match_clauses.append(PlaylistStreams.url_hash.in_(stream_url_hashes))
                 result = await session.execute(
                     select(
                         PlaylistStreams.id,

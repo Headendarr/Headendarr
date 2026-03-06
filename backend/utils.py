@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+import hashlib
+
 
 def normalize_id(value, name):
     try:
@@ -19,3 +21,12 @@ def convert_to_int(value, default=1):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def fast_url_hash(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()

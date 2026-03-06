@@ -29,7 +29,7 @@ from backend.channels import (
 )
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
-from backend.utils import normalize_id, is_truthy
+from backend.utils import fast_url_hash, normalize_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
 from backend.datetime_utils import to_utc_iso
@@ -493,10 +493,12 @@ async def api_get_channel_logo_suggestions(channel_id):
                 )
                 stream = result.scalars().first()
         if not stream and source.playlist_stream_url:
+            stream_url_hash = fast_url_hash(source.playlist_stream_url)
             async with Session() as session:
                 result = await session.execute(
                     select(PlaylistStreams).where(
                         PlaylistStreams.playlist_id == source.playlist_id,
+                        PlaylistStreams.url_hash == stream_url_hash,
                         PlaylistStreams.url == source.playlist_stream_url,
                     )
                 )
@@ -574,9 +576,11 @@ async def api_apply_channel_logo_suggestion(channel_id):
                     )
                     stream = stream_result.scalars().first()
                 if not stream and source.playlist_stream_url:
+                    stream_url_hash = fast_url_hash(source.playlist_stream_url)
                     stream_result = await session.execute(
                         select(PlaylistStreams).where(
                             PlaylistStreams.playlist_id == source.playlist_id,
+                            PlaylistStreams.url_hash == stream_url_hash,
                             PlaylistStreams.url == source.playlist_stream_url,
                         )
                     )

@@ -23,7 +23,7 @@ class Epg(Base):
 
     enabled = Column(Boolean, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
-    url = Column(Text, index=True, unique=False)
+    url = Column(Text, index=False, unique=False)
     user_agent = Column(String(255), nullable=True)
     update_schedule = Column(String(16), nullable=False, default="12h")
 
@@ -117,7 +117,7 @@ class Playlist(Base):
     connections = Column(Integer, nullable=False, unique=False)
     name = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(64), index=True, unique=True)
-    url = Column(Text, index=True, unique=False)
+    url = Column(Text, index=False, unique=False)
     account_type = Column(String(16), nullable=False, unique=False, default="M3U")
     xc_username = Column(String(255), nullable=True, unique=False)
     xc_password = Column(String(255), nullable=True, unique=False)
@@ -142,10 +142,14 @@ class Playlist(Base):
 
 class PlaylistStreams(Base):
     __tablename__ = "playlist_streams"
+    __table_args__ = (
+        Index("ix_playlist_streams_playlist_id_url_hash", "playlist_id", "url_hash"),
+    )
     id = Column(Integer, primary_key=True)
 
     name = Column(String(500), index=True, unique=False)
-    url = Column(Text, index=True, unique=False)
+    url = Column(Text, index=False, unique=False)
+    url_hash = Column(String(32), index=False, unique=False)
     channel_id = Column(Text, index=True, unique=False)
     group_title = Column(String(500), index=True, unique=False)
     tvg_chno = Column(Integer, index=False, unique=False)
@@ -156,7 +160,7 @@ class PlaylistStreams(Base):
     xc_category_id = Column(Integer, index=True, unique=False)
 
     # Link with a playlist
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
+    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True, index=True)
 
     def __repr__(self):
         return '<PlaylistStreams {}>'.format(self.id)
@@ -235,7 +239,7 @@ class ChannelSource(Base):
     playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
     xc_account_id = Column(Integer, ForeignKey('xc_accounts.id'), nullable=True)
     playlist_stream_name = Column(String(500), index=True, unique=False)
-    playlist_stream_url = Column(Text, index=True, unique=False)
+    playlist_stream_url = Column(Text, index=False, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     auto_update = Column(Boolean, nullable=False, unique=False, default=False)
     last_health_check_at = Column(DateTime, nullable=True, unique=False)
