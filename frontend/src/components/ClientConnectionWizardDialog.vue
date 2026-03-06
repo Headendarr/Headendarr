@@ -1,7 +1,7 @@
 <template>
   <TicDialogPopup
     :model-value="modelValue"
-    title="Client Setup Guide"
+    title="Client Connection Wizard"
     :width="width"
     :max-width="width"
     :show-actions="false"

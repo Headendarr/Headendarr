@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import time
+from datetime import datetime
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
@@ -54,6 +55,15 @@ def _parse_cso_event_details(details_json):
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _created_at_sort_key(payload):
+    created_at = (payload or {}).get("_created_at")
+    if isinstance(created_at, datetime):
+        return created_at.timestamp()
+    if isinstance(created_at, (int, float)):
+        return float(created_at)
+    return 0.0
 
 
 async def _fetch_cso_attention_map(channel_ids):
@@ -216,7 +226,7 @@ async def _fetch_cso_attention_map(channel_ids):
         source_issues = []
         for unresolved_issue in sorted(
             unresolved_source_issues,
-            key=lambda item: item.get("_created_at") or 0,
+            key=_created_at_sort_key,
             reverse=True,
         ):
             payload = dict(unresolved_issue)

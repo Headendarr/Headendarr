@@ -6,6 +6,9 @@ title: HLS Proxies
 
 Headendarr features a sophisticated HLS (HTTP Live Streaming) proxy system designed to enhance stream stability, unlock geographic restrictions, and provide granular control over how your IPTV sources are consumed.
 
+If you are also using CSO-managed stream routing/capacity controls, see
+[Channel Stream Organiser (CSO)](./channel-stream-organiser.md).
+
 ## What is an HLS Proxy?
 
 An HLS proxy acts as an intermediary between your IPTV provider and your streaming client (like TVHeadend or Plex). Instead of your client connecting directly to the provider's server, it connects to Headendarr. Headendarr then fetches the stream segments, potentially modifies them, and serves them to your client.

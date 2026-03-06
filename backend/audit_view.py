@@ -34,6 +34,8 @@ def build_device_label(user_agent: str | None, client_hints: dict | None = None)
     if not ua:
         return "Unknown"
     ua_lc = ua.lower()
+    if "jellyfin" in ua_lc:
+        return "Jellyfin"
     if "tivimate" in ua_lc:
         return "TiviMate"
     if "vlc" in ua_lc or "libvlc" in ua_lc:

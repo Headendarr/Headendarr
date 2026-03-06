@@ -177,7 +177,10 @@ Trade-off:
 
 ## Channel Stream Organiser (CSO)
 
-Channel setting:
+For a full CSO overview (runtime model, settings interactions, capacity behaviour, and routing guidance), see
+[Channel Stream Organiser (CSO)](../channel-stream-organiser.md).
+
+Channel-level setting highlights:
 
 - **Enable Channel Stream Organiser**: force this channel to use CSO pipeline routing.
 - **Preferred Stream Profile**: default profile used for direct channel CSO playback URLs.

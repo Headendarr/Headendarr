@@ -50,6 +50,7 @@ const sidebars = {
               ],
             },
             "configuration/hls-proxies",
+            "configuration/channel-stream-organiser",
             "configuration/user-management",
             "configuration/application-settings",
             "configuration/tvheadend",

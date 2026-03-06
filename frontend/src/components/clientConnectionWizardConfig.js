@@ -1,76 +1,154 @@
 const CLIENT_OPTIONS = [
   {label: 'Plex', value: 'plex'},
   {label: 'Jellyfin', value: 'jellyfin'},
+  {label: 'Kodi', value: 'kodi'},
   {label: 'VLC', value: 'vlc'},
   {label: 'Sparkle TV', value: 'sparkle'},
   {label: 'TiviMate', value: 'tivimate'},
   {label: 'Other / Direct Links', value: 'other'},
 ];
 
-const CLIENT_PRESETS = {
+const CLIENT_POLICIES = {
   plex: {
-    methodOrder: ['hdhr_per_source', 'hdhr_combined'],
-    recommendedProfiles: {
+    preferredMethod: 'hdhr_per_source',
+    availableMethods: ['hdhr_per_source', 'hdhr_combined'],
+    preferredProfiles: {
+      hdhr_per_source: {
+        routedThroughTvh: 'none',
+        direct: 'aac-mpegts',
+      },
+      hdhr_combined: 'aac-mpegts',
+    },
+    availableProfiles: {
       hdhr_per_source: {
         routedThroughTvh: ['none'],
-        direct: ['aac-mpegts', 'tvh'],
+        direct: ['none', 'aac-mpegts', 'h264-aac-mpegts', 'tvh'],
       },
-      hdhr_combined: ['aac-mpegts', 'tvh'],
+      hdhr_combined: ['none', 'aac-mpegts', 'h264-aac-mpegts', 'tvh'],
     },
   },
   jellyfin: {
-    methodOrder: ['hdhr_per_source', 'm3u_per_source', 'm3u_combined'],
-    recommendedProfiles: {
-      hdhr_per_source: {
-        routedThroughTvh: ['none'],
-        direct: ['mpegts', 'aac-mpegts', 'tvh'],
-      },
-      hdhr_combined: ['mpegts', 'aac-mpegts',  'tvh'],
+    preferredMethod: 'm3u_per_source',
+    availableMethods: ['m3u_per_source', 'm3u_combined'],
+    connectionNote: ({routePerSourceThroughTvh}) => {
+      const tvhRoutingText = routePerSourceThroughTvh
+        ?
+        'Per-source routing through TVHeadend is currently enabled, which is recommended when TVHeadend is also serving other clients.'
+        :
+        'If TVHeadend is also serving other clients, enable "Route per-source playlists & per-source HDHomeRun via TVHeadend" for more consistent mixed-client behaviour.';
+      return (
+        'Recommended for Jellyfin: use per-source M3U playlists so source connection limits remain visible and controllable per source. ' +
+        'Recommended profile: aac-mpegts, because Jellyfin is most reliable with MPEG-TS plus AAC audio handling. ' +
+        tvhRoutingText
+      );
+    },
+    preferredProfiles: {
       m3u_per_source: {
-        routedThroughTvh: ['none'],
-        direct: ['aac-matroska', 'mpegts', 'aac-mpegts'],
+        routedThroughTvh: 'aac-mpegts',
+        direct: 'aac-mpegts',
       },
-      m3u_combined: ['aac-matroska', 'mpegts', 'aac-mpegts'],
+      m3u_combined: 'aac-mpegts',
+    },
+    availableProfiles: {
+      m3u_per_source: {
+        routedThroughTvh: ['aac-mpegts', 'mpegts', 'aac-matroska', 'matroska'],
+        direct: ['aac-mpegts', 'mpegts', 'aac-matroska', 'h264-aac-mpegts'],
+      },
+      m3u_combined: ['aac-mpegts', 'mpegts', 'aac-matroska', 'h264-aac-mpegts'],
     },
   },
+  kodi: {
+    preferredMethod: 'tvh_htsp',
+    availableMethods: ['tvh_htsp'],
+    connectionNote: () => (
+      'Recommended for Kodi: use TVHeadend HTSP with the TVHeadend HTSP Client addon. ' +
+      'This gives the strongest native TVHeadend integration, including backend timeshift support.'
+    ),
+    preferredProfiles: {},
+    availableProfiles: {},
+  },
   vlc: {
-    methodOrder: ['m3u_combined'],
-    recommendedProfiles: {
+    preferredMethod: 'm3u_combined',
+    availableMethods: ['m3u_combined', 'm3u_per_source'],
+    preferredProfiles: {
+      m3u_combined: 'none',
+      m3u_per_source: {
+        routedThroughTvh: 'none',
+        direct: 'none',
+      },
+    },
+    availableProfiles: {
       m3u_combined: ['none'],
     },
   },
   sparkle: {
-    methodOrder: ['m3u_combined', 'm3u_per_source'],
-    recommendedProfiles: {
-      m3u_combined: ['aac-mpegts', 'tvh'],
+    preferredMethod: 'tvh_htsp',
+    availableMethods: ['tvh_htsp', 'm3u_combined', 'm3u_per_source'],
+    connectionNote: () => (
+      'Recommended for Sparkle TV: use TVHeadend HTSP. ' +
+      'Sparkle supports HTSP directly and this enables backend TVHeadend timeshift behaviour.'
+    ),
+    preferredProfiles: {
+      m3u_combined: 'aac-mpegts',
+      m3u_per_source: {
+        routedThroughTvh: 'none',
+        direct: 'aac-mpegts',
+      },
+    },
+    availableProfiles: {
+      m3u_combined: ['none', 'aac-mpegts', 'tvh'],
       m3u_per_source: {
         routedThroughTvh: ['none'],
-        direct: ['aac-mpegts', 'tvh'],
+        direct: ['none', 'aac-mpegts', 'tvh'],
       },
     },
   },
   tivimate: {
-    methodOrder: ['xc', 'm3u_combined', 'm3u_per_source'],
-    recommendedProfiles: {
-      m3u_combined: ['aac-mpegts', 'default'],
+    preferredMethod: 'xc',
+    availableMethods: ['xc', 'm3u_combined', 'm3u_per_source'],
+    preferredProfiles: {
+      m3u_combined: 'aac-mpegts',
+      m3u_per_source: {
+        routedThroughTvh: 'none',
+        direct: 'aac-mpegts',
+      },
+    },
+    availableProfiles: {
+      m3u_combined: ['none', 'aac-mpegts', 'default'],
       m3u_per_source: {
         routedThroughTvh: ['none'],
-        direct: ['aac-mpegts', 'default'],
+        direct: ['none', 'aac-mpegts', 'default'],
       },
     },
   },
   other: {
-    methodOrder: ['direct'],
-    recommendedProfiles: {
-      direct: ['default'],
+    preferredMethod: 'direct',
+    availableMethods: [
+      'direct',
+      'tvh_htsp',
+      'm3u_per_source',
+      'm3u_combined',
+      'hdhr_per_source',
+      'hdhr_combined',
+      'xc',
+    ],
+    preferredProfiles: {
+      direct: 'default',
+    },
+    availableProfiles: {
+      direct: ['none', 'default'],
     },
   },
 };
 
 const METHOD_DEFINITIONS = {
+  tvh_htsp: {
+    supportsProfile: false,
+    label: 'TVHeadend HTSP',
+  },
   hdhr_per_source: {
     supportsProfile: true,
-    label: 'Per-source HDHomeRun tuners (recommended for limits)',
+    label: 'Per-source HDHomeRun tuners',
     labelWhenPerSourceTvh: 'Per-source HDHomeRun tuners (routed through TVHeadend)',
   },
   hdhr_combined: {
@@ -79,7 +157,7 @@ const METHOD_DEFINITIONS = {
   },
   m3u_per_source: {
     supportsProfile: true,
-    label: 'Per-source M3U playlists (recommended)',
+    label: 'Per-source M3U playlists',
   },
   m3u_combined: {
     supportsProfile: true,
@@ -87,7 +165,7 @@ const METHOD_DEFINITIONS = {
   },
   xc: {
     supportsProfile: false,
-    label: 'Xtream Codes login (recommended)',
+    label: 'Xtream Codes login',
   },
   direct: {
     supportsProfile: true,
@@ -99,12 +177,53 @@ const appendRecommended = (label, isRecommended) => (isRecommended ?
   `${label} (recommended)` :
   label);
 
+const isPerSourceMethod = (methodKey) => methodKey === 'm3u_per_source' ||
+  methodKey === 'hdhr_per_source';
+
+const resolveScopedPolicyList = ({
+                                   value,
+                                   methodKey,
+                                   routePerSourceThroughTvh,
+                                 }) => {
+  if (Array.isArray(value)) {
+    return value.slice();
+  }
+  if (value && typeof value === 'object') {
+    const routed = isPerSourceMethod(methodKey) && routePerSourceThroughTvh;
+    const scoped = routed ? value.routedThroughTvh : value.direct;
+    if (Array.isArray(scoped)) {
+      return scoped.slice();
+    }
+    if (typeof scoped === 'string' && scoped.trim()) {
+      return [scoped.trim()];
+    }
+    return [];
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+};
+
 const appendProfileQuery = (url, profileKey) => {
   if (!profileKey || profileKey === 'none') {
     return url;
   }
   const divider = url.includes('?') ? '&' : '?';
   return `${url}${divider}profile=${encodeURIComponent(profileKey)}`;
+};
+
+const deriveTvhHostFromBaseUrl = (connectionBaseUrl) => {
+  const raw = String(connectionBaseUrl || '').trim();
+  if (!raw) {
+    return '';
+  }
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname || '';
+  } catch {
+    return raw.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+  }
 };
 
 const toProfileDefinitions = ({streamProfileDefinitions, streamProfiles}) => {
@@ -140,8 +259,16 @@ const toProfileDefinitions = ({streamProfileDefinitions, streamProfiles}) => {
 };
 
 export const buildMethodOptions = ({clientKey, routePerSourceThroughTvh}) => {
-  const methodOrder = CLIENT_PRESETS[clientKey]?.methodOrder || [];
-  return methodOrder.map((methodKey) => {
+  const policy = CLIENT_POLICIES[clientKey] || {};
+  const preferredMethod = String(policy.preferredMethod || '').trim();
+  const availableMethods = Array.isArray(policy.availableMethods) ?
+    policy.availableMethods :
+    [];
+  const orderedMethods = [
+    ...(preferredMethod ? [preferredMethod] : []),
+    ...availableMethods.filter((item) => item !== preferredMethod),
+  ];
+  return orderedMethods.map((methodKey) => {
     const meta = METHOD_DEFINITIONS[methodKey];
     if (!meta) {
       return null;
@@ -152,7 +279,7 @@ export const buildMethodOptions = ({clientKey, routePerSourceThroughTvh}) => {
         : meta.label;
     return {
       value: methodKey,
-      label,
+      label: appendRecommended(label, methodKey === preferredMethod),
       supportsProfile: Boolean(meta.supportsProfile),
     };
   }).filter(Boolean);
@@ -171,6 +298,17 @@ export const buildProfileOptions = ({
     {streamProfileDefinitions, streamProfiles});
   const isPlexPerSourceViaTvh = clientKey === 'plex' && methodKey ===
     'hdhr_per_source' && routePerSourceThroughTvh;
+  const policy = CLIENT_POLICIES[clientKey] || {};
+  const allowedProfileKeys = resolveScopedPolicyList({
+    value: policy?.availableProfiles?.[methodKey],
+    methodKey,
+    routePerSourceThroughTvh,
+  }).map((value) =>
+    String(value || '').trim().toLowerCase(),
+  ).filter(Boolean);
+  const allowNone = allowedProfileKeys.includes('none');
+  const nonDefaultAllowedSet = new Set(
+    allowedProfileKeys.filter((key) => key !== 'none'));
 
   if (isPlexPerSourceViaTvh) {
     const ids = (Array.isArray(tvhCompatibleProfileIds) ?
@@ -178,20 +316,25 @@ export const buildProfileOptions = ({
       []).map((id) =>
       String(id || '').trim().toLowerCase(),
     ).filter((id) => id && id !== 'pass');
-    const stripWebtvPrefix = (value) =>
-      String(value || '').replace(/^webtv-/, '');
-    const allowedTicKeys = new Set(
-      ids.map((id) => stripWebtvPrefix(id)).filter((id) => id && id !== 'pass'),
-    );
-    const tvhProfiles = profiles.filter(
+    const stripWebtvPrefix = (value) => String(value || '').
+      replace(/^webtv-/, '');
+    const allowedTicKeys = new Set(ids.map((id) => stripWebtvPrefix(id)).
+      filter((id) => id && id !== 'pass'));
+    let tvhProfiles = profiles.filter(
       (profile) => allowedTicKeys.has(profile.key));
+    if (nonDefaultAllowedSet.size) {
+      tvhProfiles = tvhProfiles.filter(
+        (profile) => nonDefaultAllowedSet.has(profile.key));
+    }
 
     const noOverrideLabel = appendRecommended(
       'Default (no override, source TVHeadend backend)',
-      selectedProfile === 'none',
+      selectedProfile === 'none' || !selectedProfile,
     );
-    return [
-      {label: noOverrideLabel, value: 'none'},
+    const options = [
+      ...(allowNone || !tvhProfiles.length ?
+        [{label: noOverrideLabel, value: 'none'}] :
+        []),
       ...tvhProfiles.map((profile) => ({
         label: profile.label || profile.key,
         value: profile.key,
@@ -199,9 +342,15 @@ export const buildProfileOptions = ({
           'TVHeadend-compatible profile override.',
       })),
     ];
+    return options.length ? options : [{label: noOverrideLabel, value: 'none'}];
   }
 
-  const availableKeys = profiles.map((profile) => profile.key);
+  let scopedProfiles = profiles;
+  if (nonDefaultAllowedSet.size) {
+    scopedProfiles = profiles.filter(
+      (profile) => nonDefaultAllowedSet.has(profile.key));
+  }
+  const availableKeys = scopedProfiles.map((profile) => profile.key);
   const recommended = pickRecommendedProfile({
     clientKey,
     methodKey,
@@ -211,15 +360,18 @@ export const buildProfileOptions = ({
 
   const noOverrideLabel = appendRecommended('Default (source format)',
     recommended === 'none');
-  return [
-    {label: noOverrideLabel, value: 'none'},
-    ...profiles.map((profile) => ({
+  const options = [
+    ...(allowNone || !scopedProfiles.length ?
+      [{label: noOverrideLabel, value: 'none'}] :
+      []),
+    ...scopedProfiles.map((profile) => ({
       label: appendRecommended(profile.label || profile.key,
         recommended === profile.key),
       value: profile.key,
       description: profile.description || '',
     })),
   ];
+  return options.length ? options : [{label: noOverrideLabel, value: 'none'}];
 };
 
 export const pickRecommendedProfile = ({
@@ -231,26 +383,13 @@ export const pickRecommendedProfile = ({
   if (!Array.isArray(availableKeys) || !availableKeys.length) {
     return 'none';
   }
-  const methodAllowList = new Set([
-    'm3u_combined',
-    'm3u_per_source',
-    'hdhr_combined',
-    'hdhr_per_source',
-    'direct']);
-  if (!methodAllowList.has(methodKey)) {
-    return 'none';
-  }
-  const isPerSourceMethod =
-    methodKey === 'm3u_per_source' || methodKey === 'hdhr_per_source';
-  const preferredConfig =
-    CLIENT_PRESETS[clientKey]?.recommendedProfiles?.[methodKey] || [];
-  const preferred = Array.isArray(preferredConfig)
-    ? preferredConfig
-    : (
-      isPerSourceMethod && routePerSourceThroughTvh
-        ? (preferredConfig?.routedThroughTvh || [])
-        : (preferredConfig?.direct || [])
-    );
+  const preferred = resolveScopedPolicyList({
+    value: CLIENT_POLICIES[clientKey]?.preferredProfiles?.[methodKey],
+    methodKey,
+    routePerSourceThroughTvh,
+  }).map((value) =>
+    String(value || '').trim().toLowerCase(),
+  ).filter(Boolean);
   for (const key of preferred) {
     if (key === 'none') {
       return 'none';
@@ -270,7 +409,14 @@ export const buildConnectionMessages = ({
                                           routeCombinedThroughCso,
                                         }) => {
   const messages = [];
-  if (methodKey === 'hdhr_per_source') {
+  const clientPolicyNoteBuilder = CLIENT_POLICIES[clientKey]?.connectionNote;
+  if (clientPolicyNoteBuilder) {
+    messages.push({
+      type: 'note',
+      text: clientPolicyNoteBuilder({routePerSourceThroughTvh}),
+    });
+  }
+  if (clientKey === 'plex' && methodKey === 'hdhr_per_source') {
     messages.push({
       type: 'note',
       text: 'Per-source HDHomeRun setup is best when you want source-level connection limit behaviour by adding one tuner per source.',
@@ -281,13 +427,6 @@ export const buildConnectionMessages = ({
     messages.push({
       type: 'warning',
       text: 'For Plex, use either "Route per-source playlists & per-source HDHomeRun via TVHeadend" or set profile to aac-mpegts for better compatibility.',
-    });
-  }
-  if (clientKey === 'jellyfin' && methodKey === 'm3u_per_source' &&
-    routePerSourceThroughTvh) {
-    messages.push({
-      type: 'warning',
-      text: 'For Jellyfin, disable "Route per-source playlists & per-source HDHomeRun via TVHeadend". Jellyfin is more reliable when per-source playlists connect directly to Headendarr.',
     });
   }
   if ((methodKey === 'm3u_combined' || methodKey === 'hdhr_combined') &&
@@ -371,6 +510,9 @@ export const buildGuide = ({
       `${connectionBaseUrl}/tic-api/hdhr_device/${currentStreamingKey}/combined`;
   const combinedPlaylistUrl = appendProfileQuery(xcPlaylistUrl,
     selectedProfile);
+  const tvhHost = deriveTvhHostFromBaseUrl(connectionBaseUrl) || '<your-host>';
+  const tvhHttpUrl = `http://${tvhHost}:9981`;
+  const htspPort = '9982';
 
   const combinedCsoStatus = routeCombinedThroughCso
     ? 'Combined routing is currently through CSO.'
@@ -380,6 +522,48 @@ export const buildGuide = ({
     : 'Per-source routes are currently configured directly from Headendarr.';
 
   const methodTemplates = {
+    tvh_htsp: {
+      title: 'TVHeadend HTSP setup',
+      summary: 'Use direct TVHeadend HTSP connection for native backend integration.',
+      steps: [
+        'In your client, choose TVHeadend / HTSP as the connection type.',
+        'Enter the host, port, username, and password from the values below.',
+        'For Kodi, configure these in the TVHeadend HTSP Client addon.',
+        'For Sparkle TV, HTSP enables backend TVHeadend timeshift support.',
+      ],
+      links: [
+        {
+          key: 'tvh.htsp.host',
+          label: 'TVHeadend Hostname/IP',
+          description: 'Use this host in HTSP client setup.',
+          value: tvhHost,
+        },
+        {
+          key: 'tvh.htsp.port',
+          label: 'HTSP Port',
+          description: 'TVHeadend HTSP port.',
+          value: htspPort,
+        },
+        {
+          key: 'tvh.username',
+          label: 'Username',
+          description: 'Your Headendarr username.',
+          value: currentUsername,
+        },
+        {
+          key: 'tvh.password',
+          label: 'Password',
+          description: 'Your streaming key.',
+          value: currentStreamingKey,
+        },
+        {
+          key: 'tvh.http.url',
+          label: 'TVHeadend HTTP URL (optional)',
+          description: 'Useful for plugin/UI checks when needed.',
+          value: tvhHttpUrl,
+        },
+      ],
+    },
     hdhr_per_source: {
       title: 'Per-source HDHomeRun setup',
       summary: `${perSourceRoutingStatus} Add one tuner per source in your client for source-level limit control.`,
@@ -560,6 +744,15 @@ export const buildGuide = ({
   if (clientKey === 'plex' && methodKey === 'hdhr_combined') {
     steps.push(
       'For Plex compatibility, prefer the aac-mpegts profile override when required.');
+  }
+  if (clientKey === 'jellyfin' &&
+    (methodKey === 'm3u_per_source' || methodKey === 'm3u_combined')) {
+    steps.push(
+      'Jellyfin does not reliably support HLS input here; use MPEG-TS or MKV profiles, with aac-mpegts preferred.',
+    );
+    steps.push(
+      'aac-mpegts usually has minimal overhead: copy/remux when source audio is already AAC, or audio-only transcode when needed.',
+    );
   }
 
   return {

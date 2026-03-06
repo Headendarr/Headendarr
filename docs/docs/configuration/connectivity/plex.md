@@ -30,27 +30,27 @@ For Plex, the recommended workarounds are:
 1. Navigate to the **Live TV & DVR** page in Plex.
 2. Click **Set Up Plex Tuner**.
 
-![Plex add first tuner](/img/screenshots/plex-setup-add-first-tuner.png)
+[![Plex add first tuner](/img/screenshots/plex-setup-add-first-tuner.png)](/img/screenshots/plex-setup-add-first-tuner.png)
 
 3. Click **Don't see your HDHomeRun device? Enter its network address manually** to enter the address manually.
 
-4. In Headendarr, open **Client Setup Guide** in the header.
-5. Select **Plex** and choose either per-source HDHomeRun tuners (best for source limits) or combined HDHomeRun (single endpoint).
-6. Copy a HDHomeRun URL from the guide and paste it into the **HDHOMERUN DEVICE ADDRESS** field.
+4. In Headendarr, open **Show connection details**.
+5. Copy either a per-source HDHomeRun URL (best for source limits) or the combined HDHomeRun URL.
+6. Paste that URL into the **HDHOMERUN DEVICE ADDRESS** field.
 
-![Copy HDHomeRun emulator URL](/img/screenshots/plex-setup-copy-hdhr-device-url.png)
+[![Copy HDHomeRun emulator URL](/img/screenshots/plex-setup-copy-hdhr-device-url.png)](/img/screenshots/plex-setup-copy-hdhr-device-url.png)
 
 7. Click **Connect**. You should now see your tuner with its details and available tuners.
 8. Click **Have an XMLTV guide on your server? Click here to use it.**
 
-![Click to use XMLTV](/img/screenshots/plex-setup-click-to-use-xmltv.png)
+[![Click to use XMLTV](/img/screenshots/plex-setup-click-to-use-xmltv.png)](/img/screenshots/plex-setup-click-to-use-xmltv.png)
 
-9. Copy the **XMLTV Guide** URL from **Client Setup Guide** and paste it into the **XMLTV GUIDE** field.
+9. Copy the **XMLTV Guide** URL from **Show connection details** and paste it into the **XMLTV GUIDE** field.
 
-![Copy XMLTV URL](/img/screenshots/plex-setup-copy-xmltv-url.png)
+[![Copy XMLTV URL](/img/screenshots/plex-setup-copy-xmltv-url.png)](/img/screenshots/plex-setup-copy-xmltv-url.png)
 
 10. Click **Continue**. You will see a list of tuner channels and a list of EPG channels. Confirm they are paired correctly.
 11. Click **Continue** again. Live TV should now be set up and connected to Headendarr.
 12. Click **Add Another Device** and repeat for each HDHomeRun tuner source. Each source should enforce its own connection limits in Plex Live TV & DVR.
 
-![Add additional tuners](/img/screenshots/plex-setup-add-additional-tuners.png)
+[![Add additional tuners](/img/screenshots/plex-setup-add-additional-tuners.png)](/img/screenshots/plex-setup-add-additional-tuners.png)
