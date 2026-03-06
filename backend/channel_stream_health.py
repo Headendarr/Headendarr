@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.orm import joinedload
 
 from backend.cso import (
@@ -259,9 +259,37 @@ async def cancel_background_health_checks_for_capacity_key(capacity_key_name: st
 async def preempt_background_health_checks_for_channel(channel) -> int:
     if not channel:
         return 0
+
+    channel_id = None
+    sources = []
+    if isinstance(channel, int):
+        channel_id = int(channel)
+    else:
+        channel_id = int(getattr(channel, "id", 0) or 0)
+        # Avoid lazy-loading from detached ORM instances.
+        sources = list((getattr(channel, "__dict__", {}) or {}).get("sources") or [])
+        try:
+            if not sources and inspect(channel).detached and channel_id > 0:
+                logger.debug(
+                    "Channel %s is detached while preempting health checks; loading sources in a fresh session.",
+                    channel_id,
+                )
+        except Exception:
+            pass
+
+    if not sources and channel_id > 0:
+        async with Session() as session:
+            result = await session.execute(
+                select(ChannelSource).where(ChannelSource.channel_id == channel_id)
+            )
+            sources = list(result.scalars().all())
+
+    if not sources:
+        return 0
+
     cancelled = 0
     seen_keys = set()
-    for source in list(getattr(channel, "sources", []) or []):
+    for source in sources:
         key_name = source_capacity_key(source)
         if key_name in seen_keys:
             continue

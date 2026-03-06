@@ -44,16 +44,19 @@ CSO_STALL_SECONDS_DEFAULT = 20
 CSO_UNDERSPEED_RATIO_DEFAULT = 0.9
 CSO_UNDERSPEED_WINDOW_SECONDS_DEFAULT = 12
 CSO_STARTUP_GRACE_SECONDS_DEFAULT = 8
-CSO_HTTP_ERROR_WINDOW_SECONDS_DEFAULT = int(os.environ.get("CSO_HTTP_ERROR_WINDOW_SECONDS", "10") or 10)
-CSO_HTTP_ERROR_THRESHOLD_DEFAULT = int(os.environ.get("CSO_HTTP_ERROR_THRESHOLD", "4") or 4)
-CSO_SPEED_STALE_SECONDS_DEFAULT = int(os.environ.get("CSO_SPEED_STALE_SECONDS", "6") or 6)
-CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = int(os.environ.get("CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS", "2") or 2)
-CSO_INGEST_RW_TIMEOUT_US = int(os.environ.get("CSO_INGEST_RW_TIMEOUT_US", "15000000") or 15000000)
-CSO_INGEST_TIMEOUT_US = int(os.environ.get("CSO_INGEST_TIMEOUT_US", "10000000") or 10000000)
-CSO_OUTPUT_CLIENT_STALE_SECONDS = float(os.environ.get("CSO_OUTPUT_CLIENT_STALE_SECONDS", "8") or 8)
-CSO_HLS_SEGMENT_SECONDS = int(os.environ.get("CSO_HLS_SEGMENT_SECONDS", "3") or 3)
-CSO_HLS_LIST_SIZE = int(os.environ.get("CSO_HLS_LIST_SIZE", "8") or 8)
+CSO_HTTP_ERROR_WINDOW_SECONDS_DEFAULT = 10
+CSO_HTTP_ERROR_THRESHOLD_DEFAULT = 4
+CSO_SPEED_STALE_SECONDS_DEFAULT = 6
+CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = 2
+CSO_INGEST_RW_TIMEOUT_US = 15_000_000
+CSO_INGEST_TIMEOUT_US = 10_000_000
+CSO_OUTPUT_CLIENT_STALE_SECONDS = 8.0
+CSO_HLS_SEGMENT_SECONDS = 3
+CSO_HLS_LIST_SIZE = 8
 CSO_HLS_CLIENT_IDLE_SECONDS = min(10, max(1, int(CSO_HLS_SEGMENT_SECONDS) * 3))
+CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES = 90_000_000
+CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES = 90_000_000
+CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS = 10
 _FFMPEG_SPEED_RE = re.compile(r"speed=\s*([0-9.]+)x")
 _HTTP_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
 _HLS_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
@@ -84,6 +87,86 @@ CONTAINER_TO_CONTENT_TYPE = {
 
 class CsoOutputReaderEnded(Exception):
     """Raised when CSO output ended unexpectedly while clients were still attached."""
+
+
+class ByteBudgetQueue:
+    """Leaky async queue bounded by payload bytes instead of item count."""
+
+    def __init__(self, max_bytes):
+        self.max_bytes = max(1, int(max_bytes or 1))
+        self._items = deque()
+        self._bytes = 0
+        self._cond = asyncio.Condition()
+
+    @staticmethod
+    def _payload_size(payload):
+        if payload is None:
+            return 0
+        try:
+            return len(payload)
+        except Exception:
+            return 0
+
+    async def put_drop_oldest(self, payload):
+        now_value = time.time()
+        size = self._payload_size(payload)
+        dropped_items = 0
+        dropped_bytes = 0
+        payload_too_large = False
+        async with self._cond:
+            while payload is not None and self._items and (self._bytes + size) > self.max_bytes:
+                old_payload, old_size, _ = self._items.popleft()
+                if old_payload is not None:
+                    self._bytes = max(0, self._bytes - old_size)
+                    dropped_items += 1
+                    dropped_bytes += int(old_size or 0)
+            if payload is not None and size > self.max_bytes:
+                while self._items:
+                    old_payload, old_size, _ = self._items.popleft()
+                    if old_payload is not None:
+                        dropped_items += 1
+                        dropped_bytes += int(old_size or 0)
+                self._bytes = 0
+                payload_too_large = True
+            self._items.append((payload, size, now_value))
+            if payload is not None:
+                self._bytes += size
+            self._cond.notify(1)
+            queued_bytes = int(self._bytes)
+            queued_items = len(self._items)
+        return {
+            "dropped_items": dropped_items,
+            "dropped_bytes": dropped_bytes,
+            "payload_too_large": payload_too_large,
+            "queued_bytes": queued_bytes,
+            "queued_items": queued_items,
+            "max_bytes": int(self.max_bytes),
+        }
+
+    async def put_eof(self):
+        await self.put_drop_oldest(None)
+
+    async def get(self):
+        async with self._cond:
+            while not self._items:
+                await self._cond.wait()
+            payload, size, _ = self._items.popleft()
+            if payload is not None:
+                self._bytes = max(0, self._bytes - size)
+            return payload
+
+    async def stats(self):
+        now_value = time.time()
+        async with self._cond:
+            oldest_age = 0.0
+            if self._items:
+                oldest_age = max(0.0, now_value - float(self._items[0][2] or now_value))
+            return {
+                "queued_items": len(self._items),
+                "queued_bytes": int(self._bytes),
+                "max_bytes": int(self.max_bytes),
+                "oldest_age_seconds": oldest_age,
+            }
 
 
 def detect_vaapi_device_path() -> str | None:
@@ -705,6 +788,10 @@ class CsoIngestSession:
         self.last_ffmpeg_speed_ts = 0.0
         self.health_failover_reason = None
         self.health_failover_details = None
+        self.last_reader_end_reason = None
+        self.last_reader_end_saw_data = False
+        self.last_reader_end_return_code = None
+        self.last_reader_end_ts = 0.0
         self._recent_ffmpeg_stderr = deque(maxlen=50)
         self.http_error_timestamps = deque(maxlen=200)
         self.hls_variants = []
@@ -762,6 +849,10 @@ class CsoIngestSession:
         self.http_error_timestamps.clear()
         self.health_failover_reason = None
         self.health_failover_details = None
+        self.last_reader_end_reason = None
+        self.last_reader_end_saw_data = False
+        self.last_reader_end_return_code = None
+        self.last_reader_end_ts = 0.0
         logger.info(
             "CSO ingest upstream connected channel=%s source_id=%s source_url=%s subscribers=%s",
             self.channel_id,
@@ -1111,6 +1202,11 @@ class CsoIngestSession:
             if token != self.process_token:
                 return
 
+            self.last_reader_end_reason = "ingest_reader_ended"
+            self.last_reader_end_saw_data = bool(saw_data)
+            self.last_reader_end_return_code = return_code
+            self.last_reader_end_ts = time.time()
+
             async with self.lock:
                 has_subscribers = bool(self.subscribers)
             if not has_subscribers:
@@ -1150,6 +1246,7 @@ class CsoIngestSession:
             await self.stop(force=True)
 
     async def _switch_source_after_failure(self, reason, return_code, saw_data, details=None):
+        graceful_reader_end = bool(reason == "ingest_reader_ended" and saw_data and return_code == 0)
         async with self.lock:
             if not self.subscribers:
                 old_capacity_key = self.current_capacity_key
@@ -1214,6 +1311,15 @@ class CsoIngestSession:
                 )
 
         if not self.allow_failover:
+            if graceful_reader_end:
+                logger.info(
+                    "CSO ingest graceful reader end channel=%s source_id=%s saw_data=%s return_code=%s",
+                    self.channel_id,
+                    failed_source_id,
+                    saw_data,
+                    return_code,
+                )
+                return False
             event_type = "capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable"
             await emit_channel_stream_event(
                 channel_id=self.channel_id,
@@ -1303,25 +1409,20 @@ class CsoIngestSession:
         if not chunk:
             return
         self.last_activity = time.time()
+        subscriber_queues = []
         async with self.lock:
             self.history.append(chunk)
             self.history_bytes += len(chunk)
             while self.history_bytes > self.max_history_bytes and self.history:
                 old = self.history.popleft()
                 self.history_bytes -= len(old)
-            for q in list(self.subscribers.values()):
-                try:
-                    q.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(chunk)
-                    except Exception:
-                        pass
+            subscriber_queues = list(self.subscribers.values())
+        for q in subscriber_queues:
+            await q.put_drop_oldest(chunk)
 
     async def add_subscriber(self, subscriber_id, prebuffer_bytes=0):
         async with self.lock:
-            q = asyncio.Queue(maxsize=8000)
+            q = ByteBudgetQueue(max_bytes=CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES)
             if prebuffer_bytes > 0 and self.history:
                 total = 0
                 items = []
@@ -1331,10 +1432,7 @@ class CsoIngestSession:
                     if total >= prebuffer_bytes:
                         break
                 for chunk in reversed(items):
-                    try:
-                        q.put_nowait(chunk)
-                    except asyncio.QueueFull:
-                        break
+                    await q.put_drop_oldest(chunk)
             self.subscribers[subscriber_id] = q
             subscriber_count = len(self.subscribers)
             source_id = getattr(self.current_source, "id", None)
@@ -1438,10 +1536,7 @@ class CsoIngestSession:
         )
         async with self.lock:
             for q in self.subscribers.values():
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
+                await q.put_eof()
 
 
 class CsoOutputSession:
@@ -1582,12 +1677,20 @@ class CsoOutputSession:
 
             if still_running and client_count > 0:
                 intentional_failover = bool(getattr(self.ingest_session, "health_failover_reason", None))
-                if intentional_failover and return_code in (None, 0):
+                ingest_graceful_reader_end = bool(
+                    getattr(self.ingest_session, "last_reader_end_reason", None) == "ingest_reader_ended"
+                    and bool(getattr(self.ingest_session, "last_reader_end_saw_data", False))
+                    and getattr(self.ingest_session, "last_reader_end_return_code", None) == 0
+                    and (time.time() - float(getattr(self.ingest_session, "last_reader_end_ts", 0.0) or 0.0)) <= 30.0
+                )
+                if (intentional_failover and return_code in (None, 0)) or ingest_graceful_reader_end:
                     logger.info(
-                        "CSO output reader ended during intentional ingest failover channel=%s output_key=%s return_code=%s",
+                        "CSO output reader ended gracefully channel=%s output_key=%s return_code=%s intentional_failover=%s ingest_graceful_reader_end=%s",
                         self.channel_id,
                         self.key,
                         return_code,
+                        intentional_failover,
+                        ingest_graceful_reader_end,
                     )
                 else:
                     self.last_error = "output_reader_ended"
@@ -1620,6 +1723,8 @@ class CsoOutputSession:
         self.last_activity = time.time()
         now = time.time()
         stale_clients = []
+        active_clients = []
+        drop_results = {}
         async with self.lock:
             self.history.append(chunk)
             self.history_bytes += len(chunk)
@@ -1631,22 +1736,27 @@ class CsoOutputSession:
                 if (now - last_touch) >= float(CSO_OUTPUT_CLIENT_STALE_SECONDS):
                     stale_clients.append(connection_id)
                     continue
-                try:
-                    q.put_nowait(chunk)
+                active_clients.append((connection_id, q))
+        for connection_id, q in active_clients:
+            drop_results[connection_id] = await q.put_drop_oldest(chunk)
+        async with self.lock:
+            for connection_id, queue_result in drop_results.items():
+                if connection_id not in self.clients:
+                    continue
+                if int(queue_result.get("dropped_items") or 0) > 0:
+                    state = self.client_drop_state.get(connection_id)
+                    if not state:
+                        state = {
+                            "first_ts": now,
+                            "last_ts": now,
+                            "count": int(queue_result.get("dropped_items") or 0),
+                        }
+                        self.client_drop_state[connection_id] = state
+                    else:
+                        state["last_ts"] = now
+                        state["count"] = int(state.get("count") or 0) + int(queue_result.get("dropped_items") or 0)
+                else:
                     self.client_drop_state.pop(connection_id, None)
-                except asyncio.QueueFull:
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(chunk)
-                        state = self.client_drop_state.get(connection_id)
-                        if not state:
-                            state = {"first_ts": now, "last_ts": now, "count": 1}
-                            self.client_drop_state[connection_id] = state
-                        else:
-                            state["last_ts"] = now
-                            state["count"] = int(state.get("count") or 0) + 1
-                    except Exception:
-                        pass
         for connection_id in stale_clients:
             logger.warning(
                 "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=no_consumer_progress stale_seconds=%s",
@@ -1659,7 +1769,7 @@ class CsoOutputSession:
 
     async def add_client(self, connection_id, prebuffer_bytes=0):
         async with self.lock:
-            q = asyncio.Queue(maxsize=100000)
+            q = ByteBudgetQueue(max_bytes=CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES)
             if prebuffer_bytes > 0 and self.history:
                 total = 0
                 items = []
@@ -1669,10 +1779,7 @@ class CsoOutputSession:
                     if total >= prebuffer_bytes:
                         break
                 for chunk in reversed(items):
-                    try:
-                        q.put_nowait(chunk)
-                    except asyncio.QueueFull:
-                        break
+                    await q.put_drop_oldest(chunk)
             self.clients[connection_id] = q
             self.client_drop_state.pop(connection_id, None)
             self.client_last_touch[connection_id] = time.time()
@@ -1693,6 +1800,24 @@ class CsoOutputSession:
                 self.client_last_touch[connection_id] = time.time()
                 self.last_activity = time.time()
 
+    async def prune_idle_clients(self, now_ts=None):
+        now_value = float(now_ts if now_ts is not None else time.time())
+        stale_ids = []
+        async with self.lock:
+            for connection_id in list(self.clients.keys()):
+                last_touch = float(self.client_last_touch.get(connection_id, 0.0) or 0.0)
+                if (now_value - last_touch) >= float(CSO_OUTPUT_CLIENT_STALE_SECONDS):
+                    stale_ids.append(connection_id)
+        for connection_id in stale_ids:
+            logger.warning(
+                "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=idle_prune stale_seconds=%s",
+                self.channel_id,
+                self.key,
+                connection_id,
+                int(CSO_OUTPUT_CLIENT_STALE_SECONDS),
+            )
+            await self.remove_client(connection_id)
+
     async def remove_client(self, connection_id):
         removed_queue = None
         async with self.lock:
@@ -1701,20 +1826,7 @@ class CsoOutputSession:
             self.client_last_touch.pop(connection_id, None)
             remaining = len(self.clients)
         if removed_queue is not None:
-            try:
-                removed_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                for _ in range(3):
-                    try:
-                        removed_queue.get_nowait()
-                    except Exception:
-                        break
-                try:
-                    removed_queue.put_nowait(None)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+            await removed_queue.put_eof()
         logger.info(
             "CSO output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
             self.channel_id,
@@ -1797,10 +1909,7 @@ class CsoOutputSession:
         )
         async with self.lock:
             for q in self.clients.values():
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
+                await q.put_eof()
             self.client_drop_state.clear()
             self.client_last_touch.clear()
 
@@ -2704,6 +2813,10 @@ async def subscribe_channel_stream(
     )
 
     async def _generator():
+        last_chunk_ts = 0.0
+        last_progress_log_ts = 0.0
+        emitted_bytes = 0
+        emitted_chunks = 0
         try:
             while True:
                 chunk = await queue.get()
@@ -2711,8 +2824,31 @@ async def subscribe_channel_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
+                now_value = time.time()
+                emitted_chunks += 1
+                emitted_bytes += len(chunk)
+                yield_gap_seconds = 0.0
+                if last_chunk_ts > 0:
+                    yield_gap_seconds = max(0.0, now_value - last_chunk_ts)
+                last_chunk_ts = now_value
                 yield chunk
                 await output_session.touch_client(connection_id)
+                if (now_value - last_progress_log_ts) >= float(CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS):
+                    queue_stats = await queue.stats()
+                    logger.info(
+                        "CSO output consumer progress channel=%s output_key=%s connection_id=%s yielded_chunks=%s yielded_bytes=%s yield_gap_ms=%s queue_items=%s queue_bytes=%s queue_max_bytes=%s queue_oldest_age_ms=%s",
+                        channel.id,
+                        output_session_key,
+                        connection_id,
+                        emitted_chunks,
+                        emitted_bytes,
+                        int(yield_gap_seconds * 1000),
+                        int(queue_stats.get("queued_items") or 0),
+                        int(queue_stats.get("queued_bytes") or 0),
+                        int(queue_stats.get("max_bytes") or 0),
+                        int(float(queue_stats.get("oldest_age_seconds") or 0.0) * 1000),
+                    )
+                    last_progress_log_ts = now_value
         finally:
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
@@ -2844,6 +2980,10 @@ async def subscribe_source_stream(
     )
 
     async def _generator():
+        last_chunk_ts = 0.0
+        last_progress_log_ts = 0.0
+        emitted_bytes = 0
+        emitted_chunks = 0
         try:
             while True:
                 chunk = await queue.get()
@@ -2851,8 +2991,31 @@ async def subscribe_source_stream(
                     if output_session.last_error == "output_reader_ended":
                         raise CsoOutputReaderEnded("output_reader_ended")
                     break
+                now_value = time.time()
+                emitted_chunks += 1
+                emitted_bytes += len(chunk)
+                yield_gap_seconds = 0.0
+                if last_chunk_ts > 0:
+                    yield_gap_seconds = max(0.0, now_value - last_chunk_ts)
+                last_chunk_ts = now_value
                 yield chunk
                 await output_session.touch_client(connection_id)
+                if (now_value - last_progress_log_ts) >= float(CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS):
+                    queue_stats = await queue.stats()
+                    logger.info(
+                        "CSO output consumer progress channel=%s output_key=%s connection_id=%s yielded_chunks=%s yielded_bytes=%s yield_gap_ms=%s queue_items=%s queue_bytes=%s queue_max_bytes=%s queue_oldest_age_ms=%s",
+                        channel_id,
+                        output_session_key,
+                        connection_id,
+                        emitted_chunks,
+                        emitted_bytes,
+                        int(yield_gap_seconds * 1000),
+                        int(queue_stats.get("queued_items") or 0),
+                        int(queue_stats.get("queued_bytes") or 0),
+                        int(queue_stats.get("max_bytes") or 0),
+                        int(float(queue_stats.get("oldest_age_seconds") or 0.0) * 1000),
+                    )
+                    last_progress_log_ts = now_value
         finally:
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
