@@ -213,6 +213,18 @@ const appendProfileQuery = (url, profileKey) => {
   return `${url}${divider}profile=${encodeURIComponent(profileKey)}`;
 };
 
+const toConnectionLimitText = (playlist) => {
+  const raw = playlist?.connections;
+  if (raw === null || raw === undefined || raw === '') {
+    return 'Connection limit not set.';
+  }
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return `Connection limit: ${numeric}.`;
+  }
+  return `Connection limit: ${String(raw)}.`;
+};
+
 const deriveTvhHostFromBaseUrl = (connectionBaseUrl) => {
   const raw = String(connectionBaseUrl || '').trim();
   if (!raw) {
@@ -448,7 +460,9 @@ const buildPerSourcePlaylistLinks = ({
   enabledPlaylists.map((playlist) => ({
     key: `m3u.${playlist.id}`,
     label: `${playlist.name} M3U`,
-    description: `Per-source playlist URL (source ID ${playlist.id}).`,
+    description: `Per-source playlist URL (source ID ${playlist.id}). ${toConnectionLimitText(
+      playlist,
+    )}`,
     value: appendProfileQuery(
       `${connectionBaseUrl}/tic-api/playlist/${playlist.id}.m3u?stream_key=${currentStreamingKey}`,
       selectedProfile,
@@ -464,7 +478,9 @@ const buildPerSourceHdhrLinks = ({
   enabledPlaylists.map((playlist) => ({
     key: `hdhr.${playlist.id}`,
     label: `${playlist.name} HDHomeRun`,
-    description: `Per-source HDHomeRun tuner endpoint (source ID ${playlist.id}).`,
+    description: `Per-source HDHomeRun tuner endpoint (source ID ${playlist.id}). ${toConnectionLimitText(
+      playlist,
+    )}`,
     value:
       selectedProfile && selectedProfile !== 'none'
         ?
