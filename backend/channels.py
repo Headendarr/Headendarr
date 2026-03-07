@@ -42,8 +42,8 @@ from backend.playlists import (
     XC_ACCOUNT_TYPE,
     _build_xc_live_stream_url,
     _get_enabled_xc_accounts_async,
-    _normalize_xc_host,
 )
+from backend.xc_hosts import first_xc_host
 from backend.cso import (
     build_cso_stream_query,
     cso_runtime_capabilities,
@@ -1210,7 +1210,7 @@ async def add_new_channel(config, data, commit=True):
                     template = playlist_stream.get("url")
                     if playlist_stream.get("xc_stream_id"):
                         stream_url = _build_xc_live_stream_url(
-                            _normalize_xc_host(playlist_info.url),
+                            first_xc_host(playlist_info.url),
                             playlist_stream["xc_stream_id"],
                             playlist_stream.get("url"),
                             account,
@@ -1498,7 +1498,7 @@ async def update_channel(config, channel_id, data):
                             template = playlist_stream.get("url")
                             if playlist_stream.get("xc_stream_id"):
                                 stream_url = _build_xc_live_stream_url(
-                                    _normalize_xc_host(playlist_info.url),
+                                    first_xc_host(playlist_info.url),
                                     playlist_stream["xc_stream_id"],
                                     playlist_stream.get("url"),
                                     account,
@@ -1587,7 +1587,7 @@ async def update_channel(config, channel_id, data):
                                 template = playlist_stream.get("url")
                                 if playlist_stream.get("xc_stream_id"):
                                     playlist_stream["url"] = _build_xc_live_stream_url(
-                                        _normalize_xc_host(playlist_info.url),
+                                        first_xc_host(playlist_info.url),
                                         playlist_stream["xc_stream_id"],
                                         playlist_stream.get("url"),
                                         account,
@@ -1648,7 +1648,7 @@ async def update_channel(config, channel_id, data):
                                         template = playlist_stream.get("url")
                                         if playlist_stream.get("xc_stream_id"):
                                             playlist_stream["url"] = _build_xc_live_stream_url(
-                                                _normalize_xc_host(playlist_info.url),
+                                                first_xc_host(playlist_info.url),
                                                 playlist_stream["xc_stream_id"],
                                                 playlist_stream.get("url"),
                                                 account,

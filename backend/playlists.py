@@ -26,6 +26,12 @@ from backend.stream_profiles import resolve_cso_profile_name
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
 from backend.utils import convert_to_int, fast_url_hash
+from backend.xc_hosts import (
+    first_xc_host,
+    parse_xc_hosts,
+    render_xc_hosts_for_form,
+    serialise_xc_hosts_for_storage,
+)
 
 logger = logging.getLogger("tic.playlists")
 
@@ -207,17 +213,6 @@ def _clear_playlist_health(config, playlist_id):
     _write_playlist_health_map(config, playlist_map)
 
 
-def _normalize_xc_host(host_url):
-    if not host_url:
-        return host_url
-    host_url = host_url.rstrip("/")
-    if "://" in host_url:
-        proto, rest = host_url.split("://", 1)
-        host = rest.split("/", 1)[0]
-        return f"{proto}://{host}"
-    return host_url
-
-
 async def _xc_request(session, host_url, params, retries=3):
     url = f"{host_url}/player_api.php"
     last_error = None
@@ -307,57 +302,93 @@ async def _get_enabled_xc_accounts_async(playlist_id):
 
 
 async def _import_xc_playlist_streams(settings, playlist):
-    host_url = _normalize_xc_host(playlist.url)
+    host_urls = parse_xc_hosts(playlist.url)
     account = await _get_primary_xc_account_async(playlist.id)
     if not account and playlist.xc_username and playlist.xc_password:
         account = type("LegacyAccount", (), {})()
         account.username = playlist.xc_username
         account.password = playlist.xc_password
-    if not host_url or not account:
+    if not host_urls or not account:
         logger.error("XC playlist %s missing host/credentials", playlist.id)
         return False
 
     headers = _resolve_source_request_headers(settings, playlist)
+    host_url = ""
+    categories = []
+    streams = []
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        auth_info = await _xc_request(
-            session,
-            host_url,
-            {
-                "username": account.username,
-                "password": account.password,
-            },
-        )
-        if not isinstance(auth_info, dict) or not auth_info.get("user_info"):
-            logger.error("XC auth failed for playlist %s", playlist.id)
+        last_error = None
+        for candidate_host in host_urls:
+            try:
+                auth_info = await _xc_request(
+                    session,
+                    candidate_host,
+                    {
+                        "username": account.username,
+                        "password": account.password,
+                    },
+                )
+                if not isinstance(auth_info, dict) or not auth_info.get("user_info"):
+                    logger.warning("XC auth failed for playlist %s host=%s", playlist.id, candidate_host)
+                    continue
+
+                candidate_categories = await _xc_request(
+                    session,
+                    candidate_host,
+                    {
+                        "username": account.username,
+                        "password": account.password,
+                        "action": "get_live_categories",
+                    },
+                )
+                if not isinstance(candidate_categories, list):
+                    logger.warning(
+                        "XC categories response invalid for playlist %s host=%s",
+                        playlist.id,
+                        candidate_host,
+                    )
+                    continue
+
+                candidate_streams = await _xc_request(
+                    session,
+                    candidate_host,
+                    {
+                        "username": account.username,
+                        "password": account.password,
+                        "action": "get_live_streams",
+                    },
+                )
+                if not isinstance(candidate_streams, list):
+                    logger.warning(
+                        "XC streams response invalid for playlist %s host=%s",
+                        playlist.id,
+                        candidate_host,
+                    )
+                    continue
+
+                host_url = candidate_host
+                categories = candidate_categories
+                streams = candidate_streams
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                last_error = exc
+                logger.warning(
+                    "XC host attempt failed for playlist %s host=%s error=%s",
+                    playlist.id,
+                    candidate_host,
+                    exc,
+                )
+                continue
+
+        if not host_url:
+            if last_error:
+                logger.error("XC host attempts failed for playlist %s error=%s", playlist.id, last_error)
+            else:
+                logger.error("XC host attempts failed for playlist %s", playlist.id)
             return False
 
-        categories = await _xc_request(
-            session,
-            host_url,
-            {
-                "username": account.username,
-                "password": account.password,
-                "action": "get_live_categories",
-            },
-        )
-        if not isinstance(categories, list):
-            logger.error("XC categories response invalid for playlist %s", playlist.id)
-            return False
         category_map = {str(c.get("category_id")): c.get("category_name") for c in categories}
-
-        streams = await _xc_request(
-            session,
-            host_url,
-            {
-                "username": account.username,
-                "password": account.password,
-                "action": "get_live_streams",
-            },
-        )
-        if not isinstance(streams, list):
-            logger.error("XC streams response invalid for playlist %s", playlist.id)
-            return False
 
     items = []
     for stream in streams:
@@ -420,7 +451,11 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "enabled": result.enabled,
                             "connections": result.connections,
                             "name": result.name,
-                            "url": result.url,
+                            "url": (
+                                render_xc_hosts_for_form(result.url)
+                                if result.account_type == XC_ACCOUNT_TYPE
+                                else result.url
+                            ),
                             "account_type": result.account_type,
                             "xc_username": result.xc_username,
                             "user_agent": result.user_agent,
@@ -445,7 +480,11 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "enabled": result.enabled,
                         "connections": result.connections,
                         "name": result.name,
-                        "url": result.url,
+                        "url": (
+                            render_xc_hosts_for_form(result.url)
+                            if result.account_type == XC_ACCOUNT_TYPE
+                            else result.url
+                        ),
                         "account_type": result.account_type,
                         "xc_username": result.xc_username,
                         "xc_password_set": bool(result.xc_password),
@@ -499,7 +538,9 @@ async def read_config_one_playlist(config, playlist_id):
                     "id": result.id,
                     "enabled": result.enabled,
                     "name": result.name,
-                    "url": result.url,
+                    "url": (
+                        render_xc_hosts_for_form(result.url) if result.account_type == XC_ACCOUNT_TYPE else result.url
+                    ),
                     "connections": result.connections,
                     "account_type": result.account_type,
                     "xc_live_stream_format": _normalize_xc_live_extension(result.xc_live_stream_format),
@@ -532,7 +573,11 @@ async def add_new_playlist(config, data):
             playlist = Playlist(
                 enabled=data.get("enabled"),
                 name=data.get("name"),
-                url=data.get("url"),
+                url=(
+                    serialise_xc_hosts_for_storage(data.get("url"))
+                    if account_type == XC_ACCOUNT_TYPE
+                    else data.get("url")
+                ),
                 account_type=account_type,
                 xc_live_stream_format=_normalize_xc_live_extension(data.get("xc_live_stream_format")),
                 xc_username=data.get("xc_username"),
@@ -561,9 +606,7 @@ async def add_new_playlist(config, data):
 
 async def update_playlist(config, playlist_id, data):
     hls_proxy_headers = (
-        _normalise_hls_proxy_headers_payload(data.get("hls_proxy_headers"))
-        if "hls_proxy_headers" in data
-        else None
+        _normalise_hls_proxy_headers_payload(data.get("hls_proxy_headers")) if "hls_proxy_headers" in data else None
     )
     async with Session() as session:
         async with session.begin():
@@ -571,8 +614,15 @@ async def update_playlist(config, playlist_id, data):
             playlist = result.scalar_one()
             playlist.enabled = data.get("enabled", playlist.enabled)
             playlist.name = data.get("name", playlist.name)
-            playlist.url = data.get("url", playlist.url)
+            # NOTE: We need to set account_type first so URL serialisation below applies the target type
+            # (XC requires JSON host-list storage; non-XC keeps raw URL text).
             playlist.account_type = data.get("account_type", playlist.account_type)
+            incoming_url = data.get("url", playlist.url)
+            playlist.url = (
+                serialise_xc_hosts_for_storage(incoming_url)
+                if playlist.account_type == XC_ACCOUNT_TYPE
+                else incoming_url
+            )
             playlist.xc_live_stream_format = _normalize_xc_live_extension(
                 data.get("xc_live_stream_format", playlist.xc_live_stream_format)
             )
@@ -1029,7 +1079,7 @@ async def read_stream_details_from_all_playlists():
             account = primary_accounts.get(result.playlist_id)
             if account:
                 stream_url = _build_xc_live_stream_url(
-                    _normalize_xc_host(result.playlist.url),
+                    first_xc_host(result.playlist.url),
                     result.xc_stream_id,
                     result.url,
                     account,
@@ -1139,7 +1189,7 @@ async def read_filtered_stream_details_from_all_playlists(
                 account = primary_accounts.get(result.playlist_id)
                 if account:
                     stream_url = _build_xc_live_stream_url(
-                        _normalize_xc_host(result.playlist.url),
+                        first_xc_host(result.playlist.url),
                         result.xc_stream_id,
                         result.url,
                         account,
@@ -1296,7 +1346,7 @@ async def probe_playlist_stream(playlist_stream_id):
         account = await _get_primary_xc_account_async(playlist_stream.playlist_id)
         if account:
             stream_url = _build_xc_live_stream_url(
-                _normalize_xc_host(playlist_stream.playlist.url),
+                first_xc_host(playlist_stream.playlist.url),
                 playlist_stream.xc_stream_id,
                 playlist_stream.url,
                 account,
@@ -1317,7 +1367,7 @@ async def resolve_playlist_stream_url(
         account = await _get_primary_xc_account_async(playlist_stream.playlist_id)
         if account:
             stream_url = _build_xc_live_stream_url(
-                _normalize_xc_host(playlist_stream.playlist.url),
+                first_xc_host(playlist_stream.playlist.url),
                 playlist_stream.xc_stream_id,
                 playlist_stream.url,
                 account,

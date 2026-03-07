@@ -33,10 +33,13 @@
             :label="accountType === 'XC' ? 'Host' : 'Source URL'"
             :description="
               accountType === 'XC'
-                ? 'Xtream Codes host (protocol + host, optional port).'
+                ? 'Xtream Codes host (protocol + host, optional port). Optional backup hosts can be added as a line-break separated list. Backup host failover is only compatible when viewing streams via CSO.'
                 : 'Playlist URL to fetch channels from.'
             "
           />
+          <div v-if="accountType === 'XC'" class="text-caption text-warning">
+            XC backup host failover is only used when playback is routed through CSO.
+          </div>
 
           <TicSelectInput
             v-model="accountType"
@@ -645,10 +648,22 @@ export default {
       }));
     },
     normalizeHost(url) {
-      if (!url) return url;
-      const trimmed = url.replace(/\s+/g, '').replace(/\/+$/, '');
-      const match = trimmed.match(/^(https?:\/\/[^/]+)/i);
-      return match ? match[1] : trimmed;
+      const hosts = this.parseXcHosts(url);
+      return hosts.length ? hosts[0] : '';
+    },
+    parseXcHosts(raw) {
+      const value = String(raw || '');
+      const hosts = [];
+      value.split(/\r?\n/).forEach((line) => {
+        const trimmed = line.trim().replace(/\/+$/, '');
+        if (!trimmed) return;
+        const match = trimmed.match(/^(https?:\/\/[^/]+)/i);
+        const host = match ? match[1] : trimmed;
+        if (host && !hosts.includes(host)) {
+          hosts.push(host);
+        }
+      });
+      return hosts;
     },
     async confirmXcHostUnique() {
       if (!this.url) {

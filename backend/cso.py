@@ -36,6 +36,7 @@ from backend.users import get_user_by_stream_key
 from backend.config import enable_cso_command_debug_logging
 from backend.datetime_utils import utc_now_naive
 from backend.http_headers import parse_headers_json, sanitise_headers
+from backend.xc_hosts import parse_xc_hosts
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
@@ -427,6 +428,43 @@ def resolve_source_url_for_stream(source_url, base_url, instance_id, stream_key=
         stream_key=stream_key,
         username=username,
     )
+
+
+def _resolve_source_url_candidates(source, base_url, instance_id, stream_key=None, username=None):
+    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+    primary_url = _resolve_source_url(
+        stream_url,
+        base_url=base_url,
+        instance_id=instance_id,
+        stream_key=stream_key,
+        username=username,
+    )
+    if not primary_url:
+        return []
+
+    xc_account_id = getattr(source, "xc_account_id", None)
+    if not xc_account_id:
+        return [primary_url]
+
+    playlist = getattr(source, "playlist", None)
+    raw_hosts = getattr(playlist, "url", None) if playlist is not None else None
+    host_list = parse_xc_hosts(raw_hosts)
+    if len(host_list) <= 1:
+        return [primary_url]
+
+    parsed_primary = urlparse(primary_url)
+    if not parsed_primary.scheme or not parsed_primary.netloc:
+        return [primary_url]
+
+    candidates = [primary_url]
+    for host in host_list:
+        parsed_host = urlparse(host if "://" in host else f"{parsed_primary.scheme}://{host}")
+        if not parsed_host.scheme or not parsed_host.netloc:
+            continue
+        candidate = parsed_primary._replace(scheme=parsed_host.scheme, netloc=parsed_host.netloc).geturl()
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 async def emit_channel_stream_event(
@@ -986,55 +1024,75 @@ class CsoIngestSession:
                 saw_capacity_block = True
                 continue
 
-            resolved_url = _resolve_source_url(
-                stream_url,
+            source_urls = _resolve_source_url_candidates(
+                source,
                 base_url=self.request_base_url,
                 instance_id=self.instance_id,
                 stream_key=self.stream_key,
                 username=self.username,
             )
-            if not resolved_url:
+            if not source_urls:
                 await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source_id)
                 continue
 
-            variants = await _discover_hls_variants(resolved_url)
-            remembered_program_index = self.source_program_index.get(source_id)
+            process = None
+            resolved_url = ""
+            variants = []
             variant_position = None
-            if variants:
-                if remembered_program_index is not None:
-                    for idx, item in enumerate(variants):
-                        if int(item.get("program_index") or 0) == int(remembered_program_index):
-                            variant_position = idx
-                            break
-                if variant_position is None:
-                    variant_position = len(variants) - 1
-                program_index = int(variants[variant_position].get("program_index") or 0)
-            else:
-                program_index = int(remembered_program_index or 0)
-                if remembered_program_index is not None:
-                    logger.info(
-                        "CSO ingest variant discovery empty; reusing remembered program index channel=%s source_id=%s program_index=%s",
+            remembered_program_index = self.source_program_index.get(source_id)
+            last_error = None
+            for candidate_url in source_urls:
+                variants = await _discover_hls_variants(candidate_url)
+                variant_position = None
+                if variants:
+                    if remembered_program_index is not None:
+                        for idx, item in enumerate(variants):
+                            if int(item.get("program_index") or 0) == int(remembered_program_index):
+                                variant_position = idx
+                                break
+                    if variant_position is None:
+                        variant_position = len(variants) - 1
+                    program_index = int(variants[variant_position].get("program_index") or 0)
+                else:
+                    program_index = int(remembered_program_index or 0)
+                    if remembered_program_index is not None:
+                        logger.info(
+                            "CSO ingest variant discovery empty; reusing remembered program index "
+                            "channel=%s source_id=%s program_index=%s",
+                            self.channel_id,
+                            source_id,
+                            program_index,
+                        )
+                try:
+                    process = await self._spawn_ingest_process(candidate_url, program_index, source=source)
+                    resolved_url = candidate_url
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    await emit_channel_stream_event(
+                        channel_id=self.channel_id,
+                        source_id=getattr(source, "id", None),
+                        playlist_id=getattr(source, "playlist_id", None),
+                        session_id=self.key,
+                        event_type="playback_unavailable",
+                        severity="warning",
+                        details={
+                            "reason": "ingest_start_failed",
+                            "pipeline": "ingest",
+                            "error": str(exc),
+                            **_source_event_context(source, source_url=candidate_url),
+                        },
+                    )
+                    continue
+
+            if not process:
+                if last_error:
+                    logger.warning(
+                        "CSO ingest failed for all URLs on source channel=%s source_id=%s error=%s",
                         self.channel_id,
                         source_id,
-                        program_index,
+                        last_error,
                     )
-            try:
-                process = await self._spawn_ingest_process(resolved_url, program_index, source=source)
-            except Exception as exc:
-                await emit_channel_stream_event(
-                    channel_id=self.channel_id,
-                    source_id=getattr(source, "id", None),
-                    playlist_id=getattr(source, "playlist_id", None),
-                    session_id=self.key,
-                    event_type="playback_unavailable",
-                    severity="warning",
-                    details={
-                        "reason": "ingest_start_failed",
-                        "pipeline": "ingest",
-                        "error": str(exc),
-                        **_source_event_context(source, source_url=resolved_url),
-                    },
-                )
                 self.current_source = None
                 self.current_source_url = ""
                 self.current_capacity_key = None
