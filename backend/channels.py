@@ -2368,6 +2368,15 @@ async def publish_channel_muxes(config):
         logger.error("Skipping TVH mux publish: %s", exc)
         return
     async with await get_tvh(config) as tvh:
+        def _is_partial_placeholder_mux(mux):
+            mux_name = str(mux.get("iptv_muxname") or mux.get("name") or "").strip()
+            service_name = str(mux.get("iptv_sname") or "").strip()
+            if mux_name == "NETWORK - SERVICE_NAME":
+                return True
+            if service_name == "SERVICE_NAME":
+                return True
+            return False
+
         # Fetch results with relationships
         async with Session() as session:
             query = await session.execute(
@@ -2677,9 +2686,14 @@ async def publish_channel_muxes(config):
         for existing_mux in current_muxes:
             uuid = existing_mux.get("uuid")
             mux_name = existing_mux.get("iptv_muxname") or existing_mux.get("name") or ""
-            if uuid and uuid not in managed_uuids and mux_name.lower().startswith("tic-"):
+            cleanup_partial = _is_partial_placeholder_mux(existing_mux)
+            cleanup_tic = mux_name.lower().startswith("tic-")
+            if uuid and uuid not in managed_uuids and (cleanup_tic or cleanup_partial):
                 try:
-                    logger.info("    - Removing mux UUID - %s", uuid)
+                    if cleanup_partial and not cleanup_tic:
+                        logger.info("    - Removing partial placeholder mux UUID - %s", uuid)
+                    else:
+                        logger.info("    - Removing mux UUID - %s", uuid)
                     await tvh.delete_mux(uuid)
                 except Exception as e:
                     logger.error("Failed removing mux '%s': %s", uuid, e)
