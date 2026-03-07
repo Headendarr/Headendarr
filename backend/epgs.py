@@ -7,7 +7,6 @@ import os
 import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
-from mimetypes import guess_extension
 from pathlib import Path
 from urllib.parse import quote
 
@@ -22,7 +21,7 @@ from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
 from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger
-from backend.channels import read_base46_image_string
+from backend.channels import build_channel_logo_output_url
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import parse_entity_id
@@ -904,10 +903,12 @@ async def build_custom_epg(config, throttle=False):
         if not result.enabled:
             continue
         channel_id = generate_epg_channel_id(result.number, result.name)
-        _, mime_type = await read_base46_image_string(result.logo_base64)
-        cache_buster = int(time.time())
-        ext = guess_extension(mime_type or "image/png") or ".png"
-        logo_url = f"{XMLTV_HOST_PLACEHOLDER}/tic-api/channels/{result.id}/logo/{cache_buster}{ext}"
+        logo_url = build_channel_logo_output_url(
+            config,
+            result.id,
+            XMLTV_HOST_PLACEHOLDER,
+            result.logo_url or "",
+        )
         configured_channels.append(
             {
                 "channel_id": channel_id,

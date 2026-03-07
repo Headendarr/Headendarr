@@ -125,7 +125,7 @@ async def build_tic_playlist_with_epg_content(
 ) -> str:
     # Local imports to avoid circular import issues.
     from backend.channels import (
-        build_channel_logo_proxy_url,
+        build_channel_logo_output_url,
         read_config_all_channels,
     )
     from backend.api.connections_common import resolve_channel_stream_url
@@ -141,7 +141,8 @@ async def build_tic_playlist_with_epg_content(
 
     channels = await read_config_all_channels()
     for channel in channels:
-        channel["logo_url"] = build_channel_logo_proxy_url(
+        channel["logo_url"] = build_channel_logo_output_url(
+            config,
             channel.get("id"),
             base_url,
             channel.get("logo_url") or "",

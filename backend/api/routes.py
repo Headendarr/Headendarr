@@ -28,22 +28,22 @@ from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIB
 from backend.tvheadend.tvh_requests import configure_tvh
 
 
-@blueprint.route('/')
+@blueprint.route("/")
 def index():
-    return redirect('/tic-web/')
+    return redirect("/tic-web/")
 
 
-@blueprint.route('/tic-web/', strict_slashes=False)
-@blueprint.route('/tic-web/<path:path>')
+@blueprint.route("/tic-web/", strict_slashes=False)
+@blueprint.route("/tic-web/<path:path>")
 async def serve_frontend(path=None):
-    assets_root = current_app.config.get('ASSETS_ROOT')
+    assets_root = current_app.config.get("ASSETS_ROOT")
     if not assets_root or not os.path.exists(assets_root):
         current_app.logger.error(f"ASSETS_ROOT does not exist: {assets_root}")
         return "Frontend assets not found", 404
 
     # If no path provided, or if it's a directory request, serve index.html
     if not path:
-        return await _serve_file(assets_root, 'index.html')
+        return await _serve_file(assets_root, "index.html")
 
     # Check if the requested path is a real file
     full_path = os.path.join(assets_root, path)
@@ -51,27 +51,27 @@ async def serve_frontend(path=None):
         return await _serve_file(assets_root, path)
 
     # History API fallback: serve index.html for virtual routes
-    return await _serve_file(assets_root, 'index.html')
+    return await _serve_file(assets_root, "index.html")
 
 
 async def _serve_file(directory, filename):
     try:
         response = await send_from_directory(directory, filename)
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         return response
     except Exception:
         return "File not found", 404
 
 
-@blueprint.route('/tic-api/ping')
+@blueprint.route("/tic-api/ping")
 async def ping():
     # Frontend AIO mixin expects uppercase 'PONG' substring in plain response
-    return 'PONG', 200, {'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store'}
+    return "PONG", 200, {"Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store"}
 
 
-@blueprint.route('/tic-tvh/ping')
+@blueprint.route("/tic-tvh/ping")
 async def ping_tvh_alias():
     """
     This is just a convenience alias. Some clients are probing /tic-tvh/ping (tvheadend http_root); return same pong
@@ -106,7 +106,7 @@ def _build_version_payload():
     return os.environ.get("BUILD_VERSION") or os.environ.get("BUILD_REF")
 
 
-@blueprint.route('/tic-api/version', methods=['GET'])
+@blueprint.route("/tic-api/version", methods=["GET"])
 @user_auth_required
 async def api_version():
     payload = _app_version_payload()
@@ -129,7 +129,7 @@ def _strip_hop_by_hop_headers(headers: dict) -> dict:
 
 
 async def _get_tvh_proxy_base():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     tvh_settings = await config.tvh_connection_settings()
     username = tvh_settings.get("tvh_username")
     password = tvh_settings.get("tvh_password")
@@ -196,21 +196,21 @@ async def _proxy_tvh_http(subpath: str):
     return Response(stream_body(), status=resp.status, headers=response_headers)
 
 
-@blueprint.route('/tic-tvh/', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+@blueprint.route("/tic-tvh/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 @admin_auth_required
 async def tvh_root_proxy():
     return await _proxy_tvh_http("")
 
 
-@blueprint.route('/tic-tvh/<path:subpath>', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+@blueprint.route("/tic-tvh/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 @admin_auth_required
 async def tvh_any_proxy(subpath: str):
-    if subpath == 'ping':
+    if subpath == "ping":
         return await ping()
     return await _proxy_tvh_http(subpath)
 
 
-@blueprint.route('/tic-api/tvh_stream/<path:subpath>', methods=['GET', 'HEAD', 'OPTIONS'])
+@blueprint.route("/tic-api/tvh_stream/<path:subpath>", methods=["GET", "HEAD", "OPTIONS"])
 @stream_key_required
 async def tvh_stream_proxy(subpath: str):
     # Internal stream-only proxy for external clients (stream key auth).
@@ -219,7 +219,7 @@ async def tvh_stream_proxy(subpath: str):
     return await _proxy_tvh_http(subpath)
 
 
-@blueprint.websocket('/tic-tvh/<path:subpath>')
+@blueprint.websocket("/tic-tvh/<path:subpath>")
 @admin_auth_required
 async def tvh_ws_proxy(subpath: str):
     base_url, username, password = await _get_tvh_proxy_base()
@@ -249,6 +249,7 @@ async def tvh_ws_proxy(subpath: str):
             auth=aiohttp.BasicAuth(username, password),
             protocols=protocols or None,
         ) as ws:
+
             async def to_upstream():
                 try:
                     while True:
@@ -269,9 +270,9 @@ async def tvh_ws_proxy(subpath: str):
             await asyncio.gather(to_upstream(), to_client())
 
 
-@blueprint.route('/tic-api/check-auth')
+@blueprint.route("/tic-api/check-auth")
 async def api_check_auth():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     user = await get_user_from_token()
     if user:
         token = _get_bearer_token()
@@ -287,7 +288,7 @@ async def api_check_auth():
         )
         response = jsonify(
             {
-                "success":     True,
+                "success": True,
                 "runtime_key": config.runtime_key,
                 "session_expires_at": to_utc_iso(session_expires_at),
                 "user": {
@@ -314,24 +315,30 @@ async def api_check_auth():
                 secure=bool(current_app.config.get("AUTH_COOKIE_SECURE", False)),
             )
         return response, 200
-    return jsonify(
-        {
-            "success": False,
-        }
-    ), 401
+    return (
+        jsonify(
+            {
+                "success": False,
+            }
+        ),
+        401,
+    )
 
 
-@blueprint.route('/tic-api/require-auth')
+@blueprint.route("/tic-api/require-auth")
 @admin_auth_required
 async def api_require_auth():
-    return jsonify(
-        {
-            "success": True,
-        }
-    ), 200
+    return (
+        jsonify(
+            {
+                "success": True,
+            }
+        ),
+        200,
+    )
 
 
-@blueprint.route('/tic-api/get-background-tasks', methods=['GET'])
+@blueprint.route("/tic-api/get-background-tasks", methods=["GET"])
 @admin_auth_required
 async def api_get_background_tasks():
     async def snapshot(task_broker):
@@ -342,8 +349,8 @@ async def api_get_background_tasks():
         }
 
     task_broker = await TaskQueueBroker.get_instance()
-    wait = request.args.get('wait', '0')
-    timeout = request.args.get('timeout', '0')
+    wait = request.args.get("wait", "0")
+    timeout = request.args.get("timeout", "0")
     try:
         wait = int(wait)
     except ValueError:
@@ -364,45 +371,37 @@ async def api_get_background_tasks():
                 break
             if (asyncio.get_event_loop().time() - start) >= timeout:
                 break
-    return jsonify(
-        {
-            "success": True,
-            "data":    data,
-        }
-    ), 200
+    return (
+        jsonify(
+            {
+                "success": True,
+                "data": data,
+            }
+        ),
+        200,
+    )
 
 
-@blueprint.route('/tic-api/toggle-pause-background-tasks', methods=['GET'])
+@blueprint.route("/tic-api/toggle-pause-background-tasks", methods=["GET"])
 @admin_auth_required
 async def api_toggle_background_tasks_status():
     task_broker = await TaskQueueBroker.get_instance()
     await task_broker.toggle_status()
-    return jsonify(
-        {
-            "success": True
-        }
-    ), 200
+    return jsonify({"success": True}), 200
 
 
-@blueprint.route('/tic-api/tvh-running', methods=['GET'])
+@blueprint.route("/tic-api/tvh-running", methods=["GET"])
 @admin_auth_required
 async def api_check_if_tvh_running_status():
     running = await is_tvh_process_running_locally()
-    return jsonify(
-        {
-            "success": True,
-            "data":    {
-                "running": running
-            }
-        }
-    ), 200
+    return jsonify({"success": True, "data": {"running": running}}), 200
 
 
-@blueprint.route('/tic-api/save-settings', methods=['POST'])
+@blueprint.route("/tic-api/save-settings", methods=["POST"])
 @admin_auth_required
 async def api_save_config():
     json_data = await request.get_json()
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
 
     settings_payload = json_data.get("settings") if isinstance(json_data, dict) else None
     if isinstance(settings_payload, dict):
@@ -419,7 +418,7 @@ async def api_save_config():
             }
 
     # Mark first run as complete
-    json_data['settings']['first_run'] = False
+    json_data["settings"]["first_run"] = False
 
     # Save the config
     config.update_settings(json_data)
@@ -427,71 +426,71 @@ async def api_save_config():
 
     # Store settings for TVH service (async via task queue)
     tvh_update_requested = any(
-        key in (json_data.get('settings') or {})
-        for key in ('tvheadend', 'dvr', 'route_playlists_through_tvh', 'route_all_tvh_through_cso_stream_buffer')
+        key in (json_data.get("settings") or {})
+        for key in (
+            "tvheadend",
+            "dvr",
+            "route_playlists_through_tvh",
+            "route_all_tvh_through_cso_stream_buffer",
+            "cache_channel_logos",
+        )
     )
-    tvh_cfg = config.read_settings().get('settings', {}).get('tvheadend', {})
-    tvh_is_configured = bool(tvh_cfg.get('host')) or bool(tvh_cfg.get('port')) or bool(tvh_cfg.get('path'))
+    tvh_cfg = config.read_settings().get("settings", {}).get("tvheadend", {})
+    tvh_is_configured = bool(tvh_cfg.get("host")) or bool(tvh_cfg.get("port")) or bool(tvh_cfg.get("path"))
     tvh_is_local = await is_tvh_process_running_locally()
     if tvh_update_requested and (tvh_is_configured or tvh_is_local):
         task_broker = await TaskQueueBroker.get_instance()
-        await task_broker.add_task({
-            'name':     'Configure TVH settings',
-            'function': configure_tvh,
-            'args':     [config],
-        }, priority=15)
-        if 'dvr' in (json_data.get('settings') or {}):
-            await task_broker.add_task({
-                'name':     'Sync all users to TVH',
-                'function': sync_all_users_to_tvh,
-                'args':     [config],
-            }, priority=16)
-    return jsonify(
-        {
-            "success": True
-        }
-    ), 200
+        await task_broker.add_task(
+            {
+                "name": "Configure TVH settings",
+                "function": configure_tvh,
+                "args": [config],
+            },
+            priority=15,
+        )
+        if "dvr" in (json_data.get("settings") or {}):
+            await task_broker.add_task(
+                {
+                    "name": "Sync all users to TVH",
+                    "function": sync_all_users_to_tvh,
+                    "args": [config],
+                },
+                priority=16,
+            )
+    return jsonify({"success": True}), 200
 
 
-@blueprint.route('/tic-api/get-settings')
+@blueprint.route("/tic-api/get-settings")
 @admin_auth_required
 async def api_get_config_tvheadend():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
-    return_data = dict(settings.get('settings', {}) or {})
+    return_data = dict(settings.get("settings", {}) or {})
     return_data["tvh_local"] = await is_tvh_process_running_locally()
     return_data["stream_profile_definitions"] = get_stream_profile_definitions()
     return_data["tvh_compatible_profile_ids"] = list(TVH_COMPATIBLE_PROFILE_IDS_ORDER)
-    return jsonify(
-        {
-            "success": True,
-            "runtime_key": config.runtime_key,
-            "data":    return_data
-        }
-    ), 200
+    return jsonify({"success": True, "runtime_key": config.runtime_key, "data": return_data}), 200
 
 
-@blueprint.route('/tic-api/export-config')
+@blueprint.route("/tic-api/export-config")
 @admin_auth_required
 async def api_export_config():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     # Fetch all playlists
     from backend.playlists import read_config_all_playlists
+
     all_playlist_configs = await read_config_all_playlists(config, output_for_export=True)
     # Fetch all epgs
     from backend.epgs import read_config_all_epgs
+
     all_epg_configs = await read_config_all_epgs(output_for_export=True)
     # Fetch all channels
     from backend.channels import read_config_all_channels
+
     channels_config = await read_config_all_channels(output_for_export=True)
     return_data = {
-        'playlists': all_playlist_configs,
-        'epgs':      all_epg_configs,
-        'channels':  channels_config,
+        "playlists": all_playlist_configs,
+        "epgs": all_epg_configs,
+        "channels": channels_config,
     }
-    return jsonify(
-        {
-            "success": True,
-            "data":    return_data
-        }
-    ), 200
+    return jsonify({"success": True, "data": return_data}), 200

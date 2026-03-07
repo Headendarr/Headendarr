@@ -9,7 +9,7 @@ from backend.api import blueprint
 from backend.api.connections_common import resolve_channel_stream_url
 from backend.api.routes_connections_epg import build_xmltv_response
 from backend.auth import audit_stream_event, mark_stream_key_usage
-from backend.channels import read_config_all_channels, build_channel_logo_proxy_url
+from backend.channels import read_config_all_channels, build_channel_logo_output_url
 from backend.playlists import build_m3u_playlist_content, read_config_all_playlists
 from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username
@@ -64,13 +64,15 @@ def _xc_channel_profile(channel: Dict[str, Any]) -> str:
 
 
 async def _get_enabled_channels() -> List[Dict[str, Any]]:
+    config = current_app.config["APP_CONFIG"]
     channels = await read_config_all_channels()
     base_url = get_request_base_url(request)
     enabled = []
     for channel in channels:
         if not channel.get("enabled"):
             continue
-        channel["logo_url"] = build_channel_logo_proxy_url(
+        channel["logo_url"] = build_channel_logo_output_url(
+            config,
             channel.get("id"),
             base_url,
             channel.get("logo_url") or "",

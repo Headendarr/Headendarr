@@ -257,6 +257,20 @@ def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
     return f"{base}/tic-api/channels/{channel_id}/logo/{token}.png"
 
 
+def cache_channel_logos_enabled(config) -> bool:
+    settings = config.read_settings() if config else {}
+    return bool((settings.get("settings") or {}).get("cache_channel_logos", True))
+
+
+def build_channel_logo_output_url(config, channel_id, base_url, source_logo_url=""):
+    source_logo = str(source_logo_url or "").strip()
+    if not source_logo:
+        return ""
+    if not cache_channel_logos_enabled(config):
+        return source_logo
+    return build_channel_logo_proxy_url(channel_id, base_url, source_logo)
+
+
 _EPG_NAME_QUALITY_TOKENS = {"hd", "fhd", "uhd", "sd", "4k"}
 
 
@@ -2090,7 +2104,8 @@ async def batch_publish_new_channels_to_tvh(config, channels):
             existing_uuid = existing_by_name.get(ch.name)
             if not existing_uuid:
                 try:
-                    logo_proxy_url = build_channel_logo_proxy_url(
+                    logo_proxy_url = build_channel_logo_output_url(
+                        config,
                         ch.id,
                         app_url,
                         ch.logo_url or "",
@@ -2110,7 +2125,8 @@ async def batch_publish_new_channels_to_tvh(config, channels):
                 "uuid": existing_uuid,
                 "name": ch.name,
                 "number": ch.number,
-                "icon": build_channel_logo_proxy_url(
+                "icon": build_channel_logo_output_url(
+                    config,
                     ch.id,
                     app_url,
                     ch.logo_url or "",
@@ -2138,6 +2154,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
     phase_seconds = {}
     api_calls = {}
     logo_refresh_count = 0
+    cache_channel_logos = cache_channel_logos_enabled(config)
 
     def _count(name):
         api_calls[name] = api_calls.get(name, 0) + 1
@@ -2216,7 +2233,8 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
         for result in results:
             if not result.enabled:
                 continue
-            logo_proxy_url = build_channel_logo_proxy_url(
+            logo_proxy_url = build_channel_logo_output_url(
+                config,
                 result.id,
                 tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
                 result.logo_url or "",
@@ -2235,7 +2253,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
             logo_url = result.logo_url or ""
             last_logo_url = logo_source_state.get(str(result.id))
             logo_status = logo_health_state.get(str(result.id), {})
-            if (not result.logo_base64) or (last_logo_url != logo_url):
+            if cache_channel_logos and ((not result.logo_base64) or (last_logo_url != logo_url)):
                 parsed_base64, parse_status, parse_error = await parse_image_as_base64_with_status(result.logo_url)
                 result.logo_base64 = parsed_base64
                 logo_source_state[str(result.id)] = logo_url
@@ -2494,7 +2512,8 @@ async def publish_channel_muxes(config):
                     "enabled": 1,
                     "uuid": mux_uuid,
                     "iptv_url": iptv_url,
-                    "iptv_icon": build_channel_logo_proxy_url(
+                    "iptv_icon": build_channel_logo_output_url(
+                        config,
                         channel_obj.id,
                         tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
                         channel_obj.logo_url or "",
@@ -2568,7 +2587,8 @@ async def publish_channel_muxes(config):
                     "enabled": 1,
                     "uuid": mux_uuid,
                     "iptv_url": iptv_url,
-                    "iptv_icon": build_channel_logo_proxy_url(
+                    "iptv_icon": build_channel_logo_output_url(
+                        config,
                         channel_obj.id,
                         tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
                         channel_obj.logo_url or "",

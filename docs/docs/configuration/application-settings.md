@@ -32,6 +32,9 @@ These settings define how Headendarr interacts with external services and how cl
   - Parallelism: checks run in bounded parallel workers (default 2), capped per run (default 10 streams).
   - Playback priority: any background diagnostic using source capacity is pre-empted when real playback needs that capacity.
   - No-overlap worker: a new scheduler tick does not start a second worker while the previous health-check worker is still running.
+- **Cache channel logos**: Controls whether Headendarr rewrites channel logos to cached `/tic-api/channels/<id>/logo/...` URLs.
+  - Enabled (default): channel logos are served from Headendarr cache/proxy URLs.
+  - Disabled: original source logo URLs are emitted in channel payloads, XMLTV, and generated playlists.
 - **Stream Profiles table**:
   - Enable/disable each supported `profile` value exposed on stream and playlist URLs.
   - Configure per-profile hardware acceleration preference (`HW Accel`, VAAPI encode path) for transcoding profiles.

@@ -7,6 +7,7 @@ from quart import Response, current_app
 from backend.api import blueprint
 from backend.api.connections_common import get_channels_for_playlist, resolve_channel_stream_url
 from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
+from backend.channels import build_channel_logo_output_url
 from backend.epgs import generate_epg_channel_id
 from backend.playlists import build_tic_playlist_with_epg_content
 from backend.url_resolver import get_request_base_url
@@ -30,7 +31,12 @@ async def _playlist_m3u_lines(playlist_id, *, stream_key=None, username=None, re
     for channel_details in await get_channels_for_playlist(playlist_id):
         channel_id = generate_epg_channel_id(channel_details["number"], channel_details["name"])
         channel_name = channel_details["name"]
-        channel_logo_url = channel_details.get("logo_url") or ""
+        channel_logo_url = build_channel_logo_output_url(
+            config,
+            channel_details.get("id"),
+            base_url,
+            channel_details.get("logo_url") or "",
+        )
         channel_uuid = channel_details.get("tvh_uuid") or ""
         extinf = (
             f'#EXTINF:-1 tvg-name="{channel_name}" tvg-logo="{channel_logo_url}" '

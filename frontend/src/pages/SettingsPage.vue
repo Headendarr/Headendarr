@@ -45,6 +45,14 @@
 
                 <div>
                   <TicToggleInput
+                    v-model="cacheChannelLogos"
+                    @update:model-value="triggerImmediateAutoSave"
+                    label="Cache channel logos"
+                    description="When enabled, Headendarr serves cached logo URLs from /tic-api/channels/:id/logo. Disable to publish original source logo URLs directly."
+                  />
+                </div>
+                <div>
+                  <TicToggleInput
                     v-model="periodicChannelStreamHealthChecks"
                     @update:model-value="triggerImmediateAutoSave"
                     label="Enable periodic channel stream health checks"
@@ -463,6 +471,7 @@ export default defineComponent({
       routePlaylistsThroughCso: ref(false),
       routeAllTvhThroughCsoStreamBuffer: ref(false),
       routePlaylistsThroughTvh: ref(false),
+      cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
       userAgents: ref([]),
       adminPassword: ref(''),
@@ -487,6 +496,7 @@ export default defineComponent({
         routePlaylistsThroughCso: false,
         routeAllTvhThroughCsoStreamBuffer: false,
         routePlaylistsThroughTvh: false,
+        cacheChannelLogos: true,
         streamProfiles: {},
         auditLogRetentionDays: 7,
         userAgents: [
@@ -565,6 +575,9 @@ export default defineComponent({
       this.queueAutoSave();
     },
     routePlaylistsThroughTvh() {
+      this.queueAutoSave();
+    },
+    cacheChannelLogos() {
       this.queueAutoSave();
     },
     streamProfiles: {

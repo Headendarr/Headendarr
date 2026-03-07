@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import io
-import hashlib
 import json
 import time
 from datetime import datetime
@@ -26,6 +25,7 @@ from backend.channels import (
     read_epg_match_candidate_preview,
     apply_bulk_epg_matches,
     apply_bulk_cso_settings,
+    build_channel_logo_output_url,
 )
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
@@ -345,9 +345,13 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
     }
 
 
-def _build_backend_logo_url(request_base_url, channel_id, source_logo_url):
-    token = hashlib.sha1((source_logo_url or "").encode("utf-8")).hexdigest()[:12]
-    return f"{request_base_url}/tic-api/channels/{channel_id}/logo/{token}.png"
+def _build_backend_logo_url(config, request_base_url, channel_id, source_logo_url):
+    return build_channel_logo_output_url(
+        config,
+        channel_id,
+        request_base_url,
+        source_logo_url,
+    )
 
 
 async def _fetch_channel_suggestion_counts():
@@ -369,11 +373,13 @@ async def _fetch_channel_suggestion_counts():
 async def api_get_channels():
     include_status = request.args.get("include_status") == "true"
     channels_config = await read_config_all_channels(include_status=include_status)
+    config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
     for channel in channels_config:
         source_logo_url = channel.get("logo_url")
         channel["source_logo_url"] = source_logo_url
         channel["logo_url"] = _build_backend_logo_url(
+            config,
             request_base_url,
             channel.get("id"),
             source_logo_url,
@@ -663,6 +669,7 @@ async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
 @streamer_or_admin_required
 async def api_get_channels_basic():
     channels_config = await read_config_all_channels()
+    config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
     basic = []
     for channel in channels_config:
@@ -674,6 +681,7 @@ async def api_get_channels_basic():
                 "name": channel.get("name"),
                 "number": channel.get("number"),
                 "logo_url": _build_backend_logo_url(
+                    config,
                     request_base_url,
                     channel.get("id"),
                     channel.get("logo_url"),
