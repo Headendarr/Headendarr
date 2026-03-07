@@ -2421,118 +2421,143 @@ async def publish_channel_muxes(config):
 
         async def process_source(channel_obj, source_obj):
             async with sem:
-                net_uuid = source_obj.playlist.tvh_uuid
-                if source_obj.playlist and source_obj.playlist.account_type == XC_ACCOUNT_TYPE:
-                    if source_obj.xc_account_id and xc_by_id.get(source_obj.xc_account_id):
-                        net_uuid = xc_by_id[source_obj.xc_account_id].tvh_uuid
-                    else:
-                        try:
-                            parsed = urlparse(source_obj.playlist_stream_url or "")
-                            parts = parsed.path.split("/")
-                            if "live" in parts:
-                                idx = parts.index("live")
-                                username = parts[idx + 1] if len(parts) > idx + 1 else None
-                                if username:
-                                    account = xc_by_playlist_and_username.get((source_obj.playlist_id, username))
-                                    if account:
-                                        net_uuid = account.tvh_uuid
-                                        source_obj.xc_account_id = account.id
-                        except Exception:
-                            pass
-                if not net_uuid:
-                    logger.debug(
-                        "Playlist not configured on TVH for channel '%s'",
-                        channel_obj.name,
-                    )
-                    return
-                mux_uuid = source_obj.tvh_uuid
-                run_mux_scan = False
-                if mux_uuid and mux_uuid in existing_mux_uuids:
-                    # Check scan_result
-                    for mux in existing_muxes:
-                        if mux.get("uuid") == mux_uuid and mux.get("scan_result") == 2:
-                            run_mux_scan = True
-                            break
-                else:
-                    mux_uuid = None
-                if not mux_uuid:
-                    logger.info("    - Creating new MUX for channel '%s'", channel_obj.name)
-                    try:
-                        mux_uuid = await tvh.network_mux_create(net_uuid)
-                        run_mux_scan = True
-                    except Exception as e:
-                        logger.error(
-                            "Failed creating MUX for channel '%s': %s",
+                try:
+                    playlist_obj = getattr(source_obj, "playlist", None)
+                    if not playlist_obj:
+                        source_obj.tvh_uuid = None
+                        source_obj.xc_account_id = None
+                        logger.warning(
+                            "Skipping source id=%s for channel '%s': playlist is missing",
+                            source_obj.id,
                             channel_obj.name,
-                            e,
                         )
                         return
-                else:
-                    logger.debug(
-                        "    - Updating existing MUX '%s' for '%s'",
-                        mux_uuid,
-                        channel_obj.name,
-                    )
+                    if not bool(getattr(playlist_obj, "enabled", False)):
+                        source_obj.tvh_uuid = None
+                        logger.debug(
+                            "Skipping source id=%s for channel '%s': playlist is disabled",
+                            source_obj.id,
+                            channel_obj.name,
+                        )
+                        return
+                    net_uuid = playlist_obj.tvh_uuid
+                    if playlist_obj.account_type == XC_ACCOUNT_TYPE:
+                        if source_obj.xc_account_id and xc_by_id.get(source_obj.xc_account_id):
+                            net_uuid = xc_by_id[source_obj.xc_account_id].tvh_uuid
+                        else:
+                            try:
+                                parsed = urlparse(source_obj.playlist_stream_url or "")
+                                parts = parsed.path.split("/")
+                                if "live" in parts:
+                                    idx = parts.index("live")
+                                    username = parts[idx + 1] if len(parts) > idx + 1 else None
+                                    if username:
+                                        account = xc_by_playlist_and_username.get((source_obj.playlist_id, username))
+                                        if account:
+                                            net_uuid = account.tvh_uuid
+                                            source_obj.xc_account_id = account.id
+                            except Exception:
+                                pass
+                    if not net_uuid:
+                        logger.debug(
+                            "Playlist not configured on TVH for channel '%s'",
+                            channel_obj.name,
+                        )
+                        return
+                    mux_uuid = source_obj.tvh_uuid
+                    run_mux_scan = False
+                    if mux_uuid and mux_uuid in existing_mux_uuids:
+                        # Check scan_result
+                        for mux in existing_muxes:
+                            if mux.get("uuid") == mux_uuid and mux.get("scan_result") == 2:
+                                run_mux_scan = True
+                                break
+                    else:
+                        mux_uuid = None
+                    if not mux_uuid:
+                        logger.info("    - Creating new MUX for channel '%s'", channel_obj.name)
+                        try:
+                            mux_uuid = await tvh.network_mux_create(net_uuid)
+                            run_mux_scan = True
+                        except Exception as e:
+                            logger.error(
+                                "Failed creating MUX for channel '%s': %s",
+                                channel_obj.name,
+                                e,
+                            )
+                            return
+                    else:
+                        logger.debug(
+                            "    - Updating existing MUX '%s' for '%s'",
+                            mux_uuid,
+                            channel_obj.name,
+                        )
 
-                service_name = f"{source_obj.playlist.name} - {source_obj.playlist_stream_name}"
-                mux_name = service_name
-                if source_obj.playlist_stream_url:
-                    url_hash = hashlib.sha1(source_obj.playlist_stream_url.encode("utf-8")).hexdigest()[:8]
-                    mux_name = f"{mux_name} [{url_hash}]"
-                if not mux_name.lower().startswith("tic-"):
-                    mux_name = f"tic-{mux_name}"
-                if route_all_tvh_through_cso_stream_buffer and source_obj.id:
-                    stream_url = build_cso_source_stream_url(
-                        base_url=tic_base_url,
-                        stream_id=source_obj.id,
-                        stream_key=tvh_stream_key,
-                        username=tvh_stream_username,
-                        connection_id="tvh",
-                        profile="tvh",
-                    )
-                else:
-                    stream_url = source_obj.playlist_stream_url
-                    if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
-                        stream_url = normalize_local_proxy_url(
-                            stream_url,
+                    service_name = f"{playlist_obj.name} - {source_obj.playlist_stream_name}"
+                    mux_name = service_name
+                    if source_obj.playlist_stream_url:
+                        url_hash = hashlib.sha1(source_obj.playlist_stream_url.encode("utf-8")).hexdigest()[:8]
+                        mux_name = f"{mux_name} [{url_hash}]"
+                    if not mux_name.lower().startswith("tic-"):
+                        mux_name = f"tic-{mux_name}"
+                    if route_all_tvh_through_cso_stream_buffer and source_obj.id:
+                        stream_url = build_cso_source_stream_url(
                             base_url=tic_base_url,
-                            instance_id=instance_id,
+                            stream_id=source_obj.id,
                             stream_key=tvh_stream_key,
                             username=tvh_stream_username,
+                            connection_id="tvh",
+                            profile="tvh",
                         )
-                iptv_url = generate_iptv_url(
-                    config,
-                    url=stream_url,
-                    service_name=service_name,
-                    use_buffer_wrapper=True,
-                    force_buffer_wrapper=True,
-                )
-                channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
-                mux_conf = {
-                    "enabled": 1,
-                    "uuid": mux_uuid,
-                    "iptv_url": iptv_url,
-                    "iptv_icon": build_channel_logo_output_url(
+                    else:
+                        stream_url = source_obj.playlist_stream_url
+                        if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
+                            stream_url = normalize_local_proxy_url(
+                                stream_url,
+                                base_url=tic_base_url,
+                                instance_id=instance_id,
+                                stream_key=tvh_stream_key,
+                                username=tvh_stream_username,
+                            )
+                    iptv_url = generate_iptv_url(
                         config,
-                        channel_obj.id,
-                        tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
-                        channel_obj.logo_url or "",
-                    ),
-                    "iptv_sname": channel_obj.name,
-                    "iptv_muxname": mux_name,
-                    "channel_number": channel_obj.number,
-                    "iptv_epgid": channel_id,
-                    "priority": source_obj.priority,
-                    "spriority": source_obj.priority,
-                }
-                if run_mux_scan:
-                    mux_conf["scan_state"] = 1
-                try:
-                    await tvh.idnode_save(mux_conf)
-                    source_obj.tvh_uuid = mux_uuid
-                    managed_uuids.append(mux_uuid)
-                except Exception as e:
-                    logger.error("Failed saving MUX for channel '%s': %s", channel_obj.name, e)
+                        url=stream_url,
+                        service_name=service_name,
+                        use_buffer_wrapper=True,
+                        force_buffer_wrapper=True,
+                    )
+                    channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
+                    mux_conf = {
+                        "enabled": 1,
+                        "uuid": mux_uuid,
+                        "iptv_url": iptv_url,
+                        "iptv_icon": build_channel_logo_output_url(
+                            config,
+                            channel_obj.id,
+                            tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
+                            channel_obj.logo_url or "",
+                        ),
+                        "iptv_sname": channel_obj.name,
+                        "iptv_muxname": mux_name,
+                        "channel_number": channel_obj.number,
+                        "iptv_epgid": channel_id,
+                        "priority": source_obj.priority,
+                        "spriority": source_obj.priority,
+                    }
+                    if run_mux_scan:
+                        mux_conf["scan_state"] = 1
+                    try:
+                        await tvh.idnode_save(mux_conf)
+                        source_obj.tvh_uuid = mux_uuid
+                        managed_uuids.append(mux_uuid)
+                    except Exception as e:
+                        logger.error("Failed saving MUX for channel '%s': %s", channel_obj.name, e)
+                except Exception:
+                    logger.exception(
+                        "Unexpected error while processing source id=%s for channel '%s'",
+                        source_obj.id,
+                        channel_obj.name,
+                    )
 
         async def process_cso_channel(channel_obj):
             async with sem:
@@ -2620,7 +2645,10 @@ async def publish_channel_muxes(config):
 
         # Await all
         if mux_tasks:
-            await asyncio.gather(*mux_tasks)
+            gather_results = await asyncio.gather(*mux_tasks, return_exceptions=True)
+            for exc in gather_results:
+                if isinstance(exc, Exception):
+                    logger.error("Unhandled task exception while publishing TVH muxes: %s", exc)
             async with Session() as session:
                 async with session.begin():
                     for channel_obj in results:
