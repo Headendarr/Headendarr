@@ -42,19 +42,22 @@ services:
       - PGID=1000
       # Timezone
       - TZ=Pacific/Auckland
-      # Skips the DB migrate command execution on container startup
-      - SKIP_MIGRATIONS=false
-      # Executes a pip install on container startup (might be required to generate the venv)
-      - RUN_PIP_INSTALL=false
-      # Enables debug logging for main application
-      - ENABLE_APP_DEBUGGING=false
-      # Enables debug logging for DB queries
-      - ENABLE_SQLALCHEMY_DEBUGGING=false
+      # Optional OIDC SSO
+      # - TIC_AUTH_OIDC_ENABLED=true
+      # - TIC_AUTH_OIDC_ISSUER_URL=https://auth.example.com
+      # - TIC_AUTH_OIDC_CLIENT_ID=headendarr
+      # - TIC_AUTH_OIDC_CLIENT_SECRET=replace-me
+      # - TIC_AUTH_OIDC_REDIRECT_URI=https://headendarr.example.com/tic-api/auth/oidc/callback
+      # - TIC_AUTH_OIDC_ADMIN_GROUPS=headendarr-admin
+      # - TIC_AUTH_OIDC_STREAMER_GROUPS=headendarr-streamer
 
     # VOLUMES:
     volumes:
       # Configuration files
       - /data/containers/tvh-iptv/tic-config:/config
+      # Recording storage
+      - /data/containers/tvh-iptv/tic-recordings:/recordings
+      - /data/containers/tvh-iptv/tic-timeshift:/timeshift
 
     ## # DEVICES:
     ## devices:
