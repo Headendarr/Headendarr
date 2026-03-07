@@ -573,7 +573,7 @@ async function initPlayer() {
         setErrorMessage('No data received from the stream.', 4000);
         isLoading.value = false;
       }
-    }, 12000);
+    }, 25000);
   }
   const type = detectStreamType(url, videoStore.streamType);
   isLoading.value = true;
