@@ -7,6 +7,7 @@
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <TicListToolbar
+                class="channels-toolbar"
                 :actions="channelsToolbarActions"
                 :filters="channelsToolbarFilters"
                 :collapse-filters-on-mobile="true"
@@ -476,6 +477,9 @@
                     </template>
                   </draggable>
                 </q-list>
+                <div v-if="filteredChannels.length === 0" class="q-pa-md text-caption text-grey-7">
+                  No channels match the selected filters.
+                </div>
               </div>
             </q-card-section>
           </q-card>
@@ -591,6 +595,8 @@ import {
   TicToggleInput,
   TicChannelIcon,
 } from 'components/ui';
+
+const BULK_FILTER_UNASSIGNED = '__unassigned__';
 
 export default defineComponent({
   name: 'ChannelsPage',
@@ -736,17 +742,20 @@ export default defineComponent({
     bulkCategoryFilterOptions() {
       return [
         {label: 'All', value: null},
+        {label: 'No groups assigned', value: BULK_FILTER_UNASSIGNED},
         ...this.availableCategories.map((category) => ({label: category, value: category}))];
     },
     bulkStreamSourceFilterOptions() {
       return [
         {label: 'All', value: null},
+        {label: 'No stream source assigned', value: BULK_FILTER_UNASSIGNED},
         ...this.availableStreamSources.map((sourceName) => ({label: sourceName, value: sourceName})),
       ];
     },
     bulkGuideFilterOptions() {
       return [
         {label: 'All', value: null},
+        {label: 'No guide assigned', value: BULK_FILTER_UNASSIGNED},
         ...this.availableGuides.map((guideName) => ({label: guideName, value: guideName}))];
     },
     channelsToolbarActions() {
@@ -1005,22 +1014,36 @@ export default defineComponent({
     },
     isChannelVisible(channel) {
       if (this.selectedBulkCategory) {
-        const tags = Array.isArray(channel?.tags) ? channel.tags : [];
-        if (!tags.includes(this.selectedBulkCategory)) {
+        const tags = Array.isArray(channel?.tags) ? channel.tags.filter(Boolean) : [];
+        const hasGroups = tags.length > 0;
+        if (this.selectedBulkCategory === BULK_FILTER_UNASSIGNED && hasGroups) {
+          return false;
+        }
+        if (this.selectedBulkCategory !== BULK_FILTER_UNASSIGNED && !tags.includes(this.selectedBulkCategory)) {
           return false;
         }
       }
       if (this.selectedBulkStreamSource) {
         const hasSource = channel?.sources && Object.values(channel.sources).some((source) =>
+          Boolean(source?.playlist_name),
+        );
+        if (this.selectedBulkStreamSource === BULK_FILTER_UNASSIGNED && hasSource) {
+          return false;
+        }
+        const hasSelectedSource = channel?.sources && Object.values(channel.sources).some((source) =>
           source?.playlist_name === this.selectedBulkStreamSource,
         );
-        if (!hasSource) {
+        if (this.selectedBulkStreamSource !== BULK_FILTER_UNASSIGNED && !hasSelectedSource) {
           return false;
         }
       }
       if (this.selectedBulkGuide) {
-        const epgName = channel?.guide?.epg_name || '';
-        if (epgName !== this.selectedBulkGuide) {
+        const epgName = channel?.guide?.epg_name?.trim() || '';
+        const hasGuide = Boolean(epgName);
+        if (this.selectedBulkGuide === BULK_FILTER_UNASSIGNED && hasGuide) {
+          return false;
+        }
+        if (this.selectedBulkGuide !== BULK_FILTER_UNASSIGNED && epgName !== this.selectedBulkGuide) {
           return false;
         }
       }
@@ -2190,6 +2213,31 @@ export default defineComponent({
   padding-left: 17px;
   display: flex;
   justify-content: flex-start;
+}
+
+.channels-toolbar :deep(.section-toolbar-filter-wrap) {
+  flex: 0 1 180px;
+  min-width: 180px;
+  max-width: 180px;
+}
+
+.channels-toolbar :deep(.q-select .q-field__native),
+.channels-toolbar :deep(.q-select .q-field__input) {
+  caret-color: transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channels-toolbar :deep(.q-select.q-field--dense .q-field__control),
+.channels-toolbar :deep(.q-select.q-field--dense .q-field__control-container) {
+  min-height: 40px;
+  height: 40px;
+}
+
+.channels-toolbar :deep(.q-select.q-field--dense .q-field__native),
+.channels-toolbar :deep(.q-select.q-field--dense .q-field__input) {
+  line-height: 24px;
 }
 
 .channel-number-link {
