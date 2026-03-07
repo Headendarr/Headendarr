@@ -85,7 +85,7 @@ services:
     image: node:22-trixie
     user: 1000:1000
     working_dir: /app/docs
-    command: bash -lc "npm install && npm start"
+    command: bash -lc "npm install && npm run clear && npm start"
     network_mode: host
     environment:
       - NODE_ENV=development
