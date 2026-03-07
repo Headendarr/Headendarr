@@ -308,104 +308,107 @@
           <q-card-section>
             <div class="text-h5 q-mb-none">Setup Steps:</div>
             <q-list>
-
-              <q-item>
+              <q-separator inset spaced />
+              <q-item v-if="!tvhLocal">
                 <q-item-section>
-                  <q-item-label v-if="!tvhLocal">
-                    1. Set <b>Headendarr Host</b> only when using a remote TVHeadend backend (Lite deployment).
-                    It is used for URLs stored in TVHeadend (for example XMLTV and proxied stream callbacks).
-                  </q-item-label>
-                  <q-item-label v-else>
-                    1. In AIO mode, Headendarr derives external URLs from each incoming request host (for example local
-                    LAN IP, domain, or Tailscale host), so no Host setting is required.
+                  <q-item-label>
+                    <q-icon name="language" class="q-mr-xs" />
+                    Set <b>Headendarr Host</b> only for remote/external TVHeadend deployments.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    2. Choose whether to route playlists and HDHomeRun traffic through TVHeadend.
-                    When enabled, clients connect to TVH for tuning and TVH pulls streams from Headendarr on their
-                    behalf.
+                    <q-icon name="alt_route" class="q-mr-xs" />
+                    Choose routing toggles based on your playback path (direct combined endpoints, TVHeadend-first, or
+                    mixed).
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    3. Add User Agents for provider compatibility. You can select these per source or EPG.
+                    <q-icon name="tune" class="q-mr-xs" />
+                    Enable only the stream profiles clients should request, and tune profile options (HW
+                    Accel/Deinterlace).
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    4. Set DVR padding to record extra minutes before and after each scheduled recording.
+                    <q-icon name="web" class="q-mr-xs" />
+                    Add provider-compatible User Agents for sources and EPGs where needed.
                   </q-item-label>
                 </q-item-section>
               </q-item>
-
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="video_library" class="q-mr-xs" />
+                    Set DVR defaults (padding, retention, profiles) used for new schedules.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
           <q-card-section>
             <div class="text-h5 q-mb-none">Notes:</div>
             <q-list>
-
-              <q-item>
+              <q-separator inset spaced />
+              <q-item v-if="!tvhLocal">
                 <q-item-section>
-                  <q-item-label v-if="!tvhLocal">
-                    Headendarr Host is only used for external TVHeadend (Lite) callback URLs written into TVHeadend
-                    config (for example XMLTV and stream callback URLs).
-                  </q-item-label>
-                  <q-item-label v-else>
-                    With AIO/local TVHeadend, Headendarr Host is ignored. URLs are generated from the request host and
-                    TVHeadend callbacks use `127.0.0.1`.
+                  <q-item-label>
+                    <q-icon name="language" class="q-mr-xs" />
+                    <b>Headendarr Host</b> is only for external TVHeadend callback URLs (for example XMLTV and stream
+                    callbacks).
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    Routing playlists and HDHomeRun through TVHeadend means client apps talk to TVH, not Headendarr. TVH
-                    becomes the “streaming client” that fetches channels from Headendarr and can apply its own
-                    buffering,
-                    mux handling, and DVR behavior.
+                    <q-icon name="info" class="q-mr-xs" />
+                    For combined playlists/endpoints, enabling CSO routing is useful when you want stream auditing and
+                    source-based connection-limit enforcement; if you do not need that, leave it disabled so clients
+                    receive direct stream URLs.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    When routing is enabled, clients see a single TVH endpoint (HDHR/playlist) and may gain better
-                    compatibility via TVH’s stream buffer, but it adds an extra hop and requires TVH to reach
-                    Headendarr.
-                    When disabled, clients connect directly to Headendarr for streams.
+                    <q-icon name="tune" class="q-mr-xs" />
+                    Channel-level configuration can still override this behaviour, so specific channels can be forced
+                    through CSO independently of these global toggles.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    User Agents are used when Headendarr fetches M3U, XC, and EPG data. Some providers block unknown
-                    clients; choose a compatible agent if downloads fail.
+                    <q-icon name="swap_horiz" class="q-mr-xs" />
+                    Using <b>Route per-source playlists &amp; per-source HDHomeRun via TVHeadend</b> together with
+                    <b>Use CSO stream buffer for TVHeadend mux streams</b> is typically best when you use TVHeadend
+                    clients (for example Kodi or Sparkle TV), or mixed deployments where some clients connect to
+                    TVHeadend and others connect directly to Headendarr.
                   </q-item-label>
                 </q-item-section>
               </q-item>
+              <q-separator inset spaced />
+              <q-item-label class="text-primary">Full Documentation:</q-item-label>
               <q-item>
                 <q-item-section>
-                  <q-item-label>
-                    DVR padding is applied when syncing recording defaults to TVHeadend.
+                  <q-item-label class="tic-help-doc-footer">
+                    <a href="https://headendarr.github.io/Headendarr/configuration/application-settings" target="_blank"
+                       rel="noopener noreferrer">Application Settings</a>
+                    <span class="tic-help-doc-sep">|</span>
+                    <a href="https://headendarr.github.io/Headendarr/configuration/channel-stream-organiser"
+                       target="_blank" rel="noopener noreferrer">Channel Stream Organiser</a>
                   </q-item-label>
                 </q-item-section>
               </q-item>
-              <q-item>
-                <q-item-section>
-                  <q-item-label>
-                    Audit log retention controls how long stream and API access events are kept in the database.
-                  </q-item-label>
-                </q-item-section>
-              </q-item>
-
             </q-list>
           </q-card-section>
         </TicResponsiveHelp>

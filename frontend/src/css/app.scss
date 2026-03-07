@@ -460,3 +460,26 @@
   border-radius: var(--tic-radius-md);
   box-shadow: var(--tic-elevated-shadow);
 }
+
+.tic-help-doc-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  line-height: 1.45;
+}
+
+.tic-help-doc-footer a {
+  color: var(--q-primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.tic-help-doc-footer a:hover {
+  text-decoration: underline;
+}
+
+.tic-help-doc-sep {
+  color: var(--q-primary);
+  opacity: 0.55;
+}

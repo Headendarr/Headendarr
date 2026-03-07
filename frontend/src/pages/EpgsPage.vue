@@ -119,6 +119,15 @@
                   label="Attempt to fetch missing programme images from Google Image Search"
                   description="This only fetches the first Google image result for the programme title when TMDB has no result."
                 />
+
+                <AdmonitionBanner
+                  v-if="enableGoogleImageSearchMetadata"
+                  type="warning"
+                  class="q-mb-md"
+                >
+                  This setting sends frequent Google Images API-style requests and can flag your IP as a bot source.
+                  Use at your own discretion.
+                </AdmonitionBanner>
               </q-form>
             </q-card-section>
           </q-card>
@@ -127,76 +136,72 @@
           <q-card-section>
             <div class="text-h5 q-mb-none">Setup Steps:</div>
             <q-list>
-
               <q-separator inset spaced />
-
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    1. Add one or more program guides. Configure EPG sources with a name and URL.
-                    URLs can be gzip compressed (.xml.gz) or uncompressed (.xml).
+                    <q-icon name="add" class="q-mr-xs" />
+                    Add EPG sources with valid XMLTV URLs (`.xml` or `.xml.gz`) and clear names.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    2. Click on the kebab menu for each added EPG and click on the <b>Update</b> button to fetch
-                    the EPG and import it into Headendarr's database.
+                    <q-icon name="update" class="q-mr-xs" />
+                    Use row action <b>Update</b> after add/edit to import guide data immediately.
                   </q-item-label>
                 </q-item-section>
               </q-item>
-
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="fact_check" class="q-mr-xs" />
+                    Use <b>Review</b> to confirm imported channel coverage before channel-mapping changes.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
           <q-card-section>
             <div class="text-h5 q-mb-none">Notes:</div>
             <q-list>
-
               <q-separator inset spaced />
-
-              <q-item-label class="text-primary">
-                Fetch missing data from TMDB:
-              </q-item-label>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    Configuring the background EPG builder to fetch missing data from TMDB will add significant time
-                    to the process.
-                    Everytime the programme guide is updated, this background EPG builder process will have to
-                    re-fetch any images.
+                    <q-icon name="hourglass_bottom" class="q-mr-xs" />
+                    TMDB and Google image enrichment can increase update time significantly on large guides.
                   </q-item-label>
                 </q-item-section>
               </q-item>
-
-              <q-separator inset spaced />
-
-              <q-item-label class="text-primary">
-                Attempt to fetch missing programme images from Google Image Search:
-              </q-item-label>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    This will cause a lot of google image searches.
-                    It is highly likely that you will flag your IP as a bot source with google if you enable this.
+                    <q-icon name="movie_filter" class="q-mr-xs" />
+                    Google image enrichment can trigger high external query volume; enable only if you need it.
                   </q-item-label>
                 </q-item-section>
               </q-item>
-
-              <q-separator inset spaced />
-
-              <q-item-label class="text-primary">
-                Initial update is manual:
-              </q-item-label>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    Adding an EPG source does not download it immediately. Use the kebab menu and click
-                    <b>Update</b> to fetch and import the guide data.
+                    <q-icon name="update" class="q-mr-xs" />
+                    Adding an EPG source does not download it immediately. Click <b>Update</b> from the row menu to
+                    fetch and import guide data.
                   </q-item-label>
                 </q-item-section>
               </q-item>
-
+              <q-separator inset spaced />
+              <q-item-label class="text-primary">Full Documentation:</q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label class="tic-help-doc-footer">
+                    <a href="https://headendarr.github.io/Headendarr/configuration/epgs" target="_blank"
+                       rel="noopener noreferrer">EPGs</a>
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
         </TicResponsiveHelp>
@@ -212,6 +217,7 @@ import {useUiStore} from 'stores/ui';
 import EpgInfoDialog from 'components/EpgInfoDialog.vue';
 import EpgReviewDialog from 'components/EpgReviewDialog.vue';
 import {
+  AdmonitionBanner,
   TicConfirmDialog,
   TicListActions,
   TicListToolbar,
@@ -223,6 +229,7 @@ import {
 export default defineComponent({
   name: 'EpgsPage',
   components: {
+    AdmonitionBanner,
     TicListActions,
     TicListToolbar,
     TicResponsiveHelp,

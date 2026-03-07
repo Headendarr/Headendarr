@@ -485,47 +485,35 @@
             <div class="text-h5 q-mb-none">Setup Steps:</div>
             <q-list>
               <q-separator inset spaced />
-
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    1. Start by clicking the <b>Import Channels from stream source</b> button. With this dialog
-                    open, select one or more streams from your imported stream sources, then close the dialog to
-                    import them into your channel list.
+                    <q-icon name="dvr" class="q-mr-xs" />
+                    Use <b>Import Channels from stream source</b> for fast bulk channel creation from your source lists.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    2. Click on the <b>Configure</b>
-                    (
-                    <q-icon name="tune" />
-                    ) button for each added channel.
-                    <br />
-                    In the Channel Settings dialog that opens you can further configure channel categories and
-                    additional streams from other sources.
+                    <q-icon name="tune" class="q-mr-xs" />
+                    Open <b>Configure</b> per channel to assign guide data, categories, and stream ordering.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    3. Click and hold the drag (
-                    <q-icon name="format_line_spacing" />
-                    ) icon to quickly change the order of your channel list.
+                    <q-icon name="format_line_spacing" class="q-mr-xs" />
+                    Reorder channels by drag-and-drop, or click channel number to edit directly.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
-                  <q-item-label> 4. Click a channel's number to open the channel number editor.</q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item>
-                <q-item-section>
                   <q-item-label>
-                    5. Click the <b>Bulk Edit</b> button above the channel list to modify multiple channels at once.
+                    <q-icon name="fact_check" class="q-mr-xs" />
+                    Use <b>Bulk Edit</b> for multi-channel updates (categories, CSO, enable/disable, refresh, delete).
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -535,14 +523,35 @@
             <div class="text-h5 q-mb-none">Notes:</div>
             <q-list>
               <q-separator inset spaced />
-
-              <q-item-label class="text-primary"> Channel Settings - Streams:</q-item-label>
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    When you open a channel's settings, you can configure multiple streams for each channel. Drag
-                    the streams in order of preference. If a stream has reached the connection limits, the next
-                    stream will be used automatically.
+                    <q-icon name="swap_vert" class="q-mr-xs" />
+                    Channel stream order in the channel settings defines failover priority. If a preferred stream fails
+                    or is at limit, the next
+                    stream is used.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="warning" class="q-mr-xs" />
+                    Use health chips and stream suggestions to quickly find channels needing fixes or better stream
+                    matches.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-separator inset spaced />
+              <q-item-label class="text-primary">Full Documentation:</q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label class="tic-help-doc-footer">
+                    <a href="https://headendarr.github.io/Headendarr/configuration/channels" target="_blank"
+                       rel="noopener noreferrer">Channels</a>
+                    <span class="tic-help-doc-sep">|</span>
+                    <a href="https://headendarr.github.io/Headendarr/configuration/channel-stream-organiser"
+                       target="_blank" rel="noopener noreferrer">Channel Stream Organiser</a>
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -1252,7 +1261,7 @@ export default defineComponent({
         const newChannels = response.data.data.sort((a, b) => a.number - b.number);
         const newChannelsById = new Map(newChannels.map(c => [c.id, c]));
         const newChannelIds = new Set(newChannels.map(c => c.id));
- 
+
         // Update existing channels and identify new ones
         this.listOfChannels.forEach(existingChannel => {
           const newChannelData = newChannelsById.get(existingChannel.id);
@@ -1264,16 +1273,16 @@ export default defineComponent({
             newChannelsById.delete(existingChannel.id); // Remove from map so only new channels remain
           }
         });
- 
+
         // Add new channels
         newChannelsById.forEach(newChannel => {
           const isSelected = this.selectedChannels.includes(newChannel.id);
           this.listOfChannels.push({...newChannel, selected: isSelected});
         });
- 
+
         // Remove deleted channels
         this.listOfChannels = this.listOfChannels.filter(c => newChannelIds.has(c.id));
- 
+
         // Ensure list remains sorted by channel number
         this.listOfChannels.sort((a, b) => a.number - b.number);
       }).catch(() => {

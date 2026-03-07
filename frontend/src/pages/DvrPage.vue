@@ -207,18 +207,71 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>
-                    1. Use <b>Schedule Recording</b> to create one-time recordings with channel and time range.
+                    <q-icon name="add" class="q-mr-xs" />
+                    Use <b>Schedule Recording</b> for one-time recordings with channel, time range, and profile.
                   </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
-                  <q-item-label> 2. Use <b>Recording Rules</b> for recurring scheduling by title match.</q-item-label>
+                  <q-item-label>
+                    <q-icon name="rule" class="q-mr-xs" />
+                    Use <b>Recording Rules</b> for recurring scheduling by title match, channel scope, and lookahead.
+                  </q-item-label>
                 </q-item-section>
               </q-item>
               <q-item>
                 <q-item-section>
-                  <q-item-label> 3. Use status and sync details to verify Headendarr and TVHeadend are aligned.
+                  <q-item-label>
+                    <q-icon name="sync" class="q-mr-xs" />
+                    Check recording status and TVHeadend sync status to confirm jobs are scheduled and updated
+                    correctly.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-card-section>
+          <q-card-section>
+            <div class="text-h5 q-mb-none">Notes:</div>
+            <q-list>
+              <q-separator inset spaced />
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="video_library" class="q-mr-xs" />
+                    Recording profiles and padding defaults are configured in <b>Application Settings → DVR Settings</b>.
+                    See:
+                    <a href="https://headendarr.github.io/Headendarr/configuration/application-settings#dvr-settings"
+                       target="_blank" rel="noopener noreferrer">DVR Settings documentation</a>.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="tv" class="q-mr-xs" />
+                    DVR recordings can also be scheduled directly from the <b>TV Guide</b> page.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="filter_alt" class="q-mr-xs" />
+                    Use filters and sort on both tabs to troubleshoot failures, stale sync states, or scheduling gaps.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-separator inset spaced />
+              <q-item-label class="text-primary">Full Documentation:</q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label class="tic-help-doc-footer">
+                    <a href="https://headendarr.github.io/Headendarr/configuration/tv-guide-dvr" target="_blank"
+                       rel="noopener noreferrer">TV Guide & DVR</a>
+                    <span class="tic-help-doc-sep">|</span>
+                    <a href="https://headendarr.github.io/Headendarr/configuration/application-settings" target="_blank"
+                       rel="noopener noreferrer">Application Settings</a>
                   </q-item-label>
                 </q-item-section>
               </q-item>

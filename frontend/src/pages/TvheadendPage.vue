@@ -2,7 +2,8 @@
   <q-page>
     <div class="q-pa-md">
       <div class="row">
-        <div :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
+        <div
+          :class="uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <q-form class="tic-form-layout">
@@ -112,49 +113,88 @@
         </div>
         <TicResponsiveHelp v-model="uiStore.showHelp">
           <q-card-section>
-                <div class="text-h5 q-mb-none">Setup Steps:</div>
-                <q-list>
-
-                  <q-separator inset spaced />
-
+            <div class="text-h5 q-mb-none">Setup Steps:</div>
+            <q-list>
+              <q-separator inset spaced />
+              <q-item v-if="aioMode === false">
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="dns" class="q-mr-xs" />
+                    Set TVHeadend host/port only for external TVHeadend deployments.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item v-else>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="check_circle" class="q-mr-xs" />
+                    In AIO deployments, TVHeadend connection fields are managed automatically.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item v-if="aioMode === false">
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="admin_panel_settings" class="q-mr-xs" />
+                    Add admin credentials only if your external TVHeadend requires authentication.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="tune" class="q-mr-xs" />
+                    Configure stream buffer settings for stable MPEG-TS output to TVHeadend when source formats vary.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
           <q-card-section>
-                <div class="text-h5 q-mb-none">Notes:</div>
-                <q-list>
-
-                  <q-separator inset spaced />
-
-                  <template v-if="aioMode === false">
-                    <q-item-label class="text-primary">
-                      TVHeadend Admin Credentials:
-                    </q-item-label>
-                    <q-item>
-                      <q-item-section>
-                        <q-item-label>
-                          Headendarr uses an internal sync account to apply configuration changes in the background.
-                          Only provide admin credentials here for external TVHeadend instances that require
-                          authentication.
-                        </q-item-label>
-                      </q-item-section>
-                    </q-item>
-
-                    <q-separator inset spaced />
-                  </template>
-
-                  <q-item-label class="text-primary">
-                    Stream Config:
+            <div class="text-h5 q-mb-none">Notes:</div>
+            <q-list>
+              <q-separator inset spaced />
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="sync" class="q-mr-xs" />
+                    Headendarr manages sync-state TVHeadend items (for example `tic-` prefixed networks/muxes and synced
+                    profiles).
+                    Manual edits to these can be overwritten on sync.
                   </q-item-label>
-                  <q-item>
-                    <q-item-section>
-                      <q-item-label>
-                        TVHeadend expects MPEG-TS input and can fail on other formats. Enabling the <b>Stream Buffer</b>
-                        wraps sources with FFmpeg to normalize them into TS, which makes most stream types compatible.
-                        This is a light overhead and helps TVH scan and tune more reliably.
-                      </q-item-label>
-                    </q-item-section>
-                  </q-item>
-
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="swap_horiz" class="q-mr-xs" />
+                    Stream Buffer improves compatibility but adds light processing overhead because streams are piped
+                    through FFmpeg.
+                    <br />
+                    This Stream Buffer can be replaced by CSO stream buffering via
+                    <b>Application Settings → Use CSO stream buffer for TVHeadend mux streams</b>.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item>
+                <q-item-section>
+                  <q-item-label>
+                    <q-icon name="warning_amber" class="q-mr-xs" />
+                    NOTE: This page and its settings are planned for deprecation as CSO configuration replaces these
+                    TVHeadend stream settings.
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-separator inset spaced />
+              <q-item-label class="text-primary">Full Documentation:</q-item-label>
+              <q-item>
+                <q-item-section>
+                  <q-item-label class="tic-help-doc-footer">
+                    <a href="https://headendarr.github.io/Headendarr/configuration/tvheadend" target="_blank"
+                       rel="noopener noreferrer">TVHeadend Integration</a>
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-card-section>
         </TicResponsiveHelp>
