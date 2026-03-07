@@ -192,6 +192,7 @@ class Config:
                 "route_playlists_through_cso": True,
                 "periodic_channel_stream_health_checks": True,
                 "route_all_tvh_through_cso_stream_buffer": True,
+                "tvh_cso_stream_profile": "mpegts",
                 "route_playlists_through_tvh": False,
                 "cache_channel_logos": True,
                 "stream_profiles": {

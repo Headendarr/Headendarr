@@ -74,6 +74,17 @@
                     label="Use CSO stream buffer for TVHeadend mux streams"
                     description="Applies to streams published to TVHeadend mux URLs. TVHeadend pulls channel streams through the CSO channel-stream endpoint with TVH remux behaviour."
                   />
+                  <div v-if="routeAllTvhThroughCsoStreamBuffer" class="sub-setting">
+                    <TicSelectInput
+                      v-model="tvhCsoStreamProfile"
+                      @update:model-value="triggerImmediateAutoSave"
+                      :options="tvhCsoProfileOptions"
+                      label="Default CSO profile for TVHeadend mux streams"
+                      description="Defaults to `mpegts`. If your server has enough capacity, prefer `h264-aac-mpegts` for cleaner output and fewer downstream playback errors."
+                      emit-value
+                      map-options
+                    />
+                  </div>
                 </div>
                 <div>
                   <TicToggleInput
@@ -470,6 +481,7 @@ export default defineComponent({
       periodicChannelStreamHealthChecks: ref(true),
       routePlaylistsThroughCso: ref(false),
       routeAllTvhThroughCsoStreamBuffer: ref(false),
+      tvhCsoStreamProfile: ref('mpegts'),
       routePlaylistsThroughTvh: ref(false),
       cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
@@ -495,6 +507,7 @@ export default defineComponent({
         periodicChannelStreamHealthChecks: true,
         routePlaylistsThroughCso: false,
         routeAllTvhThroughCsoStreamBuffer: false,
+        tvhCsoStreamProfile: 'mpegts',
         routePlaylistsThroughTvh: false,
         cacheChannelLogos: true,
         streamProfiles: {},
@@ -557,7 +570,22 @@ export default defineComponent({
       lastSavedSettingsSignature: '',
     };
   },
-  computed: {},
+  computed: {
+    tvhCsoProfileOptions() {
+      const definitions = Array.isArray(this.streamProfileDefinitions) ? this.streamProfileDefinitions : [];
+      const enabledProfiles = this.streamProfiles && typeof this.streamProfiles === 'object' ? this.streamProfiles : {};
+      const mpegtsProfiles = definitions.filter((profile) => (
+        profile.container === 'mpegts' && enabledProfiles[profile.key]?.enabled !== false
+      ));
+      if (!mpegtsProfiles.length) {
+        return [{label: 'mpegts', value: 'mpegts'}];
+      }
+      return mpegtsProfiles.map((profile) => ({
+        label: profile.label || profile.key,
+        value: profile.key,
+      }));
+    },
+  },
   watch: {
     appUrl() {
       if (this.tvhLocal) {
@@ -572,6 +600,9 @@ export default defineComponent({
       this.queueAutoSave();
     },
     routeAllTvhThroughCsoStreamBuffer() {
+      this.queueAutoSave();
+    },
+    tvhCsoStreamProfile() {
       this.queueAutoSave();
     },
     routePlaylistsThroughTvh() {
@@ -683,6 +714,7 @@ export default defineComponent({
           key: String(profile?.key || '').trim().toLowerCase(),
           label: String(profile?.label || profile?.key || '').trim(),
           description: String(profile?.description || '').trim(),
+          container: String(profile?.container || 'mpegts').trim().toLowerCase(),
           transcode: !!profile?.transcode,
           supportsHwaccel: !!profile?.supports_hwaccel,
           supportsDeinterlace: !!profile?.supports_deinterlace,
@@ -693,6 +725,7 @@ export default defineComponent({
         key,
         label: key,
         description: '',
+        container: 'mpegts',
         transcode: false,
         supportsHwaccel: false,
         supportsDeinterlace: false,
@@ -969,6 +1002,12 @@ export default defineComponent({
         }
         if (!this.uiSettings) {
           this.uiSettings = {...this.defSet.uiSettings};
+        }
+        const validTvhProfileValues = new Set(
+          (this.tvhCsoProfileOptions || []).map((item) => String(item?.value || '').trim().toLowerCase()),
+        );
+        if (!validTvhProfileValues.has(String(this.tvhCsoStreamProfile || '').trim().toLowerCase())) {
+          this.tvhCsoStreamProfile = this.defSet.tvhCsoStreamProfile;
         }
         localStorage.setItem('tic_ui_start_page', this.uiSettings.start_page);
         this.prevAdminPassword = this.adminPassword;

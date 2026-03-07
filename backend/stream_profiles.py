@@ -196,6 +196,7 @@ SUPPORTED_STREAM_PROFILES = {
 
 DEFAULT_PROFILE = "default"
 TVH_PROFILE = "tvh"
+TVH_CSO_DEFAULT_PROFILE = "mpegts"
 DEFAULT_PROFILE_TEMPLATE = {
     "label": "",
     "description": "",
@@ -271,6 +272,21 @@ def _is_supported_profile_enabled(settings, requested):
     return True
 
 
+def _resolve_tvh_cso_profile_name(settings):
+    configured_profile = str((settings or {}).get("settings", {}).get("tvh_cso_stream_profile") or "").strip().lower()
+    profile = configured_profile or TVH_CSO_DEFAULT_PROFILE
+    profile_data = _normalized_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {})
+    if profile not in SUPPORTED_STREAM_PROFILES or str(profile_data.get("container") or "").strip().lower() != "mpegts":
+        if configured_profile:
+            logger.warning(
+                "Unsupported tvh_cso_stream_profile %s; falling back to %s.",
+                configured_profile,
+                TVH_CSO_DEFAULT_PROFILE,
+            )
+        return TVH_CSO_DEFAULT_PROFILE
+    return profile
+
+
 def profile_from_cso_policy(value):
     policy = value
     if isinstance(policy, str):
@@ -298,7 +314,9 @@ def resolve_cso_profile_name(config, requested_profile=None, channel=None):
     settings = config.read_settings()
     requested = str(requested_profile or "").strip().lower()
 
-    if requested in {DEFAULT_PROFILE, TVH_PROFILE}:
+    if requested == TVH_PROFILE:
+        return _resolve_tvh_cso_profile_name(settings)
+    if requested == DEFAULT_PROFILE:
         return requested
     if requested and _is_supported_profile_enabled(settings, requested):
         return requested
@@ -306,7 +324,9 @@ def resolve_cso_profile_name(config, requested_profile=None, channel=None):
         logger.warning("Unsupported stream profile %s; falling back to channel/default.", requested)
 
     channel_profile = str(_channel_profile_override(channel) or "").strip().lower()
-    if channel_profile in {DEFAULT_PROFILE, TVH_PROFILE}:
+    if channel_profile == TVH_PROFILE:
+        return _resolve_tvh_cso_profile_name(settings)
+    if channel_profile == DEFAULT_PROFILE:
         return channel_profile
     if channel_profile and _is_supported_profile_enabled(settings, channel_profile):
         return channel_profile
@@ -428,6 +448,7 @@ def get_stream_profile_definitions():
                 "key": profile_key,
                 "label": str(profile.get("label") or profile_key),
                 "description": str(profile.get("description") or ""),
+                "container": str(profile.get("container") or "mpegts"),
                 "transcode": transcode,
                 "supports_hwaccel": supports_video_filters,
                 "supports_deinterlace": supports_video_filters,

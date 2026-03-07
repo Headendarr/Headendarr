@@ -88,13 +88,18 @@ def _is_local_cso_channel_stream_url(url=""):
 def _tvh_local_cso_ffmpeg_pipe_args():
     return (
         "-hide_banner -loglevel error "
-        "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 "
+        "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 "
+        "-reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx "
+        "-reconnect_delay_max 2 "
         "-probesize 512k -analyzeduration 0 -fpsprobesize 0 "
         "-fflags +genpts+discardcorrupt "
+        "-err_detect ignore_err "
         "-i [URL] "
         "-map 0:v:0? -map 0:a? -map 0:s? "
         "-c copy -dn "
+        "-max_muxing_queue_size 4096 "
         "-metadata service_name=[SERVICE_NAME] "
+        "-mpegts_flags +resend_headers "
         "-muxdelay 0 -muxpreload 0 "
         "-f mpegts pipe:1"
     )

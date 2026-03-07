@@ -709,6 +709,15 @@ class CsoOutputFfmpegCommandBuilder:
             "-map",
             "0:a?",
         ]
+        command += [
+            # Keep output path resilient to malformed packets and timestamp drift.
+            "-fflags",
+            "+discardcorrupt+genpts",
+            "-err_detect",
+            "ignore_err",
+            "-max_muxing_queue_size",
+            "4096",
+        ]
         return command
 
     @staticmethod
@@ -766,6 +775,10 @@ class CsoOutputFfmpegCommandBuilder:
         if audio_codec:
             sw_audio_encoder = self.audio_encoder_for_codec(audio_codec)
             command += ["-c:a", sw_audio_encoder]
+            # Rebuild audio timestamps during transcode to reduce DTS regressions downstream.
+            command += ["-af", "aresample=async=1:first_pts=0"]
+            if audio_codec == "aac":
+                command += ["-b:a", "128k", "-ar", "48000", "-ac", "2"]
         else:
             command += ["-c:a", "copy"]
         command += ["-c:s", "copy" if subtitle_mode != "drop" else "none"]
@@ -793,7 +806,14 @@ class CsoOutputFfmpegCommandBuilder:
         # Hard CSO rule: never include data streams in output.
         command.append("-dn")
         if ffmpeg_format == "mpegts":
-            command += ["-muxdelay", "0", "-muxpreload", "0"]
+            command += [
+                "-mpegts_flags",
+                "+resend_headers",
+                "-muxdelay",
+                "0",
+                "-muxpreload",
+                "0",
+            ]
         elif ffmpeg_format == "mp4":
             # Fragmented MP4 is required for live streaming to a pipe.
             command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
