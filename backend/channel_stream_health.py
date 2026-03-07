@@ -20,7 +20,7 @@ from backend.cso import (
     source_capacity_limit,
 )
 from backend.datetime_utils import utc_now_naive
-from backend.models import Channel, ChannelSource, Session
+from backend.models import Channel, ChannelSource, Playlist, Session
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_diagnostics import StreamProbe
 
@@ -397,6 +397,7 @@ async def _run_periodic_channel_stream_health_checks_worker(app):
     now_dt = utc_now_naive()
     cutoff_dt = now_dt - timedelta(hours=max(1, int(CHANNEL_STREAM_HEALTH_CHECK_INTERVAL_HOURS)))
 
+    candidate_limit = max(50, max_checks * 30)
     async with Session() as session:
         result = await session.execute(
             select(ChannelSource)
@@ -409,20 +410,26 @@ async def _run_periodic_channel_stream_health_checks_worker(app):
             .where(
                 Channel.enabled.is_(True),
                 or_(
+                    ChannelSource.playlist_id.is_(None),
+                    ChannelSource.playlist.has(Playlist.enabled.is_(True)),
+                ),
+                ChannelSource.playlist_stream_url.is_not(None),
+                ChannelSource.playlist_stream_url != "",
+                or_(
                     ChannelSource.last_health_check_at.is_(None),
                     ChannelSource.last_health_check_at < cutoff_dt,
                 ),
             )
             .order_by(ChannelSource.last_health_check_at.asc().nullsfirst(), ChannelSource.id.asc())
-            .limit(max_checks * 6)
+            .limit(candidate_limit)
         )
         sources = result.scalars().unique().all()
 
+    # Keep one candidate per shared source-capacity key (playlist / XC account / source),
+    # but do not cap this list up-front so we can keep drawing candidates if some are skipped.
     selected_sources = []
     selected_capacity_keys = set()
     for source in sources:
-        if len(selected_sources) >= max_checks:
-            break
         capacity_key_name = source_capacity_key(source)
         if capacity_key_name in selected_capacity_keys:
             continue
@@ -433,7 +440,8 @@ async def _run_periodic_channel_stream_health_checks_worker(app):
     unhealthy = 0
     skipped = 0
     cancelled = 0
-    selected = len(selected_sources)
+    selected = 0
+    completed_checks = 0
     sem = asyncio.Semaphore(max_parallel)
 
     async def _run_one(source):
@@ -445,33 +453,79 @@ async def _run_periodic_channel_stream_health_checks_worker(app):
             status, reason = await _run_source_health_check(config, source)
             return status, reason, source_id, channel_id
 
-    results = await asyncio.gather(*[_run_one(source) for source in selected_sources], return_exceptions=True)
-    for item in results:
-        if isinstance(item, Exception):
-            logger.exception("Periodic channel stream health check worker failed: %s", item)
-            skipped += 1
-            continue
-        status, reason, source_id, channel_id = item
-        if status == "healthy":
-            healthy += 1
-        elif status == "unhealthy":
-            unhealthy += 1
-        elif status == "cancelled":
-            cancelled += 1
-        else:
-            skipped += 1
-        logger.info(
-            "Periodic channel stream health check source_id=%s channel_id=%s status=%s reason=%s",
-            source_id,
-            channel_id,
-            status,
-            reason,
-        )
+    next_index = 0
+    in_flight: set[asyncio.Task] = set()
+    while completed_checks < max_checks:
+        while next_index < len(selected_sources) and len(in_flight) < max_parallel:
+            task = asyncio.create_task(_run_one(selected_sources[next_index]))
+            in_flight.add(task)
+            next_index += 1
+            selected += 1
+
+        if not in_flight:
+            break
+
+        done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            try:
+                item = task.result()
+            except Exception as ex:
+                logger.exception("Periodic channel stream health check worker failed: %s", ex)
+                skipped += 1
+                continue
+
+            status, reason, source_id, channel_id = item
+            if status == "healthy":
+                healthy += 1
+                completed_checks += 1
+            elif status == "unhealthy":
+                unhealthy += 1
+                completed_checks += 1
+            elif status == "cancelled":
+                cancelled += 1
+                completed_checks += 1
+            else:
+                skipped += 1
+            logger.info(
+                "Periodic channel stream health check source_id=%s channel_id=%s status=%s reason=%s",
+                source_id,
+                channel_id,
+                status,
+                reason,
+            )
+
+    # Drain in-flight tasks so capacity reservations and probe processes always clean up.
+    if in_flight:
+        remaining = await asyncio.gather(*in_flight, return_exceptions=True)
+        for item in remaining:
+            if isinstance(item, Exception):
+                logger.exception("Periodic channel stream health check worker failed: %s", item)
+                skipped += 1
+                continue
+            status, reason, source_id, channel_id = item
+            if status == "healthy":
+                healthy += 1
+            elif status == "unhealthy":
+                unhealthy += 1
+            elif status == "cancelled":
+                cancelled += 1
+            else:
+                skipped += 1
+            logger.info(
+                "Periodic channel stream health check source_id=%s channel_id=%s status=%s reason=%s",
+                source_id,
+                channel_id,
+                status,
+                reason,
+            )
 
     logger.info(
-        "Periodic channel stream health checks complete selected=%s parallel=%s healthy=%s unhealthy=%s cancelled=%s skipped=%s",
+        "Periodic channel stream health checks complete selected=%s parallel=%s checked=%s target=%s healthy=%s "
+        "unhealthy=%s cancelled=%s skipped=%s",
         selected,
         max_parallel,
+        completed_checks,
+        max_checks,
         healthy,
         unhealthy,
         cancelled,
