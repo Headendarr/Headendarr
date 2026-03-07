@@ -54,6 +54,7 @@ const sidebars = {
             "configuration/user-management",
             "configuration/application-settings",
             "configuration/tvheadend",
+            "configuration/reverse-proxy",
           ],
         },
         {

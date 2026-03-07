@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+import secrets
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from backend.datetime_utils import utc_now_naive
 from backend.models import Session, User, Role
+from backend.oidc import OidcConfig, extract_claim_value, map_roles_from_claims, resolve_username_from_claims
 from backend.security import hash_password, verify_password, needs_rehash, generate_stream_key
 from backend.dvr_profiles import normalize_retention_policy
 
@@ -257,3 +260,121 @@ async def verify_user_password_for_login(user: User, password: str):
     if needs_rehash(user.password_hash):
         return True, True
     return True, False
+
+
+def _clean_username(value: str) -> str:
+    cleaned = "".join(ch for ch in str(value or "") if ch.isalnum() or ch in ("-", "_", ".", "@")).strip()
+    return (cleaned or "oidc-user")[:64]
+
+
+async def _build_unique_username(session, base_username: str) -> str:
+    candidate = _clean_username(base_username)
+    suffix = 0
+    while True:
+        probe = candidate if suffix == 0 else f"{candidate[:57]}-{suffix:02d}"
+        existing = await session.execute(select(User.id).where(User.username == probe))
+        if existing.scalar_one_or_none() is None:
+            return probe
+        suffix += 1
+
+
+def _claim_email(claims: dict, config: OidcConfig) -> str | None:
+    email_value = extract_claim_value(claims, config.email_claim) or claims.get("email")
+    if email_value is None:
+        return None
+    email = str(email_value).strip()
+    return email[:255] if email else None
+
+
+async def provision_or_update_oidc_user(claims: dict, config: OidcConfig):
+    oidc_subject = str(claims.get("sub") or "").strip()
+    if not oidc_subject:
+        return None, "missing_subject"
+
+    oidc_issuer = config.issuer_url
+    desired_email = _claim_email(claims, config)
+    desired_username_raw = resolve_username_from_claims(claims, config)
+
+    for attempt in range(2):
+        try:
+            async with Session() as session:
+                async with session.begin():
+                    roles = await ensure_roles(session)
+
+                    result = await session.execute(
+                        select(User)
+                        .where(User.oidc_issuer == oidc_issuer, User.oidc_subject == oidc_subject)
+                        .options(selectinload(User.roles))
+                    )
+                    user = result.scalars().first()
+                    is_new_user = user is None
+                    mapped_role_names = map_roles_from_claims(claims, config)
+
+                    if user is None:
+                        if not config.auto_provision:
+                            return None, "provisioning_disabled"
+
+                        # Initial OIDC provisioning must always assign a usable role set.
+                        # When role syncing is disabled, fall back to streamer-only access.
+                        role_names_for_new_user = list(mapped_role_names)
+                        if not role_names_for_new_user and not config.sync_roles_on_login:
+                            role_names_for_new_user = ["streamer"]
+                        if not role_names_for_new_user:
+                            return None, "no_mapped_role"
+
+                        username = await _build_unique_username(session, desired_username_raw)
+                        user = User(
+                            username=username,
+                            password_hash=hash_password(secrets.token_urlsafe(24)),
+                            is_active=True,
+                            auth_source="oidc",
+                            oidc_issuer=oidc_issuer,
+                            oidc_subject=oidc_subject,
+                            oidc_email=desired_email,
+                            streaming_key=generate_stream_key(),
+                            streaming_key_created_at=utc_now_naive(),
+                            dvr_access_mode="none",
+                            dvr_retention_policy="forever",
+                        )
+                        session.add(user)
+                        await session.flush()
+                        for role_name in role_names_for_new_user:
+                            role_obj = roles.get(role_name)
+                            if role_obj:
+                                user.roles.append(role_obj)
+
+                    if not user.is_active:
+                        return None, "inactive"
+
+                    if config.sync_roles_on_login and not is_new_user:
+                        if not mapped_role_names:
+                            return None, "no_mapped_role"
+                        user.roles.clear()
+                        for role_name in mapped_role_names:
+                            role_obj = roles.get(role_name)
+                            if role_obj:
+                                user.roles.append(role_obj)
+                    elif not config.sync_roles_on_login and not user.roles:
+                        # Safety net for previously provisioned users with empty role sets.
+                        streamer_role = roles.get("streamer")
+                        if streamer_role:
+                            user.roles.append(streamer_role)
+
+                    if user_has_admin_role(user):
+                        user.dvr_access_mode = "read_all_write_own"
+                    elif not user.dvr_access_mode:
+                        user.dvr_access_mode = "none"
+
+                    user.auth_source = "oidc"
+                    user.oidc_issuer = oidc_issuer
+                    user.oidc_subject = oidc_subject
+                    user.oidc_email = desired_email
+                    user.last_login_at = utc_now_naive()
+                    session.add(user)
+
+                    return user, None
+        except IntegrityError:
+            if attempt == 0:
+                # Retry once to recover from concurrent first-login provisioning races.
+                continue
+            return None, "provisioning_conflict"

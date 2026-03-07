@@ -138,6 +138,33 @@ def recursive_dict_update(defaults, updates):
     return defaults
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_str(name: str, default: str = "") -> str:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value)
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
 class Config:
     runtime_key = ""
 
@@ -362,19 +389,37 @@ class Config:
 frontend_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "frontend")
 
 enable_app_debugging = False
-if os.environ.get("ENABLE_APP_DEBUGGING", "false").lower() == "true":
+if _env_bool("ENABLE_APP_DEBUGGING", False):
     enable_app_debugging = True
 
 enable_sqlalchemy_debugging = False
-if os.environ.get("ENABLE_SQLALCHEMY_DEBUGGING", "false").lower() == "true":
+if _env_bool("ENABLE_SQLALCHEMY_DEBUGGING", False):
     enable_sqlalchemy_debugging = True
 
 enable_cso_command_debug_logging = False
-if os.environ.get("ENABLE_CSO_COMMAND_DEBUG_LOGGING", "false").lower() == "true":
+if _env_bool("ENABLE_CSO_COMMAND_DEBUG_LOGGING", False):
     enable_cso_command_debug_logging = True
 
-flask_run_host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
-flask_run_port = int(os.environ.get("FLASK_RUN_PORT", "9985"))
+flask_run_host = _env_str("FLASK_RUN_HOST", "0.0.0.0")
+flask_run_port = _env_int("FLASK_RUN_PORT", 9985)
+trust_proxy_headers = _env_bool("TIC_TRUST_PROXY_HEADERS", False)
+trusted_proxy_cidrs = _env_str("TIC_TRUSTED_PROXY_CIDRS", "")
+
+auth_rate_limit_enabled = _env_bool("TIC_AUTH_RATE_LIMIT_ENABLED", True)
+
+auth_login_ip_window_seconds = _env_int("TIC_AUTH_LOGIN_IP_WINDOW_SECONDS", 600)
+auth_login_ip_max_attempts = _env_int("TIC_AUTH_LOGIN_IP_MAX_ATTEMPTS", 10)
+auth_login_user_window_seconds = _env_int("TIC_AUTH_LOGIN_USER_WINDOW_SECONDS", 600)
+auth_login_user_max_attempts = _env_int("TIC_AUTH_LOGIN_USER_MAX_ATTEMPTS", 5)
+auth_login_cooldown_base_seconds = _env_int("TIC_AUTH_LOGIN_COOLDOWN_BASE_SECONDS", 2)
+auth_login_cooldown_max_seconds = _env_int("TIC_AUTH_LOGIN_COOLDOWN_MAX_SECONDS", 60)
+
+auth_oidc_start_ip_window_seconds = _env_int("TIC_AUTH_OIDC_START_IP_WINDOW_SECONDS", 600)
+auth_oidc_start_ip_max_attempts = _env_int("TIC_AUTH_OIDC_START_IP_MAX_ATTEMPTS", 60)
+auth_oidc_callback_ip_window_seconds = _env_int("TIC_AUTH_OIDC_CALLBACK_IP_WINDOW_SECONDS", 600)
+auth_oidc_callback_ip_max_attempts = _env_int("TIC_AUTH_OIDC_CALLBACK_IP_MAX_ATTEMPTS", 60)
+
+auth_cookie_secure = _env_bool("TIC_AUTH_COOKIE_SECURE", False)
 
 app_basedir = os.path.abspath(os.path.dirname(__file__))
 config_path = os.path.join(get_home_dir(), ".tvh_iptv_config")
@@ -383,11 +428,11 @@ if not os.path.exists(config_path):
 
 # Configure Postgres DB
 sqlalchemy_database_path = os.path.join(config_path, "db.sqlite3")
-postgres_host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
-postgres_port = os.environ.get("POSTGRES_PORT", "5432")
-postgres_db = os.environ.get("POSTGRES_DB", "tic")
-postgres_user = os.environ.get("POSTGRES_USER", "tic")
-postgres_password = os.environ.get("POSTGRES_PASSWORD", "tic")
+postgres_host = _env_str("POSTGRES_HOST", "127.0.0.1")
+postgres_port = _env_str("POSTGRES_PORT", "5432")
+postgres_db = _env_str("POSTGRES_DB", "tic")
+postgres_user = _env_str("POSTGRES_USER", "tic")
+postgres_password = _env_str("POSTGRES_PASSWORD", "tic")
 postgres_password_escaped = quote_plus(postgres_password)
 
 sqlalchemy_database_uri = (
@@ -403,7 +448,7 @@ scheduler_api_enabled = True
 
 # Set up the App SECRET_KEY
 # SECRET_KEY = config('SECRET_KEY'  , default='S#perS3crEt_007')
-secret_key = os.getenv("SECRET_KEY", "S#perS3crEt_007")
+secret_key = _env_str("SECRET_KEY", "S#perS3crEt_007")
 
 # Assets Management
-assets_root = os.getenv("ASSETS_ROOT", os.path.join(frontend_dir, "dist", "spa"))
+assets_root = _env_str("ASSETS_ROOT", os.path.join(frontend_dir, "dist", "spa"))

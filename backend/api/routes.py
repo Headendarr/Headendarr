@@ -311,6 +311,7 @@ async def api_check_auth():
                 samesite="Lax",
                 path="/",
                 expires=session_expires_at,
+                secure=bool(current_app.config.get("AUTH_COOKIE_SECURE", False)),
             )
         return response, 200
     return jsonify(

@@ -2,10 +2,11 @@
 # -*- coding:utf-8 -*-
 import base64
 import asyncio
+import ipaddress
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import wraps
+from functools import wraps, lru_cache
 
 from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket, current_app
 from sqlalchemy import delete, select, update, or_
@@ -151,15 +152,64 @@ def forbidden_response(message="Forbidden"):
     return jsonify({"success": False, "message": message}), 403
 
 
+def _parse_forwarded_ip(candidate: str | None) -> str | None:
+    value = str(candidate or "").strip().strip('"')
+    if not value:
+        return None
+    if value.startswith("[") and "]" in value:
+        value = value[1 : value.index("]")]
+    else:
+        # IPv4 with optional :port in forwarded headers.
+        if ":" in value and value.count(":") == 1 and "." in value:
+            value = value.split(":", 1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _trusted_proxy_networks() -> tuple:
+    raw = str(getattr(config, "trusted_proxy_cidrs", "") or "")
+    networks = []
+    for part in raw.split(","):
+        cidr = part.strip()
+        if not cidr:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def _is_trusted_proxy_hop(remote_addr: str | None) -> bool:
+    if not getattr(config, "trust_proxy_headers", False):
+        return False
+    remote_ip = _parse_forwarded_ip(remote_addr)
+    if not remote_ip:
+        return False
+    remote_obj = ipaddress.ip_address(remote_ip)
+    networks = _trusted_proxy_networks()
+    if not networks:
+        return False
+    return any(remote_obj in network for network in networks)
+
+
 def get_request_client_ip() -> str | None:
     if not has_request_context():
         return None
+    remote_addr = getattr(request, "remote_addr", None)
+    remote_ip = _parse_forwarded_ip(remote_addr) or remote_addr
+    if not _is_trusted_proxy_hop(remote_addr):
+        return remote_ip
+
     try:
-        # Respect reverse-proxy/client forwarding headers first.
+        # Only trust forwarding headers when request arrived from a trusted proxy hop.
         xff = (request.headers.get("X-Forwarded-For") or "").strip()
         if xff:
             # Format: client, proxy1, proxy2...
-            candidate = xff.split(",")[0].strip()
+            candidate = _parse_forwarded_ip(xff.split(",")[0].strip())
             if candidate:
                 return candidate
         forwarded = (request.headers.get("Forwarded") or "").strip()
@@ -169,20 +219,16 @@ def get_request_client_ip() -> str | None:
             for part in first.split(";"):
                 part = part.strip()
                 if part.lower().startswith("for="):
-                    candidate = part[4:].strip().strip('"')
-                    if candidate.startswith("[") and "]" in candidate:
-                        candidate = candidate[1:candidate.index("]")]
-                    if ":" in candidate and candidate.count(":") == 1 and "." in candidate:
-                        candidate = candidate.split(":", 1)[0]
+                    candidate = _parse_forwarded_ip(part[4:].strip())
                     if candidate:
                         return candidate
         for header in ("X-Real-IP", "CF-Connecting-IP", "True-Client-IP"):
-            value = (request.headers.get(header) or "").strip()
+            value = _parse_forwarded_ip(request.headers.get(header))
             if value:
                 return value
     except Exception:
         pass
-    return getattr(request, "remote_addr", None)
+    return remote_ip
 
 
 def _get_bearer_token():
@@ -195,7 +241,7 @@ def _get_bearer_token():
         auth = websocket.headers.get("Authorization", "")
         cookie_token = websocket.cookies.get("tic_auth_token")
     if auth.startswith("Bearer "):
-        return auth[len("Bearer "):].strip()
+        return auth[len("Bearer ") :].strip()
     if cookie_token:
         return cookie_token
     return None
@@ -215,7 +261,7 @@ def _get_basic_auth_credentials():
         auth = websocket.headers.get("Authorization", "")
     if auth.startswith("Basic "):
         try:
-            username, password = base64.b64decode(auth[len("Basic "):].strip()).decode().split(':', 1)
+            username, password = base64.b64decode(auth[len("Basic ") :].strip()).decode().split(":", 1)
             return username, password
         except Exception:
             return None, None
@@ -249,9 +295,7 @@ async def get_user_from_token():
             async with Session() as session:
                 async with session.begin():
                     await session.execute(
-                        update(UserSession)
-                        .where(UserSession.token_hash == token_hash)
-                        .values(last_used_at=now)
+                        update(UserSession).where(UserSession.token_hash == token_hash).values(last_used_at=now)
                     )
         return cached_user
 
@@ -278,9 +322,7 @@ async def get_user_from_token():
             return None
         if await _session_last_used_throttle.should_touch(token_hash):
             await session.execute(
-                update(UserSession)
-                .where(UserSession.token_hash == token_hash)
-                .values(last_used_at=now)
+                update(UserSession).where(UserSession.token_hash == token_hash).values(last_used_at=now)
             )
             await session.commit()
         await _token_auth_cache.set(token_hash, user, session_expires_at)
@@ -387,6 +429,7 @@ async def get_user_from_stream_key():
         return cached_user
 
     from backend.users import get_user_by_stream_key
+
     user = await get_user_by_stream_key(stream_key)
     await _stream_key_cache.set(stream_key, user)
     return user
@@ -400,6 +443,7 @@ async def mark_stream_key_usage(user):
         return
     try:
         from backend.users import set_user_stream_key_last_used
+
         await set_user_stream_key_last_used(user_id)
     except Exception:
         # Activity tracking is best-effort; do not block stream requests.
@@ -509,8 +553,6 @@ async def cleanup_stream_audit_logs(retention_days: int | None = None) -> int:
         days = 1
     cutoff = utc_now_naive() - timedelta(days=days)
     async with Session() as session:
-        result = await session.execute(
-            delete(StreamAuditLog).where(StreamAuditLog.created_at < cutoff)
-        )
+        result = await session.execute(delete(StreamAuditLog).where(StreamAuditLog.created_at < cutoff))
         await session.commit()
         return int(result.rowcount or 0)

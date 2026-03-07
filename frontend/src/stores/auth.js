@@ -38,6 +38,14 @@ export const useAuthStore = defineStore('auth', {
     tokenExpiresAt: localStorage.getItem('tic_auth_expires_at') || null,
     lastAuthCheckAt: 0,
     user: parseStoredUser(),
+    authOptions: {
+      local_login_enabled: true,
+      oidc: {
+        enabled: false,
+        configured: false,
+        button_label: 'Sign in with SSO',
+      },
+    },
   }),
   actions: {
     setUser(user) {
@@ -94,6 +102,27 @@ export const useAuthStore = defineStore('auth', {
       }
       return response;
     },
+    async fetchAuthOptions() {
+      try {
+        const response = await axios.get('/tic-api/auth/options', {cache: 'no-store'});
+        if (response.status === 200 && response.data?.success) {
+          this.authOptions = {
+            local_login_enabled: !!response.data.local_login_enabled,
+            oidc: {
+              enabled: !!response.data?.oidc?.enabled,
+              configured: !!response.data?.oidc?.configured,
+              button_label: response.data?.oidc?.button_label || 'Sign in with SSO',
+            },
+          };
+        }
+      } catch (error) {
+        console.error('Failed to fetch auth options:', error);
+      }
+      return this.authOptions;
+    },
+    startOidcLogin() {
+      window.location.assign('/tic-api/auth/oidc/start');
+    },
     async logout() {
       try {
         await axios.post('/tic-api/auth/logout');
@@ -103,8 +132,9 @@ export const useAuthStore = defineStore('auth', {
         this.clearAuthState();
       }
     },
-    async refreshSession() {
-      if (!this.token) {
+    async refreshSession(options = {}) {
+      const allowCookie = !!options.allowCookie;
+      if (!this.token && !allowCookie) {
         throw new Error('No auth token');
       }
       if (refreshPromise) {

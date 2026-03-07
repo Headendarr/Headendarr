@@ -69,6 +69,9 @@ beautifulsoup4>=4.14
 argon2-cffi>=25.1
     #   Reason:             Secure password hashing (Argon2id)
     #   Import example:     from argon2 import PasswordHasher
+Authlib>=1.6
+    #   Reason:             OIDC token and JWK validation
+    #   Import example:     from authlib.jose import jwt
 psutil>=7.2
     #   Reason:             Optional process/memory metrics used by HLS proxy cache cleanup task
     #   Import example:     import psutil

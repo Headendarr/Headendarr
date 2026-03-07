@@ -117,6 +117,7 @@ def create_app():
     app.config["SCHEDULER_API_ENABLED"] = config.scheduler_api_enabled
     app.config["APP_CONFIG"] = app_config
     app.config["ASSETS_ROOT"] = config.assets_root
+    app.config["AUTH_COOKIE_SECURE"] = config.auth_cookie_secure
 
     # Init the DB connection
     db = init_db(app)

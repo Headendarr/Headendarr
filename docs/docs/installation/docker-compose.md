@@ -26,9 +26,17 @@ services:
       - "9981:9981" # TVHeadend Web UI
       - "9982:9982" # TVHeadend HTSP
     environment:
-      - PUID=1000           # Process user ID
-      - PGID=1000           # Process group ID
+      - PUID=1000 # Process user ID
+      - PGID=1000 # Process group ID
       - TZ=Pacific/Auckland # Timezone
+      # Optional OIDC SSO
+      # - TIC_AUTH_OIDC_ENABLED=true
+      # - TIC_AUTH_OIDC_ISSUER_URL=https://auth.example.com
+      # - TIC_AUTH_OIDC_CLIENT_ID=headendarr
+      # - TIC_AUTH_OIDC_CLIENT_SECRET=replace-me
+      # - TIC_AUTH_OIDC_REDIRECT_URI=https://headendarr.example.com/tic-api/auth/oidc/callback
+      # - TIC_AUTH_OIDC_ADMIN_GROUPS=headendarr-admin
+      # - TIC_AUTH_OIDC_STREAMER_GROUPS=headendarr-streamer
     volumes:
       - "/path/to/your/config_dir:/config"
       - "/path/to/your/recordings_dir:/recordings"

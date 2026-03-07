@@ -356,6 +356,10 @@ class User(Base):
     username = Column(String(64), index=True, unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    auth_source = Column(String(32), nullable=False, default="local")
+    oidc_issuer = Column(String(255), nullable=True)
+    oidc_subject = Column(String(255), nullable=True)
+    oidc_email = Column(String(255), nullable=True)
 
     streaming_key = Column(String(255), unique=True, nullable=True)
     streaming_key_hash = Column(String(255), unique=True, nullable=True)
