@@ -20,6 +20,7 @@ from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.ffmpeg import generate_iptv_url
+from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import (
     Channel,
     ChannelSource,
@@ -118,6 +119,14 @@ def build_cso_source_stream_url(
 def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) -> str:
     if not playlist_info:
         return stream_url
+    try:
+        configured_headers = parse_headers_json(getattr(playlist_info, "hls_proxy_headers", None))
+    except ValueError:
+        configured_headers = {}
+    merged_headers = sanitise_headers(configured_headers)
+    user_agent = str(getattr(playlist_info, "user_agent", "") or "").strip()
+    if user_agent and not any(str(key).strip().lower() == "user-agent" for key in merged_headers):
+        merged_headers["User-Agent"] = user_agent
     return build_configured_hls_proxy_url(
         stream_url,
         base_url=LOCAL_PROXY_HOST_PLACEHOLDER,
@@ -128,6 +137,7 @@ def _apply_playlist_hls_proxy(playlist_info, stream_url: str, instance_id: str) 
         chain_custom_hls_proxy=bool(playlist_info.chain_custom_hls_proxy),
         ffmpeg=bool(getattr(playlist_info, "hls_proxy_use_ffmpeg", False)),
         prebuffer=getattr(playlist_info, "hls_proxy_prebuffer", "1M"),
+        headers=merged_headers,
     )
 
 

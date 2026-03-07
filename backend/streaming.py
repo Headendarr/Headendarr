@@ -3,6 +3,8 @@
 import base64
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from backend.http_headers import encode_headers_query_param
+
 
 LOCAL_PROXY_HOST_PLACEHOLDER = "__TIC_HOST__"
 
@@ -92,6 +94,7 @@ def build_local_hls_proxy_url(
     username: str | None = None,
     ffmpeg: bool = False,
     prebuffer: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     parsed = urlparse(source_url)
     is_hls = (parsed.path or "").lower().endswith(".m3u8")
@@ -110,6 +113,9 @@ def build_local_hls_proxy_url(
         query_items.append(("ffmpeg", "true"))
     if prebuffer:
         query_items.append(("prebuffer", prebuffer))
+    encoded_headers = encode_headers_query_param(headers)
+    if encoded_headers:
+        query_items.append(("h", encoded_headers))
 
     if query_items:
         separator = "&" if "?" in url else "?"
@@ -144,6 +150,7 @@ def build_configured_hls_proxy_url(
     chain_custom_hls_proxy: bool = False,
     ffmpeg: bool = False,
     prebuffer: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     if not use_hls_proxy and not use_custom_hls_proxy:
         return source_url
@@ -166,6 +173,7 @@ def build_configured_hls_proxy_url(
                 username=username,
                 ffmpeg=ffmpeg,
                 prebuffer=prebuffer,
+                headers=headers,
             )
         if not use_custom_hls_proxy or not custom_url:
             return build_local_hls_proxy_url(
@@ -176,6 +184,7 @@ def build_configured_hls_proxy_url(
                 username=username,
                 ffmpeg=ffmpeg,
                 prebuffer=prebuffer,
+                headers=headers,
             )
 
     if use_custom_hls_proxy and custom_url:

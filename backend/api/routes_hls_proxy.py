@@ -31,6 +31,7 @@ from backend.cso import (
     cleanup_channel_stream_events,
     cso_session_manager,
 )
+from backend.http_headers import decode_headers_query_param, merge_headers
 from backend.stream_activity import (
     cleanup_stream_activity,
     upsert_stream_activity,
@@ -624,17 +625,21 @@ def _register_startup(state):
         asyncio.create_task(periodic_cache_cleanup())
 
 
-def _build_upstream_headers():
+def _configured_upstream_headers_from_query():
+    return decode_headers_query_param(request.args.get("h"))
+
+
+def _build_upstream_headers(configured_headers=None):
     headers = {}
     try:
         src = request.headers
     except Exception:
-        return headers
+        return merge_headers(preferred=configured_headers, fallback=headers)
     for name in ("User-Agent", "Referer", "Origin", "Accept", "Accept-Language"):
         value = src.get(name)
         if value:
             headers[name] = value
-    return headers
+    return merge_headers(preferred=configured_headers, fallback=headers)
 
 
 def _build_proxy_base_url(instance_id=None):
@@ -684,8 +689,9 @@ async def proxy_m3u8(instance_id, encoded_url):
 
     stream_key = request.args.get("stream_key") or request.args.get("password")
     username = request.args.get("username")
+    configured_headers = _configured_upstream_headers_from_query()
 
-    headers = _build_upstream_headers()
+    headers = _build_upstream_headers(configured_headers=configured_headers)
 
     body, content_type, status, res_headers = await handle_m3u8_proxy(
         decoded_url,
@@ -696,6 +702,7 @@ async def proxy_m3u8(instance_id, encoded_url):
         stream_key=stream_key,
         username=username,
         connection_id=connection_id,
+        headers_query_token=request.args.get("h"),
         max_buffer_bytes=hls_proxy_max_buffer_bytes,
         proxy_base_url=_build_proxy_base_url(instance_id=instance_id),
         segment_cache=hls_segment_cache,
@@ -751,6 +758,9 @@ async def proxy_m3u8_redirect(instance_id):
         query.append(("stream_key", stream_key))
     if username:
         query.append(("username", username))
+    headers_token = (request.args.get("h") or "").strip()
+    if headers_token:
+        query.append(("h", headers_token))
 
     return redirect(f"{target}?{urlencode(query)}", code=302)
 
@@ -770,7 +780,12 @@ async def proxy_key(instance_id, encoded_url):
     # Touch activity via connection_id if available
     await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
 
-    content, status, _ = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    content, status, _ = await handle_segment_proxy(
+        decoded_url,
+        _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query()),
+        hls_segment_cache,
+        headers_query_token=request.args.get("h"),
+    )
     if content is None:
         return Response("Failed to fetch.", status=status)
     return Response(content, content_type="application/octet-stream")
@@ -808,7 +823,10 @@ async def proxy_ts(instance_id, encoded_url):
         return redirect(target, code=302)
 
     content, status, content_type = await handle_segment_proxy(
-        decoded_url, _build_upstream_headers(), hls_segment_cache
+        decoded_url,
+        _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query()),
+        hls_segment_cache,
+        headers_query_token=request.args.get("h"),
     )
     if content is None:
         return Response("Failed to fetch.", status=status)
@@ -837,7 +855,12 @@ async def proxy_vtt(instance_id, encoded_url):
     decoded_url = b64_urlsafe_decode(encoded_url)
     await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
 
-    content, status, _ = await handle_segment_proxy(decoded_url, _build_upstream_headers(), hls_segment_cache)
+    content, status, _ = await handle_segment_proxy(
+        decoded_url,
+        _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query()),
+        hls_segment_cache,
+        headers_query_token=request.args.get("h"),
+    )
     if content is None:
         return Response("Failed to fetch.", status=status)
     return Response(content, content_type="text/vtt")
@@ -882,7 +905,12 @@ async def stream_ts(instance_id, encoded_url):
     mode = "ffmpeg" if use_ffmpeg else "direct"
 
     generator = await handle_multiplexed_stream(
-        decoded_url, mode, _build_upstream_headers(), prebuffer_bytes, connection_id
+        decoded_url,
+        mode,
+        _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query()),
+        prebuffer_bytes,
+        connection_id,
+        headers_query_token=request.args.get("h"),
     )
 
     if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):

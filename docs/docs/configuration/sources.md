@@ -20,6 +20,7 @@ title: Sources
 -   **M3U URL**: The full URL to the `.m3u` or `.m3u8` file.
 -   **Connection Limit**: The maximum number of concurrent connections allowed for this source. This is crucial for respecting provider limits and enabling stream failover.
 -   **User Agent**: Select a user agent if your provider requires a specific one.
+-   **Custom request headers (JSON)**: Optional JSON headers applied to source fetch requests (M3U/XC) and to playback upstream requests when either HLS Proxy is enabled for the source and/or streams are routed via CSO, for example `{"Origin":"https://example.com","Referer":"https://example.com/"}`.
 
 #### XC Provider Options
 
@@ -29,6 +30,7 @@ title: Sources
 -   **Password**: Your password for the XC service.
 -   **Connection Limit**: The maximum number of concurrent connections allowed for this source.
 -   **User Agent**: Select a user agent if your provider requires a specific one.
+-   **Custom request headers (JSON)**: Optional JSON headers applied to source fetch requests and to playback upstream requests when either HLS Proxy is enabled for the source and/or streams are routed via CSO.
 
 :::note Increasing XC Connection Limits
 For Xtreme Codes providers, you can configure a single source with multiple login credentials (i.e., different usernames and passwords for the same host) to effectively increase your concurrent connection limits. This is more efficient than creating separate sources for each login. Headendarr will automatically manage these connections, dynamically utilising available credentials as needed to meet demand. This allows for flexible scaling of connections throughout the year without requiring multiple source entries.

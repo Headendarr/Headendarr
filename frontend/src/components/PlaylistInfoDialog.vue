@@ -132,6 +132,12 @@
             @update:model-value="onUserAgentChange"
           />
 
+          <TicTextareaInput
+            v-model="hlsProxyHeaders"
+            label="Custom request headers (JSON)"
+            description="Optional JSON object for Source requests (playlist/XC fetch) and for playback upstream requests when either HLS Proxy is enabled for this source and/or streams are routed via CSO."
+          />
+
           <TicSelectInput
             v-if="accountType === 'XC'"
             v-model="xcLiveStreamFormat"
@@ -281,6 +287,7 @@ export default {
       chainCustomHlsProxy: false,
       hlsProxyUseFfmpeg: false,
       hlsProxyPrebuffer: '1M',
+      hlsProxyHeaders: '',
       hlsProxyPath: 'https://proxy.example.com/hls/[B64_URL].m3u8',
       initialStateSignature: '',
       hasSavedInSession: false,
@@ -410,6 +417,7 @@ export default {
       this.chainCustomHlsProxy = false;
       this.hlsProxyUseFfmpeg = false;
       this.hlsProxyPrebuffer = '1M';
+      this.hlsProxyHeaders = '';
       this.hlsProxyPath = 'https://proxy.example.com/hls/[B64_URL].m3u8';
     },
     captureInitialState() {
@@ -439,6 +447,7 @@ export default {
         chainCustomHlsProxy: this.chainCustomHlsProxy,
         hlsProxyUseFfmpeg: this.hlsProxyUseFfmpeg,
         hlsProxyPrebuffer: this.hlsProxyPrebuffer,
+        hlsProxyHeaders: this.hlsProxyHeaders,
         hlsProxyPath: this.hlsProxyPath,
       });
     },
@@ -485,6 +494,7 @@ export default {
         this.chainCustomHlsProxy = response.data.data.chain_custom_hls_proxy;
         this.hlsProxyUseFfmpeg = response.data.data.hls_proxy_use_ffmpeg;
         this.hlsProxyPrebuffer = response.data.data.hls_proxy_prebuffer || '1M';
+        this.hlsProxyHeaders = response.data.data.hls_proxy_headers || '';
         this.hlsProxyPath = response.data.data.hls_proxy_path;
       });
     },
@@ -531,6 +541,18 @@ export default {
         return;
       }
       this.saving = true;
+      const headersValidation = this.validateHlsProxyHeaders();
+      if (!headersValidation.ok) {
+        this.$q.notify({
+          color: 'negative',
+          position: 'top',
+          message: headersValidation.message,
+          icon: 'report_problem',
+          actions: [{icon: 'close', color: 'white'}],
+        });
+        this.saving = false;
+        return;
+      }
       let targetUrl = '/tic-api/playlists/new';
       const isNew = !this.playlistId;
       if (this.playlistId) {
@@ -559,6 +581,7 @@ export default {
         chain_custom_hls_proxy: this.chainCustomHlsProxy,
         hls_proxy_use_ffmpeg: this.hlsProxyUseFfmpeg,
         hls_proxy_prebuffer: this.hlsProxyPrebuffer,
+        hls_proxy_headers: this.normalizedHlsProxyHeadersPayload(),
         hls_proxy_path: this.hlsProxyPath,
       };
       if (this.accountType === 'XC') {
@@ -727,6 +750,29 @@ export default {
     },
     onUserAgentChange() {
       this.userAgentTouched = true;
+    },
+    validateHlsProxyHeaders() {
+      const raw = (this.hlsProxyHeaders || '').trim();
+      if (!raw) {
+        return {ok: true};
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          return {ok: false, message: 'Custom HLS headers must be a JSON object.'};
+        }
+      } catch (error) {
+        return {ok: false, message: 'Custom HLS headers JSON is invalid.'};
+      }
+      return {ok: true};
+    },
+    normalizedHlsProxyHeadersPayload() {
+      const raw = (this.hlsProxyHeaders || '').trim();
+      if (!raw) {
+        return '';
+      }
+      const parsed = JSON.parse(raw);
+      return JSON.stringify(parsed);
     },
     xcPasswordHint(account) {
       if (this.accountType !== 'XC') {

@@ -57,7 +57,10 @@ async def api_get_playlists_list():
 async def api_add_new_playlist():
     json_data = await request.get_json()
     config = current_app.config['APP_CONFIG']
-    playlist_id = await add_new_playlist(config, json_data)
+    try:
+        playlist_id = await add_new_playlist(config, json_data)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     playlist_name = None
     try:
         playlist_config = await read_config_one_playlist(config, playlist_id)
@@ -103,7 +106,10 @@ async def api_set_config_playlists(playlist_id):
         playlist_id = int(playlist_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid playlist id"}), 400
-    await update_playlist(config, playlist_id, json_data)
+    try:
+        await update_playlist(config, playlist_id, json_data)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     playlist_name = None
     try:
         playlist_config = await read_config_one_playlist(config, playlist_id)

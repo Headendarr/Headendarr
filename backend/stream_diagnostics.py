@@ -8,6 +8,7 @@ import aiohttp
 import base64
 from urllib.parse import parse_qsl, urlparse, urlunparse
 from backend.config import flask_run_port
+from backend.http_headers import sanitise_headers
 
 logger = logging.getLogger("tic.stream_diagnostics")
 
@@ -19,6 +20,7 @@ class StreamProbe:
         bypass_proxies=False,
         request_host_url=None,
         preferred_user_agent=None,
+        preferred_headers=None,
         probe_window_seconds=12,
         no_data_timeout_seconds=30,
         hard_timeout_seconds=45,
@@ -28,6 +30,7 @@ class StreamProbe:
         self.bypass_proxies = bypass_proxies
         self.request_host_url = request_host_url
         self.preferred_user_agent = (preferred_user_agent or "").strip() or None
+        self.preferred_headers = sanitise_headers(preferred_headers)
         self.probe_window_seconds = max(5, int(probe_window_seconds or 12))
         self.no_data_timeout_seconds = max(5, int(no_data_timeout_seconds or 30))
         self.hard_timeout_seconds = max(self.probe_window_seconds + 5, int(hard_timeout_seconds or 45))
@@ -107,6 +110,31 @@ class StreamProbe:
             or path.startswith("/tic-api/cso/channel/")
             or path.startswith("/tic-api/tvh_stream/stream/channel/")
         )
+
+    @staticmethod
+    def _header_value(headers, name):
+        target = str(name or "").strip().lower()
+        if not target:
+            return None
+        for key, value in (headers or {}).items():
+            if str(key or "").strip().lower() == target:
+                return str(value or "").strip() or None
+        return None
+
+    @staticmethod
+    def _build_ffmpeg_headers_arg(headers):
+        lines = []
+        for key, value in (headers or {}).items():
+            lower = str(key or "").strip().lower()
+            if lower in {"user-agent", "referer"}:
+                continue
+            text = str(value or "").strip()
+            if not text:
+                continue
+            lines.append(f"{key}: {text}")
+        if not lines:
+            return None
+        return "\r\n".join(lines) + "\r\n"
 
     def _normalize_localhost_url(self, raw_url: str, log: bool = False) -> str:
         parsed = urlparse(raw_url)
@@ -329,7 +357,11 @@ class StreamProbe:
     async def _run_hybrid_probe(self):
         self.log(f"Starting hybrid FFmpeg/Python probe ({int(self.probe_window_seconds)}s wall-clock limit)...")
         default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        base_headers = sanitise_headers(self.preferred_headers)
+        configured_header_user_agent = self._header_value(base_headers, "User-Agent")
         user_agent_candidates = []
+        if configured_header_user_agent:
+            user_agent_candidates.append(configured_header_user_agent)
         if self.preferred_user_agent:
             user_agent_candidates.append(self.preferred_user_agent)
         if default_user_agent not in user_agent_candidates:
@@ -353,7 +385,7 @@ class StreamProbe:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
                             self.url,
-                            headers={"User-Agent": candidate},
+                            headers={**base_headers, "User-Agent": candidate},
                             timeout=aiohttp.ClientTimeout(total=None, connect=6, sock_connect=6, sock_read=6),
                         ) as preflight:
                             if preflight.status >= 400:
@@ -417,6 +449,14 @@ class StreamProbe:
             "mpegts",
             "pipe:1",
         ]
+        referer_value = self._header_value(base_headers, "Referer")
+        extra_headers = self._build_ffmpeg_headers_arg({**base_headers, "User-Agent": user_agent})
+        if referer_value:
+            insert_idx = cmd.index("-probesize")
+            cmd[insert_idx:insert_idx] = ["-referer", referer_value]
+        if extra_headers:
+            insert_idx = cmd.index("-probesize")
+            cmd[insert_idx:insert_idx] = ["-headers", extra_headers]
 
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -548,6 +588,7 @@ async def start_probe(
     bypass_proxies=False,
     request_host_url=None,
     preferred_user_agent=None,
+    preferred_headers=None,
     on_complete=None,
 ):
     import uuid
@@ -558,6 +599,7 @@ async def start_probe(
         bypass_proxies=bypass_proxies,
         request_host_url=request_host_url,
         preferred_user_agent=preferred_user_agent,
+        preferred_headers=preferred_headers,
     )
     probe.task_id = task_id
     _active_probes[task_id] = probe

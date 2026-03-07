@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Table, MetaData, DateTime, func, Text, Float, UniqueConstraint, Index
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    ForeignKey,
+    Boolean,
+    Table,
+    MetaData,
+    DateTime,
+    func,
+    Text,
+    Float,
+    UniqueConstraint,
+    Index,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import relationship, sessionmaker, declarative_base, backref
 
@@ -28,18 +42,16 @@ class Epg(Base):
     update_schedule = Column(String(16), nullable=False, default="12h")
 
     # Backref to all associated linked channels
-    epg_channels = relationship('EpgChannels', backref='guide', lazy=True, cascade="all, delete-orphan")
-    channels = relationship('Channel', backref='guide', lazy=True, cascade="all, delete-orphan")
+    epg_channels = relationship("EpgChannels", backref="guide", lazy=True, cascade="all, delete-orphan")
+    channels = relationship("Channel", backref="guide", lazy=True, cascade="all, delete-orphan")
 
     def __repr__(self):
-        return '<Epg {}>'.format(self.id)
+        return "<Epg {}>".format(self.id)
 
 
 class EpgChannels(Base):
     __tablename__ = "epg_channels"
-    __table_args__ = (
-        Index("ix_epg_channels_epg_id_channel_id", "epg_id", "channel_id"),
-    )
+    __table_args__ = (Index("ix_epg_channels_epg_id_channel_id", "epg_id", "channel_id"),)
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(String(256), index=True, unique=False)
@@ -47,27 +59,27 @@ class EpgChannels(Base):
     icon_url = Column(Text, index=False, unique=False)
 
     # Link with an epg
-    epg_id = Column(Integer, ForeignKey('epgs.id'), nullable=False, index=True)
+    epg_id = Column(Integer, ForeignKey("epgs.id"), nullable=False, index=True)
 
     # Backref to all associated linked channels
-    epg_channel_programmes = relationship('EpgChannelProgrammes', backref='channel', lazy=True,
-                                          cascade="all, delete-orphan")
+    epg_channel_programmes = relationship(
+        "EpgChannelProgrammes", backref="channel", lazy=True, cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
-        return '<EpgChannels {}>'.format(self.id)
+        return "<EpgChannels {}>".format(self.id)
 
 
 class EpgChannelProgrammes(Base):
     """
-        <programme start="20230423183001 +0100"0 stop="20230423190001 +100" start_timestamp="1682271001" stop_timestamp="1682272801" channel="some_channel_id" >
-            <title>Programme Title</title>
-            <desc>Programme description.</desc>
-        </programme>
+    <programme start="20230423183001 +0100"0 stop="20230423190001 +100" start_timestamp="1682271001" stop_timestamp="1682272801" channel="some_channel_id" >
+        <title>Programme Title</title>
+        <desc>Programme description.</desc>
+    </programme>
     """
+
     __tablename__ = "epg_channel_programmes"
-    __table_args__ = (
-        Index("ix_epg_channel_programmes_epg_channel_id_start", "epg_channel_id", "start"),
-    )
+    __table_args__ = (Index("ix_epg_channel_programmes_epg_channel_id_start", "epg_channel_id", "start"),)
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(Text, index=True, unique=False)
@@ -84,29 +96,29 @@ class EpgChannelProgrammes(Base):
     categories = Column(Text, index=True, unique=False)
     # Extended optional XMLTV / TVHeadend supported metadata (all nullable / optional)
     summary = Column(Text, index=False, unique=False)
-    keywords = Column(Text, index=False, unique=False)          # JSON encoded list of keyword strings
-    credits_json = Column(Text, index=False, unique=False)      # JSON: {"actor":[],"director":[],...}
+    keywords = Column(Text, index=False, unique=False)  # JSON encoded list of keyword strings
+    credits_json = Column(Text, index=False, unique=False)  # JSON: {"actor":[],"director":[],...}
     video_colour = Column(Text, index=False, unique=False)
     video_aspect = Column(Text, index=False, unique=False)
     video_quality = Column(Text, index=False, unique=False)
     subtitles_type = Column(Text, index=False, unique=False)
-    audio_described = Column(Boolean, nullable=True)                    # True -> <audio-described />
+    audio_described = Column(Boolean, nullable=True)  # True -> <audio-described />
     previously_shown_date = Column(Text, index=False, unique=False)  # YYYY-MM-DD
     premiere = Column(Boolean, nullable=True)
     is_new = Column(Boolean, nullable=True)
     epnum_onscreen = Column(Text, index=False, unique=False)
     epnum_xmltv_ns = Column(Text, index=False, unique=False)
     epnum_dd_progid = Column(Text, index=False, unique=False)
-    star_rating = Column(Text, index=False, unique=False)          # e.g. "3/5"
-    production_year = Column(Text, index=False, unique=False)       # <date>
+    star_rating = Column(Text, index=False, unique=False)  # e.g. "3/5"
+    production_year = Column(Text, index=False, unique=False)  # <date>
     rating_system = Column(Text, index=False, unique=False)
     rating_value = Column(Text, index=False, unique=False)
 
     # Link with an epg channel
-    epg_channel_id = Column(Integer, ForeignKey('epg_channels.id'), nullable=False, index=True)
+    epg_channel_id = Column(Integer, ForeignKey("epg_channels.id"), nullable=False, index=True)
 
     def __repr__(self):
-        return '<EpgChannelProgrammes {}>'.format(self.id)
+        return "<EpgChannelProgrammes {}>".format(self.id)
 
 
 class Playlist(Base):
@@ -127,24 +139,23 @@ class Playlist(Base):
     chain_custom_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
     hls_proxy_use_ffmpeg = Column(Boolean, nullable=False, unique=False, default=False)
     hls_proxy_prebuffer = Column(String(32), nullable=True, unique=False, default="1M")
+    hls_proxy_headers = Column(Text, nullable=True, unique=False)
     user_agent = Column(String(255), nullable=True)
     xc_live_stream_format = Column(String(8), nullable=False, unique=False, default="ts")
     update_schedule = Column(String(16), nullable=False, default="off")
 
     # Backref to all associated linked sources
-    channel_sources = relationship('ChannelSource', backref='playlist', lazy=True, cascade="all, delete-orphan")
-    playlist_streams = relationship('PlaylistStreams', backref='playlist', lazy=True, cascade="all, delete-orphan")
-    xc_accounts = relationship('XcAccount', backref='playlist', lazy=True, cascade="all, delete-orphan")
+    channel_sources = relationship("ChannelSource", backref="playlist", lazy=True, cascade="all, delete-orphan")
+    playlist_streams = relationship("PlaylistStreams", backref="playlist", lazy=True, cascade="all, delete-orphan")
+    xc_accounts = relationship("XcAccount", backref="playlist", lazy=True, cascade="all, delete-orphan")
 
     def __repr__(self):
-        return '<Playlist {}>'.format(self.id)
+        return "<Playlist {}>".format(self.id)
 
 
 class PlaylistStreams(Base):
     __tablename__ = "playlist_streams"
-    __table_args__ = (
-        Index("ix_playlist_streams_playlist_id_url_hash", "playlist_id", "url_hash"),
-    )
+    __table_args__ = (Index("ix_playlist_streams_playlist_id_url_hash", "playlist_id", "url_hash"),)
     id = Column(Integer, primary_key=True)
 
     name = Column(String(500), index=True, unique=False)
@@ -160,17 +171,17 @@ class PlaylistStreams(Base):
     xc_category_id = Column(Integer, index=True, unique=False)
 
     # Link with a playlist
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True, index=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
 
     def __repr__(self):
-        return '<PlaylistStreams {}>'.format(self.id)
+        return "<PlaylistStreams {}>".format(self.id)
 
 
 class XcAccount(Base):
     __tablename__ = "xc_accounts"
     id = Column(Integer, primary_key=True)
 
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False)
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=False)
     username = Column(String(255), nullable=False)
     password = Column(String(255), nullable=False)
     enabled = Column(Boolean, nullable=False, unique=False, default=True)
@@ -179,14 +190,14 @@ class XcAccount(Base):
     tvh_uuid = Column(String(64), index=True, unique=True)
 
     def __repr__(self):
-        return '<XcAccount {}>'.format(self.id)
+        return "<XcAccount {}>".format(self.id)
 
 
 channels_tags_association_table = Table(
-    'channels_tags_group',
+    "channels_tags_group",
     Base.metadata,
-    Column('channel_id', Integer, ForeignKey('channels.id')),
-    Column('tag_id', Integer, ForeignKey('channel_tags.id'))
+    Column("channel_id", Integer, ForeignKey("channels.id")),
+    Column("tag_id", Integer, ForeignKey("channel_tags.id")),
 )
 
 
@@ -204,18 +215,18 @@ class Channel(Base):
     cso_policy = Column(Text, index=False, unique=False)
 
     # Link with a guide
-    guide_id = Column(Integer, ForeignKey('epgs.id'))
+    guide_id = Column(Integer, ForeignKey("epgs.id"))
     guide_name = Column(String(256), index=False, unique=False)
     guide_channel_id = Column(String(64), index=False, unique=False)
 
     # Backref to all associated linked sources
-    sources = relationship('ChannelSource', backref='channel', lazy=True, cascade="all, delete-orphan")
+    sources = relationship("ChannelSource", backref="channel", lazy=True, cascade="all, delete-orphan")
 
     # Specify many-to-many relationships
     tags = relationship("ChannelTag", secondary=channels_tags_association_table)
 
     def __repr__(self):
-        return '<Channel {}>'.format(self.id)
+        return "<Channel {}>".format(self.id)
 
 
 class ChannelTag(Base):
@@ -225,7 +236,7 @@ class ChannelTag(Base):
     name = Column(String(64), index=False, unique=True)
 
     def __repr__(self):
-        return '<ChannelTag {}>'.format(self.id)
+        return "<ChannelTag {}>".format(self.id)
 
 
 class ChannelSource(Base):
@@ -233,11 +244,11 @@ class ChannelSource(Base):
     id = Column(Integer, primary_key=True)
 
     # Link with channel
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
 
     # Link with a playlist
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True)
-    xc_account_id = Column(Integer, ForeignKey('xc_accounts.id'), nullable=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True)
+    xc_account_id = Column(Integer, ForeignKey("xc_accounts.id"), nullable=True)
     playlist_stream_name = Column(String(500), index=True, unique=False)
     playlist_stream_url = Column(Text, index=False, unique=False)
     use_hls_proxy = Column(Boolean, nullable=False, unique=False, default=False)
@@ -249,21 +260,19 @@ class ChannelSource(Base):
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 
-    xc_account = relationship('XcAccount')
+    xc_account = relationship("XcAccount")
 
     def __repr__(self):
-        return '<ChannelSource {}>'.format(self.id)
+        return "<ChannelSource {}>".format(self.id)
 
 
 class ChannelSuggestion(Base):
     __tablename__ = "channel_suggestions"
-    __table_args__ = (
-        UniqueConstraint("channel_id", "playlist_id", "stream_id", name="uq_channel_suggestion_stream"),
-    )
+    __table_args__ = (UniqueConstraint("channel_id", "playlist_id", "stream_id", name="uq_channel_suggestion_stream"),)
     id = Column(Integer, primary_key=True)
 
-    channel_id = Column(Integer, ForeignKey('channels.id', ondelete="CASCADE"), nullable=False, index=True)
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=False, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=False, index=True)
     stream_id = Column(Integer, nullable=False, index=True)
     stream_name = Column(String(500), index=True, unique=False)
     stream_url = Column(Text, index=False, unique=False)
@@ -275,19 +284,19 @@ class ChannelSuggestion(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    channel = relationship('Channel', backref=backref('suggestions', cascade="all, delete-orphan"))
-    playlist = relationship('Playlist')
+    channel = relationship("Channel", backref=backref("suggestions", cascade="all, delete-orphan"))
+    playlist = relationship("Playlist")
 
     def __repr__(self):
-        return '<ChannelSuggestion {}>'.format(self.id)
+        return "<ChannelSuggestion {}>".format(self.id)
 
 
 class RecordingRule(Base):
     __tablename__ = "recording_rules"
     id = Column(Integer, primary_key=True)
 
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
-    owner_user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     recording_profile_key = Column(String(64), nullable=False, default="default")
     title_match = Column(String(500), index=True, unique=False)
     enabled = Column(Boolean, nullable=False, unique=False, default=True)
@@ -296,19 +305,19 @@ class RecordingRule(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     # Backref to channel
-    channel = relationship('Channel', backref='recording_rules')
+    channel = relationship("Channel", backref="recording_rules")
 
     def __repr__(self):
-        return '<RecordingRule {}>'.format(self.id)
+        return "<RecordingRule {}>".format(self.id)
 
 
 class Recording(Base):
     __tablename__ = "recordings"
     id = Column(Integer, primary_key=True)
 
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
-    rule_id = Column(Integer, ForeignKey('recording_rules.id'), nullable=True)
-    owner_user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    rule_id = Column(Integer, ForeignKey("recording_rules.id"), nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     recording_profile_key = Column(String(64), nullable=False, default="default")
     epg_programme_id = Column(Integer, nullable=True)
 
@@ -325,18 +334,18 @@ class Recording(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    channel = relationship('Channel', backref='recordings')
-    rule = relationship('RecordingRule', backref='recordings')
+    channel = relationship("Channel", backref="recordings")
+    rule = relationship("RecordingRule", backref="recordings")
 
     def __repr__(self):
-        return '<Recording {}>'.format(self.id)
+        return "<Recording {}>".format(self.id)
 
 
 user_roles_association_table = Table(
-    'user_roles',
+    "user_roles",
     Base.metadata,
-    Column('user_id', Integer, ForeignKey('users.id'), nullable=False),
-    Column('role_id', Integer, ForeignKey('roles.id'), nullable=False),
+    Column("user_id", Integer, ForeignKey("users.id"), nullable=False),
+    Column("role_id", Integer, ForeignKey("roles.id"), nullable=False),
 )
 
 
@@ -367,7 +376,7 @@ class User(Base):
     stream_audits = relationship("StreamAuditLog", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
-        return '<User {}>'.format(self.id)
+        return "<User {}>".format(self.id)
 
 
 class Role(Base):
@@ -380,14 +389,14 @@ class Role(Base):
     users = relationship("User", secondary=user_roles_association_table, back_populates="roles")
 
     def __repr__(self):
-        return '<Role {}>'.format(self.id)
+        return "<Role {}>".format(self.id)
 
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
     id = Column(Integer, primary_key=True)
 
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     token_hash = Column(String(128), unique=True, nullable=False, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     last_used_at = Column(DateTime, nullable=True)
@@ -399,14 +408,14 @@ class UserSession(Base):
     user = relationship("User", back_populates="sessions")
 
     def __repr__(self):
-        return '<UserSession {}>'.format(self.id)
+        return "<UserSession {}>".format(self.id)
 
 
 class StreamAuditLog(Base):
     __tablename__ = "stream_audit_logs"
     id = Column(Integer, primary_key=True)
 
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
     endpoint = Column(Text, nullable=True)
     ip_address = Column(String(64), nullable=True)
@@ -417,7 +426,7 @@ class StreamAuditLog(Base):
     user = relationship("User", back_populates="stream_audits")
 
     def __repr__(self):
-        return '<StreamAuditLog {}>'.format(self.id)
+        return "<StreamAuditLog {}>".format(self.id)
 
 
 class CsoEventLog(Base):
@@ -428,10 +437,10 @@ class CsoEventLog(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True, index=True)
-    source_id = Column(Integer, ForeignKey('channel_sources.id', ondelete="SET NULL"), nullable=True, index=True)
-    playlist_id = Column(Integer, ForeignKey('playlists.id'), nullable=True, index=True)
-    recording_id = Column(Integer, ForeignKey('recordings.id'), nullable=True, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True, index=True)
+    source_id = Column(Integer, ForeignKey("channel_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
+    recording_id = Column(Integer, ForeignKey("recordings.id"), nullable=True, index=True)
     tvh_subscription_id = Column(String(128), nullable=True, index=True)
     session_id = Column(String(128), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
@@ -445,4 +454,4 @@ class CsoEventLog(Base):
     recording = relationship("Recording")
 
     def __repr__(self):
-        return '<CsoEventLog {}>'.format(self.id)
+        return "<CsoEventLog {}>".format(self.id)

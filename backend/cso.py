@@ -35,6 +35,7 @@ from backend.stream_profiles import generate_cso_policy_from_profile
 from backend.users import get_user_by_stream_key
 from backend.config import enable_cso_command_debug_logging
 from backend.datetime_utils import utc_now_naive
+from backend.http_headers import parse_headers_json, sanitise_headers
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
@@ -479,9 +480,36 @@ async def cleanup_channel_stream_events(app_config, retention_days=None):
         return int(result.rowcount or 0)
 
 
-def _build_ingest_ffmpeg_command(source_url, program_index=0, user_agent=None):
+def _header_value(headers, name):
+    target = str(name or "").strip().lower()
+    if not target:
+        return None
+    for key, value in (headers or {}).items():
+        if str(key or "").strip().lower() == target:
+            return str(value or "").strip() or None
+    return None
+
+
+def _format_ffmpeg_headers_arg(headers):
+    lines = []
+    for key, value in (headers or {}).items():
+        lower = str(key or "").strip().lower()
+        if lower in {"user-agent", "referer"}:
+            continue
+        text = str(value or "").strip()
+        if not text:
+            continue
+        lines.append(f"{key}: {text}")
+    if not lines:
+        return None
+    # FFmpeg expects CRLF-separated request headers.
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _build_ingest_ffmpeg_command(source_url, program_index=0, user_agent=None, request_headers=None):
     map_program = max(0, int(program_index or 0))
     is_hls_input = (urlparse(str(source_url or "")).path or "").lower().endswith(".m3u8")
+    header_values = sanitise_headers(request_headers)
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -503,12 +531,18 @@ def _build_ingest_ffmpeg_command(source_url, program_index=0, user_agent=None):
         "-reconnect_delay_max",
         str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
     ]
-    user_agent_value = str(user_agent or "").strip()
+    user_agent_value = str(user_agent or "").strip() or _header_value(header_values, "User-Agent")
     if user_agent_value:
         command += [
             "-user_agent",
             user_agent_value,
         ]
+    referer_value = _header_value(header_values, "Referer")
+    if referer_value:
+        command += ["-referer", referer_value]
+    extra_headers = _format_ffmpeg_headers_arg(header_values)
+    if extra_headers:
+        command += ["-headers", extra_headers]
     # For HLS, we let the smart HLS demuxer handle playlist retries to avoid manifest
     # spam/IP bans. For direct streams (non-HLS), we use socket-level reconnection.
     if not is_hls_input:
@@ -580,6 +614,23 @@ def _resolve_cso_ingest_user_agent(config, source):
             if candidate:
                 return candidate
     return "VLC/3.0.23 LibVLC/3.0.23"
+
+
+def _resolve_cso_ingest_headers(source):
+    playlist = getattr(source, "playlist", None) if source is not None else None
+    try:
+        configured = parse_headers_json(getattr(playlist, "hls_proxy_headers", None))
+    except ValueError:
+        configured = {}
+    return configured
+
+
+def _redact_ingest_command_for_log(command):
+    redacted = list(command or [])
+    for idx, token in enumerate(redacted):
+        if token == "-headers" and idx + 1 < len(redacted):
+            redacted[idx + 1] = "<redacted>"
+    return redacted
 
 
 def _policy_log_label(policy):
@@ -825,16 +876,19 @@ class CsoIngestSession:
     async def _spawn_ingest_process(self, source_url, program_index, source=None):
         playlist = getattr(source, "playlist", None) if source is not None else None
         source_user_agent = str(getattr(playlist, "user_agent", "") or "").strip() or self.ingest_user_agent
+        source_headers = _resolve_cso_ingest_headers(source)
+        source_user_agent = _header_value(source_headers, "User-Agent") or source_user_agent
         command = _build_ingest_ffmpeg_command(
             source_url,
             program_index=program_index,
             user_agent=source_user_agent,
+            request_headers=source_headers,
         )
         logger.info(
             "Starting CSO ingest channel=%s source=%s command=%s",
             self.channel_id,
             getattr(source, "id", None) if source is not None else getattr(self.current_source, "id", None),
-            command,
+            _redact_ingest_command_for_log(command),
         )
         return await asyncio.create_subprocess_exec(
             *command,

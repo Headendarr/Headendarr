@@ -20,6 +20,7 @@ from backend.cso import (
     source_capacity_limit,
 )
 from backend.datetime_utils import utc_now_naive
+from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import Channel, ChannelSource, Playlist, Session
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_diagnostics import StreamProbe
@@ -336,11 +337,16 @@ async def _run_source_health_check(config, source):
         return "skipped", "invalid_stream_url"
 
     preferred_user_agent = str(getattr(playlist, "user_agent", "") or "").strip() or None
+    try:
+        preferred_headers = sanitise_headers(parse_headers_json(getattr(playlist, "hls_proxy_headers", None)))
+    except ValueError:
+        preferred_headers = {}
     probe = StreamProbe(
         check_url,
         bypass_proxies=False,
         request_host_url=f"{_request_base_url()}/",
         preferred_user_agent=preferred_user_agent,
+        preferred_headers=preferred_headers,
         probe_window_seconds=CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS,
         hard_timeout_seconds=max(10, CHANNEL_STREAM_HEALTH_CHECK_PROBE_SECONDS + 15),
         include_geo_lookup=False,

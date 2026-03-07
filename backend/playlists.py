@@ -15,6 +15,12 @@ from sqlalchemy import delete, func, insert, or_, select
 from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
+from backend.http_headers import (
+    encode_headers_query_param,
+    parse_headers_json,
+    sanitise_headers,
+    serialise_headers_json,
+)
 from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
 from backend.stream_profiles import resolve_cso_profile_name
 from backend.streaming import build_configured_hls_proxy_url
@@ -311,10 +317,7 @@ async def _import_xc_playlist_streams(settings, playlist):
         logger.error("XC playlist %s missing host/credentials", playlist.id)
         return False
 
-    user_agent = _resolve_user_agent(settings, playlist.user_agent)
-    headers = {}
-    if user_agent:
-        headers["User-Agent"] = user_agent
+    headers = _resolve_source_request_headers(settings, playlist)
 
     async with aiohttp.ClientSession(headers=headers) as session:
         auth_info = await _xc_request(
@@ -426,6 +429,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                             "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                             "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                             "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                            "hls_proxy_headers": result.hls_proxy_headers,
                             "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                             "hls_proxy_path": (
                                 result.hls_proxy_path
@@ -451,6 +455,7 @@ async def read_config_all_playlists(config, output_for_export=False):
                         "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                         "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                         "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                        "hls_proxy_headers": result.hls_proxy_headers,
                         "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                         "hls_proxy_path": (
                             result.hls_proxy_path
@@ -507,6 +512,7 @@ async def read_config_one_playlist(config, playlist_id):
                     "chain_custom_hls_proxy": result.chain_custom_hls_proxy,
                     "hls_proxy_use_ffmpeg": result.hls_proxy_use_ffmpeg,
                     "hls_proxy_prebuffer": result.hls_proxy_prebuffer,
+                    "hls_proxy_headers": result.hls_proxy_headers,
                     "update_schedule": _parsed_playlist_update_schedule(result.update_schedule),
                     "hls_proxy_path": (
                         result.hls_proxy_path
@@ -519,6 +525,7 @@ async def read_config_one_playlist(config, playlist_id):
 
 
 async def add_new_playlist(config, data):
+    hls_proxy_headers = _normalise_hls_proxy_headers_payload(data.get("hls_proxy_headers"))
     async with Session() as session:
         async with session.begin():
             account_type = data.get("account_type", "M3U")
@@ -537,6 +544,7 @@ async def add_new_playlist(config, data):
                 chain_custom_hls_proxy=data.get("chain_custom_hls_proxy", False),
                 hls_proxy_use_ffmpeg=data.get("hls_proxy_use_ffmpeg", False),
                 hls_proxy_prebuffer=data.get("hls_proxy_prebuffer", "1M"),
+                hls_proxy_headers=hls_proxy_headers,
                 update_schedule=_parsed_playlist_update_schedule(data.get("update_schedule")),
                 hls_proxy_path=data.get(
                     "hls_proxy_path",
@@ -552,6 +560,11 @@ async def add_new_playlist(config, data):
 
 
 async def update_playlist(config, playlist_id, data):
+    hls_proxy_headers = (
+        _normalise_hls_proxy_headers_payload(data.get("hls_proxy_headers"))
+        if "hls_proxy_headers" in data
+        else None
+    )
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
@@ -574,6 +587,8 @@ async def update_playlist(config, playlist_id, data):
             playlist.chain_custom_hls_proxy = data.get("chain_custom_hls_proxy", playlist.chain_custom_hls_proxy)
             playlist.hls_proxy_use_ffmpeg = data.get("hls_proxy_use_ffmpeg", playlist.hls_proxy_use_ffmpeg)
             playlist.hls_proxy_prebuffer = data.get("hls_proxy_prebuffer", playlist.hls_proxy_prebuffer)
+            if "hls_proxy_headers" in data:
+                playlist.hls_proxy_headers = hls_proxy_headers
             playlist.update_schedule = _parsed_playlist_update_schedule(
                 data.get("update_schedule", playlist.update_schedule)
             )
@@ -680,16 +695,54 @@ def _resolve_user_agent(settings, user_agent):
     return "VLC/3.0.23 LibVLC/3.0.23"
 
 
-async def download_playlist_file(settings, url, output, user_agent=None):
+def _normalise_hls_proxy_headers_payload(raw_value):
+    headers = parse_headers_json(raw_value)
+    # Validate URL-safe encoded size up front to avoid runtime proxy URL generation errors.
+    encode_headers_query_param(headers)
+    return serialise_headers_json(headers)
+
+
+def _resolve_source_headers(raw_headers):
+    try:
+        configured_headers = parse_headers_json(raw_headers)
+    except ValueError:
+        configured_headers = {}
+    return sanitise_headers(configured_headers)
+
+
+def _resolve_source_request_headers(settings, playlist_info):
+    if not playlist_info:
+        return {}
+    user_agent = _resolve_user_agent(settings, getattr(playlist_info, "user_agent", None))
+    headers = _resolve_source_headers(getattr(playlist_info, "hls_proxy_headers", None))
+    if user_agent and not any(str(key).strip().lower() == "user-agent" for key in headers):
+        headers["User-Agent"] = user_agent
+    return headers
+
+
+def _resolve_hls_proxy_headers(playlist_info):
+    if not playlist_info:
+        return {}
+    # For HLS proxy and related upstream paths, enforce Source User Agent from dedicated field.
+    headers = _resolve_source_headers(getattr(playlist_info, "hls_proxy_headers", None))
+    user_agent = str(getattr(playlist_info, "user_agent", "") or "").strip()
+    if user_agent and not any(str(key).strip().lower() == "user-agent" for key in headers):
+        headers["User-Agent"] = user_agent
+    return headers
+
+
+async def download_playlist_file(settings, url, output, source_headers=None):
     logger.info("Downloading Playlist from url - '%s'", url)
     if not os.path.exists(os.path.dirname(output)):
         os.makedirs(os.path.dirname(output))
     headers = {
-        "User-Agent": _resolve_user_agent(settings, user_agent),
         "Accept": "*/*",
         "Accept-Encoding": "identity",
         "Connection": "keep-alive",
     }
+    headers.update(sanitise_headers(source_headers))
+    if not headers.get("User-Agent"):
+        headers["User-Agent"] = _resolve_user_agent(settings, None)
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
     last_error = None
     for attempt in range(1, 4):
@@ -851,7 +904,12 @@ async def import_playlist_data(config, playlist_id):
         )
         start_time = time.time()
         m3u_file = os.path.join(config.config_path, "cache", "playlists", f"{playlist_id}.m3u")
-        await download_playlist_file(settings, playlist.url, m3u_file, playlist.user_agent)
+        await download_playlist_file(
+            settings,
+            playlist.url,
+            m3u_file,
+            source_headers=_resolve_source_request_headers(settings, playlist),
+        )
         execution_time = time.time() - start_time
         logger.info(
             "Updated M3U file for playlist #%s was downloaded in '%s' seconds",
@@ -1100,6 +1158,7 @@ async def read_filtered_stream_details_from_all_playlists(
                     chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
                     ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
                     prebuffer=playlist_info.hls_proxy_prebuffer,
+                    headers=_resolve_hls_proxy_headers(playlist_info),
                 )
             results["streams"].append(
                 {
@@ -1277,6 +1336,7 @@ async def resolve_playlist_stream_url(
             chain_custom_hls_proxy=playlist_info.chain_custom_hls_proxy,
             ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
             prebuffer=playlist_info.hls_proxy_prebuffer,
+            headers=_resolve_hls_proxy_headers(playlist_info),
         )
     return stream_url
 
