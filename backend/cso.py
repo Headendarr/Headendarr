@@ -857,11 +857,13 @@ class CsoIngestSession:
         self.source_program_index = {}
         self.startup_jump_done = False
         self.process_token = 0
+        self.failover_failed_sources = set()
 
     async def start(self):
         async with self.lock:
             if self.running:
                 return
+            self.failover_failed_sources.clear()
             logger.info(
                 "CSO ingest start requested channel=%s sources=%s",
                 self.channel_id,
@@ -924,8 +926,30 @@ class CsoIngestSession:
         self.stderr_task = asyncio.create_task(self._stderr_loop(token, process))
         self.health_task = asyncio.create_task(self._health_loop(token))
 
-    async def _start_best_source_unlocked(self, reason, preferred_source_id=None):
+    def _eligible_source_ids_unlocked(self):
+        eligible_ids = set()
+        for source in self.sources:
+            source_id = getattr(source, "id", None)
+            if source_id is None:
+                continue
+            playlist = getattr(source, "playlist", None)
+            if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+                continue
+            stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+            if not stream_url:
+                continue
+            eligible_ids.add(source_id)
+        return eligible_ids
+
+    async def _start_best_source_unlocked(
+        self,
+        reason,
+        preferred_source_id=None,
+        excluded_source_ids=None,
+        ignore_hold_down=False,
+    ):
         now = time.time()
+        excluded_ids = set(excluded_source_ids or [])
         candidates = sorted(
             self.sources,
             key=lambda item: _priority_value(getattr(item, "priority", 0)),
@@ -938,8 +962,10 @@ class CsoIngestSession:
         saw_capacity_block = False
         for source in candidates:
             source_id = getattr(source, "id", None)
+            if source_id in excluded_ids:
+                continue
             hold_until = self.failed_source_until.get(source_id, 0)
-            if hold_until > now:
+            if not ignore_hold_down and hold_until > now:
                 continue
             playlist = getattr(source, "playlist", None)
             if playlist is not None and not bool(getattr(playlist, "enabled", False)):
@@ -1321,6 +1347,8 @@ class CsoIngestSession:
 
             failed_source = self.current_source
             failed_source_id = getattr(failed_source, "id", None)
+            if failed_source_id is not None:
+                self.failover_failed_sources.add(failed_source_id)
             ffmpeg_error = self._ffmpeg_error_summary()
             ffmpeg_error_lower = (ffmpeg_error or "").lower()
             is_connectivity_startup_failure = (
@@ -1430,11 +1458,25 @@ class CsoIngestSession:
         while True:
             async with self.lock:
                 has_subscribers = bool(self.subscribers)
-                start_result = await self._start_best_source_unlocked(reason="failover")
+                eligible_ids = self._eligible_source_ids_unlocked()
+                cycle_failed_ids = set(self.failover_failed_sources).intersection(eligible_ids)
+                untried_ids = eligible_ids.difference(cycle_failed_ids)
+                recycle_failed_sources = bool(eligible_ids) and not bool(untried_ids)
+                excluded_ids = cycle_failed_ids if untried_ids else set()
+                if recycle_failed_sources:
+                    # All currently eligible sources have failed at least once in this
+                    # cycle, so recycle the list and allow immediate retries.
+                    self.failover_failed_sources.clear()
+                start_result = await self._start_best_source_unlocked(
+                    reason="failover",
+                    excluded_source_ids=excluded_ids,
+                    ignore_hold_down=recycle_failed_sources,
+                )
                 if start_result.success:
                     logger.info(
-                        "CSO ingest failover started replacement channel=%s",
+                        "CSO ingest failover started replacement channel=%s recycled_cycle=%s",
                         self.channel_id,
+                        recycle_failed_sources,
                     )
                     self.running = True
                     return True
@@ -1546,6 +1588,7 @@ class CsoIngestSession:
             self.current_variant_position = None
             self.current_program_index = 0
             self.startup_jump_done = False
+            self.failover_failed_sources.clear()
             subscriber_count = len(self.subscribers)
         # Release capacity immediately so other channels are not blocked while
         # this ingest session drains/tears down.
