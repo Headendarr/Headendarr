@@ -25,7 +25,7 @@ from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigI
 from backend.channels import read_base46_image_string
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.utils import normalize_id
+from backend.utils import parse_entity_id
 
 logger = logging.getLogger("tic.epgs")
 XMLTV_UTC_FORMAT = "%Y%m%d%H%M%S +0000"
@@ -154,7 +154,7 @@ async def read_config_all_epgs(output_for_export=False, config=None):
 
 
 async def read_config_one_epg(epg_id, config=None):
-    epg_id = normalize_id(epg_id, "epg")
+    epg_id = parse_entity_id(epg_id, "epg")
     return_item = {}
     epg_health_map = _read_epg_health_map(config) if config else {}
     review_stats_map = await _read_epg_review_stats_map([epg_id])
@@ -194,7 +194,7 @@ def _build_epg_review_payload(stats, health):
 
 
 async def _read_epg_review_stats_map(epg_ids):
-    normalized_ids = [normalize_id(epg_id, "epg") for epg_id in (epg_ids or []) if epg_id is not None]
+    normalized_ids = [parse_entity_id(epg_id, "epg") for epg_id in (epg_ids or []) if epg_id is not None]
     if not normalized_ids:
         return {}
 
@@ -244,7 +244,7 @@ async def add_new_epg(data):
 
 
 async def update_epg(epg_id, data):
-    epg_id = normalize_id(epg_id, "epg")
+    epg_id = parse_entity_id(epg_id, "epg")
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Epg).where(Epg.id == epg_id))
@@ -257,7 +257,7 @@ async def update_epg(epg_id, data):
 
 
 async def delete_epg(config, epg_id):
-    epg_id = normalize_id(epg_id, "epg")
+    epg_id = parse_entity_id(epg_id, "epg")
     async with Session() as session:
         async with session.begin():
             # Get all channel IDs for the given EPG
@@ -647,7 +647,7 @@ async def read_channels_from_all_epgs(config):
 
 
 async def read_epg_review_channels(epg_id, search_query="", has_data="any", limit=100, offset=0, now_ts=None):
-    epg_id = normalize_id(epg_id, "epg")
+    epg_id = parse_entity_id(epg_id, "epg")
     limit = max(1, min(int(limit or 100), 250))
     offset = max(0, int(offset or 0))
     now_ts = int(now_ts or time.time())

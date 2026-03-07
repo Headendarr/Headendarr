@@ -59,7 +59,7 @@ from backend.streaming import (
 )
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.url_resolver import get_tvh_publish_base_url
-from backend.utils import fast_url_hash, normalize_id
+from backend.utils import fast_url_hash, parse_entity_id
 
 logger = logging.getLogger("tic.channels")
 
@@ -274,6 +274,90 @@ def _normalize_match_name(value):
     return " ".join(tokens).strip()
 
 
+def _prefix_looks_like_tag(value):
+    raw = (value or "").strip()
+    if not raw:
+        return False
+    words = re.findall(r"[A-Za-z0-9]+", raw)
+    if not words or len(words) > 4:
+        return False
+    total_chars = sum(len(word) for word in words)
+    if total_chars > 18:
+        return False
+    letters = [char for char in raw if char.isalpha()]
+    if not letters:
+        return False
+    uppercase_ratio = sum(1 for char in letters if char.isupper()) / len(letters)
+    if uppercase_ratio < 0.6:
+        return False
+    return True
+
+
+def _strip_bracketed_prefix(value):
+    current = (value or "").strip()
+    changed = False
+    while current:
+        next_value = re.sub(r"^\s*(?:\[[^\]]+\]|\([^)]+\)|\{[^}]+\})\s*", "", current, count=1)
+        if next_value == current:
+            break
+        current = next_value.strip()
+        changed = True
+    return current, changed
+
+
+def _derive_prefixed_name_variants(value):
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    variants = []
+    matched_symbol_delimiter = False
+
+    bracket_stripped, bracket_changed = _strip_bracketed_prefix(raw)
+    if bracket_changed and bracket_stripped:
+        variants.append(bracket_stripped)
+
+    # Generic split around the first run of non-word separators (works with :, -, ★, etc).
+    split_match = re.match(
+        r"^\s*(?P<prefix>[^\W_]+(?:\s+[^\W_]+){0,3})\s*[^\w\s]+\s*(?P<body>.+?)\s*$", raw, re.UNICODE
+    )
+    if split_match:
+        prefix_text = (split_match.group("prefix") or "").strip()
+        body_text = (split_match.group("body") or "").strip()
+        if body_text and _prefix_looks_like_tag(prefix_text):
+            matched_symbol_delimiter = True
+            variants.append(body_text)
+            body_bracket_stripped, body_bracket_changed = _strip_bracketed_prefix(body_text)
+            if body_bracket_changed and body_bracket_stripped:
+                variants.append(body_bracket_stripped)
+
+    words = raw.split()
+    if not matched_symbol_delimiter and len(words) >= 2:
+        one_word_prefix = words[0]
+        if _prefix_looks_like_tag(one_word_prefix):
+            variants.append(" ".join(words[1:]))
+    return variants
+
+
+def _name_match_variants(value):
+    variants = []
+    seen = set()
+
+    def _add_variant(raw_value):
+        normalized = _normalize_match_name(raw_value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            variants.append(normalized)
+
+    raw = (value or "").strip()
+    if not raw:
+        return variants
+
+    _add_variant(raw)
+    for candidate in _derive_prefixed_name_variants(raw):
+        _add_variant(candidate)
+    return variants
+
+
 def _extract_plus_one_variant(value):
     lowered = (value or "").strip().lower()
     normalized = re.sub(r"[^a-z0-9+\s]", " ", lowered)
@@ -354,14 +438,14 @@ async def build_bulk_epg_match_preview(
     overwrite_existing=False,
     max_candidates_per_channel=5,
 ):
-    normalized_ids = []
+    selected_channel_ids = []
     for channel_id in channel_ids or []:
         try:
-            normalized_ids.append(normalize_id(channel_id, "channel"))
+            selected_channel_ids.append(parse_entity_id(channel_id, "channel"))
         except ValueError:
             continue
-    normalized_ids = sorted(set(normalized_ids))
-    if not normalized_ids:
+    selected_channel_ids = sorted(set(selected_channel_ids))
+    if not selected_channel_ids:
         return {"rows": [], "summary": {"channels_considered": 0, "with_candidates": 0, "without_candidates": 0}}
 
     max_candidates_per_channel = max(1, min(_safe_int(max_candidates_per_channel, 5), 10))
@@ -370,7 +454,7 @@ async def build_bulk_epg_match_preview(
         channels_result = await session.execute(
             select(Channel)
             .options(joinedload(Channel.sources))
-            .where(Channel.id.in_(normalized_ids))
+            .where(Channel.id.in_(selected_channel_ids))
             .order_by(Channel.number.asc(), Channel.name.asc())
         )
         channels = channels_result.scalars().unique().all()
@@ -460,8 +544,8 @@ async def build_bulk_epg_match_preview(
                     if row.url:
                         stream_map[("url", playlist_id, row.url.strip())] = row
 
-    by_channel_id, by_normalized_name, by_base_name = _build_epg_channel_lookup(epg_rows)
-    normalized_name_keys = list(by_normalized_name.keys())
+    by_channel_id, by_name_key, by_base_name = _build_epg_channel_lookup(epg_rows)
+    candidate_name_keys = list(by_name_key.keys())
     epg_rows_by_tuple = {(row["epg_id"], row["channel_id"]): row for row in epg_rows}
 
     row_buffers = []
@@ -470,7 +554,7 @@ async def build_bulk_epg_match_preview(
 
     for channel in channels:
         channel_name = (channel.name or "").strip()
-        channel_name_normalized = _normalize_match_name(channel_name)
+        channel_name_variants = _name_match_variants(channel_name)
         channel_base_name, channel_plus_one = _extract_plus_one_variant(channel_name)
         raw_candidates = []
 
@@ -516,12 +600,13 @@ async def build_bulk_epg_match_preview(
             if existing:
                 _append_candidate(existing, 0.97, "existing_mapping_valid")
 
-        # 3) Exact normalized name.
-        for epg_row in by_normalized_name.get(channel_name_normalized, []):
-            if bool(epg_row["plus_one"]) == bool(channel_plus_one):
-                _append_candidate(epg_row, 0.94, "name_exact")
-            else:
-                _append_candidate(epg_row, 0.9, "name_variant_plus_one_penalty")
+        # 3) Exact name-key match (e.g. "NZ: HGTV" -> "HGTV").
+        for name_variant in channel_name_variants:
+            for epg_row in by_name_key.get(name_variant, []):
+                if bool(epg_row["plus_one"]) == bool(channel_plus_one):
+                    _append_candidate(epg_row, 0.94, "name_exact")
+                else:
+                    _append_candidate(epg_row, 0.9, "name_variant_plus_one_penalty")
 
         # Timeshift fallback: same base, different variant.
         for epg_row in by_base_name.get(channel_base_name, []):
@@ -531,20 +616,21 @@ async def build_bulk_epg_match_preview(
                 _append_candidate(epg_row, 0.89, "name_variant_plus_one_penalty")
 
         # 4) Fuzzy pass.
-        if channel_name_normalized and normalized_name_keys:
-            fuzzy_names = difflib.get_close_matches(
-                channel_name_normalized,
-                normalized_name_keys,
-                n=8,
-                cutoff=0.88,
-            )
-            for matched_name in fuzzy_names:
-                ratio = difflib.SequenceMatcher(None, channel_name_normalized, matched_name).ratio()
-                if ratio < 0.88:
-                    continue
-                for epg_row in by_normalized_name.get(matched_name, []):
-                    score = min(0.885, round(ratio, 4))
-                    _append_candidate(epg_row, score, "name_fuzzy")
+        if candidate_name_keys:
+            for name_variant in channel_name_variants:
+                fuzzy_names = difflib.get_close_matches(
+                    name_variant,
+                    candidate_name_keys,
+                    n=8,
+                    cutoff=0.88,
+                )
+                for matched_name in fuzzy_names:
+                    ratio = difflib.SequenceMatcher(None, name_variant, matched_name).ratio()
+                    if ratio < 0.88:
+                        continue
+                    for epg_row in by_name_key.get(matched_name, []):
+                        score = min(0.885, round(ratio, 4))
+                        _append_candidate(epg_row, score, "name_fuzzy")
 
         candidates = _dedupe_and_rank_candidates(raw_candidates, max_candidates_per_channel)
 
@@ -733,8 +819,8 @@ async def apply_bulk_epg_matches(*, updates):
         try:
             normalized_updates.append(
                 {
-                    "channel_id": normalize_id(channel_id, "channel"),
-                    "epg_id": normalize_id(epg_id, "epg"),
+                    "channel_id": parse_entity_id(channel_id, "channel"),
+                    "epg_id": parse_entity_id(epg_id, "epg"),
                     "epg_channel_id": epg_channel_id,
                     "use_epg_logo": bool(row.get("use_epg_logo", False)),
                 }
@@ -852,7 +938,7 @@ async def apply_bulk_cso_settings(channel_ids, cso_enabled, cso_profile=None):
     normalized_ids = []
     for channel_id in channel_ids or []:
         try:
-            normalized_ids.append(normalize_id(channel_id, "channel"))
+            normalized_ids.append(parse_entity_id(channel_id, "channel"))
         except ValueError:
             continue
     normalized_ids = sorted(set(normalized_ids))
@@ -983,7 +1069,7 @@ async def read_config_all_channels(
 
 async def read_config_one_channel(channel_id):
     return_item = {}
-    channel_id = normalize_id(channel_id, "channel")
+    channel_id = parse_entity_id(channel_id, "channel")
     async with Session() as session:
         result_query = await session.execute(
             select(Channel)
@@ -1267,7 +1353,7 @@ async def update_channels_order(config, data):
     async with Session() as session:
         async with session.begin():
             for channel_id, channel_data in data.items():
-                normalized = normalize_id(channel_id, "channel")
+                normalized = parse_entity_id(channel_id, "channel")
                 number = channel_data.get("number")
                 if number is not None:
                     try:

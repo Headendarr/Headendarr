@@ -29,7 +29,7 @@ from backend.channels import (
 )
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
-from backend.utils import fast_url_hash, normalize_id, is_truthy
+from backend.utils import fast_url_hash, parse_entity_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
 from backend.datetime_utils import to_utc_iso
@@ -400,7 +400,7 @@ async def api_get_channels():
 @blueprint.route("/tic-api/channels/<channel_id>/stream-suggestions", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_stream_suggestions(channel_id):
-    channel_id = normalize_id(channel_id, "channel")
+    channel_id = parse_entity_id(channel_id, "channel")
     async with Session() as session:
         result = await session.execute(
             select(ChannelSuggestion)
@@ -449,7 +449,7 @@ async def api_get_channel_stream_suggestions(channel_id):
 @blueprint.route("/tic-api/channels/<channel_id>/logo-suggestions", methods=["GET"])
 @admin_auth_required
 async def api_get_channel_logo_suggestions(channel_id):
-    channel_id = normalize_id(channel_id, "channel")
+    channel_id = parse_entity_id(channel_id, "channel")
     async with Session() as session:
         result = await session.execute(
             select(Channel)
@@ -538,7 +538,7 @@ async def api_get_channel_logo_suggestions(channel_id):
 @blueprint.route("/tic-api/channels/<channel_id>/logo-suggestions/apply", methods=["POST"])
 @admin_auth_required
 async def api_apply_channel_logo_suggestion(channel_id):
-    channel_id = normalize_id(channel_id, "channel")
+    channel_id = parse_entity_id(channel_id, "channel")
     async with Session() as session:
         async with session.begin():
             result = await session.execute(
@@ -641,8 +641,8 @@ async def api_apply_channel_logo_suggestion(channel_id):
 @blueprint.route("/tic-api/channels/<channel_id>/stream-suggestions/<suggestion_id>/dismiss", methods=["POST"])
 @admin_auth_required
 async def api_dismiss_channel_stream_suggestion(channel_id, suggestion_id):
-    channel_id = normalize_id(channel_id, "channel")
-    suggestion_id = normalize_id(suggestion_id, "suggestion")
+    channel_id = parse_entity_id(channel_id, "channel")
+    suggestion_id = parse_entity_id(suggestion_id, "suggestion")
     async with Session() as session:
         async with session.begin():
             result = await session.execute(
@@ -888,7 +888,7 @@ async def api_set_config_multiple_channels():
     config = current_app.config["APP_CONFIG"]
     for channel_id in json_data.get("channels", {}):
         channel = json_data["channels"][channel_id]
-        normalized = normalize_id(channel_id, "channel")
+        normalized = parse_entity_id(channel_id, "channel")
         await update_channel(config, normalized, channel)
     await queue_background_channel_update_tasks(config)
     return jsonify({"success": True})
@@ -1051,7 +1051,7 @@ async def api_delete_multiple_channels():
 
     missing = []
     for channel_id in json_data.get("channels", {}):
-        normalized = normalize_id(channel_id, "channel")
+        normalized = parse_entity_id(channel_id, "channel")
         deleted = await delete_channel(normalized)
         if not deleted:
             missing.append(normalized)
@@ -1067,7 +1067,7 @@ async def api_delete_multiple_channels():
 async def api_delete_config_channels(channel_id):
     config = current_app.config["APP_CONFIG"]
     try:
-        channel_id = normalize_id(channel_id, "channel")
+        channel_id = parse_entity_id(channel_id, "channel")
     except ValueError:
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     deleted = await delete_channel(channel_id)
@@ -1079,7 +1079,7 @@ async def api_delete_config_channels(channel_id):
 @blueprint.route("/tic-api/channels/<channel_id>/logo/<file_placeholder>", methods=["GET"])
 async def api_get_channel_logo(channel_id, file_placeholder):
     try:
-        channel_id = normalize_id(channel_id, "channel")
+        channel_id = parse_entity_id(channel_id, "channel")
     except ValueError:
         return jsonify({"success": False, "message": "Invalid channel id"}), 400
     image_base64_string, mime_type = await read_channel_logo(channel_id)

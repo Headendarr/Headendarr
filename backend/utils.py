@@ -3,7 +3,7 @@
 import hashlib
 
 
-def normalize_id(value, name):
+def parse_entity_id(value, name):
     try:
         return int(value)
     except (TypeError, ValueError):
