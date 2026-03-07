@@ -82,6 +82,14 @@
                     label="Route per-source playlists & per-source HDHomeRun via TVHeadend"
                     description="Applies only to per-source endpoints (for example /playlist/<id>.m3u and /hdhr_device/.../<id>). Clients connect to TVHeadend first, then TVHeadend fetches streams from Headendarr."
                   />
+                  <AdmonitionBanner
+                    v-if="routePlaylistsThroughTvh"
+                    type="warning"
+                    class="q-mb-md"
+                  >
+                    Enabling this can temporarily break M3U/HDHomeRun playback until channels are mapped and validated
+                    in TVHeadend. On large channel lists this catch-up can take some time.
+                  </AdmonitionBanner>
                 </div>
                 <div class="text-caption text-grey-7">
                   Stream profiles define the output formats clients can request and channels can use with Channel
@@ -148,14 +156,6 @@
                     </q-item-section>
                   </q-item>
                 </q-list>
-                <AdmonitionBanner
-                  v-if="routePlaylistsThroughTvh"
-                  type="warning"
-                  class="q-mb-md"
-                >
-                  Enabling this can temporarily break M3U/HDHomeRun playback until channels are mapped and validated
-                  in TVHeadend. On large channel lists this catch-up can take some time.
-                </AdmonitionBanner>
 
                 <q-separator />
 
