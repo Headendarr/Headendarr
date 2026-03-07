@@ -884,7 +884,10 @@ async def api_set_config_channels(channel_id):
 async def api_set_config_multiple_channels_order():
     json_data = await request.get_json()
     config = current_app.config["APP_CONFIG"]
-    await update_channels_order(config, json_data.get("channels", {}))
+    try:
+        await update_channels_order(config, json_data.get("channels", {}))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     await queue_background_channel_update_tasks(config)
     return jsonify({"success": True})
 

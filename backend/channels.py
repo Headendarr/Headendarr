@@ -64,6 +64,85 @@ from backend.utils import fast_url_hash, parse_entity_id
 logger = logging.getLogger("tic.channels")
 
 
+def _parse_channel_number(value):
+    if value in ("", None):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _next_available_channel_number(session, minimum=1000):
+    current_max = await session.scalar(select(func.max(Channel.number)).where(Channel.number.is_not(None)))
+    if current_max is None:
+        return int(minimum)
+    return max(int(minimum), int(current_max) + 1)
+
+
+async def _insert_new_channel_number_with_shift(session, channel, requested_number):
+    target_number = _parse_channel_number(requested_number)
+    if target_number is None:
+        target_number = await _next_available_channel_number(session)
+    await session.execute(
+        update(Channel)
+        .where(
+            Channel.id != channel.id,
+            Channel.number.is_not(None),
+            Channel.number >= target_number,
+        )
+        .values(number=Channel.number + 1)
+    )
+    channel.number = target_number
+
+
+async def _set_channel_number_with_shift(session, channel, requested_number):
+    target_number = _parse_channel_number(requested_number)
+    if target_number is None:
+        return
+
+    current_number = _parse_channel_number(channel.number)
+    if current_number is None:
+        await session.execute(
+            update(Channel)
+            .where(
+                Channel.id != channel.id,
+                Channel.number.is_not(None),
+                Channel.number >= target_number,
+            )
+            .values(number=Channel.number + 1)
+        )
+        channel.number = target_number
+        return
+
+    if target_number == current_number:
+        return
+
+    if target_number < current_number:
+        await session.execute(
+            update(Channel)
+            .where(
+                Channel.id != channel.id,
+                Channel.number.is_not(None),
+                Channel.number >= target_number,
+                Channel.number < current_number,
+            )
+            .values(number=Channel.number + 1)
+        )
+    else:
+        await session.execute(
+            update(Channel)
+            .where(
+                Channel.id != channel.id,
+                Channel.number.is_not(None),
+                Channel.number <= target_number,
+                Channel.number > current_number,
+            )
+            .values(number=Channel.number - 1)
+        )
+    channel.number = target_number
+
+
 def _extract_cso_payload(data, current_enabled=False, current_policy=None):
     raw_enabled = data.get("cso_enabled", current_enabled)
     cso_enabled = bool(raw_enabled)
@@ -1247,7 +1326,7 @@ async def add_new_channel(config, data, commit=True):
             enabled=data.get("enabled"),
             name=data.get("name"),
             logo_url=data.get("logo_url"),
-            number=data.get("number"),
+            number=None,
             cso_enabled=cso_enabled,
             cso_policy=cso_policy,
         )
@@ -1351,6 +1430,8 @@ async def add_new_channel(config, data, commit=True):
             channel.sources = new_sources
 
         session.add(channel)
+        await session.flush()
+        await _insert_new_channel_number_with_shift(session, channel, data.get("number"))
 
         if commit:
             await session.commit()
@@ -1366,15 +1447,20 @@ async def update_channels_order(config, data):
     """
     async with Session() as session:
         async with session.begin():
+            updates = {}
             for channel_id, channel_data in data.items():
-                normalized = parse_entity_id(channel_id, "channel")
-                number = channel_data.get("number")
-                if number is not None:
-                    try:
-                        number = int(number)
-                    except (TypeError, ValueError):
-                        number = None
-                    await session.execute(update(Channel).where(Channel.id == normalized).values(number=number))
+                parsed_channel_id = parse_entity_id(channel_id, "channel")
+                updates[parsed_channel_id] = _parse_channel_number(channel_data.get("number"))
+
+            if any(number is None for number in updates.values()):
+                raise ValueError("Channel numbers are required and must be integers.")
+
+            non_null_numbers = [number for number in updates.values() if number is not None]
+            if len(non_null_numbers) != len(set(non_null_numbers)):
+                raise ValueError("Duplicate channel numbers are not allowed.")
+
+            for channel_id, number in updates.items():
+                await session.execute(update(Channel).where(Channel.id == channel_id).values(number=number))
 
 
 async def update_channel(config, channel_id, data):
@@ -1404,14 +1490,8 @@ async def update_channel(config, channel_id, data):
             if logo_url is None:
                 logo_url = data.get("logo_url")
             channel.logo_url = logo_url
-            number_value = data.get("number")
-            if number_value in ("", None):
-                channel.number = None
-            else:
-                try:
-                    channel.number = int(number_value)
-                except (TypeError, ValueError):
-                    channel.number = None
+            number_value = data["number"] if "number" in data else channel.number
+            await _set_channel_number_with_shift(session, channel, number_value)
 
             # Category Tags
             # -- Remove existing tags
