@@ -3,8 +3,6 @@
     v-model="isOpen"
     title="Stream Diagnostics"
     width="700px"
-    :actions="dialogActions"
-    @action="onDialogAction"
     @hide="onDialogHide"
   >
     <div class="q-pa-md">
@@ -39,6 +37,15 @@
           :disable="loading"
         />
       </q-form>
+
+      <div v-if="!loading" class="row justify-center q-mb-md">
+        <TicButton
+          :label="report ? 'Run Again' : 'Start Test'"
+          :icon="report ? 'refresh' : 'play_arrow'"
+          color="primary"
+          @click="startTest"
+        />
+      </div>
 
       <div v-if="loading" class="column items-center justify-center q-pa-xl diagnostic-loading-container">
         <div class="relative-position q-mb-xl">
@@ -205,6 +212,7 @@
 
 <script>
 import axios from 'axios';
+import TicButton from 'components/ui/buttons/TicButton.vue';
 import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
 import TicTextInput from 'components/ui/inputs/TicTextInput.vue';
 import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
@@ -212,6 +220,7 @@ import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 export default {
   name: 'StreamTestDialog',
   components: {
+    TicButton,
     TicDialogWindow,
     TicTextInput,
     TicToggleInput,
@@ -261,29 +270,6 @@ export default {
     },
   },
   computed: {
-    dialogActions() {
-      if (this.loading) {
-        return [];
-      }
-      if (this.report) {
-        return [
-          {
-            id: 'restart',
-            label: 'Run Again',
-            icon: 'refresh',
-            color: 'primary',
-          },
-        ];
-      }
-      return [
-        {
-          id: 'start',
-          label: 'Start Test',
-          icon: 'play_arrow',
-          color: 'primary',
-        },
-      ];
-    },
     progressStatusLabel() {
       if (this.testProgress < 0.1) return 'Connecting to stream...';
       if (this.testProgress < 0.3) return 'Resolving network route...';
@@ -312,11 +298,6 @@ export default {
         // Optional: cancel task on backend?
       }
       this.$emit('hide');
-    },
-    onDialogAction(action) {
-      if (action.id === 'start' || action.id === 'restart') {
-        this.startTest();
-      }
     },
     startTest() {
       if (!this.localStreamUrl) {
