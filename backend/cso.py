@@ -917,6 +917,18 @@ class CsoIngestSession:
         self.process_token = 0
         self.failover_failed_sources = set()
 
+    async def _refresh_sources_from_db(self):
+        """Refresh the internal sources list from the database to capture state changes."""
+        channel = await resolve_channel_for_stream(self.channel_id)
+        if channel:
+            async with self.lock:
+                self.sources = list(channel.sources or [])
+                logger.debug(
+                    "CSO ingest refreshed sources channel=%s count=%s",
+                    self.channel_id,
+                    len(self.sources),
+                )
+
     async def start(self):
         async with self.lock:
             if self.running:
@@ -993,6 +1005,9 @@ class CsoIngestSession:
             playlist = getattr(source, "playlist", None)
             if playlist is not None and not bool(getattr(playlist, "enabled", False)):
                 continue
+            xc_account = getattr(source, "xc_account", None)
+            if xc_account is not None and not bool(getattr(xc_account, "enabled", False)):
+                continue
             stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
             if not stream_url:
                 continue
@@ -1027,6 +1042,9 @@ class CsoIngestSession:
                 continue
             playlist = getattr(source, "playlist", None)
             if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+                continue
+            xc_account = getattr(source, "xc_account", None)
+            if xc_account is not None and not bool(getattr(xc_account, "enabled", False)):
                 continue
             stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
             if not stream_url:
@@ -1444,6 +1462,7 @@ class CsoIngestSession:
                         "unauthorized",
                         "http error",
                         "server returned",
+                        "invalid data",
                     )
                 )
             )
@@ -1530,6 +1549,27 @@ class CsoIngestSession:
             failed_source_id,
             hold_down_applied,
         )
+
+        await self._refresh_sources_from_db()
+
+        # If a single-source channel (or if only one source is currently enabled)
+        # exits gracefully with code 0, allow an immediate restart of that same source
+        # to bridge the upstream disconnection without cycling through others or holding down.
+        if graceful_reader_end:
+            async with self.lock:
+                eligible_ids = self._eligible_source_ids_unlocked()
+            if len(eligible_ids) == 1 and failed_source_id in eligible_ids:
+                logger.info(
+                    "CSO ingest immediate restart of only eligible source after graceful end channel=%s source_id=%s",
+                    self.channel_id,
+                    failed_source_id,
+                )
+                async with self.lock:
+                    self.failover_failed_sources.clear()
+                    start_result = await self._start_best_source_unlocked(reason="failover", ignore_hold_down=True)
+                    if start_result.success:
+                        self.running = True
+                        return True
 
         deadline = time.time() + CSO_INGEST_RECOVERY_RETRY_WINDOW_SECONDS
         last_result = CsoStartResult(success=False, reason="no_available_source")
