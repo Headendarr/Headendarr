@@ -87,6 +87,8 @@ async def _fetch_cso_attention_map(channel_ids):
                         "capacity_blocked",
                         "health_actioned",
                         "health_recovered",
+                        "scheduled_health_failed",
+                        "scheduled_health_recovered",
                         "switch_success",
                         "session_start",
                     ]
@@ -149,7 +151,7 @@ async def _fetch_cso_attention_map(channel_ids):
             if current is None or created_at > current.get("_created_at"):
                 channel_state["connection_issue"] = payload
 
-        if event_type == "health_actioned" or reason in {
+        if event_type in {"health_actioned", "scheduled_health_failed"} or reason in {
             "under_speed",
             "stall_timeout",
             "too_slow",
@@ -169,7 +171,7 @@ async def _fetch_cso_attention_map(channel_ids):
                 health_state["latest_unhealthy"] = payload
             continue
 
-        if event_type == "health_recovered":
+        if event_type in {"health_recovered", "scheduled_health_recovered"}:
             source_id = int(payload.get("source_id") or int(details.get("source_id") or 0) or 0)
             health_state = channel_state["health_by_source"].setdefault(
                 source_id,

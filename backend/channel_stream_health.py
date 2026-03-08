@@ -170,10 +170,12 @@ async def apply_stream_probe_result_to_source(
         "health_check_type": str(health_check_type or "manual"),
     }
     now_dt = utc_now_naive()
+    previous_status = ""
     async with Session() as session:
         async with session.begin():
             current = await session.get(ChannelSource, source_id)
             if current:
+                previous_status = str(getattr(current, "last_health_check_status", "") or "").strip().lower()
                 current.last_health_check_at = now_dt
                 current.last_health_check_status = status
                 current.last_health_check_reason = reason
@@ -190,26 +192,52 @@ async def apply_stream_probe_result_to_source(
         "health_check_type": str(health_check_type or "manual"),
         "metrics": metrics_payload,
     }
-    if status == "unhealthy":
-        await emit_channel_stream_event(
-            channel_id=int(getattr(source, "channel_id", 0) or 0),
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
-            session_id=f"health-check-source-{source_id}",
-            event_type="health_actioned",
-            severity="warning",
-            details=event_details,
-        )
-    elif status == "healthy":
-        await emit_channel_stream_event(
-            channel_id=int(getattr(source, "channel_id", 0) or 0),
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
-            session_id=f"health-check-source-{source_id}",
-            event_type="health_recovered",
-            severity="info",
-            details=event_details,
-        )
+    is_periodic_background = str(health_check_type or "").strip().lower() == "periodic_background"
+    channel_id = int(getattr(source, "channel_id", 0) or 0)
+    playlist_id = getattr(source, "playlist_id", None)
+    session_id = f"health-check-source-{source_id}"
+    if is_periodic_background:
+        if status == "unhealthy" and previous_status != "unhealthy":
+            await emit_channel_stream_event(
+                channel_id=channel_id,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                session_id=session_id,
+                event_type="scheduled_health_failed",
+                severity="warning",
+                details=event_details,
+            )
+        elif status == "healthy" and previous_status == "unhealthy":
+            await emit_channel_stream_event(
+                channel_id=channel_id,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                session_id=session_id,
+                event_type="scheduled_health_recovered",
+                severity="info",
+                details=event_details,
+            )
+    else:
+        if status == "unhealthy":
+            await emit_channel_stream_event(
+                channel_id=channel_id,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                session_id=session_id,
+                event_type="health_actioned",
+                severity="warning",
+                details=event_details,
+            )
+        elif status == "healthy":
+            await emit_channel_stream_event(
+                channel_id=channel_id,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                session_id=session_id,
+                event_type="health_recovered",
+                severity="info",
+                details=event_details,
+            )
     return True
 
 

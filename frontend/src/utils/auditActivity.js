@@ -46,6 +46,12 @@ export function getAuditActivityTitle(entry) {
     if (eventType === 'health_actioned') {
       return 'CSO Health Actioned';
     }
+    if (eventType === 'scheduled_health_failed') {
+      return 'Scheduled Health Check Failed';
+    }
+    if (eventType === 'scheduled_health_recovered') {
+      return 'Scheduled Health Check Recovered';
+    }
     if (eventType) {
       return `CSO ${prettifyEvent(eventType)}`;
     }
