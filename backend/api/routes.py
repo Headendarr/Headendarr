@@ -136,8 +136,6 @@ async def _get_tvh_proxy_base():
     tvh_settings = await config.tvh_connection_settings()
     username = tvh_settings.get("tvh_username")
     password = tvh_settings.get("tvh_password")
-    if not username or not password:
-        return None, None, None
     host = tvh_settings["tvh_host"]
     port = tvh_settings["tvh_port"]
     path = tvh_settings["tvh_path"].rstrip("/")
@@ -145,10 +143,20 @@ async def _get_tvh_proxy_base():
     return base_url, username, password
 
 
-async def _proxy_tvh_http(subpath: str, stream_mode: bool = False):
-    base_url, username, password = await _get_tvh_proxy_base()
+async def _proxy_tvh_http(
+    subpath: str,
+    stream_mode: bool = False,
+    auth_username: str | None = None,
+    auth_password: str | None = None,
+    missing_auth_status: int = 503,
+):
+    base_url, default_username, default_password = await _get_tvh_proxy_base()
     if not base_url:
         return jsonify({"success": False, "message": "TVHeadend credentials not configured"}), 503
+    username = auth_username if auth_username is not None else default_username
+    password = auth_password if auth_password is not None else default_password
+    if not username or not password:
+        return jsonify({"success": False, "message": "Unauthorized"}), missing_auth_status
     path = subpath.lstrip("/")
     target = f"{base_url}/{path}" if path else f"{base_url}/"
     if request.query_string:
@@ -227,7 +235,18 @@ async def tvh_stream_proxy(subpath: str):
     # Internal stream-only proxy for external clients (stream key auth).
     if not (subpath.startswith("stream/") or subpath.startswith("dvrfile/")):
         return jsonify({"success": False, "message": "Not found"}), 404
-    return await _proxy_tvh_http(subpath, stream_mode=True)
+    stream_user = getattr(request, "_stream_user", None)
+    stream_username = getattr(stream_user, "username", None)
+    stream_password = getattr(stream_user, "streaming_key", None)
+    if not stream_username or not stream_password:
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+    return await _proxy_tvh_http(
+        subpath,
+        stream_mode=True,
+        auth_username=stream_username,
+        auth_password=stream_password,
+        missing_auth_status=401,
+    )
 
 
 @blueprint.websocket("/tic-tvh/<path:subpath>")
