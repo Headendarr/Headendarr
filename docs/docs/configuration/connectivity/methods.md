@@ -71,7 +71,7 @@ This method provides a single M3U playlist and XMLTV URL containing all mapped c
 
 - **TiviMate**: A popular and highly customizable IPTV client for Android TV.
 - **VLC**: A simple way to test streams on a desktop.
-- **Jellyfin**: Second recommended Jellyfin option when not using the Jellyfin TVHeadend plugin.
+- **Jellyfin**: Fallback option when not using per-source HDHomeRun via TVHeadend or the Jellyfin TVHeadend plugin.
 - Any client that does not support adding multiple M3U playlists as separate sources.
 
 ### Connection Details
@@ -102,7 +102,7 @@ This method generates a unique M3U playlist for each of your channel sources. It
 
 :::note Jellyfin note
 For Jellyfin, per-source M3U tuners can produce duplicate channels when the same lineup exists across multiple playlists.
-Prefer the Jellyfin TVHeadend plugin first, then one combined M3U tuner (Method 2) as the second option.
+Prefer per-source HDHomeRun via TVHeadend first, then the Jellyfin TVHeadend plugin, then one combined M3U tuner (Method 2).
 Reference: Jellyfin issue [#632](https://github.com/jellyfin/jellyfin/issues/632).
 :::
 
@@ -139,11 +139,6 @@ Headendarr can pretend to be an HDHomeRun network tuner. This is an excellent me
 - **Plex**: The primary choice for HDHomeRun emulation for its Live TV & DVR feature.
 - **Emby / Jellyfin**: Both can also discover and use HDHomeRun tuners.
 - **Channels DVR**: A premium DVR service that works well with HDHomeRun tuners.
-
-:::warning Jellyfin HDHR issues
-For Jellyfin, per-source HDHomeRun via TVHeadend can show channel disconnect issues in some deployments.
-Prefer the Jellyfin plugin first, then combined M3U, before using this method.
-:::
 
 ### How It Works
 

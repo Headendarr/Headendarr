@@ -16,11 +16,33 @@ Recommended profile order for Jellyfin:
 3. **`matroska`** (use carefully; `aac-matroska` is usually safer than plain `matroska`)
    :::
 
-## Option #1 (recommended): Jellyfin TVHeadend plugin
+## Option #1 (recommended): Per-source HDHomeRun via TVHeadend
+
+This is the recommended default for Jellyfin when you want stable playback and per-source connection-limit behaviour.
+
+### Steps
+
+1. In Headendarr **Application Settings**, enable **Route per-source playlists & per-source HDHomeRun via TVHeadend**.
+2. In Headendarr **Application Settings**, enable **Use CSO stream buffer for TVHeadend mux streams**.
+3. In Jellyfin's **Live TV** settings page, click **Add tuner device** and complete these steps:
+   1. On the next page, select **HD Homerun** as the tuner type.
+   2. Copy the tuner URL from **HDHomeRun Tuner Emulators** in **Show connection details** and paste it into the **Tuner IP Address** field.
+   3. Click **Save**.
+
+[![Jellyfin M3U tuner setup with recommended fields](/img/screenshots/jellyfin-setup-copy-per-source-hdhr-url.png)](/img/screenshots/jellyfin-setup-copy-per-source-hdhr-url.png)
+
+4. In Jellyfin's **Live TV** settings page, click **Add provider** and select **XMLTV**.
+5. In the XMLTV provider dialog, complete these steps **before clicking Save**:
+   1. Copy the **XMLTV Guide URL** from **Show connection details** and paste it into Jellyfin.
+   2. Ensure **Enable for all tuner devices** is selected.
+
+[![Jellyfin XMLTV provider setup with recommended fields](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)
+
+## Option #2: Jellyfin TVHeadend plugin
 
 If you use the Jellyfin TVHeadend plugin, Jellyfin connects directly to the TVHeadend backend (not Headendarr playlist endpoints).
 
-This is the recommended default for Jellyfin at this time.
+This is a valid alternative if you prefer plugin-based TVH integration.
 
 :::warning Plugin trade-offs
 This plugin path is valid, but it has known downsides in some environments:
@@ -52,7 +74,7 @@ Plugin references:
 - Jellyfin TVHeadend plugin source: [github.com/jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend)
 - Jellyfin TVHeadend plugin docs: [jellyfin.org/docs/general/server/plugins/tvheadend](https://jellyfin.org/docs/general/server/plugins/tvheadend/)
 
-## Option #2: Combined M3U playlist
+## Option #3: Combined M3U playlist
 
 Multiple per-source M3U tuners can cause duplicate channels in Jellyfin (Jellyfin issue [#632](https://github.com/jellyfin/jellyfin/issues/632)). Using one combined M3U tuner avoids that duplication pattern.
 
@@ -87,22 +109,3 @@ Reference: Jellyfin issue [#632](https://github.com/jellyfin/jellyfin/issues/632
 [![Jellyfin XMLTV provider setup with recommended fields](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)
 
 6. Run channel/guide mapping and test playback.
-
-## Option #3: Per-source HDHomeRun via TVHeadend
-
-This is a valid fallback option if you specifically want tuner-device behaviour and per-source connection limits in Jellyfin.
-
-:::warning HDHR routing issues
-Jellyfin can hold HDHomeRun-backed connections open when connecting directly to CSO endpoints.
-
-Per-source HDHomeRun routed through TVHeadend can also show channel disconnect/drop issues in some deployments.
-
-Use this option only if you accept extra operational tuning and troubleshooting across both routing paths.
-:::
-
-### Steps
-
-1. In Headendarr, enable **Route per-source playlists & per-source HDHomeRun via TVHeadend**.
-2. In Headendarr, enable **Use CSO stream buffer for TVHeadend mux streams**.
-3. In Jellyfin, add HDHomeRun tuners using per-source HDHomeRun URLs.
-4. Add XMLTV from Headendarr and test playback stability over time.
