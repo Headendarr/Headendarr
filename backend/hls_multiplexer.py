@@ -16,6 +16,9 @@ from backend.http_headers import sanitise_headers
 proxy_logger = logging.getLogger("proxy")
 ffmpeg_logger = logging.getLogger("ffmpeg")
 
+_DIRECT_STREAM_CONNECT_TIMEOUT = float(os.environ.get("HLS_PROXY_DIRECT_CONNECT_TIMEOUT_SECONDS", "15"))
+_DIRECT_STREAM_READ_TIMEOUT = float(os.environ.get("HLS_PROXY_DIRECT_READ_TIMEOUT_SECONDS", "120"))
+
 """
 HLS Proxy Core Engine - Integration Guide
 
@@ -356,7 +359,14 @@ class AsyncDirectStream(BaseStreamMultiplexer):
 
     async def _read_loop(self):
         try:
-            async with aiohttp.ClientSession() as session:
+            # Use live-stream-safe timeouts: no total wall-clock cap, explicit socket timeouts.
+            timeout = aiohttp.ClientTimeout(
+                total=None,
+                connect=_DIRECT_STREAM_CONNECT_TIMEOUT,
+                sock_connect=_DIRECT_STREAM_CONNECT_TIMEOUT,
+                sock_read=_DIRECT_STREAM_READ_TIMEOUT,
+            )
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(self.decoded_url, headers=self.headers) as resp:
                     if resp.status != 200:
                         proxy_logger.error(
@@ -368,7 +378,12 @@ class AsyncDirectStream(BaseStreamMultiplexer):
                             break
                         await self._broadcast(chunk)
         except Exception as e:
-            proxy_logger.error("DirectStream read error for %s: %s", self.decoded_url, e)
+            proxy_logger.error(
+                "DirectStream read error for %s: %s (%r)",
+                self.decoded_url,
+                type(e).__name__,
+                e,
+            )
         finally:
             await self.stop(force=True)
 
