@@ -212,7 +212,10 @@ async def _proxy_tvh_http(
             resp.release()
             await session.close()
 
-    return Response(stream_body(), status=resp.status, headers=response_headers)
+    response = Response(stream_body(), status=resp.status, headers=response_headers)
+    if stream_mode:
+        response.timeout = None
+    return response
 
 
 @blueprint.route("/tic-tvh/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
