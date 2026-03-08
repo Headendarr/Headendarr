@@ -62,6 +62,15 @@ def _get_connection_id(default_new=False):
     return None
 
 
+def _should_allow_unavailable_slate(effective_profile: str, channel) -> bool:
+    profile_name = str(effective_profile or "").strip().lower()
+    channel_forced_cso = bool(getattr(channel, "cso_enabled", False)) if channel is not None else False
+    # For TVH profile traffic, return hard failures unless the channel is explicitly forced through CSO.
+    if profile_name == "tvh" and not channel_forced_cso:
+        return False
+    return True
+
+
 def _client_fingerprint(stream_key, ip_address, user_agent):
     payload = f"{str(stream_key or '').strip()}|{str(ip_address or '').strip()}|{str(user_agent or '').strip()}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -238,7 +247,8 @@ async def _hls_output_has_client(output_session_key: str, connection_id: str) ->
 async def _connection_limit_blocked_response(config, channel, effective_profile="default"):
     from backend.api.routes_hls_proxy import CSO_UNAVAILABLE_SHOW_SLATE, _cso_unavailable_slate_stream
 
-    if not CSO_UNAVAILABLE_SHOW_SLATE:
+    allow_unavailable_slate = _should_allow_unavailable_slate(effective_profile, channel)
+    if not CSO_UNAVAILABLE_SHOW_SLATE or not allow_unavailable_slate:
         return Response(CONNECTION_LIMIT_REACHED_MESSAGE, status=503)
 
     resolved_profile = _resolve_cso_profile_for_source_request(config, requested_profile=effective_profile)
@@ -486,7 +496,8 @@ async def stream_from_source_gate(stream_id):
             )
 
             message = (error_message or "").strip()
-            if (status or 500) == 503 and CSO_UNAVAILABLE_SHOW_SLATE:
+            allow_unavailable_slate = _should_allow_unavailable_slate(effective_profile, channel)
+            if (status or 500) == 503 and CSO_UNAVAILABLE_SHOW_SLATE and allow_unavailable_slate:
                 lower_message = message.lower()
                 reason = "capacity_blocked" if "connection limit" in lower_message else "playback_unavailable"
                 detail_hint = _summarize_playback_issue(message) if reason == "playback_unavailable" else ""
@@ -558,7 +569,8 @@ async def stream_from_source_gate(stream_id):
                         session and getattr(session, "last_error", "") == "output_reader_ended"
                     )
 
-                if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE:
+                allow_unavailable_slate = _should_allow_unavailable_slate(effective_profile, channel)
+                if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE and allow_unavailable_slate:
                     reason = "playback_unavailable"
                     detail_hint = await _latest_cso_playback_issue_hint(
                         int(getattr(channel, "id", 0) or 0),
@@ -795,7 +807,8 @@ async def stream_channel(channel_id):
         )
 
         message = (error_message or "").strip()
-        if (status or 500) == 503 and CSO_UNAVAILABLE_SHOW_SLATE:
+        allow_unavailable_slate = _should_allow_unavailable_slate(effective_profile, channel)
+        if (status or 500) == 503 and CSO_UNAVAILABLE_SHOW_SLATE and allow_unavailable_slate:
             lower_message = message.lower()
             reason = "capacity_blocked" if "connection limit" in lower_message else "playback_unavailable"
             detail_hint = _summarize_playback_issue(message) if reason == "playback_unavailable" else ""
@@ -867,7 +880,8 @@ async def stream_channel(channel_id):
                     session and getattr(session, "last_error", "") == "output_reader_ended"
                 )
 
-            if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE:
+            allow_unavailable_slate = _should_allow_unavailable_slate(effective_profile, channel)
+            if should_emit_failure_slate and CSO_UNAVAILABLE_SHOW_SLATE and allow_unavailable_slate:
                 reason = "playback_unavailable"
                 detail_hint = await _latest_cso_playback_issue_hint(
                     channel_id_int,

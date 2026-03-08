@@ -24,6 +24,7 @@ from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import Channel, ChannelSource, Playlist, Session
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_diagnostics import StreamProbe
+from backend.tvheadend.tvh_requests import get_tvh
 
 logger = logging.getLogger("tic.channel_stream_health")
 
@@ -124,12 +125,53 @@ def _same_stream_url(left: str, right: str) -> bool:
     return str(left or "").strip() == str(right or "").strip()
 
 
+async def _set_tvh_mux_scan_pending(config, source_id: int, channel_id: int, mux_uuid: str, status: str, reason: str):
+    mux_uuid_text = str(mux_uuid or "").strip()
+    if not mux_uuid_text:
+        logger.info(
+            "Skipping TVH mux rescan update for periodic health transition source_id=%s channel_id=%s reason=%s "
+            "status=%s (missing tvh_uuid)",
+            source_id,
+            channel_id,
+            reason,
+            status,
+        )
+        return False
+
+    try:
+        async with await get_tvh(config) as tvh:
+            await tvh.idnode_save({"uuid": mux_uuid_text, "scan_state": 1})
+        logger.info(
+            "Requested TVH mux rescan (scan_state=PEND) for periodic health transition source_id=%s channel_id=%s "
+            "mux_uuid=%s reason=%s status=%s",
+            source_id,
+            channel_id,
+            mux_uuid_text,
+            reason,
+            status,
+        )
+        return True
+    except Exception as ex:
+        logger.warning(
+            "Failed to request TVH mux rescan for periodic health transition source_id=%s channel_id=%s mux_uuid=%s "
+            "reason=%s status=%s error=%s",
+            source_id,
+            channel_id,
+            mux_uuid_text,
+            reason,
+            status,
+            ex,
+        )
+        return False
+
+
 async def apply_stream_probe_result_to_source(
     source_id,
     probe: StreamProbe,
     health_check_type="manual",
     tested_stream_url: str | None = None,
     require_exact_source_url_match: bool = False,
+    config=None,
 ):
     try:
         source_id = int(source_id)
@@ -171,11 +213,13 @@ async def apply_stream_probe_result_to_source(
     }
     now_dt = utc_now_naive()
     previous_status = ""
+    source_tvh_uuid = ""
     async with Session() as session:
         async with session.begin():
             current = await session.get(ChannelSource, source_id)
             if current:
                 previous_status = str(getattr(current, "last_health_check_status", "") or "").strip().lower()
+                source_tvh_uuid = str(getattr(current, "tvh_uuid", "") or "").strip()
                 current.last_health_check_at = now_dt
                 current.last_health_check_status = status
                 current.last_health_check_reason = reason
@@ -198,6 +242,8 @@ async def apply_stream_probe_result_to_source(
     session_id = f"health-check-source-{source_id}"
     if is_periodic_background:
         if status == "unhealthy" and previous_status != "unhealthy":
+            if config is not None:
+                await _set_tvh_mux_scan_pending(config, source_id, channel_id, source_tvh_uuid, status, reason)
             await emit_channel_stream_event(
                 channel_id=channel_id,
                 source_id=source_id,
@@ -208,6 +254,8 @@ async def apply_stream_probe_result_to_source(
                 details=event_details,
             )
         elif status == "healthy" and previous_status == "unhealthy":
+            if config is not None:
+                await _set_tvh_mux_scan_pending(config, source_id, channel_id, source_tvh_uuid, status, reason)
             await emit_channel_stream_event(
                 channel_id=channel_id,
                 source_id=source_id,
@@ -400,6 +448,7 @@ async def _run_source_health_check(config, source):
                 int(source.id),
                 probe,
                 health_check_type="periodic_background",
+                config=config,
             )
         return status, reason
     finally:
