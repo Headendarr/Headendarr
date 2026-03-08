@@ -53,6 +53,7 @@ CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = 2
 CSO_INGEST_RW_TIMEOUT_US = 15_000_000
 CSO_INGEST_TIMEOUT_US = 10_000_000
 CSO_OUTPUT_CLIENT_STALE_SECONDS = 8.0
+CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH = 20.0
 CSO_HLS_SEGMENT_SECONDS = 3
 CSO_HLS_LIST_SIZE = 8
 CSO_HLS_CLIENT_IDLE_SECONDS = min(10, max(1, int(CSO_HLS_SEGMENT_SECONDS) * 3))
@@ -1943,6 +1944,13 @@ class CsoOutputSession:
 
             await self.stop(force=True)
 
+    @staticmethod
+    def _stale_seconds_for_connection(connection_id):
+        connection_text = str(connection_id or "").strip().lower()
+        if connection_text.startswith("tvh-"):
+            return float(CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH)
+        return float(CSO_OUTPUT_CLIENT_STALE_SECONDS)
+
     async def _broadcast(self, chunk):
         if not chunk:
             return
@@ -1959,8 +1967,9 @@ class CsoOutputSession:
                 self.history_bytes -= len(old)
             for connection_id, q in list(self.clients.items()):
                 last_touch = float(self.client_last_touch.get(connection_id, now) or now)
-                if (now - last_touch) >= float(CSO_OUTPUT_CLIENT_STALE_SECONDS):
-                    stale_clients.append(connection_id)
+                stale_seconds = self._stale_seconds_for_connection(connection_id)
+                if (now - last_touch) >= stale_seconds:
+                    stale_clients.append((connection_id, stale_seconds))
                     continue
                 active_clients.append((connection_id, q))
         for connection_id, q in active_clients:
@@ -1983,13 +1992,13 @@ class CsoOutputSession:
                         state["count"] = int(state.get("count") or 0) + int(queue_result.get("dropped_items") or 0)
                 else:
                     self.client_drop_state.pop(connection_id, None)
-        for connection_id in stale_clients:
+        for connection_id, stale_seconds in stale_clients:
             logger.warning(
                 "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=no_consumer_progress stale_seconds=%s",
                 self.channel_id,
                 self.key,
                 connection_id,
-                int(CSO_OUTPUT_CLIENT_STALE_SECONDS),
+                int(stale_seconds),
             )
             await self.remove_client(connection_id)
 
@@ -2032,15 +2041,16 @@ class CsoOutputSession:
         async with self.lock:
             for connection_id in list(self.clients.keys()):
                 last_touch = float(self.client_last_touch.get(connection_id, 0.0) or 0.0)
-                if (now_value - last_touch) >= float(CSO_OUTPUT_CLIENT_STALE_SECONDS):
-                    stale_ids.append(connection_id)
-        for connection_id in stale_ids:
+                stale_seconds = self._stale_seconds_for_connection(connection_id)
+                if (now_value - last_touch) >= stale_seconds:
+                    stale_ids.append((connection_id, stale_seconds))
+        for connection_id, stale_seconds in stale_ids:
             logger.warning(
                 "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=idle_prune stale_seconds=%s",
                 self.channel_id,
                 self.key,
                 connection_id,
-                int(CSO_OUTPUT_CLIENT_STALE_SECONDS),
+                int(stale_seconds),
             )
             await self.remove_client(connection_id)
 
