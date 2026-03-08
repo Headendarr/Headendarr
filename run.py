@@ -20,9 +20,10 @@ from backend.api.tasks import (
 )
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
-from backend.auth import cleanup_stream_audit_logs
+from backend.auth import cleanup_stream_audit_logs, audit_stream_event
 from backend import create_app, config
 import asyncio
+import os
 
 # Create app
 app = create_app()
@@ -234,6 +235,15 @@ async def hourly_epg_check():
 async def main():
     async with app.app_context():
         await load_stream_activity_state()
+        try:
+            await audit_stream_event(
+                None,
+                "app_startup",
+                "/tic-api/system/startup",
+                details=f"pid={os.getpid()}",
+            )
+        except Exception:
+            app.logger.exception("Failed to record app startup audit event")
 
     # Start scheduler inside a running event loop (required by APScheduler on Py 3.13+)
     app.logger.info("Starting scheduler...")

@@ -91,6 +91,8 @@ def build_activity_label(event_type: str | None, endpoint: str | None, details: 
         return "Playback started (direct source)"
     if event in {"settings_update", "settings_changed"}:
         return "Settings changed"
+    if event == "app_startup":
+        return "Application started"
 
     if "playlist" in path:
         return "Playlist requested"
