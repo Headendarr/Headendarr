@@ -10,54 +10,8 @@ on:
     - cron: "30 2 * * 6"
 
 jobs:
-  build_frontend_cache:
-    name: Build Frontend Cache
-    runs-on: ubuntu-latest
-    steps:
-      # ---
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      # ---
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 #v3.6.0
-
-      # ---
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 #v3.8.0
-
-      # ---
-      - name: Prepare Frontend Cache Build
-        id: prepare_frontend
-        run: |
-          DOCKER_PULL="false"
-          if [[ ${GITHUB_REF} == refs/heads/master ]] || [[ "${{ github.event_name }}" == "schedule" ]]; then
-            DOCKER_PULL="true"
-          fi
-          echo "docker_pull:${DOCKER_PULL:?}"
-          echo "docker_pull=${DOCKER_PULL:?}" >> $GITHUB_OUTPUT
-
-      # ---
-      - name: Build Frontend Cache
-        if: success()
-        uses: docker/build-push-action@b32b51a8eda65d6793cd0494a773d4f6bcef32dc #v6.11.0
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: frontend_build_stage
-          platforms: linux/amd64,linux/arm64
-          pull: ${{ steps.prepare_frontend.outputs.docker_pull }}
-          push: "false"
-          cache-from: type=gha,scope=frontend-build-stage
-          cache-to: type=gha,scope=frontend-build-stage,mode=max
-
   build_docker:
     name: Build Docker Image
-    needs: [build_frontend_cache]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,6 +61,12 @@ jobs:
           fi
           DOCKER_HUB_IMAGE=docker.io/josh5/${SERVICE_NAME:?}
           GHCR_IMAGE=ghcr.io/${ORG:?}/${SERVICE_NAME:?}
+          CACHE_BRANCH=$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's|[^a-z0-9._-]+|-|g; s|^-+||; s|-+$||; s|-+|-|g')
+          if [[ -z "${CACHE_BRANCH}" ]]; then
+            CACHE_BRANCH="default"
+          fi
+          CACHE_BRANCH="${CACHE_BRANCH:0:80}"
+          MAIN_CACHE_REF="${GHCR_IMAGE}:buildcache-${SERVICE_NAME}-${CACHE_BRANCH}"
 
           # Get version from frontend/package.json
           APP_VERSION=$(jq -r .version frontend/package.json)
@@ -154,6 +114,12 @@ jobs:
 
           echo "ghcr_image:${GHCR_IMAGE:?}"
           echo "ghcr_image=${GHCR_IMAGE:?}" >> $GITHUB_OUTPUT
+
+          echo "cache_branch:${CACHE_BRANCH:?}"
+          echo "cache_branch=${CACHE_BRANCH:?}" >> $GITHUB_OUTPUT
+
+          echo "main_cache_ref:${MAIN_CACHE_REF:?}"
+          echo "main_cache_ref=${MAIN_CACHE_REF:?}" >> $GITHUB_OUTPUT
 
           echo "service_name:${SERVICE_NAME:?}"
           echo "service_name=${SERVICE_NAME:?}" >> $GITHUB_OUTPUT
@@ -234,9 +200,8 @@ jobs:
           labels: |
             ${{ steps.meta.outputs.labels }}
           cache-from: |
-            type=gha,scope=${{ steps.prepare.outputs.service_name }}-main
-            type=gha,scope=frontend-build-stage
-          cache-to: type=gha,scope=${{ steps.prepare.outputs.service_name }}-main,mode=max
+            type=registry,ref=${{ steps.prepare.outputs.main_cache_ref }}
+          cache-to: type=registry,ref=${{ steps.prepare.outputs.main_cache_ref }},mode=max
 
       # ---
       - name: Check Tag Already Exists
