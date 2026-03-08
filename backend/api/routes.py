@@ -27,6 +27,9 @@ from backend.dvr_profiles import normalize_recording_profiles, normalize_retenti
 from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIBLE_PROFILE_IDS_ORDER
 from backend.tvheadend.tvh_requests import configure_tvh
 
+_TVH_PROXY_CONNECT_TIMEOUT = float(os.environ.get("TVH_PROXY_CONNECT_TIMEOUT_SECONDS", "15"))
+_TVH_PROXY_STREAM_READ_TIMEOUT = float(os.environ.get("TVH_PROXY_STREAM_READ_TIMEOUT_SECONDS", "120"))
+
 
 @blueprint.route("/")
 def index():
@@ -142,7 +145,7 @@ async def _get_tvh_proxy_base():
     return base_url, username, password
 
 
-async def _proxy_tvh_http(subpath: str):
+async def _proxy_tvh_http(subpath: str, stream_mode: bool = False):
     base_url, username, password = await _get_tvh_proxy_base()
     if not base_url:
         return jsonify({"success": False, "message": "TVHeadend credentials not configured"}), 503
@@ -154,7 +157,15 @@ async def _proxy_tvh_http(subpath: str):
     headers.pop("Host", None)
     headers.pop("Authorization", None)
     data = await request.get_data() if request.method not in ("GET", "HEAD") else None
-    timeout = aiohttp.ClientTimeout(total=60)
+    if stream_mode:
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=_TVH_PROXY_CONNECT_TIMEOUT,
+            sock_connect=_TVH_PROXY_CONNECT_TIMEOUT,
+            sock_read=_TVH_PROXY_STREAM_READ_TIMEOUT,
+        )
+    else:
+        timeout = aiohttp.ClientTimeout(total=60)
     allow_redirects = request.method in ("GET", "HEAD")
     session = aiohttp.ClientSession(timeout=timeout, auto_decompress=False)
     try:
@@ -216,7 +227,7 @@ async def tvh_stream_proxy(subpath: str):
     # Internal stream-only proxy for external clients (stream key auth).
     if not (subpath.startswith("stream/") or subpath.startswith("dvrfile/")):
         return jsonify({"success": False, "message": "Not found"}), 404
-    return await _proxy_tvh_http(subpath)
+    return await _proxy_tvh_http(subpath, stream_mode=True)
 
 
 @blueprint.websocket("/tic-tvh/<path:subpath>")
