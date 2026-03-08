@@ -138,7 +138,7 @@
             <q-list separator>
               <q-item v-for="entry in summary.recent_audit || []" :key="entry.id">
                 <q-item-section>
-                  <q-item-label>{{ entry.activity_label || 'Other activity' }}</q-item-label>
+                  <q-item-label>{{ displayRecentAuditTitle(entry) }}</q-item-label>
                   <q-item-label caption>
                     {{ formatAuditTimestamp(entry.created_at) }}
                     <span class="q-mx-xs">|</span>
@@ -204,6 +204,7 @@ import axios from 'axios';
 import {defineComponent} from 'vue';
 import {useAuthStore} from 'stores/auth';
 import {useUiStore} from 'stores/ui';
+import {getAuditActivityTitle} from '../utils/auditActivity';
 
 export default defineComponent({
   name: 'DashboardPage',
@@ -244,6 +245,9 @@ export default defineComponent({
     },
   },
   methods: {
+    displayRecentAuditTitle(entry) {
+      return getAuditActivityTitle(entry);
+    },
     fallbackDevice(userAgent) {
       const value = String(userAgent || '').trim();
       return value || 'Unknown';

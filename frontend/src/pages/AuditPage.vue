@@ -44,7 +44,7 @@
               <q-item-section>
                 <TicListItemCard v-bind="entryCardProps(entry)" :hide-header="true">
                   <div class="text-weight-medium">
-                    {{ entry.activity_label || 'Other activity' }}
+                    {{ displayAuditTitle(entry) }}
                   </div>
                   <div class="text-caption text-grey-7 q-mt-xs">
                     {{ formatAuditTimestamp(entry.created_at) }}
@@ -113,6 +113,7 @@ import axios from 'axios';
 import {defineComponent} from 'vue';
 import {useUiStore} from 'stores/ui';
 import {TicListItemCard, TicListToolbar} from 'components/ui';
+import {getAuditActivityTitle} from '../utils/auditActivity';
 
 const PAGE_SIZE = 50;
 
@@ -201,6 +202,9 @@ export default defineComponent({
     },
   },
   methods: {
+    displayAuditTitle(entry) {
+      return getAuditActivityTitle(entry);
+    },
     onAuditToolbarFilterChange({key, value}) {
       if (key === 'entryType') {
         this.entryType = value ?? null;
