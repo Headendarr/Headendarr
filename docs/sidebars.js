@@ -57,6 +57,7 @@ const sidebars = {
             "configuration/reverse-proxy",
           ],
         },
+        "audit-event-troubleshooting",
         {
           type: "category",
           label: "Advanced Setup Guides",
