@@ -399,15 +399,18 @@ start_tvh() {
         sleep 1
         if kill -0 "$tvh_pid" 2>/dev/null; then
             print_log info "Started tvheadend service with PID $tvh_pid"
+            return 0
         else
             print_log error "tvheadend failed to start"
             print_log error "Stdout:"
             sed -e 's/^/[TVH-STDOUT] /' /tmp/tvh_stdout.log || true
             print_log error "Stderr:"
             sed -e 's/^/[TVH-STDERR] /' /tmp/tvh_stderr.log || true
+            return 1
         fi
     else
         print_log warn "tvheadend binary not found at application start (PATH=$PATH). Skipping TVH launch."
+        return 0
     fi
 }
 
@@ -436,6 +439,36 @@ start_tic() {
     fi
     tic_pid=$!
     print_log info "Started TIC server with PID $tic_pid"
+}
+
+wait_for_child_exit() {
+    local name="$1"
+    local pid="$2"
+    local exit_code
+    set +e
+    wait "$pid"
+    exit_code=$?
+    set -e
+    print_log error "${name} process exited with code ${exit_code}"
+    return "$exit_code"
+}
+
+monitor_services() {
+    while true; do
+        if [ -n "${tic_pid:-}" ] && ! kill -0 "$tic_pid" 2>/dev/null; then
+            wait_for_child_exit "TIC" "$tic_pid"
+            return $?
+        fi
+        if [ -n "${tvh_pid:-}" ] && ! kill -0 "$tvh_pid" 2>/dev/null; then
+            wait_for_child_exit "TVHeadend" "$tvh_pid"
+            return $?
+        fi
+        if [ -n "${pg_pid:-}" ] && ! kill -0 "$pg_pid" 2>/dev/null; then
+            wait_for_child_exit "Postgres" "$pg_pid"
+            return $?
+        fi
+        sleep 1
+    done
 }
 
 # Root setup and drop privileges
@@ -486,11 +519,16 @@ vacuum_sqlite_if_exists
 migrate_sqlite_to_postgres
 reset_admin_password
 start_nginx
-start_tvh
+if ! start_tvh; then
+    print_log error "TVHeadend failed during startup; terminating container"
+    _term
+    exit 1
+fi
 start_tic
 
-wait "$tic_pid"
-tic_exit=$?
-print_log info "TIC server exited with code ${tic_exit}"
+set +e
+monitor_services
+service_exit=$?
+set -e
 _term
-exit "$tic_exit"
+exit "$service_exit"
