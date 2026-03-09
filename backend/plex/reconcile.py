@@ -191,6 +191,47 @@ def _build_channelmap_payload(hdhr_lineup_payload, lineupchannels_payload):
     return payload, unique_enabled, unmatched
 
 
+def _extract_setting_map(setting_items) -> dict[str, str]:
+    settings = {}
+    for item in ensure_list(setting_items):
+        if not isinstance(item, dict):
+            continue
+        setting_id = str(item.get("id") or "").strip()
+        if not setting_id:
+            continue
+        settings[setting_id] = str(item.get("value") or "").strip()
+    return settings
+
+
+def _extract_channel_mapping_ids(device_payload: dict) -> list[str]:
+    mapped_ids = []
+    for item in ensure_list(device_payload.get("ChannelMapping")):
+        if not isinstance(item, dict):
+            continue
+        enabled = str(item.get("enabled") or "1").strip()
+        if enabled in {"0", "false", "False"}:
+            continue
+        identifier = str(item.get("lineupIdentifier") or item.get("channelKey") or "").strip()
+        if identifier:
+            mapped_ids.append(identifier)
+    unique_ids = []
+    seen = set()
+    for item in mapped_ids:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_ids.append(item)
+    return sorted(unique_ids)
+
+
+def _extract_dvr_setting_map(dvrs_payload, dvr_key: str) -> dict[str, str]:
+    for dvr in _extract_dvrs(dvrs_payload):
+        if str(dvr.get("key") or "").strip() != str(dvr_key or "").strip():
+            continue
+        return _extract_setting_map(dvr.get("Setting"))
+    return {}
+
+
 def _to_plex_bool(value, default: bool) -> str:
     if value is None:
         return "true" if default else "false"
@@ -455,41 +496,74 @@ async def _apply_tuner_for_source(
             "mapped_channels": 0,
         }
 
-    put_device_prefs_response = await client.put_device_prefs(device_key, _build_tuner_settings_query(server_settings))
-    if not (200 <= put_device_prefs_response.status < 300):
-        return {
-            "source_id": source_id,
-            "status": "failed",
-            "error": f"PUT /media/grabbers/devices/{device_key}/prefs failed ({put_device_prefs_response.status})",
-        }
+    changed = {
+        "device_prefs": False,
+        "device_info": False,
+        "dvr_attach": False,
+        "dvr_prefs": False,
+        "channelmap": False,
+    }
 
-    put_device_response = await client.put_device(device_key, device_title, enabled=1)
-    if not (200 <= put_device_response.status < 300):
-        return {
-            "source_id": source_id,
-            "status": "failed",
-            "error": f"PUT /media/grabbers/devices/{device_key} failed ({put_device_response.status})",
-        }
-
-    attach_response = await client.put_dvr_device(resolved_dvr_key, device_key)
-    if not (200 <= attach_response.status < 300):
-        return {
-            "source_id": source_id,
-            "status": "failed",
-            "error": f"PUT /livetv/dvrs/{resolved_dvr_key}/devices/{device_key} failed ({attach_response.status})",
-        }
-
-    dvr_settings_response = await client.put_dvr_prefs(
-        resolved_dvr_key,
-        _build_dvr_settings_query(server_settings, app_dvr_settings),
+    desired_tuner_settings = _build_tuner_settings_query(server_settings)
+    current_tuner_settings = _extract_setting_map(target_device.get("Setting"))
+    tuner_settings_changed = any(
+        str(current_tuner_settings.get(setting_key) or "") != str(setting_value)
+        for setting_key, setting_value in desired_tuner_settings.items()
     )
-    if not (200 <= dvr_settings_response.status < 300):
-        logger.warning(
-            "Failed to apply DVR settings for server=%s dvr=%s status=%s",
-            client.server.server_id,
+    if tuner_settings_changed:
+        put_device_prefs_response = await client.put_device_prefs(device_key, desired_tuner_settings)
+        if not (200 <= put_device_prefs_response.status < 300):
+            return {
+                "source_id": source_id,
+                "status": "failed",
+                "error": f"PUT /media/grabbers/devices/{device_key}/prefs failed ({put_device_prefs_response.status})",
+            }
+        changed["device_prefs"] = True
+
+    current_title = str(target_device.get("title") or "").strip()
+    current_state = str(target_device.get("state") or "").strip().lower()
+    needs_device_info_update = current_title != device_title or current_state != "enabled"
+    if needs_device_info_update:
+        put_device_response = await client.put_device(device_key, device_title, enabled=1)
+        if not (200 <= put_device_response.status < 300):
+            return {
+                "source_id": source_id,
+                "status": "failed",
+                "error": f"PUT /media/grabbers/devices/{device_key} failed ({put_device_response.status})",
+            }
+        changed["device_info"] = True
+
+    current_parent_id = str(target_device.get("parentID") or "").strip()
+    if current_parent_id != str(resolved_dvr_key):
+        attach_response = await client.put_dvr_device(resolved_dvr_key, device_key)
+        if not (200 <= attach_response.status < 300):
+            return {
+                "source_id": source_id,
+                "status": "failed",
+                "error": f"PUT /livetv/dvrs/{resolved_dvr_key}/devices/{device_key} failed ({attach_response.status})",
+            }
+        changed["dvr_attach"] = True
+
+    desired_dvr_settings = _build_dvr_settings_query(server_settings, app_dvr_settings)
+    current_dvr_settings = _extract_dvr_setting_map(dvrs_payload, resolved_dvr_key)
+    dvr_settings_changed = any(
+        str(current_dvr_settings.get(setting_key) or "") != str(setting_value)
+        for setting_key, setting_value in desired_dvr_settings.items()
+    )
+    if dvr_settings_changed:
+        dvr_settings_response = await client.put_dvr_prefs(
             resolved_dvr_key,
-            dvr_settings_response.status,
+            desired_dvr_settings,
         )
+        if not (200 <= dvr_settings_response.status < 300):
+            logger.warning(
+                "Failed to apply DVR settings for server=%s dvr=%s status=%s",
+                client.server.server_id,
+                resolved_dvr_key,
+                dvr_settings_response.status,
+            )
+        else:
+            changed["dvr_prefs"] = True
 
     lineup_id = _resolve_lineup_id_from_dvr(
         dvrs_payload=dvrs_payload,
@@ -516,23 +590,28 @@ async def _apply_tuner_for_source(
             "unmatched_channels": unmatched,
         }
 
-    channelmap_response = await client.put_channelmap(device_key, channelmap_payload)
-    if not (200 <= channelmap_response.status < 300):
-        return {
-            "source_id": source_id,
-            "status": "failed",
-            "error": f"PUT /media/grabbers/devices/{device_key}/channelmap failed ({channelmap_response.status})",
-        }
+    current_mapped_ids = _extract_channel_mapping_ids(target_device)
+    desired_mapped_ids = sorted(mapped_ids)
+    if current_mapped_ids != desired_mapped_ids:
+        channelmap_response = await client.put_channelmap(device_key, channelmap_payload)
+        if not (200 <= channelmap_response.status < 300):
+            return {
+                "source_id": source_id,
+                "status": "failed",
+                "error": f"PUT /media/grabbers/devices/{device_key}/channelmap failed ({channelmap_response.status})",
+            }
+        changed["channelmap"] = True
 
     return {
         "source_id": source_id,
-        "status": "updated",
+        "status": "updated" if any(changed.values()) or recreated_due_to_uri_change else "unchanged",
         "device_key": device_key,
         "dvr_key": resolved_dvr_key,
         "mapped_channels": len(mapped_ids),
         "unmatched_channels": len(unmatched),
         "recreated_due_to_uri_change": recreated_due_to_uri_change,
         "device_title": device_title,
+        "changed": changed,
     }
 
 
