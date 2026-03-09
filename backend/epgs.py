@@ -365,6 +365,37 @@ def _parse_xmltv_time(raw_value, ts_value):
     return (utc_value or raw_value), parsed_timestamp
 
 
+def _shift_xmltv_window(start_value, stop_value, start_ts, stop_ts, offset_minutes):
+    try:
+        offset_seconds = int(offset_minutes or 0) * 60
+    except Exception:
+        offset_seconds = 0
+    if offset_seconds == 0:
+        return start_value, stop_value, start_ts, stop_ts
+
+    shifted_start_ts = _parse_timestamp(start_ts)
+    shifted_stop_ts = _parse_timestamp(stop_ts)
+    if shifted_start_ts:
+        shifted_start_ts = str(int(shifted_start_ts) + offset_seconds)
+        shifted_start_value = _xmltv_utc_from_timestamp(shifted_start_ts) or start_value
+    else:
+        shifted_start_value, shifted_start_ts = _parse_xmltv_time(start_value, None)
+        if shifted_start_ts:
+            shifted_start_ts = str(int(shifted_start_ts) + offset_seconds)
+            shifted_start_value = _xmltv_utc_from_timestamp(shifted_start_ts) or shifted_start_value
+
+    if shifted_stop_ts:
+        shifted_stop_ts = str(int(shifted_stop_ts) + offset_seconds)
+        shifted_stop_value = _xmltv_utc_from_timestamp(shifted_stop_ts) or stop_value
+    else:
+        shifted_stop_value, shifted_stop_ts = _parse_xmltv_time(stop_value, None)
+        if shifted_stop_ts:
+            shifted_stop_ts = str(int(shifted_stop_ts) + offset_seconds)
+            shifted_stop_value = _xmltv_utc_from_timestamp(shifted_stop_ts) or shifted_stop_value
+
+    return shifted_start_value, shifted_stop_value, shifted_start_ts, shifted_stop_ts
+
+
 def _clear_epg_channel_data_sync(epg_id):
     try:
         db.session.execute(
@@ -1038,6 +1069,7 @@ async def build_custom_epg(config, throttle=False):
                 "display_name": result.name,
                 "logo_url": logo_url,
                 "tags": [tag.name for tag in result.tags],
+                "guide_offset_minutes": int(getattr(result, "guide_offset_minutes", 0) or 0),
                 "source_key": (result.guide_id, result.guide_channel_id),
             }
         )
@@ -1125,6 +1157,7 @@ async def build_custom_epg(config, throttle=False):
     for channel_info in configured_channels:
         channel_id = channel_info["channel_id"]
         channel_tags = channel_info["tags"]
+        guide_offset_minutes = int(channel_info.get("guide_offset_minutes") or 0)
         for epg_channel_programme in programmes_by_output_channel.get(channel_id, []):
             # Create a <programme> element for the output file and copy the attributes from the input programme
             output_programme = ET.SubElement(output_root, "programme")
@@ -1136,6 +1169,13 @@ async def build_custom_epg(config, throttle=False):
             stop_value, stop_ts = _parse_xmltv_time(
                 epg_channel_programme.get("stop"),
                 epg_channel_programme.get("stop_timestamp"),
+            )
+            start_value, stop_value, start_ts, stop_ts = _shift_xmltv_window(
+                start_value,
+                stop_value,
+                start_ts,
+                stop_ts,
+                guide_offset_minutes,
             )
             if start_value:
                 output_programme.set("start", start_value)

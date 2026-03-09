@@ -101,6 +101,13 @@
             @filter="filterEpg"
           />
 
+          <TicTextInput
+            v-model="epgOffsetMinutes"
+            label="EPG Offset (minutes)"
+            description="Shift programme times for this channel by minutes (for example, +60 for +1 channels)."
+            type="number"
+          />
+
           <q-separator />
 
           <h5 class="q-my-none">Channel Streams</h5>
@@ -349,6 +356,7 @@ export default {
       epgChannelDefaultOptions: [],
       epgChannelOptions: [],
       epgChannel: '',
+      epgOffsetMinutes: 0,
       csoEnabled: false,
       csoProfile: 'default',
       streamProfileDefinitions: [],
@@ -489,6 +497,7 @@ export default {
       this.epgSourceId = null;
       this.epgSourceName = '';
       this.epgChannel = '';
+      this.epgOffsetMinutes = 0;
       this.csoEnabled = false;
       this.csoProfile = this.csoProfileChoices[0] || 'mpegts';
       this.listOfChannelSources = [];
@@ -510,6 +519,7 @@ export default {
         tags: this.tags,
         epgSourceId: this.epgSourceId,
         epgChannel: this.epgChannel,
+        epgOffsetMinutes: this.epgOffsetMinutes,
         csoEnabled: this.csoEnabled,
         csoProfile: this.csoProfile,
         sources: (this.listOfChannelSources || []).map((source) => ({
@@ -568,6 +578,7 @@ export default {
         this.epgSourceId = response.data.data.guide.epg_id;
         this.epgSourceName = response.data.data.guide.epg_name;
         this.epgChannel = response.data.data.guide.channel_id;
+        this.epgOffsetMinutes = Number(response.data.data.guide.offset_minutes || 0);
         this.csoEnabled = !!response.data.data.cso_enabled;
         if (response.data.data.stream_profile_definitions) {
           this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
@@ -1031,6 +1042,7 @@ export default {
           epg_id: this.epgSourceId,
           epg_name: this.epgSourceName,
           channel_id: this.epgChannel,
+          offset_minutes: Number.parseInt(this.epgOffsetMinutes, 10) || 0,
         },
         sources: this.listOfChannelSources,
         refresh_sources: refreshSources,
@@ -1077,6 +1089,7 @@ export default {
                 epg_id: this.epgSourceId,
                 epg_name: this.epgSourceName,
                 channel_id: this.epgChannel,
+                offset_minutes: Number.parseInt(this.epgOffsetMinutes, 10) || 0,
               },
               cso_enabled: this.csoEnabled,
               cso_profile: this.csoProfile,

@@ -36,6 +36,7 @@ from backend.users import get_user_by_stream_key
 from backend.config import enable_cso_command_debug_logging
 from backend.datetime_utils import utc_now_naive
 from backend.http_headers import parse_headers_json, sanitise_headers
+from backend.utils import convert_to_int
 from backend.xc_hosts import parse_xc_hosts
 
 logger = logging.getLogger("cso")
@@ -2532,13 +2533,6 @@ class CsoRuntimeManager:
 cso_session_manager = CsoRuntimeManager()
 
 
-def _safe_int(value):
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
 def _increment_external_count(external_counts, key):
     if not key:
         return
@@ -2560,7 +2554,7 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
     fallback_channel_ids = set()
 
     for value in channel_ids or []:
-        parsed = _safe_int(value)
+        parsed = convert_to_int(value, None)
         if parsed:
             fallback_channel_ids.add(parsed)
 
@@ -2574,9 +2568,9 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
         if is_internal_cso_activity(endpoint, display_url):
             continue
 
-        xc_account_id = _safe_int(session.get("xc_account_id"))
-        playlist_id = _safe_int(session.get("playlist_id"))
-        source_id = _safe_int(session.get("source_id"))
+        xc_account_id = convert_to_int(session.get("xc_account_id"), None)
+        playlist_id = convert_to_int(session.get("playlist_id"), None)
+        source_id = convert_to_int(session.get("source_id"), None)
         if xc_account_id:
             _increment_external_count(external_counts, f"xc:{xc_account_id}")
             continue
@@ -2587,7 +2581,7 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
             _increment_external_count(external_counts, f"source:{source_id}")
             continue
 
-        channel_id = _safe_int(session.get("channel_id"))
+        channel_id = convert_to_int(session.get("channel_id"), None)
         if channel_id:
             fallback_channel_ids.add(channel_id)
 

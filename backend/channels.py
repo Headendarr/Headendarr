@@ -59,7 +59,7 @@ from backend.streaming import (
 )
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.url_resolver import get_tvh_publish_base_url
-from backend.utils import fast_url_hash, parse_entity_id
+from backend.utils import convert_to_int, fast_url_hash, parse_entity_id
 
 logger = logging.getLogger("tic.channels")
 
@@ -353,11 +353,14 @@ def build_channel_logo_output_url(config, channel_id, base_url, source_logo_url=
 _EPG_NAME_QUALITY_TOKENS = {"hd", "fhd", "uhd", "sd", "4k"}
 
 
-def _safe_int(value, fallback=0):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
+def _parse_guide_offset_minutes(value):
+    parsed = convert_to_int(value, 0)
+    # Keep values in a sensible per-day window for +1/-1 style channel offsets.
+    if parsed > 1440:
+        return 1440
+    if parsed < -1440:
+        return -1440
+    return parsed
 
 
 def _normalize_match_name(value):
@@ -462,8 +465,8 @@ def _extract_plus_one_variant(value):
 
 
 def _channel_source_sort_key(source):
-    priority = _safe_int(getattr(source, "priority", None), fallback=9999)
-    return priority, _safe_int(getattr(source, "id", None), fallback=0)
+    priority = convert_to_int(getattr(source, "priority", None), 9999)
+    return priority, convert_to_int(getattr(source, "id", None), 0)
 
 
 def _build_epg_channel_lookup(epg_rows):
@@ -541,7 +544,7 @@ async def build_bulk_epg_match_preview(
     if not selected_channel_ids:
         return {"rows": [], "summary": {"channels_considered": 0, "with_candidates": 0, "without_candidates": 0}}
 
-    max_candidates_per_channel = max(1, min(_safe_int(max_candidates_per_channel, 5), 10))
+    max_candidates_per_channel = max(1, min(convert_to_int(max_candidates_per_channel, 5), 10))
 
     async with Session() as session:
         channels_result = await session.execute(
@@ -747,6 +750,7 @@ async def build_bulk_epg_match_preview(
                             "epg_id": channel.guide_id,
                             "epg_name": channel.guide_name,
                             "channel_id": channel.guide_channel_id,
+                            "offset_minutes": convert_to_int(getattr(channel, "guide_offset_minutes", 0), 0),
                         }
                         if channel.guide_id and channel.guide_channel_id
                         else None
@@ -803,7 +807,7 @@ async def build_bulk_epg_match_preview(
 
 
 async def read_epg_match_candidate_preview(*, epg_channel_row_id, now_ts=None):
-    now_ts = _safe_int(now_ts, int(time.time()))
+    now_ts = convert_to_int(now_ts, int(time.time()))
     start_ts_expr = cast(func.nullif(EpgChannelProgrammes.start_timestamp, ""), BigInteger)
     stop_ts_expr = cast(func.nullif(EpgChannelProgrammes.stop_timestamp, ""), BigInteger)
 
@@ -880,8 +884,8 @@ async def read_epg_match_candidate_preview(*, epg_channel_row_id, now_ts=None):
         if len(next_programmes) < 3:
             next_programmes.append(programme)
 
-    total_programmes = _safe_int(getattr(stats, "total_programmes", 0), 0)
-    future_programmes = _safe_int(getattr(stats, "future_programmes", 0), 0)
+    total_programmes = convert_to_int(getattr(stats, "total_programmes", 0), 0)
+    future_programmes = convert_to_int(getattr(stats, "future_programmes", 0), 0)
     max_stop_ts = getattr(stats, "max_stop_ts", None)
     max_stop_ts = int(max_stop_ts) if max_stop_ts is not None else None
     horizon_hours = None
@@ -916,6 +920,7 @@ async def apply_bulk_epg_matches(*, updates):
                     "epg_id": parse_entity_id(epg_id, "epg"),
                     "epg_channel_id": epg_channel_id,
                     "use_epg_logo": bool(row.get("use_epg_logo", False)),
+                    "offset_minutes": _parse_guide_offset_minutes(row.get("offset_minutes", 0)),
                 }
             )
         except ValueError:
@@ -980,8 +985,9 @@ async def apply_bulk_epg_matches(*, updates):
                     continue
 
                 unchanged = (
-                    _safe_int(channel.guide_id, 0) == row["epg_id"]
+                    convert_to_int(channel.guide_id, 0) == row["epg_id"]
                     and (channel.guide_channel_id or "") == row["epg_channel_id"]
+                    and convert_to_int(getattr(channel, "guide_offset_minutes", 0), 0) == row["offset_minutes"]
                 )
                 should_update_logo = bool(row.get("use_epg_logo")) and bool(mapping.get("icon_url"))
                 logo_unchanged = (channel.logo_url or "") == (mapping.get("icon_url") or "")
@@ -1010,6 +1016,7 @@ async def apply_bulk_epg_matches(*, updates):
                 channel.guide_id = row["epg_id"]
                 channel.guide_channel_id = row["epg_channel_id"]
                 channel.guide_name = mapping.get("epg_name")
+                channel.guide_offset_minutes = row["offset_minutes"]
                 if should_update_logo:
                     channel.logo_url = mapping.get("icon_url")
                     channel.logo_base64 = None
@@ -1131,6 +1138,7 @@ async def read_config_all_channels(
                             "guide": {
                                 "epg_name": result.guide_name,
                                 "channel_id": result.guide_channel_id,
+                                "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
                             },
                             "sources": sources,
                         }
@@ -1152,6 +1160,7 @@ async def read_config_all_channels(
                         "epg_id": result.guide_id,
                         "epg_name": result.guide_name,
                         "channel_id": result.guide_channel_id,
+                        "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
                     },
                     "sources": sources,
                 }
@@ -1212,6 +1221,7 @@ async def read_config_one_channel(channel_id):
                 "epg_id": result.guide_id,
                 "epg_name": result.guide_name,
                 "channel_id": result.guide_channel_id,
+                "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
             },
             "sources": sources,
         }
@@ -1346,6 +1356,7 @@ async def add_new_channel(config, data, commit=True):
             channel.guide_id = channel_guide_source.id
             channel.guide_name = channel_guide_source.name
             channel.guide_channel_id = guide_info["channel_id"]
+            channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
 
         new_sources = []
         playlist_stream_cache = {}
@@ -1516,10 +1527,17 @@ async def update_channel(config, channel_id, data):
                     channel.guide_id = channel_guide_source.id
                     channel.guide_name = guide_info.get("epg_name")
                     channel.guide_channel_id = guide_info.get("channel_id")
+                    channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
                 else:
                     channel.guide_id = None
                     channel.guide_name = None
                     channel.guide_channel_id = None
+                    channel.guide_offset_minutes = 0
+            elif "guide" in data:
+                channel.guide_id = None
+                channel.guide_name = None
+                channel.guide_channel_id = None
+                channel.guide_offset_minutes = 0
 
             # Skip source reconciliation when the incoming payload has no effective
             # source changes and there are no explicit source refresh requests.

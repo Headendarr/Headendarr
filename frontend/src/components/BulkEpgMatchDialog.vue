@@ -104,7 +104,8 @@
                           </q-item>
                         </template>
                       </q-select>
-                      <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-mt-xs bulk-epg-match__match-summary">
+                      <div v-if="row.selectedCandidate"
+                           class="text-caption text-grey-7 q-mt-xs bulk-epg-match__match-summary">
                         {{ candidateMatchSummary(row) }}
                       </div>
                       <q-checkbox
@@ -115,6 +116,18 @@
                         class="q-mt-xs"
                         label="Use EPG Logo"
                       />
+                      <q-input
+                        v-if="row.selectedCandidate"
+                        v-model.number="row.offsetMinutes"
+                        outlined
+                        dense
+                        type="number"
+                        class="q-mt-sm"
+                        label="EPG Offset (minutes)"
+                      />
+                      <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-ml-sm">
+                        Shift programme times for this channel (for example, +60 for +1 channels).
+                      </div>
                       <div v-if="row.selectedCandidate" class="text-caption text-grey-7 q-ml-sm">
                         Replaces channel logo with the selected EPG channel logo.
                       </div>
@@ -294,6 +307,7 @@ export default {
             selectedCandidate: first,
             selected: Boolean(first),
             useEpgLogo: false,
+            offsetMinutes: Number(row?.channel?.current_guide?.offset_minutes || 0),
             preview: null,
             previewLoading: false,
           };
@@ -406,6 +420,7 @@ export default {
             epg_id: row.selectedCandidate.epg_id,
             epg_channel_id: row.selectedCandidate.epg_channel_id,
             use_epg_logo: !!row.useEpgLogo,
+            offset_minutes: Number.parseInt(row.offsetMinutes, 10) || 0,
           }));
 
         const response = await axios.post('/tic-api/channels/bulk/epg-match/apply', {updates});

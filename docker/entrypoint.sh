@@ -278,6 +278,8 @@ setup_postgres() {
 
 run_migrations() {
     if [ "${SKIP_MIGRATIONS}" != "true" ]; then
+        print_log info "Current Alembic revision(s) before upgrade:"
+        alembic current || true
         print_log info "Running TIC DB migrations"
         alembic upgrade head
     fi

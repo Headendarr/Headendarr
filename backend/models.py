@@ -218,6 +218,7 @@ class Channel(Base):
     guide_id = Column(Integer, ForeignKey("epgs.id"))
     guide_name = Column(String(256), index=False, unique=False)
     guide_channel_id = Column(String(64), index=False, unique=False)
+    guide_offset_minutes = Column(Integer, nullable=False, unique=False, default=0)
 
     # Backref to all associated linked sources
     sources = relationship("ChannelSource", backref="channel", lazy=True, cascade="all, delete-orphan")
