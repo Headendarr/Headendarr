@@ -193,11 +193,11 @@ def _build_epg_review_payload(stats, health):
 
 
 async def _read_epg_review_stats_map(epg_ids):
-    normalized_ids = [parse_entity_id(epg_id, "epg") for epg_id in (epg_ids or []) if epg_id is not None]
-    if not normalized_ids:
+    parsed_ids = [parse_entity_id(epg_id, "epg") for epg_id in (epg_ids or []) if epg_id is not None]
+    if not parsed_ids:
         return {}
 
-    stats_map = {epg_id: {"channel_count": 0, "programme_count": 0} for epg_id in normalized_ids}
+    stats_map = {epg_id: {"channel_count": 0, "programme_count": 0} for epg_id in parsed_ids}
 
     async with Session() as session:
         async with session.begin():
@@ -206,7 +206,7 @@ async def _read_epg_review_stats_map(epg_ids):
                     EpgChannels.epg_id,
                     func.count(EpgChannels.id).label("channel_count"),
                 )
-                .where(EpgChannels.epg_id.in_(normalized_ids))
+                .where(EpgChannels.epg_id.in_(parsed_ids))
                 .group_by(EpgChannels.epg_id)
             )
             for row in channel_rows.all():
@@ -219,7 +219,7 @@ async def _read_epg_review_stats_map(epg_ids):
                 )
                 .select_from(EpgChannels)
                 .join(EpgChannelProgrammes, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
-                .where(EpgChannels.epg_id.in_(normalized_ids))
+                .where(EpgChannels.epg_id.in_(parsed_ids))
                 .group_by(EpgChannels.epg_id)
             )
             for row in programme_rows.all():
@@ -338,7 +338,7 @@ def _derive_timestamp(raw_value):
         return None
 
 
-def _normalize_timestamp(ts_value):
+def _parse_timestamp(ts_value):
     if ts_value in (None, ""):
         return None
     try:
@@ -348,21 +348,21 @@ def _normalize_timestamp(ts_value):
 
 
 def _xmltv_utc_from_timestamp(ts_value):
-    normalized = _normalize_timestamp(ts_value)
-    if not normalized:
+    parsed_value = _parse_timestamp(ts_value)
+    if not parsed_value:
         return None
     try:
-        return datetime.fromtimestamp(int(normalized), tz=timezone.utc).strftime(XMLTV_UTC_FORMAT)
+        return datetime.fromtimestamp(int(parsed_value), tz=timezone.utc).strftime(XMLTV_UTC_FORMAT)
     except Exception:
         return None
 
 
-def _normalize_xmltv_time(raw_value, ts_value):
-    ts_normalized = _normalize_timestamp(ts_value) or _derive_timestamp(raw_value)
-    if not ts_normalized:
+def _parse_xmltv_time(raw_value, ts_value):
+    parsed_timestamp = _parse_timestamp(ts_value) or _derive_timestamp(raw_value)
+    if not parsed_timestamp:
         return raw_value, None
-    utc_value = _xmltv_utc_from_timestamp(ts_normalized)
-    return (utc_value or raw_value), ts_normalized
+    utc_value = _xmltv_utc_from_timestamp(parsed_timestamp)
+    return (utc_value or raw_value), parsed_timestamp
 
 
 def _clear_epg_channel_data_sync(epg_id):
@@ -389,6 +389,94 @@ def _clear_epg_channel_data_sync(epg_id):
         )
         db.session.execute(delete(EpgChannels).where(EpgChannels.epg_id == epg_id))
         db.session.commit()
+
+
+def _clean_xmltv_text(value):
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _collect_xmltv_texts(elem, tag):
+    values = []
+    for child in elem.findall(tag):
+        text_value = _clean_xmltv_text(child.text)
+        if text_value:
+            values.append(text_value)
+    return values
+
+
+def _parse_xmltv_keywords(elem):
+    keywords = _collect_xmltv_texts(elem, "keyword")
+    if not keywords:
+        return None
+    return json.dumps(keywords)
+
+
+def _parse_xmltv_credits(elem):
+    credits = elem.find("credits")
+    if credits is None:
+        return None
+    credits_json = {}
+    for credit_entry in list(credits):
+        role = _clean_xmltv_text(credit_entry.tag)
+        person = _clean_xmltv_text(credit_entry.text)
+        if not role or not person:
+            continue
+        credits_json.setdefault(role, []).append(person)
+    if not credits_json:
+        return None
+    return json.dumps(credits_json)
+
+
+def _parse_xmltv_video(elem):
+    video = elem.find("video")
+    if video is None:
+        return None, None, None
+    return (
+        _clean_xmltv_text(video.findtext("colour", default=None)),
+        _clean_xmltv_text(video.findtext("aspect", default=None)),
+        _clean_xmltv_text(video.findtext("quality", default=None)),
+    )
+
+
+def _parse_xmltv_episode_numbers(elem):
+    onscreen_value = None
+    xmltv_ns_value = None
+    dd_progid_value = None
+    for episode_num in elem.findall("episode-num"):
+        episode_text = _clean_xmltv_text(episode_num.text)
+        if not episode_text:
+            continue
+        episode_system = _clean_xmltv_text(episode_num.attrib.get("system", "")) or ""
+        episode_system = episode_system.lower()
+        if episode_system == "onscreen" and onscreen_value is None:
+            onscreen_value = episode_text
+        elif episode_system == "xmltv_ns" and xmltv_ns_value is None:
+            xmltv_ns_value = episode_text
+        elif episode_system == "dd_progid" and dd_progid_value is None:
+            dd_progid_value = episode_text
+    return onscreen_value, xmltv_ns_value, dd_progid_value
+
+
+def _parse_xmltv_star_rating(elem):
+    for star_rating in elem.findall("star-rating"):
+        value_node = star_rating.find("value")
+        rating_value = _clean_xmltv_text(value_node.text if value_node is not None else None)
+        if rating_value:
+            return rating_value
+    return None
+
+
+def _parse_xmltv_rating(elem):
+    for rating in elem.findall("rating"):
+        rating_value_node = rating.find("value")
+        rating_value = _clean_xmltv_text(rating_value_node.text if rating_value_node is not None else None)
+        if rating_value:
+            rating_system = _clean_xmltv_text(rating.attrib.get("system", None))
+            return rating_system, rating_value
+    return None, None
 
 
 def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
@@ -471,24 +559,59 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
         stop = elem.attrib.get("stop")
         start_timestamp = elem.attrib.get("start_timestamp")
         stop_timestamp = elem.attrib.get("stop_timestamp")
-        start, start_timestamp = _normalize_xmltv_time(start, start_timestamp)
-        stop, stop_timestamp = _normalize_xmltv_time(stop, stop_timestamp)
+        start, start_timestamp = _parse_xmltv_time(start, start_timestamp)
+        stop, stop_timestamp = _parse_xmltv_time(stop, stop_timestamp)
+
+        categories = _collect_xmltv_texts(elem, "category")
+        keywords = _parse_xmltv_keywords(elem)
+        credits_json = _parse_xmltv_credits(elem)
+        video_colour, video_aspect, video_quality = _parse_xmltv_video(elem)
+        subtitles = elem.find("subtitles")
+        previously_shown = elem.find("previously-shown")
+        onscreen_epnum, xmltv_ns_epnum, dd_progid_epnum = _parse_xmltv_episode_numbers(elem)
+        star_rating = _parse_xmltv_star_rating(elem)
+        rating_system, rating_value = _parse_xmltv_rating(elem)
+
         icon = elem.find("icon")
         programme_rows.append(
             {
                 "epg_channel_id": epg_channel_id,
                 "channel_id": external_channel_id,
-                "title": elem.findtext("title", default=None),
-                "sub_title": elem.findtext("sub-title", default=None),
-                "desc": elem.findtext("desc", default=None),
-                "series_desc": elem.findtext("series-desc", default=None),
+                "title": _clean_xmltv_text(elem.findtext("title", default=None)),
+                "sub_title": _clean_xmltv_text(elem.findtext("sub-title", default=None)),
+                "desc": _clean_xmltv_text(elem.findtext("desc", default=None)),
+                "series_desc": _clean_xmltv_text(elem.findtext("series-desc", default=None)),
                 "icon_url": icon.attrib.get("src", None) if icon is not None else None,
-                "country": elem.findtext("country", default=None),
+                "country": _clean_xmltv_text(elem.findtext("country", default=None)),
                 "start": start,
                 "stop": stop,
                 "start_timestamp": start_timestamp,
                 "stop_timestamp": stop_timestamp,
-                "categories": json.dumps([cat.text for cat in elem.findall("category") if cat.text]),
+                "categories": json.dumps(categories),
+                "summary": _clean_xmltv_text(elem.findtext("summary", default=None)),
+                "keywords": keywords,
+                "credits_json": credits_json,
+                "video_colour": video_colour,
+                "video_aspect": video_aspect,
+                "video_quality": video_quality,
+                "subtitles_type": (
+                    _clean_xmltv_text(subtitles.attrib.get("type", None)) if subtitles is not None else None
+                ),
+                "audio_described": elem.find("audio-described") is not None,
+                "previously_shown_date": (
+                    _clean_xmltv_text(previously_shown.attrib.get("start", None))
+                    if previously_shown is not None
+                    else None
+                ),
+                "premiere": elem.find("premiere") is not None,
+                "is_new": elem.find("new") is not None,
+                "epnum_onscreen": onscreen_epnum,
+                "epnum_xmltv_ns": xmltv_ns_epnum,
+                "epnum_dd_progid": dd_progid_epnum,
+                "star_rating": star_rating,
+                "production_year": _clean_xmltv_text(elem.findtext("date", default=None)),
+                "rating_system": rating_system,
+                "rating_value": rating_value,
             }
         )
         programme_count += 1
@@ -1006,11 +1129,11 @@ async def build_custom_epg(config, throttle=False):
             # Create a <programme> element for the output file and copy the attributes from the input programme
             output_programme = ET.SubElement(output_root, "programme")
             # Build programmes from DB data (manually create attributes etc.
-            start_value, start_ts = _normalize_xmltv_time(
+            start_value, start_ts = _parse_xmltv_time(
                 epg_channel_programme.get("start"),
                 epg_channel_programme.get("start_timestamp"),
             )
-            stop_value, stop_ts = _normalize_xmltv_time(
+            stop_value, stop_ts = _parse_xmltv_time(
                 epg_channel_programme.get("stop"),
                 epg_channel_programme.get("stop_timestamp"),
             )
