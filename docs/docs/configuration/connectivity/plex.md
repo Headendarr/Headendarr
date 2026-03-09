@@ -11,6 +11,42 @@ Plex Live TV/DVR can have playback issues with HLS (`.m3u8`) channel streams.
 For best compatibility, make sure Plex receives MPEG-TS (`.ts`) streams for those channels.
 
 For many sources, forcing audio to AAC with an MPEG-TS output improves Plex stability significantly with minimal extra overhead compared with failed tune/retry loops.
+:::
+
+## Container configuration
+
+Set `PLEX_SERVERS_JSON` in your Headendarr container environment, then restart the container.
+
+Example `docker-compose.yml` snippet:
+
+```yaml
+services:
+  headendarr:
+    image: ghcr.io/headendarr/headendarr:latest
+    environment:
+      PLEX_SERVERS_JSON: >-
+        [{"name":"Command","base_url":"http://192.168.7.234:32400","token":"YOUR_TOKEN","verify_tls":false}]
+```
+
+What this enables in Headendarr:
+
+1. A dedicated **Plex Settings** page appears when `PLEX_SERVERS_JSON` is valid.
+2. Per Plex server settings control whether tuner sync is enabled, tuner mode, model prefix, and stream profile.
+3. Headendarr can automatically provision and keep Plex tuners in sync:
+   - create missing managed tuners
+   - update channel mappings after channel/source changes
+   - remove stale managed tuners
+   - remove managed tuners for enabled sources that currently publish an empty HDHomeRun lineup
+
+### PLEX_SERVERS_JSON Generator
+
+Use this form to generate a valid `PLEX_SERVERS_JSON` environment variable value for one or more Plex servers.
+
+<PlexServersJsonBuilder />
+
+## Manually configure
+
+### Steps
 
 For Plex, the recommended workarounds are:
 
@@ -25,10 +61,8 @@ For Plex, the recommended workarounds are:
 
 2. **Option #2:** Enable **Use HLS Proxy** and **Enable FFmpeg remux** on the source in **Stream Source Settings** so HLS sources are remuxed to MPEG-TS.
 
-:::
-
 1. Navigate to the **Live TV & DVR** page in Plex.
-2. Click **Set Up Plex Tuner**.
+1. Click **Set Up Plex Tuner**.
 
 [![Plex add first tuner](/img/screenshots/plex-setup-add-first-tuner.png)](/img/screenshots/plex-setup-add-first-tuner.png)
 

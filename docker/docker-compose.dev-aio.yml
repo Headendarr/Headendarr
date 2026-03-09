@@ -33,6 +33,8 @@ services:
       - PGID=1000
       # Timezone
       - TZ=Pacific/Auckland
+      # Enable Plex config
+      - PLEX_SERVERS_JSON=${PLEX_SERVERS_JSON:-}
       # Skips the DB migrate command execution on container startup
       - SKIP_MIGRATIONS=false
       # Executes a pip install on container startup (might be required to generate the venv)
@@ -78,8 +80,8 @@ services:
       - PATH=/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ../:/app
-      - ../temp/cache/.npm:/home/node/.npm
-      - ../temp/cache/.npm-global:/home/node/.npm-global
+      - ../temp/cache/.npm-frontend:/home/node/.npm
+      - ../temp/cache/.npm-frontend-global:/home/node/.npm-global
 
   # -- DOCS DEV SERVER --
   docs:
@@ -96,8 +98,8 @@ services:
       - PATH=/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ../:/app
-      - ../temp/cache/.npm:/home/node/.npm
-      - ../temp/cache/.npm-global:/home/node/.npm-global
+      - ../temp/cache/.npm-docs:/home/node/.npm
+      - ../temp/cache/.npm-docs-global:/home/node/.npm-global
 
   # -- DOCS STATIC SERVER --
   docs-static:

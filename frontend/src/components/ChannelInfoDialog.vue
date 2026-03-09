@@ -290,6 +290,7 @@
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
 import draggable from 'vuedraggable';
+import {useSettingsStore} from 'stores/settings';
 import {useVideoStore} from 'stores/video';
 import ChannelStreamSelectorDialog from 'components/ChannelStreamSelectorDialog.vue';
 import StreamTestDialog from 'components/StreamTestDialog.vue';
@@ -925,13 +926,10 @@ export default {
       });
     },
     fetchCsoProfileOptions() {
-      return axios({
-        method: 'GET',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        const streamProfiles = response.data?.data?.stream_profiles || {};
+      return this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
+        const streamProfiles = settings?.stream_profiles || {};
         this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
-          response.data?.data?.stream_profile_definitions,
+          settings?.stream_profile_definitions,
         );
         this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
         this.csoProfile = this.resolveValidCsoProfile(this.csoProfile);
@@ -1288,8 +1286,9 @@ export default {
     },
   },
   setup() {
+    const settingsStore = useSettingsStore();
     const videoStore = useVideoStore();
-    return {videoStore};
+    return {settingsStore, videoStore};
   },
 };
 </script>

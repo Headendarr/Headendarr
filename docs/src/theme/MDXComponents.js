@@ -1,8 +1,9 @@
-import React from 'react';
+import React from "react";
 // Import the original mapper
-import MDXComponents from '@theme-original/MDXComponents';
-import SimpleIcon from '@site/src/components/SimpleIcon';
-import ZoomImage from '@site/src/components/ZoomImage';
+import MDXComponents from "@theme-original/MDXComponents";
+import SimpleIcon from "@site/src/components/SimpleIcon";
+import ZoomImage from "@site/src/components/ZoomImage";
+import PlexServersJsonBuilder from "@site/src/components/PlexServersJsonBuilder";
 
 export default {
   // Re-use the default mapping
@@ -11,4 +12,5 @@ export default {
   // `SimpleIcon` will receive all props passed to the "SimpleIcon" tag in MDX
   SimpleIcon,
   ZoomImage,
+  PlexServersJsonBuilder,
 };

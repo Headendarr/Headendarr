@@ -571,6 +571,7 @@
 import {defineComponent} from 'vue';
 import axios from 'axios';
 import draggable from 'vuedraggable';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {useVideoStore} from 'stores/video';
 import ChannelInfoDialog from 'components/ChannelInfoDialog.vue';
@@ -618,8 +619,10 @@ export default defineComponent({
 
   setup() {
     const uiStore = useUiStore();
+    const settingsStore = useSettingsStore();
     const videoStore = useVideoStore();
     return {
+      settingsStore,
       uiStore,
       videoStore,
     };
@@ -1335,14 +1338,11 @@ export default defineComponent({
       }
     },
     fetchUiSettings: function() {
-      axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        const uiSettings = response.data.data?.ui_settings || {};
-        const streamProfiles = response.data.data?.stream_profiles || {};
+      this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
+        const uiSettings = settings?.ui_settings || {};
+        const streamProfiles = settings?.stream_profiles || {};
         this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
-          response.data.data?.stream_profile_definitions,
+          settings?.stream_profile_definitions,
         );
         this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
         this.bulkCsoProfile = this.resolveValidCsoProfile(this.bulkCsoProfile);

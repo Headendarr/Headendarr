@@ -17,6 +17,7 @@ from backend.api.tasks import (
     poll_tvh_subscription_status,
     sync_all_users_to_tvh,
     run_periodic_channel_stream_health_checks,
+    reconcile_plex_live_tv,
 )
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
@@ -119,6 +120,14 @@ async def every_5_mins():
                 "args": [app],
             },
             priority=10,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Reconciling Plex Live TV tuners (periodic)",
+                "function": reconcile_plex_live_tv,
+                "args": [app, None],
+            },
+            priority=24,
         )
 
 

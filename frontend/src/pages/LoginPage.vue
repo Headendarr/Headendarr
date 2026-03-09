@@ -51,6 +51,7 @@ import {computed, ref} from 'vue';
 import {useRoute, useRouter} from 'vue-router';
 import {useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
+import {useSettingsStore} from 'stores/settings';
 import axios from 'axios';
 
 export default {
@@ -59,6 +60,7 @@ export default {
     const route = useRoute();
     const router = useRouter();
     const authStore = useAuthStore();
+    const settingsStore = useSettingsStore();
     const username = ref('');
     const password = ref('');
     const loading = ref(false);
@@ -84,8 +86,8 @@ export default {
 
     const resolveAdminStartPage = async () => {
       try {
-        const response = await axios.get('/tic-api/get-settings');
-        const startPage = response.data?.data?.ui_settings?.start_page;
+        const settings = await settingsStore.refreshSettings({force: true});
+        const startPage = settings?.ui_settings?.start_page;
         if (startPage) {
           localStorage.setItem(startPageKey, startPage);
           return startPage;

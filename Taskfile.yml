@@ -7,7 +7,7 @@ tasks:
   init:
     desc: Initialize local cache directories
     cmds:
-      - mkdir -p temp/cache/.npm temp/cache/.npm-global temp/cache/venv-backend
+      - mkdir -p temp/cache/.npm-frontend temp/cache/.npm-frontend-global temp/cache/.npm-docs temp/cache/.npm-docs-global temp/cache/venv-backend
 
   all:start:
     desc: Start backend, frontend, and docs services in dev AIO stack (detached)

@@ -242,6 +242,9 @@ class Config:
                         },
                     ],
                 },
+                "plex": {
+                    "servers": [],
+                },
                 "ui_settings": {
                     "enable_channel_health_highlight": True,
                     "start_page": "/dashboard",

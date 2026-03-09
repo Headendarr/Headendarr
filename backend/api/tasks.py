@@ -333,6 +333,14 @@ async def apply_dvr_rules(app):
     await apply_recurring_rules(config)
 
 
+async def reconcile_plex_live_tv(app, server_ids=None):
+    logger.info("Reconciling Plex Live TV tuners")
+    config = app.config["APP_CONFIG"]
+    from backend.plex.reconcile import reconcile_plex_servers
+
+    await reconcile_plex_servers(config, server_ids=server_ids)
+
+
 _TVH_ACTIVE_SUBSCRIPTIONS = {}
 _TVH_POLL_LOCK = Lock()
 

@@ -9,7 +9,12 @@
       v-if="icon"
       avatar
     >
-      <span v-if="isTvhIcon" :style="tvhIconStyle" class="tvh-icon text-primary" aria-hidden="true"></span>
+      <span
+        v-if="isCustomSvgIcon"
+        :style="customSvgIconStyle"
+        class="custom-svg-icon text-primary"
+        aria-hidden="true"
+      ></span>
       <q-icon v-else :name="icon" color="primary" />
     </q-item-section>
 
@@ -27,6 +32,7 @@
 import {defineComponent, computed} from 'vue';
 import {useRoute} from 'vue-router';
 import tvhIconUrl from 'src/assets/tvh-icon.svg';
+import plexIconUrl from 'src/assets/plex-icon.svg';
 
 export default defineComponent({
   name: 'EssentialLink',
@@ -62,15 +68,17 @@ export default defineComponent({
     return {
       isActive,
       tvhIconUrl,
+      plexIconUrl,
     };
   },
   computed: {
-    isTvhIcon() {
-      return this.icon === 'tvh-icon';
+    isCustomSvgIcon() {
+      return this.icon === 'tvh-icon' || this.icon === 'plex-icon';
     },
-    tvhIconStyle() {
+    customSvgIconStyle() {
+      const iconUrl = this.icon === 'plex-icon' ? this.plexIconUrl : this.tvhIconUrl;
       return {
-        '--tvh-icon-url': `url("${this.tvhIconUrl}")`,
+        '--custom-svg-icon-url': `url("${iconUrl}")`,
       };
     },
   },
@@ -88,12 +96,12 @@ export default defineComponent({
   color: var(--q-primary);
 }
 
-.tvh-icon {
+.custom-svg-icon {
   width: 24px;
   height: 24px;
   display: inline-block;
   background-color: currentColor;
-  -webkit-mask: var(--tvh-icon-url) no-repeat center / contain;
-  mask: var(--tvh-icon-url) no-repeat center / contain;
+  -webkit-mask: var(--custom-svg-icon-url) no-repeat center / contain;
+  mask: var(--custom-svg-icon-url) no-repeat center / contain;
 }
 </style>

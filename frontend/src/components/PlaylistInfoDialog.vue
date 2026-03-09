@@ -214,6 +214,7 @@
 
 <script>
 import axios from 'axios';
+import {useSettingsStore} from 'stores/settings';
 import TicDialogWindow from 'components/ui/dialogs/TicDialogWindow.vue';
 import TicConfirmDialog from 'components/ui/dialogs/TicConfirmDialog.vue';
 import TicButton from 'components/ui/buttons/TicButton.vue';
@@ -502,11 +503,9 @@ export default {
       });
     },
     fetchUserAgents() {
-      return axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        const agents = response.data.data.user_agents || [];
+      const settingsStore = useSettingsStore();
+      return settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
+        const agents = settings?.user_agents || [];
         this.userAgents = agents.map((agent) => ({
           name: agent.name,
           value: agent.value,

@@ -439,6 +439,7 @@
 <script>
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {
   AdmonitionBanner,
@@ -467,6 +468,7 @@ export default defineComponent({
 
   setup() {
     return {
+      settingsStore: useSettingsStore(),
       uiStore: useUiStore(),
     };
   },
@@ -914,6 +916,7 @@ export default defineComponent({
           url: '/tic-api/save-settings',
           data: postData,
         });
+        await this.settingsStore.refreshSettings({force: true});
         this.lastSavedSettingsSignature = signature;
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('tic:settings-updated'));
@@ -941,13 +944,9 @@ export default defineComponent({
     },
     fetchSettings: function() {
       this.isHydratingSettings = true;
-      // Fetch current settings
-      axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
+      this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
         // All other application settings are here
-        const appSettings = response.data.data;
+        const appSettings = settings || {};
         this.tvhLocal = Boolean(appSettings.tvh_local);
         this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
           appSettings.stream_profile_definitions,

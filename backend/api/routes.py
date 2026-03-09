@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import aiohttp
+from sqlalchemy import select
 
 from quart import request, jsonify, send_from_directory, current_app, Response, websocket, redirect
 
@@ -12,6 +13,7 @@ from backend.api import blueprint
 
 from backend.api.tasks import TaskQueueBroker
 from backend.api.tasks import sync_all_users_to_tvh
+from backend.api.tasks import reconcile_plex_live_tv
 from backend.auth import (
     admin_auth_required,
     get_user_from_token,
@@ -24,7 +26,9 @@ from backend.auth import (
 from backend.config import is_tvh_process_running_locally
 from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
+from backend.models import Session, User
 from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIBLE_PROFILE_IDS_ORDER
+from backend.plex.runtime import build_plex_settings_for_runtime, get_runtime_plex_servers, plex_runtime_summary
 from backend.tvheadend.tvh_requests import configure_tvh
 
 _TVH_PROXY_CONNECT_TIMEOUT = float(os.environ.get("TVH_PROXY_CONNECT_TIMEOUT_SECONDS", "15"))
@@ -449,6 +453,11 @@ async def api_save_config():
                 "retention_policy": normalize_retention_policy(dvr_payload.get("retention_policy")),
                 "recording_profiles": normalize_recording_profiles(dvr_payload.get("recording_profiles")),
             }
+        runtime_servers = get_runtime_plex_servers()
+        settings_payload["plex"] = build_plex_settings_for_runtime(
+            runtime_servers=runtime_servers,
+            plex_settings=settings_payload.get("plex"),
+        )
 
     # Mark first run as complete
     json_data["settings"]["first_run"] = False
@@ -471,6 +480,7 @@ async def api_save_config():
     tvh_cfg = config.read_settings().get("settings", {}).get("tvheadend", {})
     tvh_is_configured = bool(tvh_cfg.get("host")) or bool(tvh_cfg.get("port")) or bool(tvh_cfg.get("path"))
     tvh_is_local = await is_tvh_process_running_locally()
+    task_broker = None
     if tvh_update_requested and (tvh_is_configured or tvh_is_local):
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task(
@@ -490,6 +500,18 @@ async def api_save_config():
                 },
                 priority=16,
             )
+    plex_update_requested = "plex" in (json_data.get("settings") or {})
+    if plex_update_requested:
+        if task_broker is None:
+            task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task(
+            {
+                "name": "Reconciling Plex Live TV tuners (settings change)",
+                "function": reconcile_plex_live_tv,
+                "args": [current_app, None],
+            },
+            priority=9,
+        )
     return jsonify({"success": True}), 200
 
 
@@ -499,9 +521,18 @@ async def api_get_config_tvheadend():
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
     return_data = dict(settings.get("settings", {}) or {})
+    runtime_servers = get_runtime_plex_servers()
+    return_data["plex"] = build_plex_settings_for_runtime(runtime_servers, return_data.get("plex"))
+    return_data["plex_runtime"] = plex_runtime_summary()
+    return_data["plex_available"] = bool(runtime_servers)
     return_data["tvh_local"] = await is_tvh_process_running_locally()
     return_data["stream_profile_definitions"] = get_stream_profile_definitions()
     return_data["tvh_compatible_profile_ids"] = list(TVH_COMPATIBLE_PROFILE_IDS_ORDER)
+    async with Session() as session:
+        result = await session.execute(select(User.id, User.username).order_by(User.username.asc()))
+        return_data["plex_stream_users"] = [
+            {"id": int(user_id), "username": str(username or "")} for user_id, username in result.all()
+        ]
     return jsonify({"success": True, "runtime_key": config.runtime_key, "data": return_data}), 200
 
 

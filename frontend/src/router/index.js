@@ -1,6 +1,12 @@
 import {route} from 'quasar/wrappers';
-import {createRouter, createMemoryHistory, createWebHistory, createWebHashHistory} from 'vue-router';
+import {
+  createRouter,
+  createMemoryHistory,
+  createWebHistory,
+  createWebHashHistory,
+} from 'vue-router';
 import {useAuthStore} from 'stores/auth';
+import {useSettingsStore} from 'stores/settings';
 import routes from './routes';
 
 /*
@@ -12,7 +18,7 @@ import routes from './routes';
  * with the Router instance.
  */
 
-export default route(function (/* { store, ssrContext } */) {
+export default route(function(/* { store, ssrContext } */) {
   const createHistory = process.env.SERVER
     ? createMemoryHistory
     : process.env.VUE_ROUTER_MODE === 'history'
@@ -35,12 +41,14 @@ export default route(function (/* { store, ssrContext } */) {
     // Leave this as is and make changes in quasar.conf.js instead!
     // quasar.conf.js -> build -> vueRouterMode
     // quasar.conf.js -> build -> publicPath
-    history: createHistory(process.env.MODE === 'ssr' ? void 0 : process.env.VUE_ROUTER_BASE),
+    history: createHistory(
+      process.env.MODE === 'ssr' ? void 0 : process.env.VUE_ROUTER_BASE),
   });
 
   const startPageKey = 'tic_ui_start_page';
   const defaultStartPage = '/dashboard';
-  const getStartPage = () => localStorage.getItem(startPageKey) || defaultStartPage;
+  const getStartPage = () => localStorage.getItem(startPageKey) ||
+    defaultStartPage;
 
   const canAccessRoute = (path, roles) => {
     const resolved = Router.resolve(path);
@@ -48,7 +56,8 @@ export default route(function (/* { store, ssrContext } */) {
       if (record.meta?.requiresAdmin && !roles.includes('admin')) {
         return false;
       }
-      if (record.meta?.requiresStreamer && !(roles.includes('admin') || roles.includes('streamer'))) {
+      if (record.meta?.requiresStreamer &&
+        !(roles.includes('admin') || roles.includes('streamer'))) {
         return false;
       }
     }
@@ -80,7 +89,8 @@ export default route(function (/* { store, ssrContext } */) {
     const authStore = useAuthStore();
     if (to.meta.requiresAuth) {
       const canUseWarmSession =
-        authStore.isAuthenticated && authStore.token && authStore.user && !authStore.isTokenNearExpiry();
+        authStore.isAuthenticated && authStore.token && authStore.user &&
+        !authStore.isTokenNearExpiry();
       if (canUseWarmSession) {
         authStore.checkAuthentication().catch((error) => {
           console.error('Background auth check failed:', error);
@@ -89,6 +99,9 @@ export default route(function (/* { store, ssrContext } */) {
         await authStore.checkAuthentication();
       }
       if (authStore.isAuthenticated) {
+        const settingsStore = useSettingsStore();
+        settingsStore.refreshSettings({minAgeMs: 3000}).catch(() => {
+        });
         if (to.path === '/') {
           const roles = authStore.user?.roles || [];
           const target = getRoleHomeRoute(roles);

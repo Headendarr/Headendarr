@@ -2448,6 +2448,7 @@ async def publish_channel_muxes(config):
         logger.error("Skipping TVH mux publish: %s", exc)
         return
     async with await get_tvh(config) as tvh:
+
         def _is_partial_placeholder_mux(mux):
             mux_name = str(mux.get("iptv_muxname") or mux.get("name") or "").strip()
             service_name = str(mux.get("iptv_sname") or "").strip()
@@ -2932,6 +2933,18 @@ async def queue_background_channel_update_tasks(config):
             "args": [config],
         },
         priority=23,
+    )
+
+    # Trigger a refresh of the plex servers DVR config
+    from backend.plex.reconcile import reconcile_plex_servers
+
+    await task_broker.add_task(
+        {
+            "name": "Reconciling Plex Live TV tuners",
+            "function": reconcile_plex_servers,
+            "args": [config, None],
+        },
+        priority=24,
     )
     # Ensure TVH XMLTV grabber URL stays in sync before triggering a grab
     from backend.tvheadend.tvh_requests import configure_tvh

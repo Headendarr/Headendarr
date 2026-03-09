@@ -51,6 +51,18 @@ const routes = [
     redirect: '/settings',
   },
   {
+    name: 'plex-settings',
+    path: '/plex',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/PlexSettingsPage.vue'),
+        meta: {requiresAuth: true, requiresAdmin: true},
+      },
+    ],
+  },
+  {
     name: 'tvheadend',
     path: '/tvheadend',
     component: () => import('layouts/MainLayout.vue'),
@@ -118,7 +130,11 @@ const routes = [
       {
         path: '',
         component: () => import('pages/DvrPage.vue'),
-        meta: {requiresAuth: true, requiresStreamer: true, requiresDvrAccess: true},
+        meta: {
+          requiresAuth: true,
+          requiresStreamer: true,
+          requiresDvrAccess: true,
+        },
       },
     ],
   },

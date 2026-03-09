@@ -23,6 +23,12 @@ def convert_to_int(value, default=1):
         return default
 
 
+def convert_to_bool(value, default=False):
+    if value is None:
+        return default
+    return is_truthy(value)
+
+
 def fast_url_hash(value):
     if value is None:
         return None

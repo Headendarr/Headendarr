@@ -213,6 +213,7 @@
 <script>
 import {defineComponent} from 'vue';
 import axios from 'axios';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import EpgInfoDialog from 'components/EpgInfoDialog.vue';
 import EpgReviewDialog from 'components/EpgReviewDialog.vue';
@@ -239,6 +240,7 @@ export default defineComponent({
 
   setup() {
     return {
+      settingsStore: useSettingsStore(),
       uiStore: useUiStore(),
     };
   },
@@ -360,13 +362,11 @@ export default defineComponent({
       });
     },
     fetchEpgMetadataSettings: function({silent = false} = {}) {
-      return axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
-        this.enableTmdbMetadata = response.data.data.epgs.enable_tmdb_metadata;
-        this.tmdbApiKey = response.data.data.epgs.tmdb_api_key;
-        this.enableGoogleImageSearchMetadata = response.data.data.epgs.enable_google_image_search_metadata;
+      return this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
+        const epgSettings = settings?.epgs || {};
+        this.enableTmdbMetadata = epgSettings.enable_tmdb_metadata;
+        this.tmdbApiKey = epgSettings.tmdb_api_key;
+        this.enableGoogleImageSearchMetadata = epgSettings.enable_google_image_search_metadata;
         this.lastSavedSettingsSignature = JSON.stringify(this.buildMetadataPostData().settings);
       }).catch(() => {
         if (!silent) {
@@ -434,6 +434,7 @@ export default defineComponent({
           url: '/tic-api/save-settings',
           data: postData,
         });
+        await this.settingsStore.refreshSettings({force: true});
         this.lastSavedSettingsSignature = signature;
       } catch {
         this.$q.notify({

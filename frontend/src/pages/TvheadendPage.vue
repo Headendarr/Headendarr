@@ -206,6 +206,7 @@
 <script>
 import {defineComponent, ref} from 'vue';
 import axios from 'axios';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {TicNumberInput, TicResponsiveHelp, TicTextareaInput, TicTextInput, TicToggleInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
@@ -222,6 +223,7 @@ export default defineComponent({
 
   setup() {
     return {
+      settingsStore: useSettingsStore(),
       uiStore: useUiStore(),
     };
   },
@@ -284,19 +286,16 @@ export default defineComponent({
     },
     fetchSettings: function() {
       this.isHydratingSettings = true;
-      // Fetch current settings
-      axios({
-        method: 'get',
-        url: '/tic-api/get-settings',
-      }).then((response) => {
+      this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
+        const payload = settings || {};
         // TVH Connection settings are specially nested (for some reason)
-        this.tvhHost = response.data.data.tvheadend.host;
-        this.tvhPort = response.data.data.tvheadend.port;
-        this.tvhUsername = response.data.data.tvheadend.username;
-        this.tvhPassword = response.data.data.tvheadend.password;
+        this.tvhHost = payload.tvheadend.host;
+        this.tvhPort = payload.tvheadend.port;
+        this.tvhUsername = payload.tvheadend.username;
+        this.tvhPassword = payload.tvheadend.password;
 
         // All other application settings are here
-        const appSettings = response.data.data;
+        const appSettings = payload;
 
         // Iterate over the settings and set values
         Object.entries(appSettings).forEach(([key, value]) => {
@@ -392,6 +391,7 @@ export default defineComponent({
           url: '/tic-api/save-settings',
           data: postData,
         });
+        await this.settingsStore.refreshSettings({force: true});
         this.lastSavedSettingsSignature = signature;
       } catch {
         this.$q.notify({

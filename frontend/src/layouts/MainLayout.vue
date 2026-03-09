@@ -405,6 +405,7 @@ import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 import axios from 'axios';
 import {copyToClipboard, useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {useRouter} from 'vue-router';
 
@@ -467,6 +468,14 @@ const linksList = [
     adminOnly: true,
   },
   {
+    title: 'Plex',
+    caption: 'Plex Live TV Settings',
+    icon: 'plex-icon',
+    link: '/plex',
+    adminOnly: true,
+    requiresPlex: true,
+  },
+  {
     title: 'TVHeadend',
     caption: 'TVHeadend Settings',
     icon: 'tvh-icon',
@@ -497,6 +506,7 @@ export default defineComponent({
     const $q = useQuasar();
     const router = useRouter();
     const authStore = useAuthStore();
+    const settingsStore = useSettingsStore();
     const uiStore = useUiStore();
     const roles = computed(() => authStore.user?.roles || []);
     const isAdmin = computed(() => roles.value.includes('admin'));
@@ -535,16 +545,12 @@ export default defineComponent({
     const routeCombinedThroughCso = ref(false);
     const tvhCompatibleProfileIds = ref([]);
 
-    const loadConnectionDetailsSettings = async () => {
+    const loadConnectionDetailsSettings = async ({force = false} = {}) => {
       if (!(isAdmin.value || canViewConnectionDetails.value)) {
         return;
       }
       try {
-        const response = await axios({
-          method: 'get',
-          url: '/tic-api/get-settings',
-        });
-        const settings = response?.data?.data || {};
+        const settings = await settingsStore.refreshSettings({force, minAgeMs: 3000});
         appUrl.value = settings.app_url;
         streamProfiles.value = settings.stream_profiles || {};
         streamProfileDefinitions.value = Array.isArray(settings.stream_profile_definitions)
@@ -556,16 +562,12 @@ export default defineComponent({
           ? settings.tvh_compatible_profile_ids
           : [];
       } catch {
-        streamProfiles.value = {};
-        streamProfileDefinitions.value = [];
-        routePerSourceThroughTvh.value = false;
-        routeCombinedThroughCso.value = false;
-        tvhCompatibleProfileIds.value = [];
+        // Keep last-known values to avoid drawer flicker when the request fails.
       }
     };
 
     const handleSettingsUpdated = () => {
-      loadConnectionDetailsSettings();
+      loadConnectionDetailsSettings({force: true});
     };
 
     const copyUrlToClipboard = (textToCopy) => {
@@ -706,6 +708,10 @@ export default defineComponent({
       if (link.requiresDvrAccess && !canUseDvr.value) {
         return false;
       }
+      const currentPlexAvailability = settingsStore.plexAvailable;
+      if (link.requiresPlex && currentPlexAvailability === false) {
+        return false;
+      }
       return true;
     }));
     const currentUsername = computed(() => authStore.user?.username || 'User');
@@ -808,6 +814,7 @@ export default defineComponent({
       showConnectionDetailsActions,
       showHeaderActions,
       isAdmin,
+      settingsStore,
       openConnectionWizard,
     };
   },
