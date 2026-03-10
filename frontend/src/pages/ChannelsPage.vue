@@ -15,7 +15,42 @@
                 @action="handleChannelsToolbarAction"
                 @filter-change="onChannelsToolbarFilterChange"
                 @filters="openBulkFilterDialog"
-              />
+              >
+                <template #below>
+                  <div v-if="bulkEditMode" class="bulk-mode-controls">
+                    <TicButtonDropdown
+                      label="Bulk Actions"
+                      icon="tune"
+                      color="primary"
+                      class="bulk-actions-dropdown"
+                    >
+                      <q-list>
+                        <q-item
+                          v-for="action in bulkEditDropdownActions"
+                          :key="action.id"
+                          :clickable="!action.disable"
+                          :disable="action.disable"
+                          v-close-popup
+                          @click="handleBulkDropdownAction(action)"
+                        >
+                          <q-item-section avatar>
+                            <q-icon :name="action.icon" :color="action.color || 'primary'" />
+                          </q-item-section>
+                          <q-item-section>{{ action.label }}</q-item-section>
+                        </q-item>
+                      </q-list>
+                    </TicButtonDropdown>
+                  </div>
+                  <div v-if="bulkEditMode" class="bulk-select-all-row">
+                    <q-checkbox
+                      color="primary"
+                      :model-value="allChannelsSelected"
+                      label="Select all channels"
+                      @update:model-value="setAllChannelsSelected"
+                    />
+                  </div>
+                </template>
+              </TicListToolbar>
               <div class="q-gutter-sm q-mt-sm">
                 <TicDialogPopup
                   v-model="channelNumberEditDialogVisible"
@@ -182,39 +217,6 @@
                     <TicButton label="Apply" icon="check" color="positive" @click="applyBulkFilterDraft" />
                   </template>
                 </TicDialogPopup>
-
-                <div v-if="bulkEditMode" class="bulk-mode-controls">
-                  <TicButtonDropdown
-                    label="Bulk Actions"
-                    icon="tune"
-                    color="primary"
-                    class="bulk-actions-dropdown"
-                  >
-                    <q-list>
-                      <q-item
-                        v-for="action in bulkEditDropdownActions"
-                        :key="action.id"
-                        :clickable="!action.disable"
-                        :disable="action.disable"
-                        v-close-popup
-                        @click="handleBulkDropdownAction(action)"
-                      >
-                        <q-item-section avatar>
-                          <q-icon :name="action.icon" :color="action.color || 'primary'" />
-                        </q-item-section>
-                        <q-item-section>{{ action.label }}</q-item-section>
-                      </q-item>
-                    </q-list>
-                  </TicButtonDropdown>
-                </div>
-                <div v-if="bulkEditMode" class="bulk-select-all-row">
-                  <q-checkbox
-                    color="primary"
-                    :model-value="allChannelsSelected"
-                    label="Select all channels"
-                    @update:model-value="setAllChannelsSelected"
-                  />
-                </div>
 
                 <q-list bordered separator class="channels-list rounded-borders q-pl-none">
                   <draggable
