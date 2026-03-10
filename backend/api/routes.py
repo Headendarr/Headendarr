@@ -30,6 +30,7 @@ from backend.models import Session, User
 from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIBLE_PROFILE_IDS_ORDER
 from backend.plex.runtime import build_plex_settings_for_runtime, get_runtime_plex_servers, plex_runtime_summary
 from backend.tvheadend.tvh_requests import configure_tvh
+from backend.utils import convert_to_int
 
 _TVH_PROXY_CONNECT_TIMEOUT = float(os.environ.get("TVH_PROXY_CONNECT_TIMEOUT_SECONDS", "15"))
 _TVH_PROXY_STREAM_READ_TIMEOUT = float(os.environ.get("TVH_PROXY_STREAM_READ_TIMEOUT_SECONDS", "120"))
@@ -448,8 +449,8 @@ async def api_save_config():
         dvr_payload = settings_payload.get("dvr")
         if isinstance(dvr_payload, dict):
             settings_payload["dvr"] = {
-                "pre_padding_mins": int(dvr_payload.get("pre_padding_mins", 2) or 2),
-                "post_padding_mins": int(dvr_payload.get("post_padding_mins", 5) or 5),
+                "pre_padding_mins": max(0, convert_to_int(dvr_payload.get("pre_padding_mins"), 2)),
+                "post_padding_mins": max(0, convert_to_int(dvr_payload.get("post_padding_mins"), 5)),
                 "retention_policy": normalize_retention_policy(dvr_payload.get("retention_policy")),
                 "recording_profiles": normalize_recording_profiles(dvr_payload.get("recording_profiles")),
             }
@@ -500,7 +501,13 @@ async def api_save_config():
                 },
                 priority=16,
             )
-    plex_update_requested = "plex" in (json_data.get("settings") or {})
+    plex_update_requested = any(
+        key in (json_data.get("settings") or {})
+        for key in (
+            "plex",
+            "dvr",
+        )
+    )
     if plex_update_requested:
         if task_broker is None:
             task_broker = await TaskQueueBroker.get_instance()

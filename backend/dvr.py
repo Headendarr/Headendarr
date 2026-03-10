@@ -17,6 +17,7 @@ from backend.dvr_profiles import (
 from backend.models import Session, Recording, RecordingRule, Channel, EpgChannels, EpgChannelProgrammes, User
 from backend.tvheadend.tvh_requests import get_tvh, get_tvh_with_credentials
 from backend.auth import audit_stream_event
+from backend.utils import convert_to_int
 
 logger = logging.getLogger('tic.dvr')
 
@@ -322,8 +323,8 @@ async def reconcile_tvh_recordings(config):
     recording_profiles = read_recording_profiles_from_settings(settings or {})
     profile_by_key = {item["key"]: item for item in recording_profiles}
     dvr_settings = (settings or {}).get("settings", {}).get("dvr", {}) or {}
-    default_pre_padding = max(0, int(dvr_settings.get("pre_padding_mins", 2) or 2))
-    default_post_padding = max(0, int(dvr_settings.get("post_padding_mins", 5) or 5))
+    default_pre_padding = max(0, convert_to_int(dvr_settings.get("pre_padding_mins"), 2))
+    default_post_padding = max(0, convert_to_int(dvr_settings.get("post_padding_mins"), 5))
 
     async with await get_tvh(config) as tvh:
         tvh_entries = await tvh.list_dvr_entries()

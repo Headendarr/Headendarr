@@ -11,6 +11,7 @@ import aiofiles
 from types import SimpleNamespace
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from backend.utils import convert_to_int
 
 scheduler = AsyncIOScheduler()
 
@@ -251,8 +252,8 @@ async def sync_user_to_tvh(config, user_id):
     try:
         settings = config.read_settings()
         dvr_settings = settings.get("settings", {}).get("dvr", {}) or {}
-        pre_padding = max(0, int(dvr_settings.get("pre_padding_mins", 2) or 2))
-        post_padding = max(0, int(dvr_settings.get("post_padding_mins", 5) or 5))
+        pre_padding = max(0, convert_to_int(dvr_settings.get("pre_padding_mins"), 2))
+        post_padding = max(0, convert_to_int(dvr_settings.get("post_padding_mins"), 5))
         retention_policy = normalize_retention_policy(getattr(user, "dvr_retention_policy", "forever"))
         dvr_access_mode = str(getattr(user, "dvr_access_mode", "none") or "none").strip().lower()
         if is_admin:
