@@ -1,24 +1,22 @@
 <template>
-  <q-page padding>
-    <div class="q-pa-none">
+  <q-page>
+    <div :class="$q.screen.lt.sm ? 'q-pa-none' : 'q-pa-md'">
       <div class="row">
         <div
           :class="uiStore.showHelp ? 'col-12 col-md-8 help-main' : 'col-12 help-main help-main--full'">
           <q-card flat>
             <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
               <TicListToolbar
-                class="channels-toolbar"
+                class="channels-toolbar q-mb-sm"
                 :actions="channelsToolbarActions"
                 :filters="channelsToolbarFilters"
                 :collapse-filters-on-mobile="true"
+                :sticky="true"
                 @action="handleChannelsToolbarAction"
                 @filter-change="onChannelsToolbarFilterChange"
                 @filters="openBulkFilterDialog"
               />
-            </q-card-section>
-
-            <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
-              <div class="q-gutter-sm">
+              <div class="q-gutter-sm q-mt-sm">
                 <TicDialogPopup
                   v-model="channelNumberEditDialogVisible"
                   title="Edit Channel Number"

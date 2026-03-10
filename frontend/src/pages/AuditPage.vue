@@ -9,34 +9,38 @@
             :search-value="search"
             :filters="auditToolbarFilters"
             :collapse-filters-on-mobile="false"
+            :sticky="true"
             @update:search-value="search = $event"
             @filter-change="onAuditToolbarFilterChange"
-          />
-          <div class="row q-col-gutter-sm q-mb-sm">
-            <div class="col-12 col-md-3">
-              <q-input
-                v-model="fromTsInput"
-                dense
-                outlined
-                type="datetime-local"
-                label="From"
-              />
-            </div>
-            <div class="col-12 col-md-3">
-              <q-input
-                v-model="toTsInput"
-                dense
-                outlined
-                type="datetime-local"
-                label="To"
-              />
-            </div>
-            <div class="col-12 col-md-6 flex items-center">
-              <div class="text-caption text-grey-7">
-                Set a time range to load all matching logs without infinite scrolling.
+          >
+            <template #below>
+              <div class="row q-col-gutter-sm">
+                <div class="col-12 col-md-3">
+                  <q-input
+                    v-model="fromTsInput"
+                    dense
+                    outlined
+                    type="datetime-local"
+                    label="From"
+                  />
+                </div>
+                <div class="col-12 col-md-3">
+                  <q-input
+                    v-model="toTsInput"
+                    dense
+                    outlined
+                    type="datetime-local"
+                    label="To"
+                  />
+                </div>
+                <div class="col-12 col-md-6 flex items-center">
+                  <div class="text-caption text-grey-7">
+                    Set a time range to load all matching logs without infinite scrolling.
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            </template>
+          </TicListToolbar>
 
           <q-list class="audit-list">
             <q-item v-for="entry in entries" :key="entry.entry_key || `${entry.entry_type}:${entry.id}`"
