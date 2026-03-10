@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import gzip
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
-from collections import defaultdict
-from datetime import datetime, timezone
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,14 +22,82 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
-from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger
+from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger, exists, update
 from backend.channels import build_channel_logo_output_url
-from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes
+from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes, EpgProgrammeMetadataCache
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.utils import parse_entity_id
+from backend.utils import as_naive_utc, parse_entity_id
 
 logger = logging.getLogger("tic.epgs")
 XMLTV_UTC_FORMAT = "%Y%m%d%H%M%S +0000"
+MATCHED_METADATA_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+NO_MATCH_METADATA_CACHE_TTL_SECONDS = 23 * 60 * 60
+SKIPPED_METADATA_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+TMDB_TARGET_RATE_LIMIT_REQUESTS = 20
+TMDB_RATE_LIMIT_PERIOD_SECONDS = 1.0
+TMDB_RETRY_DELAYS_SECONDS = [5, 10, 15]
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
+TMDB_MAX_SERIES_RESULTS = 3
+TMDB_MAX_EPISODE_MATCH_SEASONS = 60
+TMDB_LOOKUP_CONCURRENCY = 8
+SKIP_LOOKUP_KEYWORDS = (
+    "a-league",
+    "abc news",
+    "afternoon briefing",
+    "asian cup",
+    "bloomberg",
+    "business of war",
+    "champions tour",
+    "counting the cost",
+    "cricket",
+    "darts",
+    "dp world tour",
+    "evening news",
+    "event highlights",
+    "ext highlights",
+    "extended highlights",
+    "fox 5",
+    "grand prix",
+    "highlights",
+    "home shopping",
+    "horse race",
+    "horse racing",
+    "house of representatives",
+    "infomercial",
+    "inside story",
+    "late news",
+    "livezone",
+    "motorsport classic",
+    "national news",
+    "news live",
+    "news overnight",
+    "news regional",
+    "news update",
+    "news with auslan",
+    "newsbreak",
+    "newshour",
+    "nightly news",
+    "paid programming",
+    "paris-nice",
+    "people and power",
+    "premiership",
+    "press club address",
+    "question time",
+    "resume at",
+    "returns at",
+    "roland-garros",
+    "rugby",
+    "sevens series",
+    "shopping",
+    "supercars championship",
+    "tbc",
+    "teleshopping",
+    "the listening post",
+    "timbersports",
+    "to be advised",
+    "world championship",
+    "world cup",
+)
 DEFAULT_EPG_UPDATE_SCHEDULE = "12h"
 EPG_UPDATE_SCHEDULE_SECONDS = {
     "1h": 3600,
@@ -438,6 +508,270 @@ def _collect_xmltv_texts(elem, tag):
     return values
 
 
+def _clean_lookup_text(value):
+    if value is None:
+        return ""
+    cleaned = re.sub(r"\s+", " ", str(value).strip().lower())
+    cleaned = re.sub(r"[^a-z0-9\s]+", "", cleaned)
+    return cleaned.strip()
+
+
+def _clean_lookup_tokens(value):
+    cleaned = _clean_lookup_text(value)
+    if not cleaned:
+        return []
+    return cleaned.split()
+
+
+EPISODE_MARKER_PATTERNS = (
+    re.compile(r"(?i)\bseason\s*(?P<season>\d{1,2})\s*episode\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bseason\s*(?P<season>\d{1,2})\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bseries\s*(?P<season>\d{1,2})\s*episode\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bseries\s*(?P<season>\d{1,2})\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bstag\.?\s*(?P<season>\d{1,2})\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bstg\.?\s*(?P<season>\d{1,2})\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\btp\s*(?P<season>\d{1,2})\s*[-:/]?\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bs\.\s*(?P<season>\d{1,2})\s*ep\.?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\b(?P<season>\d{1,2})x(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\(\s*s(?P<season>\d{1,2})\s*[:;,]?\s*e[p]?\s*(?P<episode>\d{1,3})\s*\)"),
+    re.compile(r"(?i)\bs(?P<season>\d{1,2})\s*e[p]?\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bs(?P<season>\d{1,2})\s*ep\s*(?P<episode>\d{1,3})\b"),
+    re.compile(r"(?i)\bs(?P<season>\d{1,2})e(?P<episode>\d{1,3})\b"),
+)
+
+
+def _strip_episode_marker_text(value):
+    """Remove recognised season/episode markers from title or subtitle text.
+
+    Supported marker styles currently include:
+    - ``Season 1 Episode 9``
+    - ``Season 1 Ep 9``
+    - ``Series 1 Episode 9``
+    - ``Series 1 Ep 9``
+    - ``Stag. 1 Ep. 9``
+    - ``Stg. 1 Ep. 9``
+    - ``Tp02 - Ep02``
+    - ``S.15 Ep.35``
+    - ``1x09``
+    - ``(S1:E9)`` and ``(S1, Ep9)``
+    - ``S1 E9``
+    - ``S1 Ep9``
+    - ``S01E09``
+
+    After marker removal, surrounding separator characters such as ``-``, ``:``,
+    ``|``, ``,``, ``;``, ``/`` and parentheses are trimmed if they are left at
+    the start or end of the remaining text.
+    """
+    if not value:
+        return value
+    text = str(value).strip()
+    for pattern in EPISODE_MARKER_PATTERNS:
+        text = pattern.sub("", text)
+    text = re.sub(r"\s*[-:|,;/()]+\s*$", "", text)
+    text = re.sub(r"^\s*[-:|,;/()]+\s*", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text or None
+
+
+def extract_episode_marker_details(title=None, sub_title=None):
+    values = [("title", title), ("sub_title", sub_title)]
+    for source_name, source_value in values:
+        if not source_value:
+            continue
+        for pattern in EPISODE_MARKER_PATTERNS:
+            match = pattern.search(str(source_value))
+            if not match:
+                continue
+            try:
+                season_number = int(match.group("season"))
+                episode_number = int(match.group("episode"))
+            except (TypeError, ValueError):
+                continue
+            cleaned_value = _strip_episode_marker_text(source_value)
+            return {
+                "source": source_name,
+                "season_number": season_number,
+                "episode_number": episode_number,
+                "cleaned_value": cleaned_value,
+                "raw_value": source_value,
+            }
+    return None
+
+
+def _derive_tmdb_search_title(programme_row):
+    marker = extract_episode_marker_details(programme_row.get("title"), programme_row.get("sub_title"))
+    cleaned_title = _strip_episode_marker_text(programme_row.get("title"))
+    if marker and marker.get("source") == "title" and cleaned_title:
+        return cleaned_title, marker
+    return programme_row.get("title"), marker
+
+
+def _derive_tmdb_episode_search_name(programme_row, marker=None):
+    marker = marker or extract_episode_marker_details(programme_row.get("title"), programme_row.get("sub_title"))
+    sub_title = programme_row.get("sub_title")
+    if sub_title:
+        cleaned_sub_title = _strip_episode_marker_text(sub_title)
+        if cleaned_sub_title:
+            return cleaned_sub_title
+    if marker and marker.get("source") == "title":
+        return None
+    return sub_title
+
+
+def _episode_search_names(programme_row, marker=None):
+    title = programme_row.get("title")
+    derived_sub_title = _derive_tmdb_episode_search_name(programme_row, marker)
+    derived_clean = _clean_lookup_text(derived_sub_title)
+    title_clean = _clean_lookup_text(title)
+    if not derived_clean or derived_clean == title_clean:
+        return []
+
+    names = []
+    seen = set()
+
+    def _add_candidate(value):
+        candidate = (value or "").strip()
+        candidate_clean = _clean_lookup_text(candidate)
+        if not candidate_clean or candidate_clean == title_clean or candidate_clean in seen:
+            return
+        seen.add(candidate_clean)
+        names.append(candidate)
+
+    _add_candidate(derived_sub_title)
+
+    split_parts = re.split(r"\s*/\s*", derived_sub_title or "")
+    if len(split_parts) > 1:
+        for part in split_parts:
+            _add_candidate(part)
+
+    return names
+
+
+async def _run_with_inflight_dedupe(run_state, inflight_map_name, cache_key, coro_factory):
+    inflight_map = getattr(run_state, inflight_map_name)
+    async with run_state.inflight_lock:
+        existing_task = inflight_map.get(cache_key)
+        if existing_task is not None:
+            logger.debug("TMDB in-flight dedupe hit map=%s key=%r", inflight_map_name, cache_key)
+            task = existing_task
+        else:
+            task = asyncio.create_task(coro_factory())
+            inflight_map[cache_key] = task
+    try:
+        return await task
+    finally:
+        async with run_state.inflight_lock:
+            if inflight_map.get(cache_key) is task:
+                inflight_map.pop(cache_key, None)
+
+
+def derive_metadata_lookup_hash(title, sub_title=None):
+    cleaned_title = _clean_lookup_text(title)
+    if not cleaned_title:
+        return None
+    cleaned_sub_title = _clean_lookup_text(sub_title)
+    lookup_key = f"{cleaned_title}\n{cleaned_sub_title}" if cleaned_sub_title else cleaned_title
+    return hashlib.sha256(lookup_key.encode("utf-8")).hexdigest()
+
+
+def _programme_has_lookup_skip_keyword(title, sub_title=None):
+    combined = " ".join(value for value in (_clean_lookup_text(title), _clean_lookup_text(sub_title)) if value).strip()
+    if not combined:
+        return False
+    return any(keyword in combined for keyword in SKIP_LOOKUP_KEYWORDS)
+
+
+def _programme_has_episode_numbers(programme_row):
+    return bool(
+        (programme_row.get("epnum_onscreen") or "").strip() or (programme_row.get("epnum_xmltv_ns") or "").strip()
+    )
+
+
+def _programme_missing_descriptive_fields(programme_row):
+    for key in ("title", "sub_title", "desc", "series_desc", "icon_url"):
+        if not (programme_row.get(key) or "").strip():
+            return True
+    return False
+
+
+def _programme_is_plausibly_episodic(programme_row):
+    if (programme_row.get("sub_title") or "").strip():
+        return True
+    categories = programme_row.get("categories_list") or []
+    category_text = " ".join(_clean_lookup_text(item) for item in categories if item)
+    if not category_text:
+        return False
+    episodic_keywords = ("series", "drama", "comedy", "sitcom", "reality", "soap", "entertainment")
+    if any(keyword in category_text for keyword in episodic_keywords):
+        return True
+    movie_keywords = ("movie", "film", "cinema")
+    if any(keyword in category_text for keyword in movie_keywords):
+        return False
+    return False
+
+
+def _format_tmdb_image_url(path):
+    if not path:
+        return None
+    return f"{TMDB_IMAGE_BASE_URL}{path}"
+
+
+def _build_xmltv_ns(season_number, episode_number):
+    if season_number is None or episode_number is None:
+        return None
+    try:
+        season_value = int(season_number)
+        episode_value = int(episode_number)
+    except (TypeError, ValueError):
+        return None
+    if season_value < 1 or episode_value < 1:
+        return None
+    return f"{season_value - 1} . {episode_value - 1} ."
+
+
+def _build_onscreen_epnum(season_number, episode_number):
+    if season_number is None or episode_number is None:
+        return None
+    try:
+        season_value = int(season_number)
+        episode_value = int(episode_number)
+    except (TypeError, ValueError):
+        return None
+    if season_value < 1 or episode_value < 1:
+        return None
+    return f"S{season_value:02d}E{episode_value:02d}"
+
+
+def _parse_categories_json(value):
+    try:
+        parsed = json.loads(value or "[]")
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if item is not None]
+
+
+def _parse_programme_start_year(programme_row):
+    start_timestamp = programme_row.get("start_timestamp")
+    if not start_timestamp:
+        return None
+    try:
+        return datetime.fromtimestamp(int(start_timestamp), tz=timezone.utc).year
+    except Exception:
+        return None
+
+
+def _programme_is_candidate(programme_row):
+    if not (programme_row.get("title") or "").strip():
+        return False
+    if _programme_missing_descriptive_fields(programme_row):
+        return True
+    if _programme_has_episode_numbers(programme_row):
+        return False
+    return _programme_is_plausibly_episodic(programme_row)
+
+
 def _parse_xmltv_keywords(elem):
     keywords = _collect_xmltv_texts(elem, "keyword")
     if not keywords:
@@ -604,12 +938,14 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
         rating_system, rating_value = _parse_xmltv_rating(elem)
 
         icon = elem.find("icon")
+        title_text = _clean_xmltv_text(elem.findtext("title", default=None))
+        sub_title_text = _clean_xmltv_text(elem.findtext("sub-title", default=None))
         programme_rows.append(
             {
                 "epg_channel_id": epg_channel_id,
                 "channel_id": external_channel_id,
-                "title": _clean_xmltv_text(elem.findtext("title", default=None)),
-                "sub_title": _clean_xmltv_text(elem.findtext("sub-title", default=None)),
+                "title": title_text,
+                "sub_title": sub_title_text,
                 "desc": _clean_xmltv_text(elem.findtext("desc", default=None)),
                 "series_desc": _clean_xmltv_text(elem.findtext("series-desc", default=None)),
                 "icon_url": icon.attrib.get("src", None) if icon is not None else None,
@@ -643,6 +979,7 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
                 "production_year": _clean_xmltv_text(elem.findtext("date", default=None)),
                 "rating_system": rating_system,
                 "rating_value": rating_value,
+                "metadata_lookup_hash": derive_metadata_lookup_hash(title_text, sub_title_text),
             }
         )
         programme_count += 1
@@ -992,6 +1329,71 @@ async def read_epg_review_channels(epg_id, search_query="", has_data="any", limi
     }
 
 
+async def read_epg_online_metadata_no_matches(search_query="", limit=100, offset=0):
+    search_value = (search_query or "").strip()
+    limit_value = max(1, min(int(limit or 100), 1000))
+    offset_value = max(0, int(offset or 0))
+
+    filters = [EpgProgrammeMetadataCache.match_status == "no_match"]
+    if search_value:
+        like_value = f"%{search_value}%"
+        filters.append(
+            or_(
+                EpgProgrammeMetadataCache.lookup_title.ilike(like_value),
+                EpgProgrammeMetadataCache.lookup_sub_title.ilike(like_value),
+            )
+        )
+
+    async with Session() as session:
+        grouped_stmt = (
+            select(
+                EpgProgrammeMetadataCache.lookup_title.label("title"),
+                EpgProgrammeMetadataCache.lookup_sub_title.label("sub_title"),
+                func.count(EpgProgrammeMetadataCache.id).label("entry_count"),
+                func.max(EpgProgrammeMetadataCache.last_checked_at).label("last_checked_at"),
+                func.max(EpgProgrammeMetadataCache.updated_at).label("updated_at"),
+            )
+            .where(*filters)
+            .group_by(
+                EpgProgrammeMetadataCache.lookup_title,
+                EpgProgrammeMetadataCache.lookup_sub_title,
+            )
+        )
+
+        total_count_result = await session.execute(select(func.count()).select_from(grouped_stmt.subquery()))
+        total_count = int(total_count_result.scalar() or 0)
+
+        rows_result = await session.execute(
+            grouped_stmt.order_by(
+                func.count(EpgProgrammeMetadataCache.id).desc(),
+                EpgProgrammeMetadataCache.lookup_title.asc(),
+                EpgProgrammeMetadataCache.lookup_sub_title.asc(),
+            )
+            .offset(offset_value)
+            .limit(limit_value)
+        )
+
+    rows = []
+    for row in rows_result.mappings().all():
+        rows.append(
+            {
+                "title": row["title"],
+                "sub_title": row["sub_title"],
+                "entry_count": int(row["entry_count"] or 0),
+                "last_checked_at": row["last_checked_at"].isoformat() if row["last_checked_at"] else None,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+        )
+
+    return {
+        "rows": rows,
+        "total_count": total_count,
+        "offset": offset_value,
+        "limit": limit_value,
+        "search": search_value,
+    }
+
+
 # --- Cache ---
 XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
 
@@ -1315,153 +1717,957 @@ async def build_custom_epg(config, throttle=False):
 
 
 # --- Online Metadata ---
-async def search_tmdb_for_movie(api_key, title, cache, lock, semaphore):
-    async with semaphore:
-        async with lock:
-            if "tmdb" not in cache:
-                cache["tmdb"] = {}
-            if title in cache["tmdb"]:
-                logger.debug("       - Fetching data for program '%s' from TMDB. [CACHED]", title)
-                return cache["tmdb"][title]
-        search_url = f"https://api.themoviedb.org/3/search/movie?api_key={api_key}&query={title}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url) as response:
-                if response.status == 200:
-                    results = (await response.json()).get("results", [])
-                    if results:
-                        async with lock:
-                            cache["tmdb"][title] = results[0]  # Cache the first search result
-                        logger.debug("       - Fetching data for program '%s' from TMDB. [FETCHED]", title)
-                        return results[0]
-        async with lock:
-            cache["tmdb"][title] = None  # Cache None if no results found
-        logger.debug("       - Fetching data for program '%s' from TMDB. [NONE]", title)
+class AsyncRateLimiter:
+    def __init__(self, max_calls, period_seconds):
+        self.max_calls = max_calls
+        self.period_seconds = period_seconds
+        self.calls = deque()
+        self.lock = asyncio.Lock()
+
+    async def acquire(self):
+        while True:
+            async with self.lock:
+                now = time.monotonic()
+                while self.calls and (now - self.calls[0]) >= self.period_seconds:
+                    self.calls.popleft()
+                if len(self.calls) < self.max_calls:
+                    self.calls.append(now)
+                    return
+                wait_seconds = self.period_seconds - (now - self.calls[0])
+            await asyncio.sleep(max(wait_seconds, 0.01))
+
+
+class TmdbRunState:
+    def __init__(self, session, auth_value):
+        self.session = session
+        self.auth_value = (auth_value or "").strip()
+        self.rate_limiter = AsyncRateLimiter(TMDB_TARGET_RATE_LIMIT_REQUESTS, TMDB_RATE_LIMIT_PERIOD_SECONDS)
+        self.suspended = False
+        self.auth_failed = False
+        self.request_count = 0
+        self.retry_count = 0
+        self.search_cache = {}
+        self.tv_details_cache = {}
+        self.tv_season_cache = {}
+        self.google_cache = {}
+        self.inflight_lock = asyncio.Lock()
+        self.inflight_search = {}
+        self.inflight_tv_details = {}
+        self.inflight_tv_seasons = {}
+        self.inflight_google = {}
+
+
+def tmdb_metadata_enabled(settings):
+    epg_settings = settings["settings"].get("epgs", {})
+    return bool(epg_settings.get("enable_tmdb_metadata") and (epg_settings.get("tmdb_api_key") or "").strip())
+
+
+def _tmdb_auth_is_bearer_token(auth_value):
+    value = (auth_value or "").strip()
+    if not value:
+        return False
+    if value.lower().startswith("bearer "):
+        return True
+    return len(value) > 40
+
+
+def _tmdb_build_request_auth(auth_value):
+    value = (auth_value or "").strip()
+    if not value:
+        return {}, {}
+    if _tmdb_auth_is_bearer_token(value):
+        if not value.lower().startswith("bearer "):
+            value = f"Bearer {value}"
+        return {"Authorization": value}, {}
+    return {}, {"api_key": value}
+
+
+def epg_online_metadata_enabled(settings):
+    epg_settings = settings["settings"].get("epgs", {})
+    return bool(tmdb_metadata_enabled(settings) or epg_settings.get("enable_google_image_search_metadata"))
+
+
+def _tmdb_cache_expiry(match_status="matched", now_utc=None):
+    now = now_utc or datetime.now(timezone.utc)
+    if match_status == "no_match":
+        ttl_seconds = NO_MATCH_METADATA_CACHE_TTL_SECONDS
+    elif match_status == "skipped":
+        ttl_seconds = SKIPPED_METADATA_CACHE_TTL_SECONDS
+    else:
+        ttl_seconds = MATCHED_METADATA_CACHE_TTL_SECONDS
+    return now + timedelta(seconds=ttl_seconds)
+
+
+def _score_text_match(expected, actual):
+    expected_clean = _clean_lookup_text(expected)
+    actual_clean = _clean_lookup_text(actual)
+    if not expected_clean or not actual_clean:
+        return 0.0
+    if expected_clean == actual_clean:
+        return 1.0
+    if expected_clean in actual_clean or actual_clean in expected_clean:
+        shorter_length = min(len(expected_clean), len(actual_clean))
+        longer_length = max(len(expected_clean), len(actual_clean))
+        if shorter_length >= 12 and (shorter_length / max(longer_length, 1)) >= 0.75:
+            return 0.92
+        return 0.8
+    expected_tokens_list = _clean_lookup_tokens(expected)
+    actual_tokens_list = _clean_lookup_tokens(actual)
+    if expected_tokens_list and actual_tokens_list:
+        shorter_tokens = (
+            expected_tokens_list if len(expected_tokens_list) <= len(actual_tokens_list) else actual_tokens_list
+        )
+        longer_tokens = actual_tokens_list if shorter_tokens is expected_tokens_list else expected_tokens_list
+        if (
+            len(shorter_tokens) >= 3
+            and shorter_tokens == longer_tokens[: len(shorter_tokens)]
+            and (len(shorter_tokens) / max(len(longer_tokens), 1)) >= 0.6
+        ):
+            return 0.9
+    expected_tokens = set(expected_clean.split())
+    actual_tokens = set(actual_clean.split())
+    if not expected_tokens or not actual_tokens:
+        return 0.0
+    overlap = len(expected_tokens & actual_tokens) / max(len(expected_tokens), len(actual_tokens))
+    return overlap
+
+
+def _is_strong_episode_match(best_episode_score, episode_marker=None):
+    if best_episode_score >= 0.85:
+        return True
+    if episode_marker and best_episode_score >= 0.8:
+        return True
+    return False
+
+
+def _choose_tmdb_result(programme_row, tv_result, movie_result):
+    tv_has_epnums = bool(
+        tv_result and (tv_result.get("cached_epnum_onscreen") or tv_result.get("cached_epnum_xmltv_ns"))
+    )
+    movie_has_match = bool(movie_result)
+    tv_has_match = bool(tv_result)
+    if tv_has_epnums:
+        return tv_result
+    if tv_has_match and not movie_has_match:
+        return tv_result
+    if movie_has_match and not tv_has_match:
+        return movie_result
+    if not tv_has_match or not movie_has_match:
         return None
 
+    has_explicit_episode_hint = bool(
+        extract_episode_marker_details(programme_row.get("title"), programme_row.get("sub_title"))
+        or (
+            (programme_row.get("sub_title") or "").strip()
+            and _clean_lookup_text(programme_row.get("sub_title")) != _clean_lookup_text(programme_row.get("title"))
+        )
+        or _programme_has_episode_numbers(programme_row)
+    )
+    tv_confidence = float(tv_result.get("source_confidence") or 0.0)
+    movie_confidence = float(movie_result.get("source_confidence") or 0.0)
+    if has_explicit_episode_hint and tv_confidence >= (movie_confidence + 0.05):
+        logger.debug(
+            "TMDB chooser selected tv title=%r subtitle=%r tv_confidence=%.3f movie_confidence=%.3f reason=explicit_episode_hint",
+            programme_row.get("title"),
+            programme_row.get("sub_title"),
+            tv_confidence,
+            movie_confidence,
+        )
+        return tv_result
+    chosen_result = movie_result if movie_confidence >= tv_confidence else tv_result
+    logger.debug(
+        "TMDB chooser selected %s title=%r subtitle=%r tv_confidence=%.3f movie_confidence=%.3f explicit_episode_hint=%s",
+        chosen_result.get("lookup_kind"),
+        programme_row.get("title"),
+        programme_row.get("sub_title"),
+        tv_confidence,
+        movie_confidence,
+        has_explicit_episode_hint,
+    )
+    return chosen_result
 
-async def search_google_images(title, cache, lock, semaphore):
-    async with semaphore:
-        async with lock:
-            if "google_images" not in cache:
-                cache["google_images"] = {}
-            if title in cache["google_images"]:
-                logger.debug("       - Fetching data for program '%s' from Google Images. [CACHED]", title)
-                return cache["google_images"][title]
 
-        search_query = f'"{title}" television show'
-        encoded_query = quote(search_query)
-        search_url = f"https://www.google.com/search?tbm=isch&safe=active&tbs=isz:m&q={encoded_query}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, headers=headers) as response:
+def _pick_best_tmdb_result(results, expected_title, title_fields):
+    best_result = None
+    best_score = 0.0
+    for result in results or []:
+        candidate_score = 0.0
+        for field_name in title_fields:
+            candidate_score = max(candidate_score, _score_text_match(expected_title, result.get(field_name)))
+        popularity = float(result.get("popularity") or 0.0)
+        candidate_score += min(popularity / 1000.0, 0.05)
+        if candidate_score > best_score:
+            best_score = candidate_score
+            best_result = result
+    if best_score < 0.45:
+        return None, 0.0
+    return best_result, best_score
+
+
+async def _tmdb_request(run_state, path, params=None):
+    if not run_state.auth_value or run_state.suspended:
+        logger.debug(
+            "TMDB request skipped path=%s auth_present=%s suspended=%s",
+            path,
+            bool(run_state.auth_value),
+            run_state.suspended,
+        )
+        return None
+    request_params = dict(params or {})
+    request_headers, auth_params = _tmdb_build_request_auth(run_state.auth_value)
+    request_params.update(auth_params)
+    url = f"https://api.themoviedb.org/3{path}"
+    for retry_index in range(len(TMDB_RETRY_DELAYS_SECONDS) + 1):
+        await run_state.rate_limiter.acquire()
+        run_state.request_count += 1
+        log_params = {key: value for key, value in request_params.items() if key != "api_key"}
+        logger.debug("TMDB request path=%s attempt=%s params=%s", path, retry_index + 1, log_params)
+        try:
+            async with run_state.session.get(url, params=request_params, headers=request_headers) as response:
+                if response.status == 200:
+                    payload = await response.json()
+                    logger.debug(
+                        "TMDB request success path=%s attempt=%s result_keys=%s",
+                        path,
+                        retry_index + 1,
+                        sorted(payload.keys()) if isinstance(payload, dict) else None,
+                    )
+                    return payload
+                if response.status == 429:
+                    if retry_index < len(TMDB_RETRY_DELAYS_SECONDS):
+                        delay_seconds = TMDB_RETRY_DELAYS_SECONDS[retry_index]
+                        run_state.retry_count += 1
+                        logger.warning(
+                            "TMDB rate limit hit for %s; retrying in %ss (%s/%s)",
+                            path,
+                            delay_seconds,
+                            retry_index + 1,
+                            len(TMDB_RETRY_DELAYS_SECONDS),
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    run_state.suspended = True
+                    logger.warning("TMDB rate limit persisted after retries; suspending TMDB lookups for this run")
+                    return None
+                if response.status in (401, 403):
+                    run_state.suspended = True
+                    run_state.auth_failed = True
+                    logger.error(
+                        "TMDB request unauthorised path=%s status=%s; suspending TMDB lookups until the next scan",
+                        path,
+                        response.status,
+                    )
+                    return None
+                if response.status == 404:
+                    logger.debug("TMDB request returned 404 path=%s params=%s", path, log_params)
+                    return None
+                logger.warning("TMDB request failed path=%s status=%s", path, response.status)
+                return None
+        except aiohttp.ClientError as exc:
+            logger.warning("TMDB request error path=%s error=%s", path, exc)
+            return None
+    return None
+
+
+async def search_tmdb_for_movie(auth_value, title, run_state):
+    if not auth_value or not title:
+        logger.debug("TMDB movie lookup skipped title=%r auth_present=%s", title, bool(auth_value))
+        return None
+    cache_key = ("movie_search", _clean_lookup_text(title))
+    if cache_key in run_state.search_cache:
+        logger.debug("TMDB movie search cache hit title=%r hit=%s", title, bool(run_state.search_cache[cache_key]))
+        return run_state.search_cache[cache_key]
+    payload = await _run_with_inflight_dedupe(
+        run_state,
+        "inflight_search",
+        cache_key,
+        lambda: _tmdb_request(run_state, "/search/movie", {"query": title}),
+    )
+    results = (payload or {}).get("results", [])
+    logger.debug("TMDB movie search title=%r results=%s", title, len(results))
+    best_result, confidence = _pick_best_tmdb_result(results, title, ("title", "original_title"))
+    if not best_result:
+        run_state.search_cache[cache_key] = None
+        logger.debug("TMDB movie lookup no-match title=%r", title)
+        return None
+    movie_result = {
+        "lookup_kind": "movie",
+        "match_status": "matched",
+        "provider": "tmdb",
+        "provider_item_type": "movie",
+        "provider_item_id": best_result.get("id"),
+        "cached_sub_title": best_result.get("title"),
+        "cached_desc": best_result.get("overview"),
+        "cached_icon_url": _format_tmdb_image_url(best_result.get("poster_path")),
+        "source_confidence": confidence,
+        "raw_result_json": json.dumps({"movie": best_result}),
+    }
+    logger.debug(
+        "TMDB movie lookup matched title=%r movie_id=%s confidence=%.3f matched_title=%r",
+        title,
+        best_result.get("id"),
+        confidence,
+        best_result.get("title"),
+    )
+    run_state.search_cache[cache_key] = movie_result
+    return movie_result
+
+
+async def _get_tmdb_tv_details(run_state, series_id):
+    if series_id in run_state.tv_details_cache:
+        return run_state.tv_details_cache[series_id]
+    payload = await _run_with_inflight_dedupe(
+        run_state,
+        "inflight_tv_details",
+        series_id,
+        lambda: _tmdb_request(run_state, f"/tv/{series_id}"),
+    )
+    run_state.tv_details_cache[series_id] = payload
+    return payload
+
+
+async def _get_tmdb_tv_season_details(run_state, series_id, season_number):
+    cache_key = (series_id, season_number)
+    if cache_key in run_state.tv_season_cache:
+        return run_state.tv_season_cache[cache_key]
+    payload = await _run_with_inflight_dedupe(
+        run_state,
+        "inflight_tv_seasons",
+        cache_key,
+        lambda: _tmdb_request(run_state, f"/tv/{series_id}/season/{season_number}"),
+    )
+    run_state.tv_season_cache[cache_key] = payload
+    return payload
+
+
+async def search_tmdb_for_tv_programme(auth_value, programme_row, run_state):
+    title, episode_marker = _derive_tmdb_search_title(programme_row)
+    if not auth_value or not title:
+        logger.debug("TMDB TV lookup skipped title=%r auth_present=%s", title, bool(auth_value))
+        return None
+    cache_key = ("tv_search", _clean_lookup_text(title))
+    if cache_key in run_state.search_cache:
+        search_payload = run_state.search_cache[cache_key]
+        logger.debug("TMDB TV search cache hit title=%r", title)
+    else:
+        search_payload = await _run_with_inflight_dedupe(
+            run_state,
+            "inflight_search",
+            cache_key,
+            lambda: _tmdb_request(run_state, "/search/tv", {"query": title}),
+        )
+        run_state.search_cache[cache_key] = search_payload
+    results = (search_payload or {}).get("results", [])
+    logger.debug(
+        "TMDB TV search title=%r subtitle=%r results=%s extracted_marker=%s",
+        title,
+        programme_row.get("sub_title"),
+        len(results),
+        episode_marker,
+    )
+    best_series, confidence = _pick_best_tmdb_result(results, title, ("name", "original_name"))
+    if not best_series:
+        logger.debug("TMDB TV lookup no-series-match title=%r", title)
+        return None
+
+    series_result = {
+        "lookup_kind": "tv",
+        "match_status": "matched",
+        "provider": "tmdb",
+        "provider_item_type": "tv",
+        "provider_item_id": best_series.get("id"),
+        "provider_series_id": best_series.get("id"),
+        "cached_desc": None,
+        "cached_series_desc": best_series.get("overview"),
+        "cached_icon_url": _format_tmdb_image_url(best_series.get("poster_path")),
+        "source_confidence": confidence,
+        "raw_result_json": json.dumps({"series": best_series}),
+    }
+
+    episode_search_names = _episode_search_names(programme_row, episode_marker)
+    if not episode_search_names:
+        logger.debug(
+            "TMDB TV lookup series-only title=%r series_id=%s confidence=%.3f",
+            title,
+            best_series.get("id"),
+            confidence,
+        )
+        return series_result
+
+    tv_details = await _get_tmdb_tv_details(run_state, best_series.get("id"))
+    seasons = (tv_details or {}).get("seasons", [])
+    if not seasons:
+        return series_result
+
+    best_episode = None
+    best_episode_score = 0.0
+    best_episode_search_name = None
+    programme_start_year = _parse_programme_start_year(programme_row)
+    seasons_checked = 0
+    marker_season = episode_marker.get("season_number") if episode_marker else None
+    marker_episode = episode_marker.get("episode_number") if episode_marker else None
+    for season in seasons:
+        season_number = season.get("season_number")
+        if season_number is None:
+            continue
+        if marker_season is not None and season_number != marker_season:
+            continue
+        seasons_checked += 1
+        if seasons_checked > TMDB_MAX_EPISODE_MATCH_SEASONS:
+            break
+        season_payload = await _get_tmdb_tv_season_details(run_state, best_series.get("id"), season_number)
+        episodes = (season_payload or {}).get("episodes", [])
+        for episode in episodes:
+            episode_score = 0.0
+            matched_search_name = None
+            for candidate_name in episode_search_names:
+                candidate_score = _score_text_match(candidate_name, episode.get("name"))
+                if candidate_score > episode_score:
+                    episode_score = candidate_score
+                    matched_search_name = candidate_name
+            if marker_season == episode.get("season_number") and marker_episode == episode.get("episode_number"):
+                episode_score = max(episode_score, 0.95)
+            if episode_score <= 0.0:
+                continue
+            air_date = episode.get("air_date")
+            if programme_start_year and air_date:
+                try:
+                    air_year = int(str(air_date).split("-", 1)[0])
+                    if abs(programme_start_year - air_year) <= 3:
+                        episode_score += 0.1
+                except (TypeError, ValueError):
+                    pass
+            if episode_score > best_episode_score:
+                best_episode = episode
+                best_episode_score = episode_score
+                best_episode_search_name = matched_search_name
+
+    if not best_episode or not _is_strong_episode_match(best_episode_score, episode_marker):
+        logger.debug(
+            "TMDB TV lookup no-episode-match title=%r subtitle=%r series_id=%s best_episode_score=%.3f",
+            title,
+            episode_search_names[0] if episode_search_names else None,
+            best_series.get("id"),
+            best_episode_score,
+        )
+        return series_result
+
+    season_number = best_episode.get("season_number")
+    episode_number = best_episode.get("episode_number")
+    logger.debug(
+        "TMDB TV lookup matched title=%r subtitle=%r series_id=%s season=%s episode=%s confidence=%.3f",
+        title,
+        best_episode_search_name or (episode_search_names[0] if episode_search_names else None),
+        best_series.get("id"),
+        season_number,
+        episode_number,
+        min(confidence + best_episode_score, 1.0),
+    )
+    return {
+        "lookup_kind": "tv",
+        "match_status": "matched",
+        "provider": "tmdb",
+        "provider_item_type": "episode",
+        "provider_item_id": best_episode.get("id"),
+        "provider_series_id": best_series.get("id"),
+        "provider_season_number": season_number,
+        "provider_episode_number": episode_number,
+        "cached_sub_title": best_episode.get("name"),
+        "cached_desc": best_episode.get("overview") or best_series.get("overview"),
+        "cached_series_desc": best_series.get("overview"),
+        "cached_icon_url": _format_tmdb_image_url(best_series.get("poster_path")),
+        "cached_epnum_onscreen": _build_onscreen_epnum(season_number, episode_number),
+        "cached_epnum_xmltv_ns": _build_xmltv_ns(season_number, episode_number),
+        "source_confidence": min(confidence + best_episode_score, 1.0),
+        "raw_result_json": json.dumps({"series": best_series, "episode": best_episode}),
+    }
+
+
+async def search_google_images(title, run_state):
+    cache_key = _clean_lookup_text(title)
+    if cache_key in run_state.google_cache:
+        logger.debug("Google image cache hit title=%r hit=%s", title, bool(run_state.google_cache[cache_key]))
+        return run_state.google_cache[cache_key]
+
+    search_query = f'"{title}" television show'
+    encoded_query = quote(search_query)
+    search_url = f"https://www.google.com/search?tbm=isch&safe=active&tbs=isz:m&q={encoded_query}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
+
+    async def _fetch_google_image():
+        try:
+            async with run_state.session.get(search_url, headers=headers) as response:
                 if response.status == 200:
                     soup = BeautifulSoup(await response.text(), "html.parser")
                     images = soup.find_all("img")
-                    if images:
-                        # The first image might be the Google logo, so we take the second one
+                    if len(images) > 1:
                         image_url = images[1]["src"]
-                        async with lock:
-                            cache["google_images"][title] = image_url  # Cache the first image URL
-                        logger.debug("       - Fetching data for program '%s' from Google Images. [FETCHED]", title)
+                        logger.debug("Google image lookup matched title=%r", title)
                         return image_url
-
-        async with lock:
-            cache["google_images"][title] = None  # Cache None if no results found
-        logger.debug("       - Fetching data for program '%s' from Google Images. [NONE]", title)
+        except aiohttp.ClientError as exc:
+            logger.warning("Google image search failed for '%s': %s", title, exc)
+        logger.debug("Google image lookup no-match title=%r", title)
         return None
 
-
-async def update_programme_with_online_data(settings, programme, categories, cache, lock, semaphore):
-    updated = False
-    title = programme.title
-    categories = [category.lower() for category in categories]
-
-    # Fetch updated data from TMDB
-    if not (programme.sub_title or programme.desc or programme.icon_url):
-        if settings["settings"].get("epgs", {}).get("enable_tmdb_metadata"):
-            api_key = settings["settings"].get("epgs", {}).get("tmdb_api_key", "")
-            tmdb_data = await search_tmdb_for_movie(api_key, title, cache, lock, semaphore)
-            if tmdb_data:
-                # Update programme with fetched data if fields are missing
-                if not programme.sub_title:
-                    programme.sub_title = tmdb_data.get("title")
-                if not programme.desc:
-                    programme.desc = tmdb_data.get("overview")
-                if not programme.icon_url:
-                    programme.icon_url = f"https://image.tmdb.org/t/p/w500{tmdb_data.get('poster_path')}"
-
-    # Fetch icon_url from Google Images if still missing
-    if not programme.icon_url:
-        if settings["settings"].get("epgs", {}).get("enable_google_image_search_metadata"):
-            image_url = await search_google_images(title, cache, lock, semaphore)
-            if image_url:
-                programme.icon_url = image_url
-
-    return programme
+    image_url = await _run_with_inflight_dedupe(run_state, "inflight_google", cache_key, _fetch_google_image)
+    run_state.google_cache[cache_key] = image_url
+    return image_url
 
 
-async def update_programmes_concurrently(settings, programmes, cache, lock):
-    semaphore = asyncio.Semaphore(10)
+def _metadata_cache_row_to_dict(cache_row):
+    return {
+        "lookup_hash": cache_row.lookup_hash,
+        "lookup_title": cache_row.lookup_title,
+        "lookup_sub_title": cache_row.lookup_sub_title,
+        "lookup_kind": cache_row.lookup_kind,
+        "match_status": cache_row.match_status,
+        "provider": cache_row.provider,
+        "provider_item_type": cache_row.provider_item_type,
+        "provider_item_id": cache_row.provider_item_id,
+        "provider_series_id": cache_row.provider_series_id,
+        "provider_season_number": cache_row.provider_season_number,
+        "provider_episode_number": cache_row.provider_episode_number,
+        "cached_sub_title": cache_row.cached_sub_title,
+        "cached_desc": cache_row.cached_desc,
+        "cached_series_desc": cache_row.cached_series_desc,
+        "cached_icon_url": cache_row.cached_icon_url,
+        "cached_epnum_onscreen": cache_row.cached_epnum_onscreen,
+        "cached_epnum_xmltv_ns": cache_row.cached_epnum_xmltv_ns,
+        "last_checked_at": cache_row.last_checked_at,
+        "expires_at": cache_row.expires_at,
+        "failure_count": cache_row.failure_count,
+        "source_confidence": cache_row.source_confidence,
+        "raw_result_json": cache_row.raw_result_json,
+    }
 
-    async def update_wrapper(programme):
-        categories = json.loads(programme.categories)
-        return await update_programme_with_online_data(settings, programme, categories, cache, lock, semaphore)
 
-    tasks = [update_wrapper(programme) for programme in programmes]
-    updated_programmes = await asyncio.gather(*tasks, return_exceptions=True)
+def _build_cache_entry_payload(lookup_hash, programme_row, match_status, lookup_kind="unknown", **kwargs):
+    now_utc = datetime.now(timezone.utc)
+    created_at = as_naive_utc(kwargs.pop("created_at", now_utc))
+    last_checked_at = as_naive_utc(kwargs.pop("last_checked_at", now_utc))
+    expires_at = as_naive_utc(kwargs.pop("expires_at", _tmdb_cache_expiry(match_status, now_utc)))
+    updated_at = as_naive_utc(kwargs.pop("updated_at", now_utc))
+    payload = {
+        "lookup_hash": lookup_hash,
+        "lookup_title": programme_row.get("title"),
+        "lookup_sub_title": programme_row.get("sub_title"),
+        "lookup_kind": lookup_kind,
+        "match_status": match_status,
+        "provider": kwargs.pop("provider", "tmdb"),
+        "provider_item_type": kwargs.pop("provider_item_type", None),
+        "provider_item_id": kwargs.pop("provider_item_id", None),
+        "provider_series_id": kwargs.pop("provider_series_id", None),
+        "provider_season_number": kwargs.pop("provider_season_number", None),
+        "provider_episode_number": kwargs.pop("provider_episode_number", None),
+        "cached_sub_title": kwargs.pop("cached_sub_title", None),
+        "cached_desc": kwargs.pop("cached_desc", None),
+        "cached_series_desc": kwargs.pop("cached_series_desc", None),
+        "cached_icon_url": kwargs.pop("cached_icon_url", None),
+        "cached_epnum_onscreen": kwargs.pop("cached_epnum_onscreen", None),
+        "cached_epnum_xmltv_ns": kwargs.pop("cached_epnum_xmltv_ns", None),
+        "last_checked_at": last_checked_at,
+        "expires_at": expires_at,
+        "failure_count": kwargs.pop("failure_count", 0),
+        "source_confidence": kwargs.pop("source_confidence", None),
+        "raw_result_json": kwargs.pop("raw_result_json", None),
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+    payload.update(kwargs)
+    return payload
 
-    for i, result in enumerate(updated_programmes):
-        if isinstance(result, Exception):
-            logger.error(f"Error updating programme: {result}")
+
+def _apply_cache_entry_to_programme_row(programme_row, cache_entry):
+    updates = {}
+    field_map = {
+        "sub_title": "cached_sub_title",
+        "desc": "cached_desc",
+        "series_desc": "cached_series_desc",
+        "icon_url": "cached_icon_url",
+        "epnum_onscreen": "cached_epnum_onscreen",
+        "epnum_xmltv_ns": "cached_epnum_xmltv_ns",
+    }
+    for programme_field, cache_field in field_map.items():
+        if (programme_row.get(programme_field) or "").strip():
+            continue
+        cache_value = cache_entry.get(cache_field)
+        if cache_value:
+            updates[programme_field] = cache_value
+    if programme_row.get("metadata_lookup_hash") != cache_entry.get("lookup_hash"):
+        updates["metadata_lookup_hash"] = cache_entry.get("lookup_hash")
+    return updates
+
+
+async def _save_metadata_cache_entries(session, cache_entries):
+    if not cache_entries:
+        return
+    hashes = [entry["lookup_hash"] for entry in cache_entries]
+    existing_rows = await session.execute(
+        select(EpgProgrammeMetadataCache).where(EpgProgrammeMetadataCache.lookup_hash.in_(hashes))
+    )
+    existing_map = {row.lookup_hash: row for row in existing_rows.scalars().all()}
+
+    for entry in cache_entries:
+        existing_row = existing_map.get(entry["lookup_hash"])
+        if existing_row:
+            for key, value in entry.items():
+                if key == "created_at":
+                    continue
+                setattr(existing_row, key, value)
+            continue
+        session.add(EpgProgrammeMetadataCache(**entry))
+    await session.flush()
+
+
+def _cache_entry_is_fresh(cache_entry, now_utc):
+    expires_at = cache_entry.get("expires_at")
+    if not expires_at:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > now_utc
+
+
+async def _lookup_online_metadata_for_hash(settings, programme_row, run_state):
+    lookup_hash = programme_row.get("metadata_lookup_hash")
+    if not lookup_hash:
+        logger.debug("Online metadata lookup skipped row_id=%s reason=no_lookup_hash", programme_row.get("id"))
+        return None
+    if _programme_has_lookup_skip_keyword(programme_row.get("title"), programme_row.get("sub_title")):
+        logger.debug(
+            "Online metadata lookup skipped row_id=%s title=%r subtitle=%r reason=skip_keyword",
+            programme_row.get("id"),
+            programme_row.get("title"),
+            programme_row.get("sub_title"),
+        )
+        return _build_cache_entry_payload(
+            lookup_hash,
+            programme_row,
+            "skipped",
+            lookup_kind="skip",
+            raw_result_json=json.dumps({"reason": "skip_keyword"}),
+        )
+
+    tmdb_auth_value = settings["settings"].get("epgs", {}).get("tmdb_api_key", "")
+    enable_tmdb_metadata = tmdb_metadata_enabled(settings)
+    enable_google_images = bool(settings["settings"].get("epgs", {}).get("enable_google_image_search_metadata"))
+
+    tv_result = None
+    movie_result = None
+    logger.debug(
+        "Online metadata lookup begin row_id=%s hash=%s title=%r subtitle=%r missing_descriptive=%s has_epnum=%s episodic=%s",
+        programme_row.get("id"),
+        lookup_hash,
+        programme_row.get("title"),
+        programme_row.get("sub_title"),
+        _programme_missing_descriptive_fields(programme_row),
+        _programme_has_episode_numbers(programme_row),
+        _programme_is_plausibly_episodic(programme_row),
+    )
+    if enable_tmdb_metadata:
+        if _programme_has_episode_numbers(programme_row) and _programme_missing_descriptive_fields(programme_row):
+            tv_result = await search_tmdb_for_tv_programme(tmdb_auth_value, programme_row, run_state)
+        elif _programme_missing_descriptive_fields(programme_row):
+            tv_result = await search_tmdb_for_tv_programme(tmdb_auth_value, programme_row, run_state)
+            movie_result = await search_tmdb_for_movie(tmdb_auth_value, programme_row.get("title"), run_state)
+        elif _programme_is_plausibly_episodic(programme_row):
+            tv_result = await search_tmdb_for_tv_programme(tmdb_auth_value, programme_row, run_state)
+
+    chosen_result = _choose_tmdb_result(programme_row, tv_result, movie_result)
+
+    if chosen_result and enable_google_images and not chosen_result.get("cached_icon_url"):
+        chosen_result["cached_icon_url"] = await search_google_images(programme_row.get("title"), run_state)
+
+    if not chosen_result and enable_google_images and not (programme_row.get("icon_url") or "").strip():
+        google_icon = await search_google_images(programme_row.get("title"), run_state)
+        if google_icon:
+            chosen_result = {
+                "lookup_kind": "unknown",
+                "match_status": "matched",
+                "provider": "google_images",
+                "cached_icon_url": google_icon,
+                "raw_result_json": json.dumps({"google_image": True}),
+            }
+
+    if not chosen_result:
+        if run_state.auth_failed:
+            logger.error(
+                "TMDB authorisation failed during online metadata lookup; stopping TMDB lookups until the next scan"
+            )
+            return None
+        logger.debug(
+            "Online metadata lookup no-match row_id=%s hash=%s title=%r subtitle=%r",
+            programme_row.get("id"),
+            lookup_hash,
+            programme_row.get("title"),
+            programme_row.get("sub_title"),
+        )
+        return _build_cache_entry_payload(
+            lookup_hash,
+            programme_row,
+            "no_match",
+            raw_result_json=json.dumps({"reason": "no_match"}),
+            failure_count=1,
+        )
+
+    logger.debug(
+        "Online metadata lookup matched row_id=%s hash=%s lookup_kind=%s provider=%s item_type=%s has_epnum_onscreen=%s has_epnum_xmltv_ns=%s",
+        programme_row.get("id"),
+        lookup_hash,
+        chosen_result.get("lookup_kind"),
+        chosen_result.get("provider"),
+        chosen_result.get("provider_item_type"),
+        bool(chosen_result.get("cached_epnum_onscreen")),
+        bool(chosen_result.get("cached_epnum_xmltv_ns")),
+    )
+    chosen_result_payload = dict(chosen_result)
+    match_status = chosen_result_payload.pop("match_status", "matched")
+    return _build_cache_entry_payload(lookup_hash, programme_row, match_status, **chosen_result_payload)
+
+
+async def _fetch_online_metadata_candidates(session):
+    mapped_channel_exists = exists(
+        select(Channel.id).where(
+            and_(
+                Channel.enabled == True,
+                Channel.guide_id == EpgChannels.epg_id,
+                Channel.guide_channel_id == EpgChannels.channel_id,
+            )
+        )
+    )
+    result = await session.execute(
+        select(
+            EpgChannelProgrammes.id,
+            EpgChannelProgrammes.title,
+            EpgChannelProgrammes.sub_title,
+            EpgChannelProgrammes.desc,
+            EpgChannelProgrammes.series_desc,
+            EpgChannelProgrammes.icon_url,
+            EpgChannelProgrammes.epnum_onscreen,
+            EpgChannelProgrammes.epnum_xmltv_ns,
+            EpgChannelProgrammes.categories,
+            EpgChannelProgrammes.start_timestamp,
+            EpgChannelProgrammes.metadata_lookup_hash,
+        )
+        .join(EpgChannels, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+        .where(mapped_channel_exists, EpgChannelProgrammes.title.is_not(None))
+    )
+    candidates = []
+    for row in result.all():
+        programme_row = {
+            "id": row.id,
+            "title": row.title,
+            "sub_title": row.sub_title,
+            "desc": row.desc,
+            "series_desc": row.series_desc,
+            "icon_url": row.icon_url,
+            "epnum_onscreen": row.epnum_onscreen,
+            "epnum_xmltv_ns": row.epnum_xmltv_ns,
+            "categories_list": _parse_categories_json(row.categories),
+            "start_timestamp": row.start_timestamp,
+            "stored_metadata_lookup_hash": row.metadata_lookup_hash,
+            "metadata_lookup_hash": row.metadata_lookup_hash or derive_metadata_lookup_hash(row.title, row.sub_title),
+        }
+        if _programme_is_candidate(programme_row):
+            candidates.append(programme_row)
         else:
-            programmes[i] = result
+            logger.debug(
+                "Online metadata candidate skipped row_id=%s title=%r subtitle=%r missing_descriptive=%s has_epnum=%s episodic=%s",
+                programme_row.get("id"),
+                programme_row.get("title"),
+                programme_row.get("sub_title"),
+                _programme_missing_descriptive_fields(programme_row),
+                _programme_has_episode_numbers(programme_row),
+                _programme_is_plausibly_episodic(programme_row),
+            )
+    return candidates
 
-    return programmes
+
+async def _bulk_update_programme_rows(session, update_rows):
+    if not update_rows:
+        return 0
+    merged_updates = {}
+    for row in update_rows:
+        row_id = row.get("id")
+        if row_id is None:
+            continue
+        merged_updates.setdefault(row_id, {"id": row_id}).update(row)
+    if not merged_updates:
+        return 0
+    await session.execute(update(EpgChannelProgrammes), list(merged_updates.values()))
+    return len(merged_updates)
+
+
+async def _resolve_online_metadata_hashes(settings, unresolved_by_hash, run_state):
+    if not unresolved_by_hash:
+        return []
+
+    semaphore = asyncio.Semaphore(TMDB_LOOKUP_CONCURRENCY)
+
+    async def resolve_one(lookup_hash, candidate):
+        async with semaphore:
+            if run_state.suspended:
+                return None
+            cache_entry = await _lookup_online_metadata_for_hash(settings, candidate, run_state)
+            if run_state.suspended and run_state.auth_failed:
+                logger.debug("Stopping unresolved hash processing after TMDB auth failure hash=%s", lookup_hash)
+            return (lookup_hash, cache_entry)
+
+    tasks = [resolve_one(lookup_hash, candidate) for lookup_hash, candidate in unresolved_by_hash.items()]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    resolved_entries = []
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error("Error resolving online metadata hash: %s", result)
+            continue
+        if not result:
+            continue
+        lookup_hash, cache_entry = result
+        if cache_entry:
+            resolved_entries.append((lookup_hash, cache_entry))
+    return resolved_entries
 
 
 async def update_channel_epg_with_online_data(config):
     settings = config.read_settings()
-    update_with_online_data = False
-    if settings["settings"].get("epgs", {}).get("enable_tmdb_metadata"):
-        update_with_online_data = True
-    if settings["settings"].get("epgs", {}).get("enable_google_image_search_metadata"):
-        update_with_online_data = True
-    if not update_with_online_data:
+    if not epg_online_metadata_enabled(settings):
+        epg_settings = settings["settings"].get("epgs", {})
+        if epg_settings.get("enable_tmdb_metadata") and not (epg_settings.get("tmdb_api_key") or "").strip():
+            logger.error("TMDB metadata enrichment is enabled but no TMDB API key is configured; skipping this scan")
         return
-    start_time = time.time()
-    cache = {}
-    lock = asyncio.Lock()
-    logger.info("Update EPG with missing data from online sources for each configured channel.")
+
+    start_time = time.perf_counter()
+    phase_seconds = {}
+    logger.info("Update EPG with cached and online metadata for configured channels.")
+
     async with Session() as session:
-        channels_query = await session.execute(select(Channel).order_by(Channel.number.asc()))
-        channels = channels_query.scalars().all()
-        for result in channels:
-            if result.enabled:
-                channel_id = generate_epg_channel_id(result.number, result.name)
-                db_programmes_query = await session.execute(
-                    select(EpgChannelProgrammes)
-                    .options(joinedload(EpgChannelProgrammes.channel))
-                    .where(
-                        and_(
-                            EpgChannelProgrammes.channel.has(epg_id=result.guide_id),
-                            EpgChannelProgrammes.channel.has(channel_id=result.guide_channel_id),
-                        )
-                    )
-                    .order_by(
-                        EpgChannelProgrammes.channel_id.asc(),
-                        EpgChannelProgrammes.start.asc(),
-                    )
+        t0 = time.perf_counter()
+        candidates = await _fetch_online_metadata_candidates(session)
+        phase_seconds["fetch_candidates"] = time.perf_counter() - t0
+
+        if not candidates:
+            logger.info("No EPG programmes require online metadata updates.")
+            return
+
+        logger.info("Online metadata candidate scan found %s programme rows needing enrichment.", len(candidates))
+
+        now_utc = datetime.now(timezone.utc)
+        hashes = sorted(
+            {candidate["metadata_lookup_hash"] for candidate in candidates if candidate.get("metadata_lookup_hash")}
+        )
+        candidate_rows_by_hash = defaultdict(list)
+        for candidate in candidates:
+            candidate_rows_by_hash[candidate.get("metadata_lookup_hash")].append(candidate)
+
+        t0 = time.perf_counter()
+        cache_result = await session.execute(
+            select(EpgProgrammeMetadataCache).where(EpgProgrammeMetadataCache.lookup_hash.in_(hashes))
+        )
+        cache_map = {}
+        for cache_row in cache_result.scalars().all():
+            cache_entry = _metadata_cache_row_to_dict(cache_row)
+            if _cache_entry_is_fresh(cache_entry, now_utc):
+                cache_map[cache_entry["lookup_hash"]] = cache_entry
+                logger.debug(
+                    "Online metadata cache fresh hash=%s match_status=%s lookup_kind=%s",
+                    cache_entry["lookup_hash"],
+                    cache_entry.get("match_status"),
+                    cache_entry.get("lookup_kind"),
                 )
-                db_programmes = db_programmes_query.scalars().all()
-                logger.info("   - Updating programme list for %s - %s.", channel_id, result.name)
-                programmes = await update_programmes_concurrently(settings, db_programmes, cache, lock)
-                for programme in programmes:
-                    session.add(programme)
-                await session.commit()
-    execution_time = time.time() - start_time
-    logger.info("Updating online EPG data for configured channels took '%s' seconds", int(execution_time))
+            else:
+                logger.debug(
+                    "Online metadata cache stale hash=%s match_status=%s expires_at=%s",
+                    cache_entry["lookup_hash"],
+                    cache_entry.get("match_status"),
+                    cache_entry.get("expires_at"),
+                )
+        phase_seconds["load_cache"] = time.perf_counter() - t0
+
+        initial_updates = []
+        unresolved_by_hash = {}
+        for candidate in candidates:
+            lookup_hash = candidate.get("metadata_lookup_hash")
+            if not lookup_hash:
+                continue
+            if candidate.get("stored_metadata_lookup_hash") != lookup_hash:
+                initial_updates.append({"id": candidate["id"], "metadata_lookup_hash": lookup_hash})
+            cache_entry = cache_map.get(lookup_hash)
+            if cache_entry:
+                logger.debug(
+                    "Online metadata cache apply row_id=%s hash=%s match_status=%s",
+                    candidate["id"],
+                    lookup_hash,
+                    cache_entry.get("match_status"),
+                )
+                programme_updates = _apply_cache_entry_to_programme_row(candidate, cache_entry)
+                if programme_updates:
+                    initial_updates.append({"id": candidate["id"], **programme_updates})
+                continue
+            unresolved_by_hash.setdefault(lookup_hash, candidate)
+            logger.debug(
+                "Online metadata cache miss row_id=%s hash=%s title=%r subtitle=%r",
+                candidate["id"],
+                lookup_hash,
+                candidate.get("title"),
+                candidate.get("sub_title"),
+            )
+
+        t0 = time.perf_counter()
+        initial_updated_count = await _bulk_update_programme_rows(session, initial_updates)
+        phase_seconds["apply_cached_updates"] = time.perf_counter() - t0
+
+        logger.info(
+            "Online metadata cache phase cache_hits=%s unresolved_hashes=%s initial_row_updates=%s",
+            len(candidates) - len(unresolved_by_hash),
+            len(unresolved_by_hash),
+            initial_updated_count,
+        )
+
+        new_cache_entries = []
+        new_programme_updates = []
+        async with aiohttp.ClientSession() as http_session:
+            run_state = TmdbRunState(http_session, settings["settings"].get("epgs", {}).get("tmdb_api_key", ""))
+            t0 = time.perf_counter()
+            resolved_entries = await _resolve_online_metadata_hashes(settings, unresolved_by_hash, run_state)
+            for lookup_hash, cache_entry in resolved_entries:
+                new_cache_entries.append(cache_entry)
+                for row in candidate_rows_by_hash.get(lookup_hash, []):
+                    programme_updates = _apply_cache_entry_to_programme_row(row, cache_entry)
+                    if programme_updates:
+                        new_programme_updates.append({"id": row["id"], **programme_updates})
+            phase_seconds["external_lookup"] = time.perf_counter() - t0
+            logger.info(
+                "Online metadata lookup stats candidates=%s cache_hits=%s unresolved=%s resolved=%s tmdb_requests=%s tmdb_retries=%s tmdb_suspended=%s concurrency=%s target_rps=%s",
+                len(candidates),
+                len(candidates) - len(unresolved_by_hash),
+                len(unresolved_by_hash),
+                len(resolved_entries),
+                run_state.request_count,
+                run_state.retry_count,
+                run_state.suspended,
+                TMDB_LOOKUP_CONCURRENCY,
+                TMDB_TARGET_RATE_LIMIT_REQUESTS,
+            )
+
+        t0 = time.perf_counter()
+        await _save_metadata_cache_entries(session, new_cache_entries)
+        saved_update_count = await _bulk_update_programme_rows(session, new_programme_updates)
+        await session.commit()
+        phase_seconds["save_cache_and_updates"] = time.perf_counter() - t0
+
+    execution_time = time.perf_counter() - start_time
+    logger.info(
+        "Updating online EPG data for configured channels took '%s' seconds (candidates=%s updated=%s cache_entries=%s phases=%s)",
+        int(execution_time),
+        len(candidates),
+        initial_updated_count + saved_update_count,
+        len(new_cache_entries),
+        {key: round(value, 2) for key, value in phase_seconds.items()},
+    )
 
 
 # --- TVH Functions ---

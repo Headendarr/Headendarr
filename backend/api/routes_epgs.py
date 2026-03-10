@@ -6,60 +6,49 @@ from backend.epgs import (
     add_new_epg,
     build_custom_epg_subprocess,
     delete_epg,
+    epg_online_metadata_enabled,
     import_epg_data,
     read_channels_from_all_epgs,
     read_config_all_epgs,
     read_config_one_epg,
+    read_epg_online_metadata_no_matches,
     read_epg_review_channels,
     update_epg,
+    update_channel_epg_with_online_data,
 )
 from backend.api import blueprint
 from quart import request, jsonify, current_app
 
 
-@blueprint.route('/tic-api/epgs/get', methods=['GET'])
+@blueprint.route("/tic-api/epgs/get", methods=["GET"])
 @admin_auth_required
 async def api_get_epgs_list():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     all_epg_configs = await read_config_all_epgs(config=config)
-    return jsonify(
-        {
-            "success": True,
-            "data":    all_epg_configs
-        }
-    )
+    return jsonify({"success": True, "data": all_epg_configs})
 
 
-@blueprint.route('/tic-api/epgs/settings/new', methods=['POST'])
+@blueprint.route("/tic-api/epgs/settings/new", methods=["POST"])
 @admin_auth_required
 async def api_add_new_epg():
     json_data = await request.get_json()
     await add_new_epg(json_data)
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/epgs/settings/<epg_id>', methods=['GET'])
+@blueprint.route("/tic-api/epgs/settings/<epg_id>", methods=["GET"])
 @admin_auth_required
 async def api_get_epg_config(epg_id):
     try:
         epg_id = int(epg_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     epg_config = await read_config_one_epg(epg_id, config=config)
-    return jsonify(
-        {
-            "success": True,
-            "data":    epg_config
-        }
-    )
+    return jsonify({"success": True, "data": epg_config})
 
 
-@blueprint.route('/tic-api/epgs/settings/<epg_id>/save', methods=['POST'])
+@blueprint.route("/tic-api/epgs/settings/<epg_id>/save", methods=["POST"])
 @admin_auth_required
 async def api_set_epg_config(epg_id):
     json_data = await request.get_json()
@@ -69,34 +58,27 @@ async def api_set_epg_config(epg_id):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
     await update_epg(epg_id, json_data)
     # TODO: Trigger an update of the cached EPG config
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/epgs/settings/<epg_id>/delete', methods=['DELETE'])
+@blueprint.route("/tic-api/epgs/settings/<epg_id>/delete", methods=["DELETE"])
 @admin_auth_required
 async def api_delete_epg(epg_id):
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     try:
         epg_id = int(epg_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
     await delete_epg(config, epg_id)
     # TODO: Trigger an update of the cached EPG config
-    return jsonify(
-        {
-            "success": True
-        }
-    )
+    return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/epgs/update/<epg_id>', methods=['POST'])
+@blueprint.route("/tic-api/epgs/update/<epg_id>", methods=["POST"])
 @admin_auth_required
 async def api_update_epg(epg_id):
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
+    settings = config.read_settings()
     try:
         epg_id = int(epg_id)
     except (TypeError, ValueError):
@@ -104,22 +86,34 @@ async def api_update_epg(epg_id):
     epg_name = None
     try:
         epg_config = await read_config_one_epg(epg_id, config=config)
-        epg_name = epg_config.get('name') if epg_config else None
+        epg_name = epg_config.get("name") if epg_config else None
     except Exception:
         epg_name = None
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name':     f'Update EPG - Name: {epg_name or epg_id}',
-        'function': import_epg_data,
-        'args':     [config, epg_id],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Update EPG - Name: {epg_name or epg_id}",
+            "function": import_epg_data,
+            "args": [config, epg_id],
+        },
+        priority=20,
+    )
+    if epg_online_metadata_enabled(settings):
+        await task_broker.add_task(
+            {
+                "name": "Update EPG Data with online metadata",
+                "function": update_channel_epg_with_online_data,
+                "args": [config],
+            },
+            priority=21,
+        )
     await task_broker.add_task(
         {
             "name": "Recreating static XMLTV file",
             "function": build_custom_epg_subprocess,
             "args": [config],
         },
-        priority=21,
+        priority=23,
     )
     return jsonify(
         {
@@ -128,20 +122,15 @@ async def api_update_epg(epg_id):
     )
 
 
-@blueprint.route('/tic-api/epgs/channels', methods=['GET'])
+@blueprint.route("/tic-api/epgs/channels", methods=["GET"])
 @admin_auth_required
 async def api_get_all_epg_channels():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     epgs_channels = await read_channels_from_all_epgs(config)
-    return jsonify(
-        {
-            "success": True,
-            "data":    epgs_channels
-        }
-    )
+    return jsonify({"success": True, "data": epgs_channels})
 
 
-@blueprint.route('/tic-api/epgs/review/<epg_id>/channels', methods=['GET'])
+@blueprint.route("/tic-api/epgs/review/<epg_id>/channels", methods=["GET"])
 @admin_auth_required
 async def api_get_epg_review_channels(epg_id):
     try:
@@ -149,14 +138,14 @@ async def api_get_epg_review_channels(epg_id):
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
 
-    search_query = request.args.get('search', '')
-    has_data = request.args.get('has_data', 'any')
+    search_query = request.args.get("search", "")
+    has_data = request.args.get("has_data", "any")
     try:
-        limit = int(request.args.get('limit', 100))
+        limit = int(request.args.get("limit", 100))
     except (TypeError, ValueError):
         limit = 100
     try:
-        offset = int(request.args.get('offset', 0))
+        offset = int(request.args.get("offset", 0))
     except (TypeError, ValueError):
         offset = 0
 
@@ -164,6 +153,27 @@ async def api_get_epg_review_channels(epg_id):
         epg_id=epg_id,
         search_query=search_query,
         has_data=has_data,
+        limit=limit,
+        offset=offset,
+    )
+    return jsonify({"success": True, "data": payload})
+
+
+@blueprint.route("/tic-api/epgs/metadata/no-match", methods=["GET"])
+@admin_auth_required
+async def api_get_epg_online_metadata_no_matches():
+    search_query = request.args.get("search", "")
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+
+    payload = await read_epg_online_metadata_no_matches(
+        search_query=search_query,
         limit=limit,
         offset=offset,
     )

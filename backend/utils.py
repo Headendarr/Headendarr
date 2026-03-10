@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import hashlib
+from datetime import timezone
 
 
 def parse_entity_id(value, name):
@@ -36,3 +37,11 @@ def fast_url_hash(value):
     if not raw:
         return None
     return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def as_naive_utc(dt_value):
+    if dt_value is None:
+        return None
+    if dt_value.tzinfo is None:
+        return dt_value
+    return dt_value.astimezone(timezone.utc).replace(tzinfo=None)

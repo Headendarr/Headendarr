@@ -113,12 +113,50 @@ class EpgChannelProgrammes(Base):
     production_year = Column(Text, index=False, unique=False)  # <date>
     rating_system = Column(Text, index=False, unique=False)
     rating_value = Column(Text, index=False, unique=False)
+    metadata_lookup_hash = Column(String(64), index=True, unique=False)
 
     # Link with an epg channel
     epg_channel_id = Column(Integer, ForeignKey("epg_channels.id"), nullable=False, index=True)
 
     def __repr__(self):
         return "<EpgChannelProgrammes {}>".format(self.id)
+
+
+class EpgProgrammeMetadataCache(Base):
+    __tablename__ = "epg_programme_metadata_cache"
+    __table_args__ = (
+        Index("ix_epg_programme_metadata_cache_expires_at", "expires_at"),
+        Index("ix_epg_programme_metadata_cache_match_status", "match_status"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    lookup_hash = Column(String(64), index=True, unique=True, nullable=False)
+    lookup_title = Column(Text, nullable=True)
+    lookup_sub_title = Column(Text, nullable=True)
+    lookup_kind = Column(String(16), nullable=False, default="unknown")
+    match_status = Column(String(16), nullable=False, default="no_match")
+    provider = Column(String(32), nullable=False, default="tmdb")
+    provider_item_type = Column(String(16), nullable=True)
+    provider_item_id = Column(Integer, nullable=True)
+    provider_series_id = Column(Integer, nullable=True)
+    provider_season_number = Column(Integer, nullable=True)
+    provider_episode_number = Column(Integer, nullable=True)
+    cached_sub_title = Column(Text, nullable=True)
+    cached_desc = Column(Text, nullable=True)
+    cached_series_desc = Column(Text, nullable=True)
+    cached_icon_url = Column(Text, nullable=True)
+    cached_epnum_onscreen = Column(Text, nullable=True)
+    cached_epnum_xmltv_ns = Column(Text, nullable=True)
+    last_checked_at = Column(DateTime, nullable=False, default=func.now())
+    expires_at = Column(DateTime, nullable=False)
+    failure_count = Column(Integer, nullable=False, default=0)
+    source_confidence = Column(Float, nullable=True)
+    raw_result_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=func.now())
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+    def __repr__(self):
+        return "<EpgProgrammeMetadataCache {}>".format(self.id)
 
 
 class Playlist(Base):

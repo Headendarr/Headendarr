@@ -156,10 +156,19 @@ async def refresh_linked_channels_for_playlist(config, playlist_id):
 async def update_epgs(app):
     logger.info("Updating EPGs")
     config = app.config["APP_CONFIG"]
-    from backend.epgs import import_epg_data_for_all_epgs, build_custom_epg_subprocess
+    settings = config.read_settings()
+    from backend.epgs import (
+        build_custom_epg_subprocess,
+        epg_online_metadata_enabled,
+        import_epg_data_for_all_epgs,
+        update_channel_epg_with_online_data,
+    )
 
     updated_count = await import_epg_data_for_all_epgs(config)
     if updated_count > 0:
+        if epg_online_metadata_enabled(settings):
+            logger.info("Reapplying cached/online EPG metadata after %s source update(s)", updated_count)
+            await update_channel_epg_with_online_data(config)
         logger.info("Rebuilding custom EPG after %s source update(s)", updated_count)
         await build_custom_epg_subprocess(config)
     else:
