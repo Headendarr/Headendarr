@@ -232,6 +232,28 @@ def _extract_dvr_setting_map(dvrs_payload, dvr_key: str) -> dict[str, str]:
     return {}
 
 
+def _count_dvr_devices(dvrs_payload, dvr_key: str) -> int:
+    for dvr in _extract_dvrs(dvrs_payload):
+        if str(dvr.get("key") or "").strip() != str(dvr_key or "").strip():
+            continue
+        return sum(1 for item in ensure_list(dvr.get("Device")) if isinstance(item, dict))
+    return 0
+
+
+def _can_remove_dvr_device(dvrs_payload, dvr_key: str, device_key: str) -> bool:
+    device_count = _count_dvr_devices(dvrs_payload, dvr_key)
+    if device_count <= 1:
+        return False
+    for dvr in _extract_dvrs(dvrs_payload):
+        if str(dvr.get("key") or "").strip() != str(dvr_key or "").strip():
+            continue
+        return any(
+            isinstance(item, dict) and str(item.get("key") or "").strip() == str(device_key or "").strip()
+            for item in ensure_list(dvr.get("Device"))
+        )
+    return False
+
+
 def _to_plex_bool(value, default: bool) -> str:
     if value is None:
         return "true" if default else "false"
@@ -301,6 +323,13 @@ def _find_target_device(
         if expected_model and model == expected_model:
             return device
         if expected_uri and uri == expected_uri:
+            return device
+    return None
+
+
+def _find_device_by_uri(devices: list[dict], expected_uri: str) -> dict | None:
+    for device in devices:
+        if str(device.get("uri") or "").strip() == str(expected_uri or "").strip():
             return device
     return None
 
@@ -385,40 +414,70 @@ async def _apply_tuner_for_source(
     expected_uri = hdhr_base_url
     target_device = _find_target_device(all_devices, expected_device_id, expected_model, expected_uri)
     recreated_due_to_uri_change = False
+    stale_device = None
 
     if target_device is not None:
         current_uri = str(target_device.get("uri") or "").strip()
         if current_uri and current_uri != expected_uri:
-            stale_device_key = str(target_device.get("key") or "").strip()
-            stale_dvr_key = str(target_device.get("parentID") or "").strip()
-            if not stale_dvr_key and stale_device_key:
-                for dvr in _extract_dvrs(dvrs_response.payload):
-                    dvr_key = str(dvr.get("key") or "").strip()
-                    for dvr_device in ensure_list(dvr.get("Device")):
-                        if not isinstance(dvr_device, dict):
-                            continue
-                        if str(dvr_device.get("key") or "").strip() == stale_device_key:
-                            stale_dvr_key = dvr_key
-                            break
-                    if stale_dvr_key:
-                        break
-            if stale_dvr_key and stale_device_key:
-                delete_response = await client.delete_dvr_device(stale_dvr_key, stale_device_key)
-                if not (200 <= delete_response.status < 300 or delete_response.status == 404):
-                    return {
-                        "source_id": source_id,
-                        "status": "failed",
-                        "error": f"failed to remove stale tuner after profile change ({delete_response.status})",
-                    }
+            stale_device = target_device
             target_device = None
-            recreated_due_to_uri_change = True
 
     if target_device is None and hdhr_lineup_payload:
         await client.try_create_device(hdhr_base_url, discover_payload)
         devices_response = await client.get_devices()
         dvrs_response = await client.get_dvrs()
         all_devices = _flatten_devices(devices_response.payload, dvrs_response.payload)
-        target_device = _find_target_device(all_devices, expected_device_id, expected_model, expected_uri)
+        target_device = _find_device_by_uri(all_devices, expected_uri) or _find_target_device(
+            all_devices,
+            expected_device_id,
+            expected_model,
+            expected_uri,
+        )
+
+    if target_device is None and stale_device is not None:
+        stale_device_key = str(stale_device.get("key") or "").strip()
+        stale_dvr_key = str(stale_device.get("parentID") or "").strip()
+        if not stale_dvr_key and stale_device_key:
+            for dvr in _extract_dvrs(dvrs_response.payload):
+                dvr_key = str(dvr.get("key") or "").strip()
+                for dvr_device in ensure_list(dvr.get("Device")):
+                    if not isinstance(dvr_device, dict):
+                        continue
+                    if str(dvr_device.get("key") or "").strip() == stale_device_key:
+                        stale_dvr_key = dvr_key
+                        break
+                if stale_dvr_key:
+                    break
+        if (
+            stale_dvr_key
+            and stale_device_key
+            and _can_remove_dvr_device(dvrs_response.payload, stale_dvr_key, stale_device_key)
+        ):
+            delete_response = await client.delete_dvr_device(stale_dvr_key, stale_device_key)
+            if not (200 <= delete_response.status < 300 or delete_response.status == 404):
+                return {
+                    "source_id": source_id,
+                    "status": "failed",
+                    "error": f"failed to remove stale tuner after profile change ({delete_response.status})",
+                }
+            recreated_due_to_uri_change = True
+            await client.try_create_device(hdhr_base_url, discover_payload)
+            devices_response = await client.get_devices()
+            dvrs_response = await client.get_dvrs()
+            all_devices = _flatten_devices(devices_response.payload, dvrs_response.payload)
+            target_device = _find_device_by_uri(all_devices, expected_uri) or _find_target_device(
+                all_devices,
+                expected_device_id,
+                expected_model,
+                expected_uri,
+            )
+        else:
+            return {
+                "source_id": source_id,
+                "status": "preserved",
+                "detail": "kept_existing_tuner_to_preserve_dvr",
+                "mapped_channels": len(hdhr_lineup_payload) if isinstance(hdhr_lineup_payload, list) else 0,
+            }
 
     if target_device is None:
         if not hdhr_lineup_payload:
@@ -481,16 +540,10 @@ async def _apply_tuner_for_source(
         }
 
     if not hdhr_lineup_payload:
-        delete_response = await client.delete_dvr_device(resolved_dvr_key, device_key)
-        if not (200 <= delete_response.status < 300 or delete_response.status == 404):
-            return {
-                "source_id": source_id,
-                "status": "failed",
-                "error": f"failed to delete empty tuner from DVR: {delete_response.status}",
-            }
         return {
             "source_id": source_id,
-            "status": "deleted",
+            "status": "preserved",
+            "detail": "empty_lineup_kept_to_preserve_dvr",
             "device_key": device_key,
             "dvr_key": resolved_dvr_key,
             "mapped_channels": 0,
@@ -641,6 +694,17 @@ async def _delete_stale_managed_tuners(
             device_key = str(device.get("key") or "")
             if not dvr_key or not device_key:
                 continue
+            if not _can_remove_dvr_device(dvrs_response.payload, dvr_key, device_key):
+                deletions.append(
+                    {
+                        "status": "preserved",
+                        "dvr_key": dvr_key,
+                        "device_key": device_key,
+                        "model": model,
+                        "detail": "kept_last_device_to_preserve_dvr",
+                    }
+                )
+                continue
             response = await client.delete_dvr_device(dvr_key, device_key)
             deletions.append(
                 {
@@ -651,6 +715,16 @@ async def _delete_stale_managed_tuners(
                     "http_status": response.status,
                 }
             )
+            if 200 <= response.status < 300 or response.status == 404:
+                dvrs_response = await client.get_dvrs()
+                if not (200 <= dvrs_response.status < 300):
+                    deletions.append(
+                        {
+                            "status": "failed",
+                            "error": f"failed to refresh DVRs after deletion ({dvrs_response.status})",
+                        }
+                    )
+                    return deletions
     return deletions
 
 
@@ -761,16 +835,21 @@ async def reconcile_server(
         )
         per_source_results.append(result)
 
-    stale_deletions = await _delete_stale_managed_tuners(
-        client=client,
-        managed_prefix=managed_prefix,
-        stream_key=stream_key,
-        desired_models=desired_models,
-    )
+    stale_deletions = []
+    can_delete_stale = all(item.get("status") not in {"failed", "preserved"} for item in per_source_results)
+    if can_delete_stale:
+        stale_deletions = await _delete_stale_managed_tuners(
+            client=client,
+            managed_prefix=managed_prefix,
+            stream_key=stream_key,
+            desired_models=desired_models,
+        )
 
     failed_items = [item for item in per_source_results if item.get("status") == "failed"]
     failed_items.extend([item for item in stale_deletions if item.get("status") == "failed"])
-    status = "success" if not failed_items else "partial"
+    preserved_items = [item for item in per_source_results if item.get("status") == "preserved"]
+    preserved_items.extend([item for item in stale_deletions if item.get("status") == "preserved"])
+    status = "success" if not failed_items and not preserved_items else "partial"
     duration_ms = int((time.monotonic() - started_at) * 1000)
     return {
         "server_id": runtime_server.server_id,
