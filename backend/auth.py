@@ -514,6 +514,7 @@ async def audit_stream_event(
     details: str = None,
     ip_address: str = None,
     user_agent: str = None,
+    severity: str = "info",
 ):
     if is_tvh_backend_stream_user(user):
         return
@@ -533,6 +534,7 @@ async def audit_stream_event(
             log = StreamAuditLog(
                 user_id=user.id if user else None,
                 event_type=event_type,
+                severity=str(severity or "info").strip().lower() or "info",
                 endpoint=endpoint,
                 ip_address=ip_value,
                 user_agent=user_agent_value,

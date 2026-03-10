@@ -136,7 +136,7 @@
             </q-card-section>
             <q-separator />
             <q-list separator>
-              <q-item v-for="entry in summary.recent_audit || []" :key="entry.id">
+              <q-item v-for="entry in visibleRecentAudit" :key="entry.id">
                 <q-item-section>
                   <q-item-label>{{ displayRecentAuditTitle(entry) }}</q-item-label>
                   <q-item-label caption>
@@ -146,7 +146,7 @@
                   </q-item-label>
                 </q-item-section>
               </q-item>
-              <q-item v-if="!(summary.recent_audit || []).length">
+              <q-item v-if="!visibleRecentAudit.length">
                 <q-item-section>
                   <q-item-label class="text-grey-7">No recent audit entries.</q-item-label>
                 </q-item-section>
@@ -203,6 +203,7 @@
 import axios from 'axios';
 import {defineComponent} from 'vue';
 import {useAuthStore} from 'stores/auth';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {getAuditActivityTitle} from '../utils/auditActivity';
 
@@ -211,6 +212,7 @@ export default defineComponent({
   setup() {
     return {
       authStore: useAuthStore(),
+      settingsStore: useSettingsStore(),
       uiStore: useUiStore(),
     };
   },
@@ -236,12 +238,22 @@ export default defineComponent({
     };
   },
   computed: {
+    appDebugEnabled() {
+      return Boolean(this.settingsStore.appDebugEnabled);
+    },
     combinedIssues() {
       const list = [...(this.summary.channels?.issues || [])];
       if (this.epgIssue) {
         list.push(this.epgIssue);
       }
       return list;
+    },
+    visibleRecentAudit() {
+      const rows = Array.isArray(this.summary.recent_audit) ? this.summary.recent_audit : [];
+      if (this.appDebugEnabled) {
+        return rows;
+      }
+      return rows.filter((entry) => String(entry?.severity || 'info').toLowerCase() !== 'debug');
     },
   },
   methods: {
@@ -439,6 +451,11 @@ export default defineComponent({
     },
   },
   async mounted() {
+    try {
+      await this.settingsStore.refreshSettings({minAgeMs: 3000});
+    } catch (error) {
+      console.error('Failed to load application settings:', error);
+    }
     await Promise.all([
       this.loadSummary(),
       this.loadEpgIssueSummary(),

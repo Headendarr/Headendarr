@@ -19,6 +19,12 @@ export const useSettingsStore = defineStore('settings', {
       }
       return Boolean(state.settingsData?.plex_available);
     },
+    appDebugEnabled(state) {
+      if (!state.isLoaded && !state.settingsData) {
+        return false;
+      }
+      return Boolean(state.settingsData?.app_debug_enabled);
+    },
   },
   actions: {
     async refreshSettings(options = {}) {

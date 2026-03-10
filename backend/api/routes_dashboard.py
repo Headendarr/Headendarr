@@ -98,6 +98,7 @@ async def _recent_audit(limit: int = 10):
             StreamAuditLog.id.label("id"),
             StreamAuditLog.created_at.label("created_at"),
             StreamAuditLog.event_type.label("event_type"),
+            StreamAuditLog.severity.label("severity"),
             StreamAuditLog.endpoint.label("endpoint"),
             StreamAuditLog.details.label("details"),
             StreamAuditLog.ip_address.label("ip_address"),

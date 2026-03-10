@@ -10,6 +10,8 @@ from backend.datetime_utils import to_utc_iso
 def derive_audit_mode(event_type: str | None, endpoint: str | None) -> str | None:
     event = (event_type or "").strip().lower()
     path = (endpoint or "").strip().lower()
+    if "/tic-api/hdhr_device/" in path:
+        return None
     if event in {"stream_start", "stream_stop", "recording_start", "recording_stop", "hls_stream_connect"}:
         return "session_tracked"
     if event == "playback_start_direct":
@@ -64,6 +66,9 @@ def build_activity_label(event_type: str | None, endpoint: str | None, details: 
     event = (event_type or "").strip().lower()
     path = (endpoint or "").strip().lower()
     detail = (details or "").strip().lower()
+
+    if "/tic-api/hdhr_device/" in path and event in {"stream_connect", "stream_disconnect"}:
+        return "HDHomeRun API request"
 
     if event in {"stream_connect", "hls_stream_connect", "stream_start"}:
         return "Playback session started"
@@ -123,6 +128,7 @@ def serialize_audit_row(row: dict[str, Any]) -> dict[str, Any]:
         "user_agent": user_agent,
         "user_id": row.get("user_id"),
         "username": row.get("username"),
+        "severity": str(row.get("severity") or "info").strip().lower() or "info",
         "activity_label": build_activity_label(event_type, endpoint, details),
         "device_label": build_device_label(user_agent, row.get("client_hints")),
         "audit_mode": derive_audit_mode(event_type, endpoint),

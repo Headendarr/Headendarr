@@ -34,6 +34,7 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 _ENTRY_TYPE_STREAM_AUDIT = "stream_audit"
 _ENTRY_TYPE_CSO_EVENT_LOG = "cso_event_log"
 _VALID_ENTRY_TYPES = {_ENTRY_TYPE_STREAM_AUDIT, _ENTRY_TYPE_CSO_EVENT_LOG}
+_VALID_SEVERITIES = {"debug", "info", "warning", "error"}
 
 
 def _parse_entry_types(params):
@@ -45,6 +46,21 @@ def _parse_entry_types(params):
     if not valid:
         return {_ENTRY_TYPE_STREAM_AUDIT, _ENTRY_TYPE_CSO_EVENT_LOG}
     return valid
+
+
+def _parse_severities(params):
+    raw = (params.get("severity") or "").strip().lower()
+    if not raw:
+        return set()
+    parsed = {part.strip() for part in raw.split(",") if part.strip()}
+    return parsed.intersection(_VALID_SEVERITIES)
+
+
+def _parse_event_types(params):
+    raw = (params.get("event_type") or "").strip().lower()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def _entry_sort_tuple(entry: dict):
@@ -126,7 +142,7 @@ def _serialize_stream_audit_row(row):
         "user_id": row.get("user_id"),
         "username": row.get("username"),
         "channel_id": None,
-        "severity": "info",
+        "severity": str(row.get("severity") or "info").strip().lower() or "info",
         "audit_mode": derive_audit_mode(event_type, endpoint),
         "activity_label": build_activity_label(event_type, endpoint, details),
         "device_label": build_device_label(user_agent),
@@ -185,7 +201,8 @@ def _serialize_channel_stream_row(row):
 
 def _stream_filters_from_params(params):
     filters = []
-    event_type = (params.get("event_type") or "").strip()
+    event_types = _parse_event_types(params)
+    severities = _parse_severities(params)
     username = (params.get("username") or "").strip()
     search = (params.get("search") or "").strip()
     from_ts = _parse_iso_datetime(params.get("from_ts"))
@@ -196,8 +213,13 @@ def _stream_filters_from_params(params):
         channel_id = int(channel_id_raw) if channel_id_raw else None
     except ValueError:
         channel_id = None
-    if event_type:
-        filters.append(StreamAuditLog.event_type == event_type)
+    if event_types:
+        filters.append(StreamAuditLog.event_type.in_(list(event_types)))
+    if severities:
+        severity_filters = [StreamAuditLog.severity.in_(list(severities))]
+        if "info" in severities:
+            severity_filters.append(StreamAuditLog.severity.is_(None))
+        filters.append(or_(*severity_filters))
     if username:
         filters.append(User.username.ilike(f"%{username}%"))
     if from_ts:
@@ -222,7 +244,8 @@ def _stream_filters_from_params(params):
 
 def _channel_event_filters_from_params(params):
     filters = []
-    event_type = (params.get("event_type") or "").strip()
+    event_types = _parse_event_types(params)
+    severities = _parse_severities(params)
     search = (params.get("search") or "").strip()
     from_ts = _parse_iso_datetime(params.get("from_ts"))
     to_ts = _parse_iso_datetime(params.get("to_ts"))
@@ -232,8 +255,13 @@ def _channel_event_filters_from_params(params):
         channel_id = int(channel_id_raw) if channel_id_raw else None
     except ValueError:
         channel_id = None
-    if event_type:
-        filters.append(CsoEventLog.event_type == event_type)
+    if event_types:
+        filters.append(CsoEventLog.event_type.in_(list(event_types)))
+    if severities:
+        severity_filters = [CsoEventLog.severity.in_(list(severities))]
+        if "info" in severities:
+            severity_filters.append(CsoEventLog.severity.is_(None))
+        filters.append(or_(*severity_filters))
     if from_ts:
         filters.append(CsoEventLog.created_at >= from_ts)
     if to_ts:
@@ -264,6 +292,7 @@ async def _query_unified_audit_rows(limit: int, params):
                     StreamAuditLog.id.label("id"),
                     StreamAuditLog.created_at.label("created_at"),
                     StreamAuditLog.event_type.label("event_type"),
+                    StreamAuditLog.severity.label("severity"),
                     StreamAuditLog.endpoint.label("endpoint"),
                     StreamAuditLog.details.label("details"),
                     StreamAuditLog.ip_address.label("ip_address"),
@@ -331,6 +360,30 @@ async def _query_unified_audit_rows(limit: int, params):
     return out
 
 
+async def _query_audit_event_types(params):
+    values = set()
+    async with Session() as session:
+        stream_stmt = select(StreamAuditLog.event_type.label("event_type")).distinct()
+        stream_stmt = stream_stmt.select_from(StreamAuditLog).outerjoin(User, User.id == StreamAuditLog.user_id)
+        for condition in _stream_filters_from_params(params):
+            stream_stmt = stream_stmt.where(condition)
+        stream_result = await session.execute(stream_stmt)
+        values.update(
+            str(row.event_type or "").strip() for row in stream_result.all() if str(row.event_type or "").strip()
+        )
+
+        channel_stmt = select(CsoEventLog.event_type.label("event_type")).distinct().select_from(CsoEventLog)
+        channel_stmt = channel_stmt.outerjoin(Channel, Channel.id == CsoEventLog.channel_id)
+        for condition in _channel_event_filters_from_params(params):
+            channel_stmt = channel_stmt.where(condition)
+        channel_result = await session.execute(channel_stmt)
+        values.update(
+            str(row.event_type or "").strip() for row in channel_result.all() if str(row.event_type or "").strip()
+        )
+
+    return sorted(values, key=lambda value: value.lower())
+
+
 @blueprint.route("/tic-api/audit/logs", methods=["GET"])
 @admin_auth_required
 async def api_list_audit_logs():
@@ -374,6 +427,15 @@ async def api_poll_audit_logs():
         if elapsed >= timeout_value:
             return jsonify({"success": True, "data": []})
         await asyncio.sleep(1)
+
+
+@blueprint.route("/tic-api/audit/filter-options", methods=["GET"])
+@admin_auth_required
+async def api_audit_filter_options():
+    args = request.args.to_dict(flat=True)
+    args.pop("event_type", None)
+    event_types = await _query_audit_event_types(args)
+    return jsonify({"success": True, "data": {"event_types": event_types}})
 
 
 @blueprint.route("/tic-api/audit/playback-start", methods=["POST"])

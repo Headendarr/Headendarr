@@ -4,7 +4,7 @@
       <q-card flat>
         <q-card-section :class="$q.platform.is.mobile ? 'q-px-none' : ''">
           <TicListToolbar
-            class="q-mb-sm"
+            class="q-mb-sm audit-toolbar"
             :search="{label: 'Search audit logs', placeholder: 'User, endpoint, event, details...'}"
             :search-value="search"
             :filters="auditToolbarFilters"
@@ -111,6 +111,7 @@
 <script>
 import axios from 'axios';
 import {defineComponent} from 'vue';
+import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {TicListItemCard, TicListToolbar} from 'components/ui';
 import {getAuditActivityTitle} from '../utils/auditActivity';
@@ -125,6 +126,7 @@ export default defineComponent({
   },
   setup() {
     return {
+      settingsStore: useSettingsStore(),
       uiStore: useUiStore(),
     };
   },
@@ -134,12 +136,14 @@ export default defineComponent({
       loading: false,
       hasMore: true,
       search: '',
-      entryType: null,
-      eventType: null,
+      entryType: [],
+      eventType: [],
+      severity: [],
       fromTsInput: '',
       toTsInput: '',
       channelIdFilter: null,
-      eventTypeOptions: [{label: 'All events', value: null}],
+      eventTypeOptions: [],
+      eventOptionsLoading: false,
       pollTimer: null,
       pollCancelled: false,
       searchDebounceTimer: null,
@@ -155,6 +159,9 @@ export default defineComponent({
     entryType() {
       this.scheduleRefresh();
     },
+    severity() {
+      this.scheduleRefresh();
+    },
     fromTsInput() {
       this.scheduleRefresh();
     },
@@ -166,14 +173,36 @@ export default defineComponent({
     isTimeRangeMode() {
       return Boolean((this.fromTsInput || '').trim() || (this.toTsInput || '').trim());
     },
+    appDebugEnabled() {
+      return Boolean(this.settingsStore.appDebugEnabled);
+    },
+    severityOptions() {
+      const options = [
+        {label: 'Info', value: 'info'},
+        {label: 'Warning', value: 'warning'},
+        {label: 'Error', value: 'error'},
+      ];
+      if (this.appDebugEnabled) {
+        options.splice(1, 0, {label: 'Debug', value: 'debug'});
+      }
+      return options;
+    },
+    effectiveSeverityFilter() {
+      if (this.appDebugEnabled) {
+        return this.severity.length ? this.severity.join(',') : null;
+      }
+      if (this.severity.includes('debug')) {
+        return 'info,warning,error';
+      }
+      return this.severity.length ? this.severity.join(',') : 'info,warning,error';
+    },
     auditToolbarFilters() {
       return [
         {
           key: 'entryType',
           modelValue: this.entryType,
-          label: 'Type',
+          label: 'Filter by Type',
           options: [
-            {label: 'All activity', value: null},
             {label: 'User Stream Audit Logs', value: 'stream_audit'},
             {label: 'CSO Events', value: 'cso_event_log'},
           ],
@@ -182,19 +211,39 @@ export default defineComponent({
           emitValue: true,
           mapOptions: true,
           clearable: true,
+          multiple: true,
+          collapseSelections: true,
           dense: true,
           behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
         },
         {
           key: 'event',
           modelValue: this.eventType,
-          label: 'Event',
+          label: 'Filter by Event',
           options: this.eventTypeOptions,
           optionLabel: 'label',
           optionValue: 'value',
           emitValue: true,
           mapOptions: true,
           clearable: true,
+          multiple: true,
+          collapseSelections: true,
+          loading: this.eventOptionsLoading,
+          dense: true,
+          behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
+        },
+        {
+          key: 'severity',
+          modelValue: this.severity,
+          label: 'Filter by Severity',
+          options: this.severityOptions,
+          optionLabel: 'label',
+          optionValue: 'value',
+          emitValue: true,
+          mapOptions: true,
+          clearable: true,
+          multiple: true,
+          collapseSelections: true,
           dense: true,
           behavior: this.$q.screen.lt.md ? 'dialog' : 'menu',
         },
@@ -207,10 +256,13 @@ export default defineComponent({
     },
     onAuditToolbarFilterChange({key, value}) {
       if (key === 'entryType') {
-        this.entryType = value ?? null;
+        this.entryType = Array.isArray(value) ? value : [];
       }
       if (key === 'event') {
-        this.eventType = value ?? null;
+        this.eventType = Array.isArray(value) ? value : [];
+      }
+      if (key === 'severity') {
+        this.severity = Array.isArray(value) ? value : [];
       }
     },
     fallbackDeviceLabel(userAgent) {
@@ -304,6 +356,13 @@ export default defineComponent({
           headerColor: 'var(--tic-list-card-default-header-bg)',
         };
       }
+      if (severity === 'debug') {
+        return {
+          accentColor: 'var(--tic-list-card-default-border, transparent)',
+          surfaceColor: 'var(--tic-list-card-default-bg)',
+          headerColor: 'var(--tic-list-card-default-header-bg)',
+        };
+      }
       return {
         accentColor: 'var(--tic-list-card-default-border, transparent)',
         surfaceColor: 'var(--tic-list-card-default-bg)',
@@ -320,11 +379,14 @@ export default defineComponent({
       if (this.search?.trim()) {
         params.search = this.search.trim();
       }
-      if (this.eventType) {
-        params.event_type = this.eventType;
+      if (this.eventType.length) {
+        params.event_type = this.eventType.join(',');
       }
-      if (this.entryType) {
-        params.entry_types = this.entryType;
+      if (this.effectiveSeverityFilter) {
+        params.severity = this.effectiveSeverityFilter;
+      }
+      if (this.entryType.length) {
+        params.entry_types = this.entryType.join(',');
       }
       const fromTsIso = this.localInputToIso(this.fromTsInput);
       const toTsIso = this.localInputToIso(this.toTsInput);
@@ -344,29 +406,46 @@ export default defineComponent({
       this.entries = [];
       this.hasMore = true;
     },
-    updateEventTypeOptions() {
+    updateEventTypeOptions(eventTypes = []) {
+      const selected = Array.isArray(this.eventType) ? this.eventType : [];
       const seen = new Set();
-      const options = [{label: 'All events', value: null}];
-      this.entries.forEach((entry) => {
-        const event = String(entry.event_type || '').trim();
-        if (!event || seen.has(event)) {
+      const values = [];
+      [...selected, ...eventTypes].forEach((event) => {
+        const value = String(event || '').trim();
+        if (!value || seen.has(value)) {
           return;
         }
-        seen.add(event);
-        options.push({label: event, value: event});
+        seen.add(value);
+        values.push(value);
       });
-      this.eventTypeOptions = options;
+      this.eventTypeOptions = values.map((event) => ({label: event, value: event}));
+    },
+    async refreshEventTypeOptions() {
+      this.eventOptionsLoading = true;
+      try {
+        const params = {
+          ...this.buildFilterQuery(),
+        };
+        delete params.event_type;
+        const response = await axios.get('/tic-api/audit/filter-options', {params});
+        this.updateEventTypeOptions(response?.data?.data?.event_types || []);
+      } catch (error) {
+        console.error('Failed to load audit filter options:', error);
+        this.updateEventTypeOptions();
+      } finally {
+        this.eventOptionsLoading = false;
+      }
     },
     async fetchInitial() {
       this.loading = true;
       this.stopPolling();
       try {
+        await this.refreshEventTypeOptions();
         const response = await axios.get('/tic-api/audit/logs', {
           params: this.buildFilterQuery(),
         });
         this.entries = response.data.data || [];
         this.hasMore = this.isTimeRangeMode ? false : (this.entries.length || 0) >= PAGE_SIZE;
-        this.updateEventTypeOptions();
       } catch (error) {
         console.error('Failed to load audit logs:', error);
         this.$q.notify({color: 'negative', message: 'Failed to load audit logs'});
@@ -424,11 +503,14 @@ export default defineComponent({
       if (this.search?.trim()) {
         params.search = this.search.trim();
       }
-      if (this.eventType) {
-        params.event_type = this.eventType;
+      if (this.eventType.length) {
+        params.event_type = this.eventType.join(',');
       }
-      if (this.entryType) {
-        params.entry_types = this.entryType;
+      if (this.effectiveSeverityFilter) {
+        params.severity = this.effectiveSeverityFilter;
+      }
+      if (this.entryType.length) {
+        params.entry_types = this.entryType.join(',');
       }
       if (this.channelIdFilter !== null && this.channelIdFilter !== undefined && this.channelIdFilter !== '') {
         params.channel_id = this.channelIdFilter;
@@ -442,7 +524,6 @@ export default defineComponent({
             (entry) => !existing.has(entry.entry_key || `${entry.entry_type}:${entry.id}`));
           if (additions.length) {
             this.entries = [...additions, ...this.entries];
-            this.updateEventTypeOptions();
           }
         }
       } catch (error) {
@@ -506,10 +587,13 @@ export default defineComponent({
         this.search = query.search;
       }
       if (typeof query.event_type === 'string') {
-        this.eventType = query.event_type || null;
+        this.eventType = query.event_type ? query.event_type.split(',').filter(Boolean) : [];
+      }
+      if (typeof query.severity === 'string') {
+        this.severity = query.severity ? query.severity.split(',').filter(Boolean) : [];
       }
       if (typeof query.entry_types === 'string') {
-        this.entryType = query.entry_types || null;
+        this.entryType = query.entry_types ? query.entry_types.split(',').filter(Boolean) : [];
       }
       if (query.channel_id !== undefined) {
         const parsed = Number.parseInt(String(query.channel_id), 10);
@@ -523,7 +607,12 @@ export default defineComponent({
       }
     },
   },
-  mounted() {
+  async mounted() {
+    try {
+      await this.settingsStore.refreshSettings({minAgeMs: 3000});
+    } catch (error) {
+      console.error('Failed to load application settings:', error);
+    }
     this.applyRouteQueryDefaults();
     this.fetchInitial();
   },
@@ -538,6 +627,41 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.audit-toolbar :deep(.section-toolbar-row) {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
+  gap: 8px 16px;
+  justify-content: space-between;
+}
+
+.audit-toolbar :deep(.section-toolbar-left) {
+  min-width: 0;
+}
+
+.audit-toolbar :deep(.section-toolbar-right) {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.audit-toolbar :deep(.section-toolbar-search-wrap) {
+  width: 360px;
+  min-width: 280px;
+  max-width: 420px;
+  flex: 0 1 360px;
+}
+
+.audit-toolbar :deep(.section-toolbar-filter-wrap) {
+  min-width: 150px;
+  max-width: 190px;
+  flex: 0 0 176px;
+}
+
+.audit-toolbar :deep(.section-toolbar-field .q-field) {
+  margin-bottom: 0;
+}
+
 .audit-list-item {
   align-items: flex-start;
 }
@@ -546,5 +670,28 @@ export default defineComponent({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 1023px) {
+  .audit-toolbar :deep(.section-toolbar-row) {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-toolbar :deep(.section-toolbar-right) {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .audit-toolbar :deep(.section-toolbar-filter-wrap) {
+    min-width: 180px;
+    max-width: none;
+    flex: 1 1 220px;
+  }
+}
+
+@media (max-width: 599px) {
+  .audit-toolbar :deep(.section-toolbar-right) {
+    width: 100%;
+  }
 }
 </style>

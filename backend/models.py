@@ -422,6 +422,7 @@ class StreamAuditLog(Base):
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
+    severity = Column(String(16), nullable=False, default="info", server_default="info")
     endpoint = Column(Text, nullable=True)
     ip_address = Column(String(64), nullable=True)
     user_agent = Column(Text, nullable=True)

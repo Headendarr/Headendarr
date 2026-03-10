@@ -47,9 +47,12 @@
             :option-value="filter.optionValue || 'value'"
             :emit-value="filter.emitValue !== false"
             :map-options="filter.mapOptions !== false"
+            :multiple="Boolean(filter.multiple)"
+            :collapse-selections="Boolean(filter.collapseSelections)"
             :clearable="Boolean(filter.clearable)"
             :dense="filter.dense !== false"
             :disable="Boolean(filter.disable)"
+            :loading="Boolean(filter.loading)"
             :behavior="filter.behavior || ($q.screen.lt.md ? 'dialog' : 'menu')"
             @update:model-value="$emit('filterChange', {key: filter.key, value: $event})"
           />

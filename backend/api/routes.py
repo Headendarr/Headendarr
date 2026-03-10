@@ -23,6 +23,7 @@ from backend.auth import (
     user_auth_required,
     audit_stream_event,
 )
+from backend import config as backend_config
 from backend.config import is_tvh_process_running_locally
 from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
@@ -532,6 +533,7 @@ async def api_get_config_tvheadend():
     return_data["plex"] = build_plex_settings_for_runtime(runtime_servers, return_data.get("plex"))
     return_data["plex_runtime"] = plex_runtime_summary()
     return_data["plex_available"] = bool(runtime_servers)
+    return_data["app_debug_enabled"] = bool(backend_config.enable_app_debugging)
     return_data["tvh_local"] = await is_tvh_process_running_locally()
     return_data["stream_profile_definitions"] = get_stream_profile_definitions()
     return_data["tvh_compatible_profile_ids"] = list(TVH_COMPATIBLE_PROFILE_IDS_ORDER)

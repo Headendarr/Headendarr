@@ -10,7 +10,7 @@ from backend.api.connections_common import (
     get_playlist_connection_count,
     resolve_channel_stream_url,
 )
-from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
+from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user, skip_stream_connect_audit
 from backend.channels import read_config_all_channels
 from backend.epgs import generate_epg_channel_id
 from backend.playlists import read_config_all_playlists
@@ -163,9 +163,10 @@ async def _get_combined_discover_data(stream_username=None, stream_key=None, pro
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/discover.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/discover.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def discover_json(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_discover", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_discover", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id=playlist_id,
@@ -178,9 +179,10 @@ async def discover_json(playlist_id, stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_json(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup", request.path, severity="debug")
     lineup_list = await _get_lineup_list(
         playlist_id,
         stream_username=request._stream_user.username if request._stream_user else None,
@@ -192,9 +194,10 @@ async def lineup_json(playlist_id, stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup_status.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup_status.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_status_json(playlist_id=None, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_status", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup_status", request.path, severity="debug")
     return jsonify(
         {
             "ScanInProgress": 0,
@@ -207,17 +210,19 @@ async def lineup_status_json(playlist_id=None, stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/lineup.post", methods=["GET", "POST"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/lineup.post", methods=["GET", "POST"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_post(playlist_id=None, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_post", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup_post", request.path, severity="debug")
     return ""
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/device.xml", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/<playlist_id>/<profile>/device.xml", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def device_xml(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_device_xml", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_device_xml", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id,
@@ -231,9 +236,10 @@ async def device_xml(playlist_id, stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/discover.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/discover.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def discover_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_discover_combined", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_discover_combined", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_combined_discover_data(
         stream_username=request._stream_user.username if request._stream_user else None,
@@ -245,9 +251,10 @@ async def discover_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_combined", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup_combined", request.path, severity="debug")
     lineup_list = await _get_combined_lineup_list(
         stream_username=request._stream_user.username if request._stream_user else None,
         stream_key=request._stream_key,
@@ -258,9 +265,10 @@ async def lineup_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup_status.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup_status.json", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_status_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_status_combined", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup_status_combined", request.path, severity="debug")
     return jsonify(
         {
             "ScanInProgress": 0,
@@ -273,17 +281,19 @@ async def lineup_status_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup.post", methods=["GET", "POST"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup.post", methods=["GET", "POST"])
+@skip_stream_connect_audit
 @stream_key_required
 async def lineup_post_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_post_combined", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_lineup_post_combined", request.path, severity="debug")
     return ""
 
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/device.xml", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/device.xml", methods=["GET"])
+@skip_stream_connect_audit
 @stream_key_required
 async def device_xml_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_device_xml_combined", request.path)
+    await audit_stream_event(request._stream_user, "hdhr_device_xml_combined", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_combined_discover_data(
         stream_username=request._stream_user.username if request._stream_user else None,

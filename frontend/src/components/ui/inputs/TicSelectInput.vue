@@ -5,6 +5,8 @@
       outlined
       :model-value="modelValue"
       :options="displayOptions"
+      :display-value="selectionDisplayValue"
+      :input-class="multiple && collapseSelections ? 'tic-select-input-collapsed-value' : ''"
       :label="label"
       :option-label="optionLabel"
       :option-value="optionValue"
@@ -12,7 +14,7 @@
       :map-options="mapOptions"
       :multiple="multiple"
       :use-input="searchable"
-      :use-chips="multiple"
+      :use-chips="multiple && !collapseSelections"
       :hide-dropdown-icon="hideDropdownIcon"
       :input-debounce="inputDebounce"
       :clearable="clearable"
@@ -24,12 +26,22 @@
       @filter="onFilter"
     >
       <template #option="scope">
-        <q-item v-bind="scope.itemProps">
+        <q-item
+          v-bind="scope.itemProps"
+          :class="{'tic-select-option--selected': scope.selected}"
+        >
           <q-item-section>
             <q-item-label>{{ resolveOptionLabel(scope.opt) }}</q-item-label>
             <q-item-label v-if="resolveOptionDescription(scope.opt)" caption>
               {{ resolveOptionDescription(scope.opt) }}
             </q-item-label>
+          </q-item-section>
+          <q-item-section
+            v-if="scope.selected"
+            side
+            class="tic-select-option-check"
+          >
+            <q-icon name="check" color="primary" size="18px" />
           </q-item-section>
         </q-item>
       </template>
@@ -89,6 +101,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  collapseSelections: {
+    type: Boolean,
+    default: false,
+  },
   searchable: {
     type: Boolean,
     default: true,
@@ -138,6 +154,20 @@ const displayOptions = computed(() => {
   return props.searchable ? filteredOptions.value : props.options;
 });
 
+const resolveOptionValue = (option) => {
+  if (typeof props.optionValue === 'function') {
+    return props.optionValue(option);
+  }
+  if (typeof option === 'string') {
+    return option;
+  }
+  return option?.[props.optionValue];
+};
+
+const findOptionByValue = (value) => {
+  return props.options.find((option) => resolveOptionValue(option) === value);
+};
+
 const resolveOptionLabel = (option) => {
   if (typeof props.optionLabel === 'function') {
     return props.optionLabel(option);
@@ -160,6 +190,31 @@ const resolveOptionDescription = (option) => {
   }
   return option?.[props.optionDescription] ?? '';
 };
+
+const selectedLabels = computed(() => {
+  const rawValues = Array.isArray(props.modelValue) ? props.modelValue : [];
+  return rawValues.map((value) => {
+    const option = findOptionByValue(value);
+    if (option !== undefined) {
+      return String(resolveOptionLabel(option) || '').trim();
+    }
+    return String(value || '').trim();
+  }).filter(Boolean);
+});
+
+const selectionDisplayValue = computed(() => {
+  if (!props.multiple || !props.collapseSelections) {
+    return undefined;
+  }
+  const labels = selectedLabels.value;
+  if (!labels.length) {
+    return '';
+  }
+  if (labels.length === 1) {
+    return labels[0];
+  }
+  return `${labels.length} selected`;
+});
 
 const onFilter = (value, update) => {
   emit('filter', value, update);
@@ -186,6 +241,14 @@ const onFilter = (value, update) => {
   padding-bottom: 0 !important;
 }
 
+.tic-select-option--selected {
+  background: color-mix(in srgb, var(--q-primary) 10%, transparent);
+}
+
+.tic-select-option-check {
+  min-width: 24px;
+}
+
 .tic-select-input--with-description .tic-select-input-field {
   padding-bottom: 8px !important;
 }
@@ -193,5 +256,32 @@ const onFilter = (value, update) => {
 .tic-input-description {
   margin-top: 0;
   margin-left: 8px;
+}
+
+:deep(.tic-select-input-field .q-field__native),
+:deep(.tic-select-input-field .q-field__input) {
+  flex-wrap: nowrap !important;
+}
+
+:deep(.tic-select-input-field .q-field__native > .ellipsis) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+:deep(.tic-select-input-field .q-field__input.tic-select-input-collapsed-value) {
+  flex: 0 0 1px !important;
+  width: 1px !important;
+  min-width: 1px !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.tic-select-input-field .q-field__control) {
+  min-height: 40px;
+}
+
+:deep(.tic-select-input-field .q-field__marginal) {
+  height: 40px;
 }
 </style>
