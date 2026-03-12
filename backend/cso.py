@@ -47,6 +47,9 @@ from backend.xc_hosts import parse_xc_hosts
 
 logger = logging.getLogger("cso")
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
+CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS = 5 * 60
+CSO_SOURCE_FAILURE_PRIORITY_PENALTY = 1000
+CSO_UNHEALTHY_SOURCE_PRIORITY_PENALTY = 5
 CSO_INGEST_RECOVERY_RETRY_WINDOW_SECONDS = 12
 CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS = 1
 CSO_STALL_SECONDS_DEFAULT = 20
@@ -104,6 +107,8 @@ _FFMPEG_AUDIO_STREAM_RE = re.compile(
     r"Stream #\d+:\d+(?:\[[^\]]+\])?: Audio:\s*([a-zA-Z0-9_]+)(?:\s*\(([^)]*)\))?,\s*(\d+)\s*Hz,\s*([^,]+)"
 )
 _FFMPEG_FPS_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*fps")
+_cso_channel_failed_sources: dict[int, dict[int, float]] = {}
+_cso_channel_failed_sources_lock = asyncio.Lock()
 
 CONTAINER_TO_FORMAT = {
     "mpegts": "mpegts",
@@ -124,6 +129,84 @@ CONTAINER_TO_CONTENT_TYPE = {
     "webm": "video/webm",
     "hls": "application/vnd.apple.mpegurl",
 }
+
+
+async def _get_cso_channel_failed_source_ids(channel_id):
+    try:
+        channel_id = int(channel_id)
+    except Exception:
+        return set()
+    if channel_id <= 0:
+        return set()
+
+    now = time.time()
+    async with _cso_channel_failed_sources_lock:
+        failed_map = _cso_channel_failed_sources.get(channel_id) or {}
+        active_ids = set()
+        expired_ids = []
+        for source_id, hold_until in failed_map.items():
+            if float(hold_until or 0.0) > now:
+                active_ids.add(int(source_id))
+            else:
+                expired_ids.append(int(source_id))
+        for source_id in expired_ids:
+            failed_map.pop(source_id, None)
+        if failed_map:
+            _cso_channel_failed_sources[channel_id] = failed_map
+        else:
+            _cso_channel_failed_sources.pop(channel_id, None)
+        return active_ids
+
+
+async def mark_cso_channel_source_temporarily_failed(channel_id, source_id, ttl_seconds=CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS):
+    try:
+        channel_id = int(channel_id)
+        source_id = int(source_id)
+    except Exception:
+        return False
+    if channel_id <= 0 or source_id <= 0:
+        return False
+
+    hold_until = time.time() + max(1.0, float(ttl_seconds or CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS))
+    async with _cso_channel_failed_sources_lock:
+        failed_map = _cso_channel_failed_sources.setdefault(channel_id, {})
+        failed_map[source_id] = hold_until
+    logger.info(
+        "CSO source failure cache updated channel=%s source_id=%s ttl_seconds=%s",
+        channel_id,
+        source_id,
+        int(max(1.0, float(ttl_seconds or CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS))),
+    )
+    return True
+
+
+def _cso_source_effective_priority(source, failed_source_ids=None):
+    base_priority = convert_to_int(getattr(source, "priority", 0), 0)
+    source_id = convert_to_int(getattr(source, "id", 0), 0)
+    health_status = str(getattr(source, "last_health_check_status", "") or "").strip().lower()
+    unhealthy_penalty = CSO_UNHEALTHY_SOURCE_PRIORITY_PENALTY if health_status == "unhealthy" else 0
+    temporary_penalty = CSO_SOURCE_FAILURE_PRIORITY_PENALTY if source_id in set(failed_source_ids or set()) else 0
+    return base_priority - unhealthy_penalty - temporary_penalty
+
+
+async def order_cso_channel_sources(sources, channel_id=None):
+    candidates = list(sources or [])
+    resolved_channel_id = channel_id
+    if resolved_channel_id is None:
+        for source in candidates:
+            resolved_channel_id = getattr(source, "channel_id", None)
+            if resolved_channel_id is not None:
+                break
+    failed_source_ids = await _get_cso_channel_failed_source_ids(resolved_channel_id)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            _cso_source_effective_priority(item, failed_source_ids=failed_source_ids),
+            convert_to_int(getattr(item, "priority", 0), 0),
+            -convert_to_int(getattr(item, "id", 0), 0),
+        ),
+        reverse=True,
+    )
 
 
 async def _wait_process_exit_with_timeout(process, timeout_seconds=2.0):
@@ -1704,6 +1787,35 @@ class CsoIngestSession:
                     len(self.sources),
                 )
 
+    async def _handle_source_failure(self, source, reason, details=None):
+        source_id = convert_to_int(getattr(source, "id", 0), 0)
+        if source_id <= 0 or int(self.channel_id or 0) <= 0:
+            return
+
+        await mark_cso_channel_source_temporarily_failed(self.channel_id, source_id)
+
+        app = getattr(self, "app", None)
+        if app is None:
+            return
+
+        try:
+            from backend.channel_stream_health import schedule_background_health_check_for_source
+
+            await schedule_background_health_check_for_source(
+                app,
+                source_id,
+                reason=reason,
+                details=details or {},
+            )
+        except Exception as exc:
+            logger.warning(
+                "CSO failed to queue background health check channel=%s source_id=%s reason=%s error=%s",
+                self.channel_id,
+                source_id,
+                reason,
+                exc,
+            )
+
     async def start(self):
         async with self.lock:
             if self.running:
@@ -1941,11 +2053,7 @@ class CsoIngestSession:
     ):
         now = time.time()
         excluded_ids = set(excluded_source_ids or [])
-        candidates = sorted(
-            self.sources,
-            key=lambda item: convert_to_int(getattr(item, "priority", 0), 0),
-            reverse=True,
-        )
+        candidates = await order_cso_channel_sources(self.sources, channel_id=self.channel_id)
         if preferred_source_id is not None:
             preferred = [source for source in candidates if getattr(source, "id", None) == preferred_source_id]
             others = [source for source in candidates if getattr(source, "id", None) != preferred_source_id]
@@ -2025,6 +2133,7 @@ class CsoIngestSession:
                     break
                 except Exception as exc:
                     last_error = exc
+                    await self._handle_source_failure(source, "ingest_start_failed", {"error": str(exc)})
                     await emit_channel_stream_event(
                         channel_id=self.channel_id,
                         source_id=getattr(source, "id", None),
@@ -2485,6 +2594,16 @@ class CsoIngestSession:
             hold_down_applied,
             int(max(0.0, time.time() - float(self.session_start_ts or time.time())) * 1000),
         )
+        if failed_source is not None and reason != "capacity_blocked":
+            await self._handle_source_failure(
+                failed_source,
+                reason,
+                {
+                    "return_code": return_code,
+                    "saw_data": saw_data,
+                    **(details or {}),
+                },
+            )
         self.failover_start_ts = time.time()
         self.failover_in_progress = True
 
@@ -4291,11 +4410,7 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
         )
         channels = result.scalars().unique().all()
         for channel in channels:
-            candidates = sorted(
-                list(channel.sources or []),
-                key=lambda item: convert_to_int(getattr(item, "priority", 0), 0),
-                reverse=True,
-            )
+            candidates = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
             for source in candidates:
                 playlist = getattr(source, "playlist", None)
                 if playlist is not None and not bool(getattr(playlist, "enabled", False)):
@@ -4536,7 +4651,7 @@ async def subscribe_channel_hls(
     if not channel.enabled:
         return None, "Channel is disabled", 404
 
-    sources = list(channel.sources or [])
+    sources = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
     if not sources:
         return None, "No available stream source for this channel", 503
 
@@ -4561,6 +4676,12 @@ async def subscribe_channel_hls(
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    try:
+        from quart import current_app
+
+        ingest_session.app = current_app._get_current_object()
+    except Exception:
+        pass
     await ingest_session.start()
     if not ingest_session.running:
         reason = ingest_session.last_error or "no_available_source"
@@ -4774,7 +4895,7 @@ async def subscribe_channel_stream(
     if not channel.enabled:
         return None, None, "Channel is disabled", 404
 
-    sources = list(channel.sources or [])
+    sources = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
     if not sources:
         await emit_channel_stream_event(
             channel_id=channel.id,
@@ -4817,6 +4938,12 @@ async def subscribe_channel_stream(
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    try:
+        from quart import current_app
+
+        ingest_session.app = current_app._get_current_object()
+    except Exception:
+        pass
     ingest_session.slate_session = slate_session
     await ingest_session.start()
     if not ingest_session.running:

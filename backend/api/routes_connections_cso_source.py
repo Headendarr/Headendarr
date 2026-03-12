@@ -20,6 +20,7 @@ from backend.cso import (
     cso_session_manager,
     emit_channel_stream_event,
     is_internal_cso_activity,
+    order_cso_channel_sources,
     policy_content_type,
     resolve_channel_for_stream,
     subscribe_slate_stream,
@@ -197,11 +198,7 @@ async def _select_primary_source_for_capacity(channel):
             )
             sources = list(result.scalars().all())
 
-    candidates = sorted(
-        sources,
-        key=lambda item: int(getattr(item, "priority", 0) or 0),
-        reverse=True,
-    )
+    candidates = await order_cso_channel_sources(sources, channel_id=channel_id)
     for source in candidates:
         playlist = getattr(source, "playlist", None)
         if playlist is not None and not bool(getattr(playlist, "enabled", False)):

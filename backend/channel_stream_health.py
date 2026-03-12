@@ -53,6 +53,7 @@ _active_health_checks_by_source: dict[int, ActiveHealthCheck] = {}
 _health_checks_lock = asyncio.Lock()
 _health_run_lock = asyncio.Lock()
 _health_run_task: asyncio.Task | None = None
+_scheduled_health_checks_by_source: dict[int, asyncio.Task] = {}
 
 
 def _request_base_url():
@@ -386,6 +387,34 @@ async def has_background_health_check_for_capacity_key(capacity_key_name: str) -
     return bool(checks)
 
 
+async def schedule_background_health_check_for_source(app, source_id, reason="cso_failover", details=None) -> bool:
+    try:
+        source_id = int(source_id)
+    except Exception:
+        return False
+    if source_id <= 0 or app is None:
+        return False
+
+    async with _health_checks_lock:
+        active_check = _active_health_checks_by_source.get(source_id)
+        scheduled_task = _scheduled_health_checks_by_source.get(source_id)
+        if active_check is not None:
+            return False
+        if scheduled_task is not None and not scheduled_task.done():
+            return False
+        task = asyncio.create_task(
+            _run_requested_source_health_check_worker(app, source_id, reason=reason, details=details or {})
+        )
+        _scheduled_health_checks_by_source[source_id] = task
+    logger.info(
+        "Queued background stream health check source_id=%s reason=%s details=%s",
+        source_id,
+        reason,
+        details or {},
+    )
+    return True
+
+
 async def cancel_background_health_checks_for_capacity_key(capacity_key_name: str, reason="playback_priority") -> int:
     checks = await _active_health_checks_for_capacity_key(capacity_key_name)
     if not checks:
@@ -456,6 +485,47 @@ async def preempt_background_health_checks_for_channel(channel_id) -> int:
                 reason="channel_playback_priority",
             )
     return cancelled
+
+
+async def _run_requested_source_health_check_worker(app, source_id, reason="cso_failover", details=None):
+    try:
+        async with Session() as session:
+            result = await session.execute(
+                select(ChannelSource)
+                .options(
+                    joinedload(ChannelSource.channel),
+                    joinedload(ChannelSource.playlist),
+                    joinedload(ChannelSource.xc_account),
+                )
+                .where(ChannelSource.id == int(source_id))
+            )
+            source = result.scalars().first()
+        if not source:
+            return
+
+        status, outcome_reason = await _run_source_health_check(app.config["APP_CONFIG"], source)
+        logger.info(
+            "Background stream health check complete source_id=%s channel_id=%s trigger_reason=%s status=%s outcome=%s details=%s",
+            int(source_id),
+            int(getattr(source, "channel_id", 0) or 0),
+            reason,
+            status,
+            outcome_reason,
+            details or {},
+        )
+    except Exception as exc:
+        logger.warning(
+            "Background stream health check failed source_id=%s trigger_reason=%s error=%s details=%s",
+            source_id,
+            reason,
+            exc,
+            details or {},
+        )
+    finally:
+        async with _health_checks_lock:
+            task = _scheduled_health_checks_by_source.get(int(source_id))
+            if task is asyncio.current_task():
+                _scheduled_health_checks_by_source.pop(int(source_id), None)
 
 
 async def _run_source_health_check(config, source):
