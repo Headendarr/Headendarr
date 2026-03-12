@@ -455,11 +455,12 @@ async def api_save_config():
                 "retention_policy": normalize_retention_policy(dvr_payload.get("retention_policy")),
                 "recording_profiles": normalize_recording_profiles(dvr_payload.get("recording_profiles")),
             }
-        runtime_servers = get_runtime_plex_servers()
-        settings_payload["plex"] = build_plex_settings_for_runtime(
-            runtime_servers=runtime_servers,
-            plex_settings=settings_payload.get("plex"),
-        )
+        if "plex" in settings_payload:
+            runtime_servers = get_runtime_plex_servers()
+            settings_payload["plex"] = build_plex_settings_for_runtime(
+                runtime_servers=runtime_servers,
+                plex_settings=settings_payload.get("plex"),
+            )
 
     # Mark first run as complete
     json_data["settings"]["first_run"] = False
