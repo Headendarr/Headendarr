@@ -329,6 +329,17 @@ async def delete_epg(config, epg_id):
     epg_id = parse_entity_id(epg_id, "epg")
     async with Session() as session:
         async with session.begin():
+            # Unlink channels before deleting the guide row to satisfy the FK on channels.guide_id.
+            await session.execute(
+                update(Channel)
+                .where(Channel.guide_id == epg_id)
+                .values(
+                    guide_id=None,
+                    guide_name=None,
+                    guide_channel_id=None,
+                    guide_offset_minutes=0,
+                )
+            )
             # Get all channel IDs for the given EPG
             # noinspection DuplicatedCode
             result = await session.execute(select(EpgChannels.id).where(EpgChannels.epg_id == epg_id))
