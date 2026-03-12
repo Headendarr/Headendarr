@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from quart import request, jsonify
@@ -8,11 +9,31 @@ from sqlalchemy import select, and_, cast, Integer
 from backend.api import blueprint
 from backend.auth import streamer_or_admin_required
 from backend.channels import read_config_all_channels
+from backend.epgs import _shift_xmltv_window
 from backend.models import Session, EpgChannels, EpgChannelProgrammes
 
 
 def _now_ts():
     return int(datetime.now(tz=timezone.utc).timestamp())
+
+
+def _shift_programme_window(programme, offset_minutes):
+    start_value, stop_value, start_ts, stop_ts = _shift_xmltv_window(
+        None,
+        None,
+        programme.get("start_timestamp"),
+        programme.get("stop_timestamp"),
+        offset_minutes,
+    )
+    try:
+        shifted_start_ts = int(start_ts or 0)
+    except (TypeError, ValueError):
+        shifted_start_ts = 0
+    try:
+        shifted_stop_ts = int(stop_ts or 0)
+    except (TypeError, ValueError):
+        shifted_stop_ts = 0
+    return shifted_start_ts, shifted_stop_ts
 
 
 @blueprint.route("/tic-api/guide/grid", methods=["GET"])
@@ -36,6 +57,11 @@ async def api_guide_grid():
     pairs = {(c["guide"]["epg_id"], c["guide"]["channel_id"]) for c in guide_channels}
     epg_ids = {p[0] for p in pairs}
     channel_ids = {p[1] for p in pairs}
+    offset_minutes = [int(channel.get("guide", {}).get("offset_minutes", 0) or 0) for channel in guide_channels]
+    min_offset_seconds = min(offset_minutes, default=0) * 60
+    max_offset_seconds = max(offset_minutes, default=0) * 60
+    query_start_ts = start_ts - max_offset_seconds
+    query_end_ts = end_ts - min_offset_seconds
 
     async with Session() as session:
         result = await session.execute(
@@ -58,8 +84,8 @@ async def api_guide_grid():
                 select(EpgChannelProgrammes).where(
                     and_(
                         EpgChannelProgrammes.epg_channel_id.in_(epg_channel_ids),
-                        cast(EpgChannelProgrammes.start_timestamp, Integer) <= end_ts,
-                        cast(EpgChannelProgrammes.stop_timestamp, Integer) >= start_ts,
+                        cast(EpgChannelProgrammes.start_timestamp, Integer) <= query_end_ts,
+                        cast(EpgChannelProgrammes.stop_timestamp, Integer) >= query_start_ts,
                     )
                 )
             )
@@ -78,25 +104,35 @@ async def api_guide_grid():
                     }
                 )
 
-        # Map programmes to TIC channel ids
-        from collections import defaultdict
-
         channel_pair_map = defaultdict(list)
         for channel in guide_channels:
             pair = (channel["guide"]["epg_id"], channel["guide"]["channel_id"])
             epg_channel_id = epg_by_pair.get(pair)
             if epg_channel_id:
-                channel_pair_map[epg_channel_id].append(channel["id"])
+                channel_pair_map[epg_channel_id].append(
+                    {
+                        "channel_id": channel["id"],
+                        "offset_minutes": int(channel.get("guide", {}).get("offset_minutes", 0) or 0),
+                    }
+                )
 
         mapped_programmes = []
         for programme in programmes:
-            channel_ids = channel_pair_map.get(programme["epg_channel_id"])
-            if not channel_ids:
+            mapped_channels = channel_pair_map.get(programme["epg_channel_id"])
+            if not mapped_channels:
                 continue
-            for i, channel_id in enumerate(channel_ids):
+            for i, mapped_channel in enumerate(mapped_channels):
+                shifted_start_ts, shifted_stop_ts = _shift_programme_window(
+                    programme,
+                    mapped_channel["offset_minutes"],
+                )
+                if shifted_start_ts > end_ts or shifted_stop_ts < start_ts:
+                    continue
                 prog_copy = programme.copy()
-                prog_copy["channel_id"] = channel_id
+                prog_copy["channel_id"] = mapped_channel["channel_id"]
                 prog_copy["epg_programme_id"] = programme["id"]
+                prog_copy["start_ts"] = shifted_start_ts
+                prog_copy["stop_ts"] = shifted_stop_ts
                 # Ensure each programme object sent to the frontend has a unique ID,
                 # as Vue uses it for list keys.
                 prog_copy["id"] = f"{programme['id']}-{i}"
