@@ -7,10 +7,11 @@ import logging
 import os
 import re
 import shutil
+import stat
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import aiofiles
 import aiohttp
@@ -374,17 +375,90 @@ def _resolve_user_agent(settings, user_agent):
     return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
 
 
+def _is_file_epg_source(url):
+    return str(url or "").strip().lower().startswith("file://")
+
+
+def _resolve_file_epg_command(url):
+    raw_value = str(url or "").strip()
+    if not _is_file_epg_source(raw_value):
+        raise ValueError("EPG source is not a file:// source")
+
+    command_path = unquote(raw_value[len("file://") :]).strip()
+    if not command_path:
+        raise ValueError("file:// EPG sources must include a script or executable path")
+
+    return os.path.expanduser(command_path)
+
+
+async def _write_process_stdout_to_file(stream, output):
+    async with aiofiles.open(output, "wb") as file_handle:
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                break
+            await file_handle.write(chunk)
+
+
+async def _run_file_epg_source(url, output):
+    command_path = _resolve_file_epg_command(url)
+    logger.info("Running EPG file source - '%s'", command_path)
+
+    if not os.path.exists(command_path):
+        raise FileNotFoundError(f"EPG file source does not exist: '{command_path}'")
+    if os.path.isdir(command_path):
+        raise IsADirectoryError(f"EPG file source must be a file, not a directory: '{command_path}'")
+
+    file_mode = os.stat(command_path).st_mode
+    if not stat.S_ISREG(file_mode):
+        raise ValueError(f"EPG file source must be a regular file: '{command_path}'")
+    if not os.access(command_path, os.X_OK):
+        raise PermissionError(f"EPG file source is not executable: '{command_path}'")
+
+    process = await asyncio.create_subprocess_exec(
+        command_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout_task = asyncio.create_task(_write_process_stdout_to_file(process.stdout, output))
+    stderr_task = asyncio.create_task(process.stderr.read())
+    await process.wait()
+    await stdout_task
+    stderr = await stderr_task
+
+    if process.returncode != 0:
+        stderr_text = (stderr or b"").decode("utf-8", errors="replace").strip()
+        if len(stderr_text) > 800:
+            stderr_text = f"{stderr_text[:800].rstrip()}..."
+        if os.path.exists(output):
+            try:
+                os.remove(output)
+            except OSError:
+                pass
+        raise RuntimeError(
+            f"EPG file source exited with status {process.returncode}" + (f": {stderr_text}" if stderr_text else "")
+        )
+
+    if os.path.getsize(output) == 0:
+        raise RuntimeError(f"EPG file source produced no output: '{command_path}'")
+
+
 async def download_xmltv_epg(settings, url, output, user_agent=None):
-    logger.info("Downloading EPG from url - '%s'", url)
     if not os.path.exists(os.path.dirname(output)):
         os.makedirs(os.path.dirname(output))
-    headers = {"User-Agent": _resolve_user_agent(settings, user_agent)}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            response.raise_for_status()
-            async with aiofiles.open(output, "wb") as f:
-                async for chunk in response.content.iter_chunked(8192):
-                    await f.write(chunk)
+
+    if _is_file_epg_source(url):
+        await _run_file_epg_source(url, output)
+    else:
+        logger.info("Downloading EPG from url - '%s'", url)
+        headers = {"User-Agent": _resolve_user_agent(settings, user_agent)}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                response.raise_for_status()
+                async with aiofiles.open(output, "wb") as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        await f.write(chunk)
     await try_unzip(output)
 
 
@@ -1024,15 +1098,15 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
 async def import_epg_data(config, epg_id):
     epg = await read_config_one_epg(epg_id, config=config)
     settings = config.read_settings()
-    # Download a new local copy of the EPG
-    logger.info("Downloading updated XMLTV file for EPG #%s from url - '%s'", epg_id, epg["url"])
+    # Fetch a new local cached copy of the EPG from either HTTP(S) or a local executable.
+    logger.info("Fetching updated XMLTV file for EPG #%s from source - '%s'", epg_id, epg["url"])
     attempt_ts = int(time.time())
     try:
         start_time = time.time()
         xmltv_file = os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml")
         await download_xmltv_epg(settings, epg["url"], xmltv_file, epg.get("user_agent"))
         execution_time = time.time() - start_time
-        logger.info("Updated XMLTV file for EPG #%s was downloaded in '%s' seconds", epg_id, int(execution_time))
+        logger.info("Updated XMLTV file for EPG #%s was cached in '%s' seconds", epg_id, int(execution_time))
         # Read and save EPG data to DB (offloaded to worker thread)
         logger.info("Importing updated data for EPG #%s", epg_id)
         start_time = time.perf_counter()

@@ -31,7 +31,7 @@
           <TicTextareaInput
             v-model="url"
             label="EPG URL"
-            description="XMLTV source URL (supports .xml and .xml.gz sources)."
+            description="XMLTV source URL or file:// script path. HTTP/HTTPS sources can be .xml or .xml.gz; file:// runs a local executable and imports its XMLTV stdout."
             :rows="3"
             :autogrow="true"
           />
@@ -45,7 +45,7 @@
             :map-options="true"
             :clearable="false"
             label="User Agent"
-            description="User-Agent header used when Headendarr fetches this source."
+            description="User-Agent header used when Headendarr fetches HTTP/HTTPS sources."
           />
 
           <TicSelectInput
