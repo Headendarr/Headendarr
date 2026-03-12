@@ -106,16 +106,15 @@ RUN set -eux; \
         bash \
         ca-certificates \
         curl \
+        ffmpeg \
         postgresql-17 \
         postgresql-contrib-17 \
+        procps \
         sqlite3 \
         tini \
-        tzdata \
-        procps \
-        ffmpeg; \
+        tzdata; \
     echo "**** conditional tvheadend dependency libraries (only if tvheadend missing) ****"; \
     if ! command -v tvheadend >/dev/null 2>&1; then \
-        # Pruned list to only widely available Debian trixie runtime libs; removed: x264, x265, xmltv, pngquant, python3 (already present), libssl3 (already in base), to prevent 'unable to locate package' failures. \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libavahi-client3 \
             libdbus-1-3 \

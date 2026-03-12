@@ -9,6 +9,7 @@ import base64
 from urllib.parse import parse_qsl, urlparse, urlunparse
 from backend.config import flask_run_port
 from backend.http_headers import sanitise_headers
+from backend.source_media import probe_stream_media_shape
 
 logger = logging.getLogger("tic.stream_diagnostics")
 
@@ -45,6 +46,7 @@ class StreamProbe:
             "proxy_chain": [],
             "dns": {},
             "geo": {},
+            "media": {},
             "probe": {"avg_speed": 0, "avg_bitrate": 0, "health": "unknown", "summary": ""},
             "errors": [],
             "logs": [],
@@ -429,6 +431,23 @@ class StreamProbe:
             self.log("Preflight succeeded using source-configured user-agent.")
         elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
             self.log("Preflight succeeded using fallback browser user-agent.")
+
+        media_shape = await probe_stream_media_shape(
+            self.url,
+            user_agent=user_agent,
+            request_headers=base_headers,
+            timeout_seconds=8.0,
+        )
+        if media_shape:
+            self.report["media"] = media_shape
+            self.log(
+                "Media shape detected: "
+                f"video={media_shape.get('video_codec') or 'n/a'} "
+                f"{int(media_shape.get('width') or 0)}x{int(media_shape.get('height') or 0)} "
+                f"{media_shape.get('avg_frame_rate') or 'n/a'} "
+                f"pix_fmt={media_shape.get('pixel_format') or 'n/a'} "
+                f"audio={media_shape.get('audio_codec') or 'n/a'}"
+            )
 
         cmd = [
             "ffmpeg",

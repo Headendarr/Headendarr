@@ -113,7 +113,7 @@ const config = {
               },
               {
                 html: `
-                  <a href="https://unmanic.app/discord" target="_blank" rel="noopener noreferrer" class="footer__link-item">
+                  <a href="https://streamingtech.co.nz/discord" target="_blank" rel="noopener noreferrer" class="footer__link-item">
                     <img src="https://cdn.simpleicons.org/discord/5865F2" alt="Discord" width="16" height="16" style="vertical-align: middle; margin-right: 8px;" />
                     Discord
                   </a>

@@ -296,6 +296,8 @@ class ChannelSource(Base):
     last_health_check_status = Column(String(32), nullable=True, unique=False)
     last_health_check_reason = Column(String(64), nullable=True, unique=False)
     last_health_check_metrics = Column(Text, nullable=True, unique=False)
+    stream_probe_at = Column(DateTime, nullable=True, unique=False)
+    stream_probe_details = Column(Text, nullable=True, unique=False)
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 

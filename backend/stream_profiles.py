@@ -94,7 +94,7 @@ SUPPORTED_STREAM_PROFILES = {
     },
     "aac-hls": {
         "label": "aac-hls",
-        "description": "Transcode audio to AAC in HLS (MPEG-TS segments).",
+        "description": "Transcode audio to AAC in HLS (copy video).",
         "output_mode": "force_transcode",
         "container": "hls",
         "video_codec": "",
@@ -124,6 +124,17 @@ SUPPORTED_STREAM_PROFILES = {
         "subtitle_mode": "copy",
         "transcode": True,
         "tvh_profile_name": "webtv-h264-aac-matroska",
+    },
+    "h264-aac-hls": {
+        "label": "h264-aac-hls",
+        "description": "Transcode to H.264/AAC in HLS.",
+        "output_mode": "force_transcode",
+        "container": "hls",
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "pass",
     },
     "h264-aac-mp4": {
         "label": "h264-aac-mp4",

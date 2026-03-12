@@ -30,6 +30,17 @@ def convert_to_bool(value, default=False):
     return is_truthy(value)
 
 
+def clean_text(value):
+    return str(value or "").strip()
+
+
+def clean_key(value, fallback=""):
+    cleaned = clean_text(value).lower()
+    if cleaned:
+        return cleaned
+    return clean_text(fallback).lower()
+
+
 def fast_url_hash(value):
     if value is None:
         return None

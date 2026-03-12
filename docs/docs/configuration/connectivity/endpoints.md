@@ -107,6 +107,7 @@ Configurable profiles (Application Settings -> Connections):
 - `vp8-vorbis-webm`
 - `hls`
 - `aac-hls`
+- `h264-aac-hls`
 - `h265-aac-mp4`
 - `h265-aac-matroska`
 - `h265-ac3-mp4`

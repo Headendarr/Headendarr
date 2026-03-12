@@ -401,9 +401,17 @@ enable_sqlalchemy_debugging = False
 if _env_bool("ENABLE_SQLALCHEMY_DEBUGGING", False):
     enable_sqlalchemy_debugging = True
 
-enable_cso_command_debug_logging = False
-if _env_bool("ENABLE_CSO_COMMAND_DEBUG_LOGGING", False):
-    enable_cso_command_debug_logging = True
+enable_cso_output_command_debug_logging = False
+if _env_bool("ENABLE_CSO_OUTPUT_COMMAND_DEBUG_LOGGING", False):
+    enable_cso_output_command_debug_logging = True
+
+enable_cso_ingest_command_debug_logging = False
+if _env_bool("ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING", False):
+    enable_cso_ingest_command_debug_logging = True
+
+enable_cso_slate_command_debug_logging = False
+if _env_bool("ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING", False):
+    enable_cso_slate_command_debug_logging = True
 
 flask_run_host = _env_str("FLASK_RUN_HOST", "0.0.0.0")
 flask_run_port = _env_int("FLASK_RUN_PORT", 9985)

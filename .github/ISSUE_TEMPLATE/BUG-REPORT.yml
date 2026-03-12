@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **THIS IS NOT THE PLACE TO ASK FOR SUPPORT!** Please use [Discord](https://unmanic.app/discord) for support issues.
+        **THIS IS NOT THE PLACE TO ASK FOR SUPPORT!** Please use [Discord](https://streamingtech.co.nz/discord) for support issues.
 
         ---
         Before opening a bug report, please test against the current `staging` image first.

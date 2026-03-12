@@ -27,7 +27,7 @@ invalid:support:
   comment: >
     :wave: @{issue-author}, we use the issue tracker exclusively for bug reports.
     However, this issue appears to be a support request. Please use our
-    [Discord Server](https://unmanic.app/discord) to get help. Thanks.
+    [Discord Server](https://streamingtech.co.nz/discord) to get help. Thanks.
   close: true
   lock: true
   lock-reason: 'off-topic'

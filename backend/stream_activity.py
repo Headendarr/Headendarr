@@ -72,6 +72,7 @@ class StreamActivityTracker:
         self.sessions = {}  # connection_id -> session_dict
         self.history = {}  # connection_id -> { 'last_seen': float, 'entry': dict }
         self.playlist_parents = {}  # child_url -> parent_url (short-lived)
+        self.pending_enrichments = set()  # connection_id values currently resolving metadata
         self.lock = asyncio.Lock()
         self.activity_ttl = activity_ttl
         self.history_ttl = history_ttl
@@ -136,6 +137,97 @@ class StreamActivityTracker:
         path = urlparse(normalized).path.lower()
         return path.endswith((".ts", ".vtt", ".key"))
 
+    @staticmethod
+    def _merge_client_hints(existing_hints, new_hints):
+        if not new_hints:
+            return existing_hints
+        if isinstance(existing_hints, dict):
+            merged_hints = dict(existing_hints)
+            merged_hints.update(new_hints)
+            return merged_hints
+        return dict(new_hints)
+
+    @staticmethod
+    def _apply_sticky_metadata(
+        session,
+        *,
+        channel_id=None,
+        channel_name=None,
+        channel_logo_url=None,
+        stream_name=None,
+        source_url=None,
+        display_url=None,
+        source_id=None,
+        playlist_id=None,
+        xc_account_id=None,
+    ):
+        if channel_id and not session.get("channel_id"):
+            session["channel_id"] = channel_id
+        if channel_name and not session.get("channel_name"):
+            session["channel_name"] = channel_name
+        if channel_logo_url and not session.get("channel_logo_url"):
+            session["channel_logo_url"] = channel_logo_url
+        if stream_name and not session.get("stream_name"):
+            session["stream_name"] = stream_name
+        if source_url and not session.get("source_url"):
+            session["source_url"] = source_url
+        if display_url and not session.get("display_url"):
+            session["display_url"] = display_url
+        if source_id and not session.get("source_id"):
+            session["source_id"] = source_id
+        if playlist_id and not session.get("playlist_id"):
+            session["playlist_id"] = playlist_id
+        if xc_account_id and not session.get("xc_account_id"):
+            session["xc_account_id"] = xc_account_id
+
+    async def _resolve_metadata(
+        self,
+        canonical_identity,
+        normalized_identity,
+        *,
+        existing_channel_name=None,
+        channel_id=None,
+        channel_name=None,
+        channel_logo_url=None,
+        stream_name=None,
+        source_url=None,
+        display_url=None,
+        source_id=None,
+        playlist_id=None,
+        xc_account_id=None,
+    ):
+        resolved_stream_name = stream_name
+        resolved_source_url = source_url
+        resolved_display_url = display_url
+        resolved_source_id = source_id
+        resolved_playlist_id = playlist_id
+        resolved_xc_account_id = xc_account_id
+        if not channel_name and not existing_channel_name:
+            from backend.channels import build_stream_source_index, resolve_stream_target
+
+            source_index = await build_stream_source_index()
+            resolved = resolve_stream_target(canonical_identity, source_index, related_urls=[normalized_identity])
+            channel_id = channel_id or resolved.get("channel_id")
+            channel_name = channel_name or resolved.get("channel_name")
+            channel_logo_url = channel_logo_url or resolved.get("channel_logo_url")
+            resolved_source_id = resolved_source_id or resolved.get("source_id")
+            resolved_playlist_id = resolved_playlist_id or resolved.get("playlist_id")
+            resolved_xc_account_id = resolved_xc_account_id or resolved.get("xc_account_id")
+            resolved_stream_name = resolved_stream_name or resolved.get("stream_name")
+            resolved_source_url = resolved_source_url or resolved.get("source_url")
+            resolved_display_url = resolved_display_url or resolved.get("display_url")
+        return {
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "channel_logo_url": channel_logo_url,
+            "stream_name": resolved_stream_name,
+            "source_url": resolved_source_url,
+            "display_url": resolved_display_url,
+            "source_id": resolved_source_id,
+            "playlist_id": resolved_playlist_id,
+            "xc_account_id": resolved_xc_account_id,
+        }
+
     async def mark(
         self,
         identity,
@@ -157,6 +249,7 @@ class StreamActivityTracker:
         playlist_id=None,
         xc_account_id=None,
         client_hints=None,
+        enrich_metadata=True,
     ):
         if not user:
             user = self._request_user()
@@ -181,7 +274,7 @@ class StreamActivityTracker:
         if not connection_id:
             connection_id = uuid.uuid4().hex
 
-        from backend.channels import build_stream_source_index, normalize_url, resolve_stream_target
+        from backend.channels import normalize_url
 
         normalized_identity = normalize_url(identity)
         # Resolve authoritative identity (playlist > segment)
@@ -196,26 +289,32 @@ class StreamActivityTracker:
             if existing:
                 existing_channel_name = existing.get("channel_name")
 
-        # Try to resolve metadata if not provided and not already known
-        resolved_stream_name = stream_name
-        resolved_source_url = source_url
-        resolved_display_url = display_url
-        resolved_source_id = source_id
-        resolved_playlist_id = playlist_id
-        resolved_xc_account_id = xc_account_id
-        if not channel_name and not existing_channel_name:
-            source_index = await build_stream_source_index()
-            # Try resolution with both canonical and raw identity
-            resolved = resolve_stream_target(canonical_identity, source_index, related_urls=[normalized_identity])
-            channel_id = channel_id or resolved.get("channel_id")
-            channel_name = channel_name or resolved.get("channel_name")
-            channel_logo_url = channel_logo_url or resolved.get("channel_logo_url")
-            resolved_source_id = resolved_source_id or resolved.get("source_id")
-            resolved_playlist_id = resolved_playlist_id or resolved.get("playlist_id")
-            resolved_xc_account_id = resolved_xc_account_id or resolved.get("xc_account_id")
-            resolved_stream_name = resolved_stream_name or resolved.get("stream_name")
-            resolved_source_url = resolved_source_url or resolved.get("source_url")
-            resolved_display_url = resolved_display_url or resolved.get("display_url")
+        resolved_metadata = {
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "channel_logo_url": channel_logo_url,
+            "stream_name": stream_name,
+            "source_url": source_url,
+            "display_url": display_url,
+            "source_id": source_id,
+            "playlist_id": playlist_id,
+            "xc_account_id": xc_account_id,
+        }
+        if enrich_metadata:
+            resolved_metadata = await self._resolve_metadata(
+                canonical_identity,
+                normalized_identity,
+                existing_channel_name=existing_channel_name,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                channel_logo_url=channel_logo_url,
+                stream_name=stream_name,
+                source_url=source_url,
+                display_url=display_url,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                xc_account_id=xc_account_id,
+            )
 
         async with self.lock:
             # 1. Update existing active session
@@ -225,13 +324,7 @@ class StreamActivityTracker:
                 session["ip_address"] = ip_address
                 session["user_agent"] = user_agent
                 if client_hints:
-                    existing_hints = session.get("client_hints") or {}
-                    if isinstance(existing_hints, dict):
-                        merged_hints = dict(existing_hints)
-                        merged_hints.update(client_hints)
-                        session["client_hints"] = merged_hints
-                    else:
-                        session["client_hints"] = dict(client_hints)
+                    session["client_hints"] = self._merge_client_hints(session.get("client_hints"), client_hints)
                 if details_override:
                     session["details"] = details_override
 
@@ -248,25 +341,7 @@ class StreamActivityTracker:
                     if normalized_identity not in rel:
                         rel.append(normalized_identity)
 
-                # Enrichment (sticky)
-                if channel_id and not session.get("channel_id"):
-                    session["channel_id"] = channel_id
-                if channel_name and not session.get("channel_name"):
-                    session["channel_name"] = channel_name
-                if channel_logo_url and not session.get("channel_logo_url"):
-                    session["channel_logo_url"] = channel_logo_url
-                if resolved_stream_name and not session.get("stream_name"):
-                    session["stream_name"] = resolved_stream_name
-                if resolved_source_url and not session.get("source_url"):
-                    session["source_url"] = resolved_source_url
-                if resolved_display_url and not session.get("display_url"):
-                    session["display_url"] = resolved_display_url
-                if resolved_source_id and not session.get("source_id"):
-                    session["source_id"] = resolved_source_id
-                if resolved_playlist_id and not session.get("playlist_id"):
-                    session["playlist_id"] = resolved_playlist_id
-                if resolved_xc_account_id and not session.get("xc_account_id"):
-                    session["xc_account_id"] = resolved_xc_account_id
+                self._apply_sticky_metadata(session, **resolved_metadata)
                 return "touched"
 
             # 2. Rehydrate from history
@@ -277,35 +352,11 @@ class StreamActivityTracker:
                 session["ip_address"] = ip_address
                 session["user_agent"] = user_agent
                 if client_hints:
-                    existing_hints = session.get("client_hints") or {}
-                    if isinstance(existing_hints, dict):
-                        merged_hints = dict(existing_hints)
-                        merged_hints.update(client_hints)
-                        session["client_hints"] = merged_hints
-                    else:
-                        session["client_hints"] = dict(client_hints)
+                    session["client_hints"] = self._merge_client_hints(session.get("client_hints"), client_hints)
                 if details_override:
                     session["details"] = details_override
 
-                # Enrichment (sticky)
-                if channel_id and not session.get("channel_id"):
-                    session["channel_id"] = channel_id
-                if channel_name and not session.get("channel_name"):
-                    session["channel_name"] = channel_name
-                if channel_logo_url and not session.get("channel_logo_url"):
-                    session["channel_logo_url"] = channel_logo_url
-                if resolved_stream_name and not session.get("stream_name"):
-                    session["stream_name"] = resolved_stream_name
-                if resolved_source_url and not session.get("source_url"):
-                    session["source_url"] = resolved_source_url
-                if resolved_display_url and not session.get("display_url"):
-                    session["display_url"] = resolved_display_url
-                if resolved_source_id and not session.get("source_id"):
-                    session["source_id"] = resolved_source_id
-                if resolved_playlist_id and not session.get("playlist_id"):
-                    session["playlist_id"] = resolved_playlist_id
-                if resolved_xc_account_id and not session.get("xc_account_id"):
-                    session["xc_account_id"] = resolved_xc_account_id
+                self._apply_sticky_metadata(session, **resolved_metadata)
 
                 if canonical_identity and (not session.get("identity") or self._is_segment(session.get("identity"))):
                     if not self._is_segment(canonical_identity):
@@ -348,15 +399,15 @@ class StreamActivityTracker:
                 "user_agent": user_agent,
                 "client_hints": dict(client_hints) if isinstance(client_hints, dict) else None,
                 "related_identities": [normalized_identity] if normalized_identity else [],
-                "channel_id": channel_id,
-                "channel_name": channel_name,
-                "channel_logo_url": channel_logo_url,
-                "stream_name": resolved_stream_name,
-                "source_url": resolved_source_url,
-                "display_url": resolved_display_url,
-                "source_id": resolved_source_id,
-                "playlist_id": resolved_playlist_id,
-                "xc_account_id": resolved_xc_account_id,
+                "channel_id": resolved_metadata.get("channel_id"),
+                "channel_name": resolved_metadata.get("channel_name"),
+                "channel_logo_url": resolved_metadata.get("channel_logo_url"),
+                "stream_name": resolved_metadata.get("stream_name"),
+                "source_url": resolved_metadata.get("source_url"),
+                "display_url": resolved_metadata.get("display_url"),
+                "source_id": resolved_metadata.get("source_id"),
+                "playlist_id": resolved_metadata.get("playlist_id"),
+                "xc_account_id": resolved_metadata.get("xc_account_id"),
             }
             self.sessions[connection_id] = session
 
@@ -369,6 +420,62 @@ class StreamActivityTracker:
                     details=session["details"],
                 )
             return "started"
+
+    async def enrich_session_metadata(
+        self,
+        identity,
+        connection_id,
+        channel_id=None,
+        channel_name=None,
+        channel_logo_url=None,
+        stream_name=None,
+        source_url=None,
+        display_url=None,
+        source_id=None,
+        playlist_id=None,
+        xc_account_id=None,
+    ):
+        if not connection_id:
+            return False
+
+        from backend.channels import normalize_url
+
+        normalized_identity = normalize_url(identity)
+        canonical_identity = self._resolve_playlist_root(normalized_identity)
+        async with self.lock:
+            if connection_id in self.pending_enrichments:
+                return False
+            session = self.sessions.get(connection_id) or self.history.get(connection_id, {}).get("entry")
+            if not session:
+                return False
+            if session.get("channel_name"):
+                return False
+            self.pending_enrichments.add(connection_id)
+
+        try:
+            resolved_metadata = await self._resolve_metadata(
+                canonical_identity,
+                normalized_identity,
+                existing_channel_name=None,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                channel_logo_url=channel_logo_url,
+                stream_name=stream_name,
+                source_url=source_url,
+                display_url=display_url,
+                source_id=source_id,
+                playlist_id=playlist_id,
+                xc_account_id=xc_account_id,
+            )
+            async with self.lock:
+                session = self.sessions.get(connection_id) or self.history.get(connection_id, {}).get("entry")
+                if not session:
+                    return False
+                self._apply_sticky_metadata(session, **resolved_metadata)
+            return True
+        finally:
+            async with self.lock:
+                self.pending_enrichments.discard(connection_id)
 
     async def touch(self, connection_id, identity=None, ip_address=None, user_agent=None):
         if not connection_id:
@@ -616,6 +723,7 @@ async def upsert_stream_activity(
     playlist_id=None,
     xc_account_id=None,
     client_hints=None,
+    enrich_metadata=True,
 ):
     return await _stream_activity_tracker.mark(
         identity,
@@ -637,6 +745,35 @@ async def upsert_stream_activity(
         playlist_id=playlist_id,
         xc_account_id=xc_account_id,
         client_hints=client_hints,
+        enrich_metadata=enrich_metadata,
+    )
+
+
+async def enrich_stream_activity_metadata(
+    identity: str,
+    connection_id: str | None,
+    channel_id=None,
+    channel_name=None,
+    channel_logo_url=None,
+    stream_name=None,
+    source_url=None,
+    display_url=None,
+    source_id=None,
+    playlist_id=None,
+    xc_account_id=None,
+):
+    return await _stream_activity_tracker.enrich_session_metadata(
+        identity,
+        connection_id,
+        channel_id=channel_id,
+        channel_name=channel_name,
+        channel_logo_url=channel_logo_url,
+        stream_name=stream_name,
+        source_url=source_url,
+        display_url=display_url,
+        source_id=source_id,
+        playlist_id=playlist_id,
+        xc_account_id=xc_account_id,
     )
 
 

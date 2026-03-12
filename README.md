@@ -38,7 +38,7 @@ This project is actively maintained and open to issues, feature requests, and pu
 
 Please use the issue template or PR template when contributing so reports and changes are easier to review and action.
 
-You can also join the community on [Discord](https://support-api.streamingtech.co.nz/discord).
+You can also join the community on [Discord](https://streamingtech.co.nz/discord).
 
 ### Table Of Contents
 

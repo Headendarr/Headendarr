@@ -125,44 +125,108 @@ def _same_stream_url(left: str, right: str) -> bool:
     return str(left or "").strip() == str(right or "").strip()
 
 
-async def _set_tvh_mux_scan_pending(config, source_id: int, channel_id: int, mux_uuid: str, status: str, reason: str):
+async def apply_tvh_mux_health_state_task(
+    config,
+    source_id: int,
+    channel_id: int,
+    mux_uuid: str,
+    status: str,
+    reason: str,
+    enabled: bool,
+    request_rescan: bool = True,
+):
     mux_uuid_text = str(mux_uuid or "").strip()
     if not mux_uuid_text:
         logger.info(
-            "Skipping TVH mux rescan update for periodic health transition source_id=%s channel_id=%s reason=%s "
-            "status=%s (missing tvh_uuid)",
+            "Skipping TVH mux health update for periodic health transition source_id=%s channel_id=%s "
+            "reason=%s status=%s enabled=%s (missing tvh_uuid)",
             source_id,
             channel_id,
             reason,
             status,
+            enabled,
         )
         return False
 
+    node = {"uuid": mux_uuid_text, "enabled": bool(enabled)}
+    if request_rescan:
+        node["scan_state"] = 1
+
     try:
         async with await get_tvh(config) as tvh:
-            await tvh.idnode_save({"uuid": mux_uuid_text, "scan_state": 1})
+            await tvh.idnode_save(node)
         logger.info(
-            "Requested TVH mux rescan (scan_state=PEND) for periodic health transition source_id=%s channel_id=%s "
-            "mux_uuid=%s reason=%s status=%s",
+            "Applied TVH mux health state for periodic health transition source_id=%s channel_id=%s mux_uuid=%s "
+            "reason=%s status=%s enabled=%s request_rescan=%s",
             source_id,
             channel_id,
             mux_uuid_text,
             reason,
             status,
+            enabled,
+            request_rescan,
         )
         return True
     except Exception as ex:
         logger.warning(
-            "Failed to request TVH mux rescan for periodic health transition source_id=%s channel_id=%s mux_uuid=%s "
-            "reason=%s status=%s error=%s",
+            "Failed to apply TVH mux health state for periodic health transition source_id=%s channel_id=%s "
+            "mux_uuid=%s reason=%s status=%s enabled=%s request_rescan=%s error=%s",
             source_id,
             channel_id,
             mux_uuid_text,
             reason,
             status,
+            enabled,
+            request_rescan,
             ex,
         )
         return False
+
+
+async def queue_tvh_mux_health_state_update(
+    config,
+    source_id: int,
+    channel_id: int,
+    mux_uuid: str,
+    status: str,
+    reason: str,
+    enabled: bool,
+    request_rescan: bool = True,
+):
+    from backend.api.tasks import TaskQueueBroker
+
+    mux_uuid_text = str(mux_uuid or "").strip()
+    if not mux_uuid_text:
+        logger.info(
+            "Skipping queued TVH mux health update for source_id=%s channel_id=%s reason=%s status=%s enabled=%s "
+            "(missing tvh_uuid)",
+            source_id,
+            channel_id,
+            reason,
+            status,
+            enabled,
+        )
+        return False
+
+    task_broker = await TaskQueueBroker.get_instance()
+    await task_broker.add_task(
+        {
+            "name": f"Update TVH mux health - source:{int(source_id)} enabled:{int(bool(enabled))}",
+            "function": apply_tvh_mux_health_state_task,
+            "args": [config, source_id, channel_id, mux_uuid_text, status, reason, enabled, request_rescan],
+        },
+        priority=18,
+    )
+    logger.info(
+        "Queued TVH mux health update for source_id=%s channel_id=%s mux_uuid=%s status=%s enabled=%s request_rescan=%s",
+        source_id,
+        channel_id,
+        mux_uuid_text,
+        status,
+        enabled,
+        request_rescan,
+    )
+    return True
 
 
 async def apply_stream_probe_result_to_source(
@@ -208,6 +272,7 @@ async def apply_stream_probe_result_to_source(
         "avg_speed": avg_speed,
         "avg_bitrate": avg_bitrate,
         "probe_health": str((probe.report or {}).get("probe", {}).get("health") or ""),
+        "media": (probe.report or {}).get("media") or {},
         "errors": errors[:5],
         "health_check_type": str(health_check_type or "manual"),
     }
@@ -224,6 +289,10 @@ async def apply_stream_probe_result_to_source(
                 current.last_health_check_status = status
                 current.last_health_check_reason = reason
                 current.last_health_check_metrics = json.dumps(metrics_payload, sort_keys=True)
+                media_shape = metrics_payload.get("media") or {}
+                if media_shape:
+                    current.stream_probe_at = now_dt
+                    current.stream_probe_details = json.dumps(media_shape, sort_keys=True)
 
     playlist = getattr(source, "playlist", None)
     event_details = {
@@ -243,7 +312,16 @@ async def apply_stream_probe_result_to_source(
     if is_periodic_background:
         if status == "unhealthy" and previous_status != "unhealthy":
             if config is not None:
-                await _set_tvh_mux_scan_pending(config, source_id, channel_id, source_tvh_uuid, status, reason)
+                await queue_tvh_mux_health_state_update(
+                    config,
+                    source_id,
+                    channel_id,
+                    source_tvh_uuid,
+                    status,
+                    reason,
+                    enabled=False,
+                    request_rescan=True,
+                )
             await emit_channel_stream_event(
                 channel_id=channel_id,
                 source_id=source_id,
@@ -255,7 +333,16 @@ async def apply_stream_probe_result_to_source(
             )
         elif status == "healthy" and previous_status == "unhealthy":
             if config is not None:
-                await _set_tvh_mux_scan_pending(config, source_id, channel_id, source_tvh_uuid, status, reason)
+                await queue_tvh_mux_health_state_update(
+                    config,
+                    source_id,
+                    channel_id,
+                    source_tvh_uuid,
+                    status,
+                    reason,
+                    enabled=True,
+                    request_rescan=True,
+                )
             await emit_channel_stream_event(
                 channel_id=channel_id,
                 source_id=source_id,
