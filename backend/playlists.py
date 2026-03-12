@@ -883,7 +883,11 @@ async def store_playlist_streams(config, playlist_id):
             )
             items = []
             for stream in pl:
-                tvg_channel_number = stream.attributes.get("tvg-chno")
+                tvg_chno = stream.attributes.get("tvg-chno")
+                try:
+                    tvg_channel_number = int(tvg_chno) if tvg_chno is not None else None
+                except (TypeError, ValueError):
+                    tvg_channel_number = None
                 items.append(
                     {
                         "playlist_id": playlist_id,
@@ -892,7 +896,7 @@ async def store_playlist_streams(config, playlist_id):
                         "url_hash": fast_url_hash(stream.url),
                         "channel_id": stream.attributes.get("channel-id"),
                         "group_title": stream.attributes.get("group-title"),
-                        "tvg_chno": int(tvg_channel_number) if tvg_channel_number is not None else None,
+                        "tvg_chno": tvg_channel_number,
                         "tvg_id": stream.attributes.get("tvg-id"),
                         "tvg_logo": stream.attributes.get("tvg-logo"),
                         "source_type": M3U_ACCOUNT_TYPE,
