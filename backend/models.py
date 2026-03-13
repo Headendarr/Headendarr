@@ -483,10 +483,10 @@ class CsoEventLog(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True, index=True)
+    channel_id = Column(Integer, ForeignKey("channels.id", ondelete="SET NULL"), nullable=True, index=True)
     source_id = Column(Integer, ForeignKey("channel_sources.id", ondelete="SET NULL"), nullable=True, index=True)
     playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
-    recording_id = Column(Integer, ForeignKey("recordings.id"), nullable=True, index=True)
+    recording_id = Column(Integer, ForeignKey("recordings.id", ondelete="SET NULL"), nullable=True, index=True)
     tvh_subscription_id = Column(String(128), nullable=True, index=True)
     session_id = Column(String(128), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)

@@ -26,6 +26,7 @@ from backend.models import (
     ChannelSource,
     ChannelSuggestion,
     ChannelTag,
+    CsoEventLog,
     Epg,
     EpgChannelProgrammes,
     EpgChannels,
@@ -2032,6 +2033,16 @@ async def delete_channel(channel_id):
             if channel is None:
                 logger.warning("delete_channel: channel id %s not found", channel_id)
                 return False
+
+            # Keep CSO event history but detach it from records that are about to be deleted.
+            await session.execute(
+                update(CsoEventLog)
+                .where(CsoEventLog.recording_id.in_(select(Recording.id).where(Recording.channel_id == channel.id)))
+                .values(recording_id=None)
+            )
+            await session.execute(
+                update(CsoEventLog).where(CsoEventLog.channel_id == channel.id).values(channel_id=None)
+            )
 
             # Delete recordings and rules tied to this channel to avoid FK violations
             await session.execute(delete(Recording).where(Recording.channel_id == channel.id))
