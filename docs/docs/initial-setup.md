@@ -77,6 +77,20 @@ After creating channels, you can click on any of them to **edit** and refine mis
 
 - Select multiple channels to perform bulk actions, such as adding/removing tags, deleting channels, or **refreshing the stream URLs**. This is useful if your provider has changed the stream links in their master playlist.
 
+:::tip Pause the background task queue while doing batch changes
+In the left sidebar, next to **Upcoming background tasks**, there is a pause/play icon for the background task queue.
+
+This is useful when you are making lots of changes in a row, such as:
+
+- initial TVHeadend or Plex setup
+- importing and reorganising channels
+- adjusting mappings and stream order
+
+Pausing the queue prevents each individual change from immediately triggering follow-up background work such as downloading EPG or Playlist sources, TVHeadend sync or Plex reconciliation. You can make all of your changes first, then resume the queue when you are ready for everything to be applied.
+
+Be careful during initial setup: if the queue is paused, manual **Update** actions for Sources and EPGs will also stay queued. That means playlist and guide data will not be imported into the database until the queue is resumed, so there will be nothing available yet for channel import, EPG matching, or guide-based configuration.
+:::
+
 ## 6. Sync and Watch
 
 Once your channels are configured, automatic background tasks will sync your config with the TVHeadend backend. This pushes all your configuration to the TVHeadend backend.
