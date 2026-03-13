@@ -83,7 +83,7 @@
         <div class="row q-col-gutter-md">
           <!-- Geo Info -->
           <div class="col-12 col-md-6">
-            <q-card flat bordered class="h-100">
+            <q-card flat bordered class="h-100 diagnostic-card">
               <q-card-section>
                 <div class="text-subtitle2">Network Route</div>
               </q-card-section>
@@ -144,7 +144,7 @@
 
           <!-- Performance Info -->
           <div class="col-12 col-md-6">
-            <q-card flat bordered class="h-100">
+            <q-card flat bordered class="h-100 diagnostic-card">
               <q-card-section>
                 <div class="text-subtitle2">Stream Performance</div>
               </q-card-section>
@@ -177,7 +177,11 @@
                 </q-item>
               </q-list>
               <q-separator v-if="report.probe?.summary" />
-              <q-card-section v-if="report.probe?.summary" :class="healthBgClass(report.probe?.health)" class="q-py-sm">
+              <q-card-section
+                v-if="report.probe?.summary"
+                :class="healthBgClass(report.probe?.health)"
+                class="q-py-sm diagnostic-health"
+              >
                 <div class="row no-wrap items-center">
                   <q-icon :name="healthIcon(report.probe?.health)" :color="healthColor(report.probe?.health)"
                           size="20px" class="q-mr-sm" />
@@ -194,7 +198,7 @@
         <!-- Logs -->
         <div class="q-mt-md">
           <div class="text-subtitle2 q-mb-sm">Detailed Logs</div>
-          <div class="bg-grey-2 q-pa-sm rounded-borders scroll"
+          <div class="diagnostic-logs q-pa-sm rounded-borders scroll"
                style="max-height: 200px; font-family: monospace; font-size: 12px;">
             <div v-for="(log, i) in report.logs" :key="i">{{ log }}</div>
             <div v-for="(err, i) in report.errors" :key="'err-'+i" class="text-negative">{{ err }}</div>
@@ -202,7 +206,7 @@
         </div>
       </div>
 
-      <div v-else class="text-center q-pa-lg">
+      <div v-else class="text-center q-pa-lg diagnostic-empty-state">
         <q-icon name="speed" size="64px" color="grey-5" />
         <div class="q-mt-md">Click 'Start Test' to analyze this stream.</div>
       </div>
@@ -403,13 +407,13 @@ export default {
     },
     healthBgClass(health) {
       const classes = {
-        good: 'bg-green-1',
-        fair: 'bg-orange-1',
-        poor: 'bg-red-1',
-        critical: 'bg-red-1',
-        uncertain: 'bg-blue-1',
+        good: 'diagnostic-health--good',
+        fair: 'diagnostic-health--fair',
+        poor: 'diagnostic-health--poor',
+        critical: 'diagnostic-health--critical',
+        uncertain: 'diagnostic-health--uncertain',
       };
-      return classes[health] || 'bg-grey-1';
+      return classes[health] || 'diagnostic-health--default';
     },
     healthIcon(health) {
       const icons = {
@@ -452,5 +456,62 @@ export default {
 
 .h-100 {
   height: 100%;
+}
+
+.diagnostic-card {
+  background: var(--app-surface-bg);
+  border: var(--tic-elevated-border);
+}
+
+.diagnostic-health {
+  border-top: 1px solid var(--q-separator-color, rgba(0, 0, 0, 0.12));
+}
+
+.diagnostic-health--good {
+  background: color-mix(in srgb, var(--q-positive), var(--app-surface-bg) 88%);
+}
+
+.diagnostic-health--fair {
+  background: color-mix(in srgb, var(--q-warning), var(--app-surface-bg) 88%);
+}
+
+.diagnostic-health--poor,
+.diagnostic-health--critical {
+  background: color-mix(in srgb, var(--q-negative), var(--app-surface-bg) 90%);
+}
+
+.diagnostic-health--uncertain {
+  background: color-mix(in srgb, var(--q-info), var(--app-surface-bg) 88%);
+}
+
+.diagnostic-health--default {
+  background: color-mix(in srgb, var(--q-grey-6, #9e9e9e), var(--app-surface-bg) 90%);
+}
+
+:global(body.body--dark) .diagnostic-health--good {
+  background: color-mix(in srgb, var(--q-positive), var(--app-surface-bg) 76%);
+}
+
+:global(body.body--dark) .diagnostic-health--fair {
+  background: color-mix(in srgb, var(--q-warning), var(--app-surface-bg) 78%);
+}
+
+:global(body.body--dark) .diagnostic-health--poor,
+:global(body.body--dark) .diagnostic-health--critical {
+  background: color-mix(in srgb, var(--q-negative), var(--app-surface-bg) 80%);
+}
+
+:global(body.body--dark) .diagnostic-health--uncertain {
+  background: color-mix(in srgb, var(--q-info), var(--app-surface-bg) 78%);
+}
+
+:global(body.body--dark) .diagnostic-health--default {
+  background: color-mix(in srgb, var(--q-grey-6, #9e9e9e), var(--app-surface-bg) 82%);
+}
+
+.diagnostic-logs,
+.diagnostic-empty-state {
+  background: color-mix(in srgb, var(--app-surface-bg), var(--q-primary) 4%);
+  border: 1px solid var(--q-separator-color, rgba(0, 0, 0, 0.12));
 }
 </style>
