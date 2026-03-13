@@ -143,10 +143,7 @@ async def _fetch_cso_attention_map(channel_ids):
                 channel_state["latest_connection_recovery_at"] = created_at
             continue
 
-        if event_type in {
-            "playback_unavailable",
-            "capacity_blocked",
-        }:
+        if event_type == "playback_unavailable":
             current = channel_state.get("connection_issue")
             if current is None or created_at > current.get("_created_at"):
                 channel_state["connection_issue"] = payload
