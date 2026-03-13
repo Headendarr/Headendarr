@@ -1909,8 +1909,8 @@ class CsoIngestSession:
                 variants = await _discover_hls_variants(candidate_url)
                 variant_position = None
                 ingest_url = candidate_url
-                ingest_program_index = int(remembered_program_index or 0)
-                if variants:
+                url_path = urlparse(candidate_url).path.lower()
+                if (url_path.endswith(".m3u8") or url_path.endswith(".m3u")) and variants:
                     if remembered_program_index is not None:
                         for idx, item in enumerate(variants):
                             if int(item.get("program_index") or 0) == int(remembered_program_index):
@@ -1921,7 +1921,16 @@ class CsoIngestSession:
                     selected_variant = variants[variant_position]
                     program_index = int(selected_variant.get("program_index") or 0)
                     ingest_url = (selected_variant.get("variant_url") or "").strip() or candidate_url
-                    ingest_program_index = int(selected_variant.get("ffmpeg_program_index") or 0)
+                    logger.info(
+                        "CSO HLS ingest selected variant channel=%s source_id=%s "
+                        "program_index=%s variant_position=%s variant_count=%s ingest_url=%s",
+                        self.channel_id,
+                        source_id,
+                        program_index,
+                        variant_position,
+                        len(variants),
+                        ingest_url,
+                    )
                 else:
                     program_index = int(remembered_program_index or 0)
                     if remembered_program_index is not None:
@@ -1933,7 +1942,7 @@ class CsoIngestSession:
                             program_index,
                         )
                 try:
-                    process = await self._spawn_ingest_process(ingest_url, ingest_program_index, source=source)
+                    process = await self._spawn_ingest_process(ingest_url, program_index, source=source)
                     resolved_url = ingest_url
                     break
                 except Exception as exc:
@@ -4247,9 +4256,10 @@ async def _discover_hls_variants(url):
                 if response.status >= 400:
                     return []
                 payload = await response.text()
+                resolved_url = str(response.url or url)
     except Exception:
         return []
-    return _parse_hls_playlist_variants(url, payload)
+    return _parse_hls_playlist_variants(resolved_url, payload)
 
 
 def _parse_hls_playlist_variants(base_url, payload):
