@@ -2,7 +2,6 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -62,13 +61,21 @@ CSO_SPEED_STALE_SECONDS_DEFAULT = 6
 CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS = 2
 CSO_INGEST_RW_TIMEOUT_US = 15_000_000
 CSO_INGEST_TIMEOUT_US = 10_000_000
-CSO_OUTPUT_CLIENT_STALE_SECONDS = 8.0
+CSO_OUTPUT_CLIENT_STALE_SECONDS = 15.0
 CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH = 20.0
 CSO_HLS_SEGMENT_SECONDS = 3
 CSO_HLS_LIST_SIZE = 5
 CSO_HLS_CLIENT_IDLE_SECONDS = max(10, int(CSO_HLS_SEGMENT_SECONDS) * 3)
 CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES = 90_000_000
 CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES = 90_000_000
+CSO_INGEST_HISTORY_MAX_BYTES = 16 * 1024 * 1024
+CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES = 512 * 1024
+CSO_INGEST_PROBE_SIZE_BYTES = 2 * 1024 * 1024
+CSO_INGEST_ANALYSE_DURATION_US = 3_000_000
+CSO_INGEST_FPS_PROBE_SIZE = 64
+CSO_OUTPUT_PROBE_SIZE_BYTES = 1 * 1024 * 1024
+CSO_OUTPUT_ANALYSE_DURATION_US = 2_000_000
+CSO_OUTPUT_FPS_PROBE_SIZE = 32
 CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS = 10
 CSO_OUTPUT_SLATE_POLL_INTERVAL_SECONDS = 0.25
 CSO_OUTPUT_PIPE_POLL_INTERVAL_SECONDS = 0.25
@@ -80,8 +87,6 @@ CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS = {
     "playback_unavailable": 3,
     "startup_pending": 30,
 }
-CSO_UNAVAILABLE_SLATE_CACHE_TTL_SECONDS = 30 * 60
-CSO_UNAVAILABLE_SLATE_CACHE_VERSION = "v3"
 CSO_UNAVAILABLE_SLATE_MESSAGES = {
     "capacity_blocked": {
         "title": "Channel Temporarily Unavailable",
@@ -158,7 +163,9 @@ async def _get_cso_channel_failed_source_ids(channel_id):
         return active_ids
 
 
-async def mark_cso_channel_source_temporarily_failed(channel_id, source_id, ttl_seconds=CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS):
+async def mark_cso_channel_source_temporarily_failed(
+    channel_id, source_id, ttl_seconds=CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS
+):
     try:
         channel_id = int(channel_id)
         source_id = int(source_id)
@@ -691,94 +698,526 @@ def _format_ffmpeg_headers_arg(headers):
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_ingest_ffmpeg_command(source_url, program_index=0, user_agent=None, request_headers=None):
-    map_program = max(0, int(program_index or 0))
-    is_hls_input = (urlparse(source_url or "").path or "").lower().endswith(".m3u8")
-    header_values = sanitise_headers(request_headers)
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "info",
-    ]
-    if enable_cso_ingest_command_debug_logging:
-        command += ["-stats"]
-    else:
-        command += ["-nostats"]
-    command += [
-        # Progress reporting for health-checks; reconnect flags for resilience.
-        "-progress",
-        "pipe:2",
-        "-reconnect",
-        "1",
-        "-reconnect_on_network_error",
-        "1",
-        "-reconnect_delay_max",
-        str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
-    ]
-    user_agent_value = clean_text(user_agent) or _header_value(header_values, "User-Agent")
-    if user_agent_value:
-        command += [
-            "-user_agent",
-            user_agent_value,
+class CsoFfmpegCommandBuilder:
+    """Structured FFmpeg command builder for ingest, output, HLS output, and slate sessions."""
+
+    def __init__(self, policy=None):
+        self.policy = dict(policy or {})
+
+    @staticmethod
+    def video_encoder_for_codec(video_codec: str) -> str:
+        codec = video_codec or ""
+        return {
+            "h264": "libx264",
+            "h265": "libx265",
+            "vp8": "libvpx",
+        }.get(codec, "libx264")
+
+    @staticmethod
+    def vaapi_encoder_for_codec(video_codec: str) -> str:
+        codec = video_codec or ""
+        return "hevc_vaapi" if codec == "h265" else "h264_vaapi"
+
+    @staticmethod
+    def audio_encoder_for_codec(audio_codec: str) -> str:
+        codec = audio_codec or ""
+        return {
+            "aac": "aac",
+            "ac3": "ac3",
+            "vorbis": "libvorbis",
+        }.get(codec, "aac")
+
+    @staticmethod
+    def _build_slate_media_hint(media_hint):
+        hint = dict(media_hint or {})
+        width = max(16, int(hint.get("width") or 0))
+        height = max(16, int(hint.get("height") or 0))
+        fps_value = float(hint.get("fps") or 0.0)
+        fps = int(round(fps_value)) if fps_value > 0 else 0
+        pixel_format = clean_key(hint.get("pixel_format")) or "yuv420p"
+        if width <= 16 or height <= 16:
+            width = 1280
+            height = 720
+        if fps <= 0:
+            avg_frame_rate = clean_text(hint.get("avg_frame_rate"))
+            if avg_frame_rate and "/" in avg_frame_rate:
+                try:
+                    numerator, denominator = avg_frame_rate.split("/", 1)
+                    denominator_value = max(1, int(float(denominator)))
+                    fps = int(round(float(numerator) / float(denominator_value)))
+                except Exception:
+                    fps = 0
+        if fps <= 0:
+            fps = 25
+        if fps > 60:
+            fps = 60
+        return {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "pixel_format": pixel_format,
+        }
+
+    @staticmethod
+    def _ffmpeg_logging_command(debug_enabled, quiet_level="warning"):
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "info" if debug_enabled else quiet_level]
+        if debug_enabled:
+            command += ["-stats"]
+        else:
+            command += ["-nostats"]
+        return command
+
+    @staticmethod
+    def _probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size):
+        return [
+            "-probesize",
+            str(max(32_768, int(probe_size_bytes))),
+            "-analyzeduration",
+            str(max(250_000, int(analyse_duration_us))),
+            "-fpsprobesize",
+            str(max(0, int(fps_probe_size))),
         ]
-    referer_value = _header_value(header_values, "Referer")
-    if referer_value:
-        command += ["-referer", referer_value]
-    extra_headers = _format_ffmpeg_headers_arg(header_values)
-    if extra_headers:
-        command += ["-headers", extra_headers]
-    # For HLS, we let the smart HLS demuxer handle playlist retries to avoid manifest
-    # spam/IP bans. For direct streams (non-HLS), we use socket-level reconnection.
-    if not is_hls_input:
-        command += [
-            "-reconnect_at_eof",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_on_http_error",
-            "4xx,5xx",
+
+    @staticmethod
+    def _input_resilience_flags():
+        return [
+            "-fflags",
+            "+discardcorrupt+genpts",
+            "-err_detect",
+            "ignore_err",
         ]
-    else:
-        # HLS demuxing already handles playlist refresh and segment polling.
-        # Avoid EOF/http reconnect loops that can spam upstream proxy requests.
-        command += [
-            "-reconnect_streamed",
+
+    @staticmethod
+    def _drop_data_streams():
+        return ["-dn"]
+
+    @staticmethod
+    def _mpegts_output_flags(zero_latency=True):
+        command = [
+            "-mpegts_flags",
+            "+resend_headers",
+        ]
+        if zero_latency:
+            command += [
+                "-muxdelay",
+                "0",
+                "-muxpreload",
+                "0",
+            ]
+        return command
+
+    @staticmethod
+    def _pipe_output_target(ffmpeg_format, target="pipe:1"):
+        command = []
+        if ffmpeg_format == "mp4":
+            command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
+        command += ["-f", ffmpeg_format, target]
+        return command
+
+    @staticmethod
+    def _lavfi_input(spec):
+        return ["-f", "lavfi", "-i", spec]
+
+    def _slate_av_encode_flags(self, fps_value, pix_fmt, audio_bitrate, still_image=False):
+        command = [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast" if still_image else "superfast",
+            "-tune",
+            "stillimage" if still_image else "zerolatency",
+            "-pix_fmt",
+            pix_fmt,
+            "-bf",
             "0",
+            "-g",
+            str(fps_value if still_image else max(fps_value * 2, fps_value)),
+            "-keyint_min",
+            str(fps_value if still_image else max(fps_value * 2, fps_value)),
+            "-sc_threshold",
+            "0",
+            "-x264-params",
+            "repeat-headers=1:scenecut=0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            audio_bitrate,
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-shortest",
         ]
-    command += [
-        # Tolerate malformed/corrupt packets and continue ingest.
-        "-fflags",
-        "+discardcorrupt+genpts",
-        "-err_detect",
-        "ignore_err",
-        # Bound network stalls so reconnect logic can recover.
-        "-rw_timeout",
-        str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
-        "-timeout",
-        str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
-        "-i",
-        source_url,
-        "-map",
-        f"0:p:{map_program}:v:0?",
-        "-map",
-        f"0:p:{map_program}:a?",
-        "-map",
-        f"0:p:{map_program}:s?",
-        "-c",
-        "copy",
-        "-dn",
-        "-mpegts_flags",
-        "+resend_headers",
-        "-muxdelay",
-        "0",
-        "-muxpreload",
-        "0",
-        "-f",
-        "mpegts",
-        "pipe:1",
-    ]
-    return command
+        return command
+
+    def _apply_stream_selection(self, command, policy=None):
+        effective_policy = policy or self.policy
+        subtitle_mode = effective_policy.get("subtitle_mode") or "copy"
+        if subtitle_mode != "drop":
+            command += ["-map", "0:s?"]
+        return subtitle_mode
+
+    def _apply_transcode_options(self, command, subtitle_mode, policy=None):
+        effective_policy = policy or self.policy
+        video_codec = effective_policy.get("video_codec") or ""
+        audio_codec = effective_policy.get("audio_codec") or ""
+        use_hwaccel = bool(effective_policy.get("hwaccel", False)) and bool(video_codec)
+        deinterlace = bool(effective_policy.get("deinterlace", False)) and bool(video_codec)
+        vaapi_device = detect_vaapi_device_path() if use_hwaccel else None
+
+        if video_codec:
+            if vaapi_device:
+                encoder = self.vaapi_encoder_for_codec(video_codec)
+                filters = []
+                if deinterlace:
+                    filters.append("bwdif=mode=send_frame:parity=auto:deint=all")
+                filters += ["format=nv12", "hwupload"]
+                command += ["-vaapi_device", vaapi_device, "-vf", ",".join(filters), "-c:v", encoder]
+            else:
+                if deinterlace:
+                    command += ["-vf", "bwdif=mode=send_frame:parity=auto:deint=all"]
+                sw_video_encoder = self.video_encoder_for_codec(video_codec)
+                command += ["-c:v", sw_video_encoder]
+                if sw_video_encoder == "libx264":
+                    command += ["-preset", "veryfast", "-tune", "zerolatency"]
+        else:
+            command += ["-c:v", "copy"]
+
+        if audio_codec:
+            sw_audio_encoder = self.audio_encoder_for_codec(audio_codec)
+            command += ["-c:a", sw_audio_encoder]
+            command += ["-af", "aresample=async=1:first_pts=0"]
+            if audio_codec == "aac":
+                command += ["-b:a", "128k", "-ar", "48000", "-ac", "2"]
+        else:
+            command += ["-c:a", "copy"]
+        command += ["-c:s", "copy" if subtitle_mode != "drop" else "none"]
+        if subtitle_mode == "drop":
+            command.append("-sn")
+
+    def _build_mpegts_pipe_input(self, probe_size_bytes, analyse_duration_us, fps_probe_size, low_latency):
+        command = []
+        if low_latency:
+            command += [
+                "-fflags",
+                "+nobuffer",
+                "-flags",
+                "low_delay",
+            ]
+        command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
+        command += [
+            "-f",
+            "mpegts",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:v:0?",
+            "-map",
+            "0:a?",
+            "-max_muxing_queue_size",
+            "4096",
+        ]
+        command += self._input_resilience_flags()
+        return command
+
+    def build_ingest_command(self, source_url, program_index=0, user_agent=None, request_headers=None):
+        map_program = max(0, int(program_index or 0))
+        is_hls_input = (urlparse(source_url or "").path or "").lower().endswith(".m3u8")
+        header_values = sanitise_headers(request_headers)
+        command = self._ffmpeg_logging_command(enable_cso_ingest_command_debug_logging, quiet_level="info")
+        command += [
+            "-progress",
+            "pipe:2",
+            "-reconnect",
+            "1",
+            "-reconnect_on_network_error",
+            "1",
+            "-reconnect_delay_max",
+            str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+        ]
+        user_agent_value = clean_text(user_agent) or _header_value(header_values, "User-Agent")
+        if user_agent_value:
+            command += ["-user_agent", user_agent_value]
+        referer_value = _header_value(header_values, "Referer")
+        if referer_value:
+            command += ["-referer", referer_value]
+        extra_headers = _format_ffmpeg_headers_arg(header_values)
+        if extra_headers:
+            command += ["-headers", extra_headers]
+        if not is_hls_input:
+            command += [
+                "-reconnect_at_eof",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_on_http_error",
+                "4xx,5xx",
+            ]
+        else:
+            command += ["-reconnect_streamed", "0"]
+        command += self._input_resilience_flags()
+        command += self._probe_flags(
+            CSO_INGEST_PROBE_SIZE_BYTES,
+            CSO_INGEST_ANALYSE_DURATION_US,
+            CSO_INGEST_FPS_PROBE_SIZE,
+        )
+        command += [
+            "-rw_timeout",
+            str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
+            "-timeout",
+            str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
+            "-i",
+            source_url,
+            "-map",
+            f"0:p:{map_program}:v:0?",
+            "-map",
+            f"0:p:{map_program}:a?",
+            "-map",
+            f"0:p:{map_program}:s?",
+            "-c",
+            "copy",
+        ]
+        command += self._drop_data_streams()
+        command += self._mpegts_output_flags(zero_latency=True)
+        command += self._pipe_output_target("mpegts")
+        return command
+
+    def build_output_command(self):
+        command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        command += self._build_mpegts_pipe_input(
+            CSO_OUTPUT_PROBE_SIZE_BYTES,
+            CSO_OUTPUT_ANALYSE_DURATION_US,
+            CSO_OUTPUT_FPS_PROBE_SIZE,
+            low_latency=True,
+        )
+        subtitle_mode = self._apply_stream_selection(command)
+        mode = self.policy.get("output_mode") or "force_remux"
+        ffmpeg_format = policy_ffmpeg_format(self.policy)
+
+        if mode == "force_transcode":
+            self._apply_transcode_options(command, subtitle_mode)
+        else:
+            command += ["-c", "copy"]
+            if ffmpeg_format == "mp4":
+                command += ["-bsf:a", "aac_adtstoasc"]
+            if subtitle_mode == "drop":
+                command.append("-sn")
+
+        command += self._drop_data_streams()
+        if ffmpeg_format == "mpegts":
+            command += self._mpegts_output_flags(zero_latency=True)
+        command += self._pipe_output_target(ffmpeg_format)
+        return command
+
+    def build_hls_output_command(self, output_dir: Path):
+        command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        command += self._build_mpegts_pipe_input(
+            2 * 1024 * 1024,
+            5_000_000,
+            CSO_OUTPUT_FPS_PROBE_SIZE,
+            low_latency=False,
+        )
+        subtitle_mode = self._apply_stream_selection(command)
+        hls_policy = _effective_hls_runtime_policy(self.policy)
+        mode = hls_policy.get("output_mode") or "force_remux"
+
+        if mode == "force_transcode":
+            self._apply_transcode_options(command, subtitle_mode, policy=hls_policy)
+        else:
+            command += ["-c", "copy"]
+            if subtitle_mode == "drop":
+                command.append("-sn")
+            command += self._mpegts_output_flags(zero_latency=False)
+
+        command += self._drop_data_streams()
+        segment_pattern = str(output_dir / "seg_%06d.ts")
+        playlist_path = str(output_dir / "index.m3u8")
+        hls_flags = ["delete_segments", "append_list", "omit_endlist", "temp_file", "independent_segments"]
+        command += [
+            "-f",
+            "hls",
+            "-hls_time",
+            str(max(1, int(CSO_HLS_SEGMENT_SECONDS))),
+            "-hls_segment_type",
+            "mpegts",
+            "-hls_list_size",
+            str(max(3, int(CSO_HLS_LIST_SIZE))),
+            "-hls_flags",
+            "+".join(hls_flags),
+            "-hls_delete_threshold",
+            "2",
+            "-hls_segment_filename",
+            segment_pattern,
+            playlist_path,
+        ]
+        return command
+
+    def build_slate_command(
+        self,
+        slate_type,
+        primary_text="",
+        secondary_text="",
+        duration_seconds=10,
+        output_target="pipe:1",
+        realtime=False,
+        media_hint=None,
+    ):
+        reason_key = clean_key(slate_type, fallback="playback_unavailable")
+        duration_value = None if duration_seconds is None else max(1, int(duration_seconds))
+        slate_media_hint = self._build_slate_media_hint(media_hint)
+        startup_width = int(slate_media_hint.get("width") or 1280)
+        startup_height = int(slate_media_hint.get("height") or 720)
+        startup_fps = int(slate_media_hint.get("fps") or 25)
+        startup_pix_fmt = clean_key(slate_media_hint.get("pixel_format")) or "yuv420p"
+        render_fps = 60
+        layout_scale = min(float(startup_width) / 1280.0, float(startup_height) / 720.0)
+        title_font_size = max(28, int(round(52 * layout_scale)))
+        subtitle_font_size = max(14, int(round(20 * layout_scale)))
+        panel_x = max(24, int(round(70 * float(startup_width) / 1280.0)))
+        panel_w = max(320, int(round(1140 * float(startup_width) / 1280.0)))
+        panel_h = max(160, int(round(340 * float(startup_height) / 720.0)))
+        panel_y = max(
+            12, int(round((startup_height - panel_h) / 2.0 - (160 * float(startup_height) / 720.0) + panel_h / 2.0))
+        )
+        logo_width = max(52, int(round(92 * layout_scale)))
+        logo_margin_x = max(24, int(round(42 * float(startup_width) / 1280.0)))
+        logo_margin_y = max(24, int(round(34 * float(startup_height) / 720.0)))
+        title_y = int(round((startup_height / 2.0) - (84 * float(startup_height) / 720.0)))
+        subtitle_y_1 = int(round((startup_height / 2.0) + (2 * float(startup_height) / 720.0)))
+        subtitle_y_2 = int(round((startup_height / 2.0) + (30 * float(startup_height) / 720.0)))
+        subtitle_y_3 = int(round((startup_height / 2.0) + (58 * float(startup_height) / 720.0)))
+        subtitle_y_4 = int(round((startup_height / 2.0) + (86 * float(startup_height) / 720.0)))
+        blob1_size = max(220, int(round(680 * layout_scale)))
+        blob2_size = max(240, int(round(760 * layout_scale)))
+        blob3_size = max(210, int(round(620 * layout_scale)))
+        blob1_side_size = max(80, int(round(240 * layout_scale)))
+        blob2_side_size = max(72, int(round(210 * layout_scale)))
+        startup_video = f"color=c=black:s={startup_width}x{startup_height}:r={startup_fps}"
+        startup_audio = "anullsrc=channel_layout=stereo:sample_rate=48000"
+        if duration_value is not None:
+            startup_video = f"{startup_video}:d={duration_value}"
+            startup_audio = f"{startup_audio}:d={duration_value}"
+        if reason_key == "startup_pending":
+            command = ["ffmpeg", "-hide_banner", "-loglevel", "warning"]
+            if realtime:
+                command += ["-re"]
+            command += self._lavfi_input(startup_video)
+            command += self._lavfi_input(startup_audio)
+            command += self._slate_av_encode_flags(startup_fps, startup_pix_fmt, "128k", still_image=True)
+            command += self._mpegts_output_flags(zero_latency=False)
+            command += self._pipe_output_target("mpegts", target=output_target)
+            return command
+
+        title = _escape_ffmpeg_drawtext_text(clean_text(primary_text))
+        subtitle_lines = [
+            _escape_ffmpeg_drawtext_text(line)
+            for line in _wrap_slate_words(clean_text(secondary_text), max_chars=84, max_lines=4)
+        ]
+        drawtext_title = (
+            "drawtext="
+            f"text='{title}':"
+            "fontcolor=white:"
+            f"fontsize={title_font_size}:"
+            f"x=(w-text_w)/2:y={title_y}"
+        )
+        drawtext_subtitle_1 = (
+            "drawtext="
+            f"text='{subtitle_lines[0] if len(subtitle_lines) > 0 else ''}':"
+            f"fontcolor=white:fontsize={subtitle_font_size}:"
+            f"x=(w-text_w)/2:y={subtitle_y_1}"
+        )
+        drawtext_subtitle_2 = (
+            "drawtext="
+            f"text='{subtitle_lines[1] if len(subtitle_lines) > 1 else ''}':"
+            f"fontcolor=white:fontsize={subtitle_font_size}:"
+            f"x=(w-text_w)/2:y={subtitle_y_2}"
+        )
+        drawtext_subtitle_3 = (
+            "drawtext="
+            f"text='{subtitle_lines[2] if len(subtitle_lines) > 2 else ''}':"
+            f"fontcolor=white:fontsize={subtitle_font_size}:"
+            f"x=(w-text_w)/2:y={subtitle_y_3}"
+        )
+        drawtext_subtitle_4 = (
+            "drawtext="
+            f"text='{subtitle_lines[3] if len(subtitle_lines) > 3 else ''}':"
+            f"fontcolor=white:fontsize={subtitle_font_size}:"
+            f"x=(w-text_w)/2:y={subtitle_y_4}"
+        )
+        draw_panel = f"drawbox=x={panel_x}:y={panel_y}:w={panel_w}:h={panel_h}:color=0x0B0F14@0.64:t=fill"
+        draw_border = f"drawbox=x={panel_x}:y={panel_y}:w={panel_w}:h={panel_h}:color=0xE2E8F0@0.16:t=2"
+        logo_path = _resolve_cso_unavailable_logo_path()
+        filter_steps = [
+            "[1:v]format=rgba,colorchannelmixer=aa=0.30,gblur=sigma=90[blob1]",
+            "[2:v]format=rgba,colorchannelmixer=aa=0.26,gblur=sigma=105[blob2]",
+            "[3:v]format=rgba,colorchannelmixer=aa=0.24,gblur=sigma=98[blob3]",
+            "[0:v][blob1]overlay=x='(W-w)/2-W*0.14+sin(2*PI*t/12)*42':y='H*0.16+cos(2*PI*t/12)*24':shortest=1[bg1]",
+            "[bg1][blob2]overlay=x='(W-w)/2+W*0.12+cos(2*PI*t/11+0.8)*46':y='H*0.18+sin(2*PI*t/11+0.8)*28':shortest=1[bg2]",
+            "[bg2][blob3]overlay=x='(W-w)/2+W*0.02+sin(2*PI*t/13+1.6)*50':y='H*0.54+cos(2*PI*t/13+1.6)*22':shortest=1[bg3]",
+            f"[blob1]scale=w={blob1_side_size}:h={blob1_side_size}[blob1_side]",
+            f"[blob2]scale=w={blob2_side_size}:h={blob2_side_size}[blob2_side]",
+            "[bg3][blob1_side]overlay=x='W*0.06+sin(2*PI*t/9+0.35)*18':y='H*0.28+cos(2*PI*t/9+0.95)*14':shortest=1[bg4]",
+            "[bg4][blob2_side]overlay=x='W-w-W*0.07+cos(2*PI*t/9+1.15)*20':y='H*0.72+sin(2*PI*t/9+0.55)*12':shortest=1[bg5]",
+            "[bg5]gblur=sigma=42:steps=3,fps=60[bg_blur]",
+        ]
+        input_args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+        ]
+        input_args += self._lavfi_input(
+            f"color=c=0x0B0F14:s={startup_width}x{startup_height}:r={render_fps}"
+            + (f":d={duration_value}" if duration_value is not None else "")
+        )
+        input_args += self._lavfi_input(
+            f"color=c=0x21A3CF:s={blob1_size}x{blob1_size}:r={render_fps}"
+            + (f":d={duration_value}" if duration_value is not None else "")
+        )
+        input_args += self._lavfi_input(
+            f"color=c=0x79D2C0:s={blob2_size}x{blob2_size}:r={render_fps}"
+            + (f":d={duration_value}" if duration_value is not None else "")
+        )
+        input_args += self._lavfi_input(
+            f"color=c=0x6AA8FF:s={blob3_size}x{blob3_size}:r={render_fps}"
+            + (f":d={duration_value}" if duration_value is not None else "")
+        )
+        if logo_path:
+            input_args += ["-loop", "1", "-i", logo_path]
+            filter_steps.append(
+                f"[4:v]scale=w={logo_width}:h=-1:flags=lanczos,format=rgba,colorchannelmixer=aa=0.98[logo]"
+            )
+            filter_steps.append(f"[bg_blur][logo]overlay=x={logo_margin_x}:y={logo_margin_y}:shortest=1[bg_logo]")
+            background_label = "bg_logo"
+        else:
+            background_label = "bg_blur"
+        filter_steps.append(f"[{background_label}]{draw_panel}[panel]")
+        filter_steps.append(f"[panel]{draw_border}[panel2]")
+        panel_label = "panel2"
+        filter_steps += [
+            f"[{panel_label}]{drawtext_title}[title1]",
+            "[title1]" + drawtext_subtitle_1 + "[title2]",
+            "[title2]" + drawtext_subtitle_2 + "[title3]",
+            "[title3]" + drawtext_subtitle_3 + "[title4]",
+            "[title4]" + drawtext_subtitle_4 + ",eq=brightness=-0.03:contrast=1.06:saturation=1.18[vout]",
+        ]
+        command = list(input_args)
+        command += self._lavfi_input(
+            "anullsrc=channel_layout=stereo:sample_rate=48000"
+            + (f":d={duration_value}" if duration_value is not None else "")
+        )
+        command += [
+            "-filter_complex",
+            ";".join(filter_steps),
+            "-map",
+            "[vout]",
+            "-map",
+            f"{5 if logo_path else 4}:a",
+        ]
+        command += self._slate_av_encode_flags(render_fps, "yuv420p", "96k", still_image=False)
+        command += self._mpegts_output_flags(zero_latency=False)
+        command += self._pipe_output_target("mpegts", target=output_target)
+        return command
 
 
 def _resolve_cso_ingest_user_agent(config, source):
@@ -901,224 +1340,6 @@ async def latest_cso_playback_issue_hint(channel_id: int, session_id: str = "") 
     return ""
 
 
-class CsoOutputFfmpegCommandBuilder:
-    """Curated FFmpeg command builder for CSO output pipelines."""
-
-    def __init__(self, policy):
-        self.policy = policy or {}
-
-    def _base(self):
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "info" if enable_cso_output_command_debug_logging else "warning",
-        ]
-        if enable_cso_output_command_debug_logging:
-            command += ["-stats"]
-        # TODO: Review analyzeduration and probesize for all the ffmpeg commands in this file
-        command += [
-            "-fflags",
-            "+nobuffer",
-            "-flags",
-            "low_delay",
-            "-probesize",
-            "524288",
-            "-analyzeduration",
-            "1000000",
-            "-f",
-            "mpegts",
-            "-i",
-            "pipe:0",
-            "-map",
-            "0:v:0?",
-            "-map",
-            "0:a?",
-        ]
-        command += [
-            # Keep output path resilient to malformed packets and timestamp drift.
-            "-fflags",
-            "+discardcorrupt+genpts",
-            "-err_detect",
-            "ignore_err",
-            "-max_muxing_queue_size",
-            "4096",
-        ]
-        return command
-
-    @staticmethod
-    def video_encoder_for_codec(video_codec: str) -> str:
-        codec = video_codec or ""
-        return {
-            "h264": "libx264",
-            "h265": "libx265",
-            "vp8": "libvpx",
-        }.get(codec, "libx264")
-
-    @staticmethod
-    def vaapi_encoder_for_codec(video_codec: str) -> str:
-        codec = video_codec or ""
-        return "hevc_vaapi" if codec == "h265" else "h264_vaapi"
-
-    @staticmethod
-    def audio_encoder_for_codec(audio_codec: str) -> str:
-        codec = audio_codec or ""
-        return {
-            "aac": "aac",
-            "ac3": "ac3",
-            "vorbis": "libvorbis",
-        }.get(codec, "aac")
-
-    def _apply_stream_selection(self, command):
-        subtitle_mode = self.policy.get("subtitle_mode") or "copy"
-        if subtitle_mode != "drop":
-            command += ["-map", "0:s?"]
-        return subtitle_mode
-
-    def _apply_transcode_options(self, command, subtitle_mode):
-        video_codec = self.policy.get("video_codec") or ""
-        audio_codec = self.policy.get("audio_codec") or ""
-        use_hwaccel = bool(self.policy.get("hwaccel", False)) and bool(video_codec)
-        deinterlace = bool(self.policy.get("deinterlace", False)) and bool(video_codec)
-        vaapi_device = detect_vaapi_device_path() if use_hwaccel else None
-
-        if video_codec:
-            if vaapi_device:
-                encoder = self.vaapi_encoder_for_codec(video_codec)
-                filters = []
-                if deinterlace:
-                    filters.append("bwdif=mode=send_frame:parity=auto:deint=all")
-                filters += ["format=nv12", "hwupload"]
-                command += ["-vaapi_device", vaapi_device, "-vf", ",".join(filters), "-c:v", encoder]
-            else:
-                if deinterlace:
-                    command += ["-vf", "bwdif=mode=send_frame:parity=auto:deint=all"]
-                sw_video_encoder = self.video_encoder_for_codec(video_codec)
-                command += ["-c:v", sw_video_encoder]
-                if sw_video_encoder == "libx264":
-                    command += ["-preset", "veryfast", "-tune", "zerolatency"]
-        else:
-            command += ["-c:v", "copy"]
-
-        if audio_codec:
-            sw_audio_encoder = self.audio_encoder_for_codec(audio_codec)
-            command += ["-c:a", sw_audio_encoder]
-            # Rebuild audio timestamps during transcode to reduce DTS regressions downstream.
-            command += ["-af", "aresample=async=1:first_pts=0"]
-            if audio_codec == "aac":
-                command += ["-b:a", "128k", "-ar", "48000", "-ac", "2"]
-        else:
-            command += ["-c:a", "copy"]
-        command += ["-c:s", "copy" if subtitle_mode != "drop" else "none"]
-        if subtitle_mode == "drop":
-            command.append("-sn")
-
-    def build_output_command(self):
-        command = self._base()
-        subtitle_mode = self._apply_stream_selection(command)
-        mode = self.policy.get("output_mode") or "force_remux"
-        ffmpeg_format = policy_ffmpeg_format(self.policy)
-
-        if mode == "force_transcode":
-            self._apply_transcode_options(command, subtitle_mode)
-        else:
-            command += ["-c", "copy"]
-            if ffmpeg_format == "mp4":
-                # TS/HLS (MPEG-TS) often carries AAC with ADTS headers per frame.
-                # MP4 stores codec config once in container header (extradata), so
-                # remuxing copy into MP4 needs this bitstream rewrite.
-                command += ["-bsf:a", "aac_adtstoasc"]
-            if subtitle_mode == "drop":
-                command.append("-sn")
-
-        # Hard CSO rule: never include data streams in output.
-        command.append("-dn")
-        if ffmpeg_format == "mpegts":
-            command += [
-                "-mpegts_flags",
-                "+resend_headers",
-                "-muxdelay",
-                "0",
-                "-muxpreload",
-                "0",
-            ]
-        elif ffmpeg_format == "mp4":
-            # Fragmented MP4 is required for live streaming to a pipe.
-            command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
-        command += ["-f", ffmpeg_format, "pipe:1"]
-        return command
-
-    def build_hls_output_command(self, output_dir: Path):
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "info" if enable_cso_output_command_debug_logging else "warning",
-        ]
-        if enable_cso_output_command_debug_logging:
-            command += ["-stats"]
-        command += [
-            "-probesize",
-            "2097152",
-            "-analyzeduration",
-            "5000000",
-            "-f",
-            "mpegts",
-            "-i",
-            "pipe:0",
-            "-map",
-            "0:v:0?",
-            "-map",
-            "0:a?",
-            "-fflags",
-            "+discardcorrupt+genpts",
-            "-err_detect",
-            "ignore_err",
-            "-max_muxing_queue_size",
-            "4096",
-        ]
-        subtitle_mode = self._apply_stream_selection(command)
-        hls_policy = _effective_hls_runtime_policy(self.policy)
-        mode = hls_policy.get("output_mode") or "force_remux"
-        original_policy = self.policy
-        try:
-            self.policy = hls_policy
-            if mode == "force_transcode":
-                self._apply_transcode_options(command, subtitle_mode)
-            else:
-                command += ["-c", "copy"]
-                if subtitle_mode == "drop":
-                    command.append("-sn")
-                # HLS MPEG-TS segments benefit from repeated codec headers for
-                # clients joining mid-playlist.
-                command += ["-mpegts_flags", "+resend_headers"]
-        finally:
-            self.policy = original_policy
-
-        command.append("-dn")
-        segment_pattern = str(output_dir / "seg_%06d.ts")
-        playlist_path = str(output_dir / "index.m3u8")
-        hls_flags = ["delete_segments", "append_list", "omit_endlist", "temp_file", "independent_segments"]
-        command += [
-            "-f",
-            "hls",
-            "-hls_time",
-            str(max(1, int(CSO_HLS_SEGMENT_SECONDS))),
-            "-hls_segment_type",
-            "mpegts",
-            "-hls_list_size",
-            str(max(3, int(CSO_HLS_LIST_SIZE))),
-            "-hls_flags",
-            "+".join(hls_flags),
-            "-hls_delete_threshold",
-            "2",
-            "-hls_segment_filename",
-            segment_pattern,
-            playlist_path,
-        ]
-        return command
-
-
 def _cso_unavailable_slate_message(reason_key, detail_hint=""):
     if reason_key == "startup_pending":
         return "", ""
@@ -1183,337 +1404,6 @@ def _wrap_slate_words(text, max_chars=44, max_lines=2):
     return lines[:max_lines]
 
 
-def _build_cso_slate_media_hint(media_hint):
-    hint = dict(media_hint or {})
-    width = max(16, int(hint.get("width") or 0))
-    height = max(16, int(hint.get("height") or 0))
-    fps_value = float(hint.get("fps") or 0.0)
-    fps = int(round(fps_value)) if fps_value > 0 else 0
-    pixel_format = clean_key(hint.get("pixel_format")) or "yuv420p"
-    if width <= 16 or height <= 16:
-        width = 1280
-        height = 720
-    if fps <= 0:
-        avg_frame_rate = clean_text(hint.get("avg_frame_rate"))
-        if avg_frame_rate and "/" in avg_frame_rate:
-            try:
-                numerator, denominator = avg_frame_rate.split("/", 1)
-                denominator_value = max(1, int(float(denominator)))
-                fps = int(round(float(numerator) / float(denominator_value)))
-            except Exception:
-                fps = 0
-    if fps <= 0:
-        fps = 25
-    if fps > 60:
-        fps = 60
-    return {
-        "width": width,
-        "height": height,
-        "fps": fps,
-        "pixel_format": pixel_format,
-    }
-
-
-def build_cso_slate_command(
-    reason_key,
-    duration_seconds=10,
-    output_target="pipe:1",
-    detail_hint="",
-    realtime=False,
-    media_hint=None,
-):
-    if not reason_key:
-        reason_key = "playback_unavailable"
-    duration_value = None if duration_seconds is None else max(1, int(duration_seconds))
-    slate_media_hint = _build_cso_slate_media_hint(media_hint)
-    startup_width = int(slate_media_hint.get("width") or 1280)
-    startup_height = int(slate_media_hint.get("height") or 720)
-    startup_fps = int(slate_media_hint.get("fps") or 25)
-    startup_pix_fmt = clean_key(slate_media_hint.get("pixel_format")) or "yuv420p"
-    render_fps = 60
-    layout_scale = min(float(startup_width) / 1280.0, float(startup_height) / 720.0)
-    title_font_size = max(28, int(round(52 * layout_scale)))
-    subtitle_font_size = max(14, int(round(20 * layout_scale)))
-    panel_x = max(24, int(round(70 * float(startup_width) / 1280.0)))
-    panel_w = max(320, int(round(1140 * float(startup_width) / 1280.0)))
-    panel_h = max(160, int(round(340 * float(startup_height) / 720.0)))
-    panel_y = max(
-        12, int(round((startup_height - panel_h) / 2.0 - (160 * float(startup_height) / 720.0) + panel_h / 2.0))
-    )
-    logo_width = max(52, int(round(92 * layout_scale)))
-    logo_margin_x = max(24, int(round(42 * float(startup_width) / 1280.0)))
-    logo_margin_y = max(24, int(round(34 * float(startup_height) / 720.0)))
-    title_y = int(round((startup_height / 2.0) - (84 * float(startup_height) / 720.0)))
-    subtitle_y_1 = int(round((startup_height / 2.0) + (2 * float(startup_height) / 720.0)))
-    subtitle_y_2 = int(round((startup_height / 2.0) + (30 * float(startup_height) / 720.0)))
-    subtitle_y_3 = int(round((startup_height / 2.0) + (58 * float(startup_height) / 720.0)))
-    subtitle_y_4 = int(round((startup_height / 2.0) + (86 * float(startup_height) / 720.0)))
-    blob1_size = max(220, int(round(680 * layout_scale)))
-    blob2_size = max(240, int(round(760 * layout_scale)))
-    blob3_size = max(210, int(round(620 * layout_scale)))
-    blob1_side_size = max(80, int(round(240 * layout_scale)))
-    blob2_side_size = max(72, int(round(210 * layout_scale)))
-    startup_video = f"color=c=black:s={startup_width}x{startup_height}:r={startup_fps}"
-    startup_audio = "anullsrc=channel_layout=stereo:sample_rate=48000"
-    if duration_value is not None:
-        startup_video = f"{startup_video}:d={duration_value}"
-        startup_audio = f"{startup_audio}:d={duration_value}"
-    if reason_key == "startup_pending":
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-        ]
-        if realtime:
-            command += [
-                "-re",
-            ]
-        command += [
-            "-f",
-            "lavfi",
-            "-i",
-            startup_video,
-            "-f",
-            "lavfi",
-            "-i",
-            startup_audio,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "stillimage",
-            "-pix_fmt",
-            startup_pix_fmt,
-            "-bf",
-            "0",
-            "-g",
-            str(startup_fps),
-            "-keyint_min",
-            str(startup_fps),
-            "-sc_threshold",
-            "0",
-            "-x264-params",
-            "repeat-headers=1:scenecut=0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-shortest",
-            "-mpegts_flags",
-            "+resend_headers",
-            "-f",
-            "mpegts",
-            output_target,
-        ]
-        return command
-
-    title, subtitle = _cso_unavailable_slate_message(reason_key, detail_hint=detail_hint)
-    title = _escape_ffmpeg_drawtext_text(title)
-    subtitle_lines = [
-        _escape_ffmpeg_drawtext_text(line) for line in _wrap_slate_words(subtitle, max_chars=84, max_lines=4)
-    ]
-    drawtext_title = (
-        "drawtext=" f"text='{title}':" "fontcolor=white:" f"fontsize={title_font_size}:" f"x=(w-text_w)/2:y={title_y}"
-    )
-    drawtext_subtitle_1 = (
-        "drawtext="
-        f"text='{subtitle_lines[0] if len(subtitle_lines) > 0 else ''}':"
-        f"fontcolor=white:fontsize={subtitle_font_size}:"
-        f"x=(w-text_w)/2:y={subtitle_y_1}"
-    )
-    drawtext_subtitle_2 = (
-        "drawtext="
-        f"text='{subtitle_lines[1] if len(subtitle_lines) > 1 else ''}':"
-        f"fontcolor=white:fontsize={subtitle_font_size}:"
-        f"x=(w-text_w)/2:y={subtitle_y_2}"
-    )
-    drawtext_subtitle_3 = (
-        "drawtext="
-        f"text='{subtitle_lines[2] if len(subtitle_lines) > 2 else ''}':"
-        f"fontcolor=white:fontsize={subtitle_font_size}:"
-        f"x=(w-text_w)/2:y={subtitle_y_3}"
-    )
-    drawtext_subtitle_4 = (
-        "drawtext="
-        f"text='{subtitle_lines[3] if len(subtitle_lines) > 3 else ''}':"
-        f"fontcolor=white:fontsize={subtitle_font_size}:"
-        f"x=(w-text_w)/2:y={subtitle_y_4}"
-    )
-    draw_panel = f"drawbox=x={panel_x}:y={panel_y}:w={panel_w}:h={panel_h}:color=0x0B0F14@0.64:t=fill"
-    draw_border = f"drawbox=x={panel_x}:y={panel_y}:w={panel_w}:h={panel_h}:color=0xE2E8F0@0.16:t=2"
-    logo_path = _resolve_cso_unavailable_logo_path()
-    filter_steps = [
-        "[1:v]format=rgba,colorchannelmixer=aa=0.30,gblur=sigma=90[blob1]",
-        "[2:v]format=rgba,colorchannelmixer=aa=0.26,gblur=sigma=105[blob2]",
-        "[3:v]format=rgba,colorchannelmixer=aa=0.24,gblur=sigma=98[blob3]",
-        "[0:v][blob1]overlay=x='(W-w)/2-W*0.14+sin(2*PI*t/12)*42':y='H*0.16+cos(2*PI*t/12)*24':shortest=1[bg1]",
-        "[bg1][blob2]overlay=x='(W-w)/2+W*0.12+cos(2*PI*t/11+0.8)*46':y='H*0.18+sin(2*PI*t/11+0.8)*28':shortest=1[bg2]",
-        "[bg2][blob3]overlay=x='(W-w)/2+W*0.02+sin(2*PI*t/13+1.6)*50':y='H*0.54+cos(2*PI*t/13+1.6)*22':shortest=1[bg3]",
-        f"[blob1]scale=w={blob1_side_size}:h={blob1_side_size}[blob1_side]",
-        f"[blob2]scale=w={blob2_side_size}:h={blob2_side_size}[blob2_side]",
-        "[bg3][blob1_side]overlay=x='W*0.06+sin(2*PI*t/9+0.35)*18':y='H*0.28+cos(2*PI*t/9+0.95)*14':shortest=1[bg4]",
-        "[bg4][blob2_side]overlay=x='W-w-W*0.07+cos(2*PI*t/9+1.15)*20':y='H*0.72+sin(2*PI*t/9+0.55)*12':shortest=1[bg5]",
-        "[bg5]gblur=sigma=42:steps=3,fps=60[bg_blur]",
-    ]
-    input_args = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=0x0B0F14:s={startup_width}x{startup_height}:r={render_fps}"
-        + (f":d={duration_value}" if duration_value is not None else ""),
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=0x21A3CF:s={blob1_size}x{blob1_size}:r={render_fps}"
-        + (f":d={duration_value}" if duration_value is not None else ""),
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=0x79D2C0:s={blob2_size}x{blob2_size}:r={render_fps}"
-        + (f":d={duration_value}" if duration_value is not None else ""),
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=0x6AA8FF:s={blob3_size}x{blob3_size}:r={render_fps}"
-        + (f":d={duration_value}" if duration_value is not None else ""),
-    ]
-    if logo_path:
-        input_args += ["-loop", "1", "-i", logo_path]
-        filter_steps.append(f"[4:v]scale=w={logo_width}:h=-1:flags=lanczos,format=rgba,colorchannelmixer=aa=0.98[logo]")
-        filter_steps.append(f"[bg_blur][logo]overlay=x={logo_margin_x}:y={logo_margin_y}:shortest=1[bg_logo]")
-        background_label = "bg_logo"
-    else:
-        background_label = "bg_blur"
-    filter_steps.append(f"[{background_label}]{draw_panel}[panel]")
-    filter_steps.append(f"[panel]{draw_border}[panel2]")
-    panel_label = "panel2"
-    filter_steps += [
-        f"[{panel_label}]{drawtext_title}[title1]",
-        "[title1]" + drawtext_subtitle_1 + "[title2]",
-        "[title2]" + drawtext_subtitle_2 + "[title3]",
-        "[title3]" + drawtext_subtitle_3 + "[title4]",
-        "[title4]" + drawtext_subtitle_4 + ",eq=brightness=-0.03:contrast=1.06:saturation=1.18[vout]",
-    ]
-    return input_args + [
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=channel_layout=stereo:sample_rate=48000"
-        + (f":d={duration_value}" if duration_value is not None else ""),
-        "-filter_complex",
-        ";".join(filter_steps),
-        "-map",
-        "[vout]",
-        "-map",
-        f"{5 if logo_path else 4}:a",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "superfast",
-        "-tune",
-        "zerolatency",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        str(render_fps),
-        "-bf",
-        "0",
-        "-g",
-        str(max(render_fps * 2, render_fps)),
-        "-keyint_min",
-        str(max(render_fps * 2, render_fps)),
-        "-sc_threshold",
-        "0",
-        "-x264-params",
-        "repeat-headers=1:scenecut=0",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "96k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-shortest",
-        "-mpegts_flags",
-        "+resend_headers",
-        "-f",
-        "mpegts",
-        output_target,
-    ]
-
-
-def _cso_slate_cache_hash(reason_key, duration_seconds):
-    digest = hashlib.sha256()
-    digest.update(CSO_UNAVAILABLE_SLATE_CACHE_VERSION.encode("utf-8"))
-    digest.update(reason_key.encode("utf-8"))
-    digest.update(str(int(duration_seconds)).encode("utf-8"))
-    digest.update(" ".join(build_cso_slate_command(reason_key, duration_seconds=duration_seconds)).encode("utf-8"))
-    return digest.hexdigest()[:12]
-
-
-async def _cleanup_cso_slate_cache(cache_dir, max_age_seconds):
-    if not cache_dir.exists():
-        return
-    now_value = time.time()
-    for path in cache_dir.glob("*.ts"):
-        try:
-            if (now_value - path.stat().st_mtime) > max_age_seconds:
-                await asyncio.to_thread(path.unlink, missing_ok=True)
-        except Exception:
-            continue
-
-
-async def ensure_cso_slate_asset(config_path, reason_key, duration_seconds):
-    if not config_path:
-        return None
-    cache_dir = Path(config_path) / "cache" / "cso_slates"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    await _cleanup_cso_slate_cache(cache_dir, max_age_seconds=CSO_UNAVAILABLE_SLATE_CACHE_TTL_SECONDS)
-    cache_hash = _cso_slate_cache_hash(reason_key, int(duration_seconds))
-    out_path = cache_dir / f"{reason_key}_{int(duration_seconds)}s_{cache_hash}.ts"
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return str(out_path)
-    command = build_cso_slate_command(reason_key, duration_seconds=duration_seconds, output_target=str(out_path))
-    logger.info("Rendering CSO slate asset reason=%s path=%s", reason_key, out_path)
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stderr = b""
-    try:
-        _, stderr = await process.communicate()
-    except Exception:
-        try:
-            process.kill()
-        except Exception:
-            pass
-    if process.returncode not in (0, None) or not out_path.exists() or out_path.stat().st_size <= 0:
-        logger.warning(
-            "Failed rendering CSO slate reason=%s rc=%s stderr=%s",
-            reason_key,
-            process.returncode,
-            stderr.decode("utf-8", errors="replace").strip() or "n/a",
-        )
-        try:
-            await asyncio.to_thread(out_path.unlink, missing_ok=True)
-        except Exception:
-            pass
-        return None
-    return str(out_path)
-
-
 async def iter_cso_slate_source(config_path, reason, detail_hint=""):
     reason_key = clean_key(reason, fallback="playback_unavailable")
     resolved_duration = _cso_unavailable_duration_seconds(reason_key)
@@ -1539,96 +1429,6 @@ async def iter_cso_slate_source(config_path, reason, detail_hint=""):
             await session.remove_subscriber(subscriber_id)
         except Exception:
             pass
-
-
-async def cso_unavailable_slate_stream(
-    reason,
-    policy=None,
-    detail_hint="",
-    config_path="",
-):
-    reason_key = clean_key(reason, fallback="playback_unavailable")
-    if not policy:
-        async for chunk in iter_cso_slate_source(config_path, reason_key, detail_hint=detail_hint):
-            yield chunk
-        return
-
-    effective_policy = dict(policy or {})
-    container = str(effective_policy.get("container") or "mpegts")
-    if container in {"matroska", "mp4"}:
-        effective_policy["output_mode"] = "force_transcode"
-        if not effective_policy.get("audio_codec"):
-            effective_policy["audio_codec"] = "aac"
-        if "video_codec" not in effective_policy:
-            effective_policy["video_codec"] = ""
-    command = CsoOutputFfmpegCommandBuilder(effective_policy).build_output_command()
-    logger.info(
-        "Starting CSO unavailable slate transform reason=%s duration=%ss policy=%s command=%s",
-        reason_key,
-        _cso_unavailable_duration_seconds(reason_key),
-        effective_policy,
-        command,
-    )
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    async def _writer():
-        try:
-            async for chunk in iter_cso_slate_source(config_path, reason_key, detail_hint=detail_hint):
-                if not process.stdin:
-                    break
-                process.stdin.write(chunk)
-                await process.stdin.drain()
-        except Exception:
-            pass
-        finally:
-            try:
-                if process.stdin:
-                    process.stdin.close()
-            except Exception:
-                pass
-
-    async def _stderr_reader():
-        while True:
-            try:
-                line = await process.stderr.readline()
-            except Exception:
-                break
-            if not line:
-                break
-
-    writer_task = asyncio.create_task(_writer())
-    stderr_task = asyncio.create_task(_stderr_reader())
-    emitted_bytes = 0
-    try:
-        while process.stdout:
-            chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
-            if not chunk:
-                break
-            emitted_bytes += len(chunk)
-            yield chunk
-    finally:
-        try:
-            await asyncio.wait_for(writer_task, timeout=2.0)
-        except Exception:
-            writer_task.cancel()
-        try:
-            process.terminate()
-            await asyncio.wait_for(process.wait(), timeout=1.5)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
-        try:
-            await asyncio.wait_for(stderr_task, timeout=0.5)
-        except Exception:
-            pass
-        logger.info("CSO unavailable slate transform ended reason=%s bytes=%s", reason, emitted_bytes)
 
 
 def build_cso_stream_plan(
@@ -1680,7 +1480,7 @@ class CsoIngestSession:
         self.subscribers = {}
         self.history = deque()
         self.history_bytes = 0
-        self.max_history_bytes = 4 * 1024 * 1024
+        self.max_history_bytes = int(CSO_INGEST_HISTORY_MAX_BYTES)
         self.current_source = None
         self.current_source_url = ""
         self.current_capacity_key = None
@@ -1845,7 +1645,7 @@ class CsoIngestSession:
         source_headers = _resolve_cso_ingest_headers(source)
         source_user_agent = _header_value(source_headers, "User-Agent") or source_user_agent
         source_probe = load_source_media_shape(source) if source is not None else {}
-        command = _build_ingest_ffmpeg_command(
+        command = CsoFfmpegCommandBuilder().build_ingest_command(
             source_url,
             program_index=program_index,
             user_agent=source_user_agent,
@@ -2857,11 +2657,13 @@ class CsoSlateSession:
         self.first_chunk_logged = False
 
     async def _spawn_process(self):
-        command = build_cso_slate_command(
+        title, subtitle = _cso_unavailable_slate_message(self.reason, detail_hint=self.detail_hint)
+        command = CsoFfmpegCommandBuilder().build_slate_command(
             self.reason,
+            primary_text=title,
+            secondary_text=subtitle,
             duration_seconds=self.duration_seconds,
             output_target="pipe:1",
-            detail_hint=self.detail_hint,
             realtime=True,
             media_hint=self.media_hint,
         )
@@ -3122,7 +2924,10 @@ class CsoOutputSession:
             self._input_mode = "slate" if self.use_slate_as_input else "ingest"
             if self.ingest_session is not None:
                 await self.ingest_session.start()
-                self.ingest_queue = await self.ingest_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
+                self.ingest_queue = await self.ingest_session.add_subscriber(
+                    self.key,
+                    prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                )
             if self.use_slate_as_input and self.slate_session is not None:
                 await self.slate_session.start()
                 self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
@@ -3148,7 +2953,7 @@ class CsoOutputSession:
                 )
             self.running = True
             try:
-                command = CsoOutputFfmpegCommandBuilder(self.output_policy).build_output_command()
+                command = CsoFfmpegCommandBuilder(self.output_policy).build_output_command()
                 logger.info(
                     "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
                     self.channel_id,
@@ -3868,7 +3673,7 @@ class CsoHlsOutputSession:
                     ),
                     int((time.time() - self.last_activity) * 1000),
                 )
-            command = CsoOutputFfmpegCommandBuilder(self.policy).build_hls_output_command(self.output_dir)
+            command = CsoFfmpegCommandBuilder(self.policy).build_hls_output_command(self.output_dir)
             logger.info(
                 "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
                 self.channel_id,
@@ -4410,7 +4215,9 @@ async def reconcile_cso_capacity_with_tvh_channels(channel_ids, activity_session
         )
         channels = result.scalars().unique().all()
         for channel in channels:
-            candidates = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
+            candidates = await order_cso_channel_sources(
+                list(channel.sources or []), channel_id=getattr(channel, "id", None)
+            )
             for source in candidates:
                 playlist = getattr(source, "playlist", None)
                 if playlist is not None and not bool(getattr(playlist, "enabled", False)):
