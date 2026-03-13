@@ -5,7 +5,7 @@
 # File Created: Monday, 13th May 2024 4:20:35 pm
 # Author: Josh.5 (jsunnex@gmail.com)
 # -----
-# Last Modified: Thursday, 19th February 2026 11:56:17 am
+# Last Modified: Friday, 13th March 2026 2:47:03 pm
 # Modified By: Josh.5 (jsunnex@gmail.com)
 ###
 
@@ -278,10 +278,19 @@ setup_postgres() {
 
 run_migrations() {
     if [ "${SKIP_MIGRATIONS}" != "true" ]; then
+        local before_current
+        local after_current
+
         print_log info "Current Alembic revision(s) before upgrade:"
-        alembic current || true
+        before_current="$(alembic current 2>/dev/null || true)"
+        printf '%s\n' "${before_current}"
         print_log info "Running TIC DB migrations"
         alembic upgrade head
+        after_current="$(alembic current 2>/dev/null || true)"
+        if [ "${after_current}" != "${before_current}" ]; then
+            print_log info "Alembic revision(s) after upgrade:"
+            printf '%s\n' "${after_current}"
+        fi
     fi
 }
 
