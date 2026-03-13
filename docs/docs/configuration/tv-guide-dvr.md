@@ -15,6 +15,7 @@ Navigate to the **TV Guide** page to see a familiar grid-based Electronic Progra
 - **Timeline**: The guide displays channels on the vertical axis and time on the horizontal axis.
 - **Navigation**: You can scroll vertically to browse channels and horizontally to move forward and backward in time.
 - **Programme Details**: Click on any programme in the grid to see more details, such as the show description, episode name, and air time.
+- **Per-channel guide offsets**: If a channel has an **EPG Offset (minutes)** configured on the [Channels](./channels.md#programme-guide-mapping) page, the TV Guide uses that shifted time window for display.
 
 ## DVR (Digital Video Recorder)
 

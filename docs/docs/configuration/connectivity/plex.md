@@ -38,11 +38,44 @@ What this enables in Headendarr:
    - remove stale managed tuners
    - remove managed tuners for enabled sources that currently publish an empty HDHomeRun lineup
 
+:::info Server name matching
+The `name` field in each `PLEX_SERVERS_JSON` entry should match that Plex server's current friendly name.
+Headendarr currently validates the configured name against the live server identity before applying tuner changes.
+:::
+
 ### PLEX_SERVERS_JSON Generator
 
 Use this form to generate a valid `PLEX_SERVERS_JSON` environment variable value for one or more Plex servers.
 
 <PlexServersJsonBuilder />
+
+### Plex Settings Page
+
+After `PLEX_SERVERS_JSON` is valid and the container has restarted, open **Plex Settings** in Headendarr.
+
+Each configured Plex server exposes these groups of settings:
+
+- **Connection**
+  - **Enabled**: turns automatic tuner reconciliation on or off for that Plex server.
+  - **Headendarr base URL**: the URL Plex should use to reach Headendarr's HDHomeRun and XMLTV endpoints.
+  - **Stream user**: selects which Headendarr user's stream key is published to Plex.
+- **Tuner Settings**
+  - **Default tuner mode**:
+    - **Per source** publishes one managed tuner per Headendarr source.
+    - **Combined** publishes one combined managed tuner.
+  - **Stream profile**: selects the profile segment used in generated HDHomeRun endpoints.
+  - Optional recording-time transcode controls are also available for compatible Plex workflows.
+- **DVR Settings**
+  - Resolution preference, replace-lower-quality behaviour, partial-airing behaviour, guide enrichment, post-processing script, commercial detection mode, and guide refresh cadence.
+  - Headendarr also pushes your global DVR start/end padding into Plex's DVR settings during reconcile.
+
+Settings on this page auto-save. Headendarr then queues a Plex reconcile run after Plex settings are saved.
+
+### Reconcile Behaviour
+
+Plex tuner reconciliation runs whenever Plex settings are saved in Headendarr, and otherwise runs on the background scheduler every 5 minutes to keep Plex aligned with the current Headendarr configuration.
+
+During reconciliation, Headendarr automatically keeps Plex Live TV in sync with the channels and mappings you manage in Headendarr. It can create missing managed tuners, attach new tuners to the correct Plex DVR, update existing tuners in place when settings change, and refresh channel mappings after source or channel changes. It also includes safety checks to avoid deleting the last tuner on a Plex DVR, which helps prevent Plex from dropping the whole DVR configuration and protects your existing DVR setup and recordings. The goal is that you manage channels, guide mappings, and source changes in Headendarr, and Headendarr handles keeping Plex up to date for you.
 
 ## Manually configure
 

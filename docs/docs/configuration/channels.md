@@ -33,6 +33,19 @@ This method is for creating a single, custom channel from scratch.
 
 After creating a channel using either method, you can click on it in the main list at any time to open the edit dialog and fix up any missing information or change its configuration.
 
+### Programme Guide Mapping
+
+Inside **Channel Settings**, the **Programme Guide** section controls how this channel maps to imported XMLTV data.
+
+- **EPG Source**: Selects which imported EPG this channel should use.
+- **EPG Channel**: Selects the specific guide channel from that EPG.
+- **EPG Offset (minutes)**: Shifts programme times for this channel.
+  - Useful for `+1`, `-1`, or other time-shifted variants that reuse the same upstream guide channel.
+  - Example: set `+60` for a `Channel +1` variant.
+  - The offset is reflected in generated XMLTV output and in the built-in TV Guide.
+
+When using **Bulk EPG Match**, you can also set the per-channel guide offset while applying the match.
+
 ### Adding Manual Stream Sources
 
 Inside a channel's settings dialog, you can add a source that is not tied to a configured Source playlist.
