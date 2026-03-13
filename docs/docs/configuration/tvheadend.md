@@ -23,6 +23,19 @@ When you use the AIO installation, Headendarr automatically configures and manag
 
 In short, Headendarr acts as the "brain" for configuration, while TVHeadend acts as the "engine" for delivery.
 
+## TVHeadend Settings page
+
+Headendarr's **TVHeadend Settings** page controls both the TVHeadend connection details and how published mux URLs are delivered to TVHeadend.
+
+### Stream Buffer modes
+
+- **Disabled**: TVHeadend connects directly to the published source or proxy URL with no Headendarr FFmpeg wrapper.
+- **CSO**: TVHeadend mux pulls are routed through Headendarr's CSO TVH stream path. Use this when you want CSO-managed buffering and connection-limit handling for TVHeadend playback.
+- **Custom FFmpeg args**: Headendarr wraps mux streams in an FFmpeg pipe using the configured arguments. Use this when you need a manual remux path instead of CSO.
+
+When **CSO** is selected, the page also exposes the CSO profile used for TVHeadend mux streams.
+When **Custom FFmpeg args** is selected, the page exposes the editable FFmpeg argument field.
+
 ## Accessing the TVHeadend UI
 
 You can access the full TVHeadend UI through the **SHOW TVHEADEND BACKEND** button in the header. This will open a pop-up that shows you the full TVHeadend UI that you can interact with. You can click on a button at the top right-hand corner of the pop-up to open this in a new window for full access and to adjust advanced settings.

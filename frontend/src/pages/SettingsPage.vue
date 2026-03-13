@@ -69,25 +69,6 @@
                 </div>
                 <div>
                   <TicToggleInput
-                    v-model="routeAllTvhThroughCsoStreamBuffer"
-                    @update:model-value="triggerImmediateAutoSave"
-                    label="Use CSO stream buffer for TVHeadend mux streams"
-                    description="Applies to streams published to TVHeadend mux URLs. TVHeadend pulls channel streams through the CSO channel-stream endpoint with TVH remux behaviour."
-                  />
-                  <div v-if="routeAllTvhThroughCsoStreamBuffer" class="sub-setting">
-                    <TicSelectInput
-                      v-model="tvhCsoStreamProfile"
-                      @update:model-value="triggerImmediateAutoSave"
-                      :options="tvhCsoProfileOptions"
-                      label="Default CSO profile for TVHeadend mux streams"
-                      description="Defaults to `mpegts`. If your server has enough capacity, prefer `h264-aac-mpegts` for cleaner output and fewer downstream playback errors."
-                      emit-value
-                      map-options
-                    />
-                  </div>
-                </div>
-                <div>
-                  <TicToggleInput
                     v-model="routePlaylistsThroughTvh"
                     @update:model-value="triggerImmediateAutoSave"
                     label="Route per-source playlists & per-source HDHomeRun via TVHeadend"
@@ -408,10 +389,8 @@
                 <q-item-section>
                   <q-item-label>
                     <q-icon name="swap_horiz" class="q-mr-xs" />
-                    Using <b>Route per-source playlists &amp; per-source HDHomeRun via TVHeadend</b> together with
-                    <b>Use CSO stream buffer for TVHeadend mux streams</b> is typically best when you use TVHeadend
-                    clients (for example Kodi or Sparkle TV), or mixed deployments where some clients connect to
-                    TVHeadend and others connect directly to Headendarr.
+                    TVHeadend mux stream handling now lives on the <b>TVHeadend Settings</b> page, where you can
+                    choose direct, CSO, or custom FFmpeg buffering behaviour for published mux URLs.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -482,8 +461,6 @@ export default defineComponent({
       appUrl: ref(null),
       periodicChannelStreamHealthChecks: ref(true),
       routePlaylistsThroughCso: ref(false),
-      routeAllTvhThroughCsoStreamBuffer: ref(false),
-      tvhCsoStreamProfile: ref('mpegts'),
       routePlaylistsThroughTvh: ref(false),
       cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
@@ -508,8 +485,6 @@ export default defineComponent({
         appUrl: null,
         periodicChannelStreamHealthChecks: true,
         routePlaylistsThroughCso: false,
-        routeAllTvhThroughCsoStreamBuffer: false,
-        tvhCsoStreamProfile: 'mpegts',
         routePlaylistsThroughTvh: false,
         cacheChannelLogos: true,
         streamProfiles: {},
@@ -572,22 +547,6 @@ export default defineComponent({
       lastSavedSettingsSignature: '',
     };
   },
-  computed: {
-    tvhCsoProfileOptions() {
-      const definitions = Array.isArray(this.streamProfileDefinitions) ? this.streamProfileDefinitions : [];
-      const enabledProfiles = this.streamProfiles && typeof this.streamProfiles === 'object' ? this.streamProfiles : {};
-      const mpegtsProfiles = definitions.filter((profile) => (
-        profile.container === 'mpegts' && enabledProfiles[profile.key]?.enabled !== false
-      ));
-      if (!mpegtsProfiles.length) {
-        return [{label: 'mpegts', value: 'mpegts'}];
-      }
-      return mpegtsProfiles.map((profile) => ({
-        label: profile.label || profile.key,
-        value: profile.key,
-      }));
-    },
-  },
   watch: {
     appUrl() {
       if (this.tvhLocal) {
@@ -599,12 +558,6 @@ export default defineComponent({
       this.queueAutoSave();
     },
     periodicChannelStreamHealthChecks() {
-      this.queueAutoSave();
-    },
-    routeAllTvhThroughCsoStreamBuffer() {
-      this.queueAutoSave();
-    },
-    tvhCsoStreamProfile() {
       this.queueAutoSave();
     },
     routePlaylistsThroughTvh() {
@@ -1001,12 +954,6 @@ export default defineComponent({
         }
         if (!this.uiSettings) {
           this.uiSettings = {...this.defSet.uiSettings};
-        }
-        const validTvhProfileValues = new Set(
-          (this.tvhCsoProfileOptions || []).map((item) => String(item?.value || '').trim().toLowerCase()),
-        );
-        if (!validTvhProfileValues.has(String(this.tvhCsoStreamProfile || '').trim().toLowerCase())) {
-          this.tvhCsoStreamProfile = this.defSet.tvhCsoStreamProfile;
         }
         localStorage.setItem('tic_ui_start_page', this.uiSettings.start_page);
         this.prevAdminPassword = this.adminPassword;

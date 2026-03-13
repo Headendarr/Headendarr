@@ -475,8 +475,8 @@ async def api_save_config():
         for key in (
             "tvheadend",
             "dvr",
+            "tvh_stream_buffer_mode",
             "route_playlists_through_tvh",
-            "route_all_tvh_through_cso_stream_buffer",
             "cache_channel_logos",
         )
     )

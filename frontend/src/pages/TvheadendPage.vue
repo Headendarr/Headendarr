@@ -85,14 +85,32 @@
 
                 <h5 class="text-primary q-mt-none q-mb-none">Stream Config</h5>
 
-                <TicToggleInput
-                  v-model="enableStreamBuffer"
-                  label="Enable Stream Buffer"
-                  description="Wrap streams with an FFmpeg pipe. TVHeadend is most reliable with MPEG-TS input; this converts other stream types to TS and improves compatibility."
+                <TicSelectInput
+                  v-model="tvhStreamBufferMode"
+                  @update:model-value="triggerImmediateAutoSave"
+                  :options="streamBufferModeOptions"
+                  label="Stream Buffer"
+                  description="Choose whether TVHeadend connects directly to the published stream, routes through CSO, or uses custom FFmpeg remux arguments."
+                  emit-value
+                  map-options
                 />
 
                 <div
-                  v-if="enableStreamBuffer"
+                  v-if="tvhStreamBufferMode === 'cso'"
+                  class="sub-setting">
+                  <TicSelectInput
+                    v-model="tvhCsoStreamProfile"
+                    @update:model-value="triggerImmediateAutoSave"
+                    :options="tvhCsoProfileOptions"
+                    label="CSO Profile"
+                    description="Defaults to `mpegts`. If your server has enough capacity, prefer `h264-aac-mpegts` for cleaner output and fewer downstream playback errors."
+                    emit-value
+                    map-options
+                  />
+                </div>
+
+                <div
+                  v-if="tvhStreamBufferMode === 'custom_ffmpeg'"
                   class="sub-setting">
                   <q-skeleton
                     v-if="defaultFfmpegPipeArgs === null"
@@ -168,20 +186,9 @@
                 <q-item-section>
                   <q-item-label>
                     <q-icon name="swap_horiz" class="q-mr-xs" />
-                    Stream Buffer improves compatibility but adds light processing overhead because streams are piped
-                    through FFmpeg.
-                    <br />
-                    This Stream Buffer can be replaced by CSO stream buffering via
-                    <b>Application Settings → Use CSO stream buffer for TVHeadend mux streams</b>.
-                  </q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item>
-                <q-item-section>
-                  <q-item-label>
-                    <q-icon name="warning_amber" class="q-mr-xs" />
-                    NOTE: This page and its settings are planned for deprecation as CSO configuration replaces these
-                    TVHeadend stream settings.
+                    Use <b>Disabled</b> when TVHeadend should pull the published source URL directly. Use
+                    <b>CSO</b> for CSO-managed mux pulls and <b>Custom FFmpeg args</b> when you need a manual remux
+                    wrapper.
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -208,7 +215,7 @@ import {defineComponent, ref} from 'vue';
 import axios from 'axios';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
-import {TicNumberInput, TicResponsiveHelp, TicTextareaInput, TicTextInput, TicToggleInput} from 'components/ui';
+import {TicNumberInput, TicResponsiveHelp, TicSelectInput, TicTextareaInput, TicTextInput} from 'components/ui';
 import aioStartupTasks from 'src/mixins/aioFunctionsMixin';
 
 export default defineComponent({
@@ -216,9 +223,9 @@ export default defineComponent({
   components: {
     TicNumberInput,
     TicResponsiveHelp,
+    TicSelectInput,
     TicTextareaInput,
     TicTextInput,
-    TicToggleInput,
   },
 
   setup() {
@@ -238,9 +245,11 @@ export default defineComponent({
       tvhPort: ref(null),
       tvhUsername: ref(null),
       tvhPassword: ref(null),
-      appUrl: ref(null),
-      enableStreamBuffer: ref(null),
+      tvhStreamBufferMode: ref('cso'),
+      tvhCsoStreamProfile: ref('mpegts'),
       defaultFfmpegPipeArgs: ref(null),
+      streamProfiles: ref({}),
+      streamProfileDefinitions: ref([]),
 
       // Defaults
       defSet: ref({
@@ -248,10 +257,28 @@ export default defineComponent({
         tvhPort: '9981',
         tvhUsername: '',
         tvhPassword: '',
-        appUrl: window.location.origin,
-        enableStreamBuffer: true,
+        tvhStreamBufferMode: 'cso',
+        tvhCsoStreamProfile: 'mpegts',
         defaultFfmpegPipeArgs: '-hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1',
+        streamProfiles: {},
       }),
+      streamBufferModeOptions: [
+        {
+          label: 'Disabled',
+          value: 'disabled',
+          description: 'TVHeadend connects directly to the published stream URL.',
+        },
+        {
+          label: 'CSO',
+          value: 'cso',
+          description: 'TVHeadend pulls muxes through the CSO TVH stream path.',
+        },
+        {
+          label: 'Custom FFmpeg args',
+          value: 'custom_ffmpeg',
+          description: 'Wrap mux streams in an FFmpeg pipe using the custom arguments below.',
+        },
+      ],
       isHydratingSettings: true,
       autoSaveTimer: null,
       autoSaveDelayMs: 3000,
@@ -259,6 +286,22 @@ export default defineComponent({
       pendingSaveAfterFlight: false,
       lastSavedSettingsSignature: '',
     };
+  },
+  computed: {
+    tvhCsoProfileOptions() {
+      const definitions = Array.isArray(this.streamProfileDefinitions) ? this.streamProfileDefinitions : [];
+      const enabledProfiles = this.streamProfiles && typeof this.streamProfiles === 'object' ? this.streamProfiles : {};
+      const mpegtsProfiles = definitions.filter((profile) => (
+        profile.container === 'mpegts' && enabledProfiles[profile.key]?.enabled !== false
+      ));
+      if (!mpegtsProfiles.length) {
+        return [{label: 'mpegts', value: 'mpegts'}];
+      }
+      return mpegtsProfiles.map((profile) => ({
+        label: profile.label || profile.key,
+        value: profile.key,
+      }));
+    },
   },
   watch: {
     tvhHost() {
@@ -273,7 +316,10 @@ export default defineComponent({
     tvhPassword() {
       this.queueAutoSave();
     },
-    enableStreamBuffer() {
+    tvhStreamBufferMode() {
+      this.queueAutoSave();
+    },
+    tvhCsoStreamProfile() {
       this.queueAutoSave();
     },
     defaultFfmpegPipeArgs() {
@@ -284,10 +330,32 @@ export default defineComponent({
     convertToCamelCase(str) {
       return str.replace(/([-_][a-z])/g, (group) => group.toUpperCase().replace('-', '').replace('_', ''));
     },
+    normalizeStreamProfileDefinitions(definitions, streamProfiles) {
+      if (Array.isArray(definitions) && definitions.length) {
+        return definitions.map((profile) => ({
+          key: String(profile?.key || '').trim().toLowerCase(),
+          label: String(profile?.label || profile?.key || '').trim(),
+          description: String(profile?.description || '').trim(),
+          container: String(profile?.container || 'mpegts').trim().toLowerCase(),
+        })).filter((profile) => profile.key);
+      }
+      const fallbackMap = streamProfiles && typeof streamProfiles === 'object' ? streamProfiles : {};
+      return Object.keys(fallbackMap).map((key) => ({
+        key,
+        label: key,
+        description: '',
+        container: 'mpegts',
+      }));
+    },
     fetchSettings: function() {
       this.isHydratingSettings = true;
       this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
         const payload = settings || {};
+        this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+          payload.stream_profile_definitions,
+          payload.stream_profiles ?? this.defSet.streamProfiles,
+        );
+        this.streamProfiles = payload.stream_profiles ?? this.defSet.streamProfiles;
         // TVH Connection settings are specially nested (for some reason)
         this.tvhHost = payload.tvheadend.host;
         this.tvhPort = payload.tvheadend.port;
@@ -311,6 +379,18 @@ export default defineComponent({
             this[key] = this.defSet[key];
           }
         });
+        const validStreamBufferModes = new Set(
+          this.streamBufferModeOptions.map((item) => String(item?.value || '').trim().toLowerCase()),
+        );
+        if (!validStreamBufferModes.has(String(this.tvhStreamBufferMode || '').trim().toLowerCase())) {
+          this.tvhStreamBufferMode = this.defSet.tvhStreamBufferMode;
+        }
+        const validTvhProfileValues = new Set(
+          (this.tvhCsoProfileOptions || []).map((item) => String(item?.value || '').trim().toLowerCase()),
+        );
+        if (!validTvhProfileValues.has(String(this.tvhCsoStreamProfile || '').trim().toLowerCase())) {
+          this.tvhCsoStreamProfile = this.defSet.tvhCsoStreamProfile;
+        }
         this.lastSavedSettingsSignature = JSON.stringify(this.buildSettingsPostData().settings);
 
       }).catch(() => {
@@ -333,19 +413,19 @@ export default defineComponent({
           tvheadend: {},
         },
       };
-      // Dynamically populate settings from component data, falling back to defaults
-      Object.keys(this.defSet).forEach((key) => {
-        const snakeCaseKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-
-        if (key.startsWith('tvh')) {
-          // Handle tvheadend settings
-          const tvhKey = key.replace('tvh', '').toLowerCase(); // Convert tvhHost to host, etc.
-          postData.settings.tvheadend[tvhKey] = this[key] ?? this.defSet[key];
-        } else {
-          // Handle other application settings
-          postData.settings[snakeCaseKey] = this[key] ?? this.defSet[key];
-        }
-      });
+      postData.settings.tvheadend = {
+        host: this.tvhHost ?? this.defSet.tvhHost,
+        port: this.tvhPort ?? this.defSet.tvhPort,
+        username: this.tvhUsername ?? this.defSet.tvhUsername,
+        password: this.tvhPassword ?? this.defSet.tvhPassword,
+      };
+      const validStreamBufferModes = new Set(this.streamBufferModeOptions.map((item) => item.value));
+      const streamBufferMode = validStreamBufferModes.has(this.tvhStreamBufferMode)
+        ? this.tvhStreamBufferMode
+        : this.defSet.tvhStreamBufferMode;
+      postData.settings.tvh_stream_buffer_mode = streamBufferMode;
+      postData.settings.tvh_cso_stream_profile = this.tvhCsoStreamProfile ?? this.defSet.tvhCsoStreamProfile;
+      postData.settings.default_ffmpeg_pipe_args = this.defaultFfmpegPipeArgs ?? this.defSet.defaultFfmpegPipeArgs;
       return postData;
     },
     triggerImmediateAutoSave() {

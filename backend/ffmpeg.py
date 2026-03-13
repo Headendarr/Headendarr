@@ -108,8 +108,12 @@ def _tvh_local_cso_ffmpeg_pipe_args():
 def generate_iptv_url(config, url="", service_name="", use_buffer_wrapper=True, force_buffer_wrapper=False):
     if not url.startswith("pipe://") and use_buffer_wrapper:
         settings = config.read_settings()
-        enable_stream_buffer = bool(settings["settings"].get("enable_stream_buffer", False))
-        if enable_stream_buffer or force_buffer_wrapper:
+        # Add compatibility with the old settings (resolve_tvh_stream_buffer_mode)
+        # TODO: Remove this later on
+        from backend.config import resolve_tvh_stream_buffer_mode
+
+        stream_buffer_mode = resolve_tvh_stream_buffer_mode(settings["settings"])
+        if stream_buffer_mode == "custom_ffmpeg" or force_buffer_wrapper:
             ffmpeg_args = settings["settings"]["default_ffmpeg_pipe_args"]
             if _is_local_cso_channel_stream_url(url):
                 ffmpeg_args = _tvh_local_cso_ffmpeg_pipe_args()

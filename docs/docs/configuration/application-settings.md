@@ -34,7 +34,7 @@ These settings define how Headendarr interacts with external services and how cl
   - No-overlap worker: a new scheduler tick does not start a second worker while the previous health-check worker is still running.
 - **Cache channel logos**: Controls whether Headendarr rewrites channel logos to cached `/tic-api/channels/<id>/logo/...` URLs.
   - Enabled (default): channel logos are served from Headendarr cache/proxy URLs.
-  - Disabled: original source logo URLs are emitted in channel payloads, XMLTV, and generated playlists.
+  - Disabled: original source logo URLs are emitted in channel payloads, XMLTV, and generated playlists. Consider using a source like [github.com/tv-logo/tv-logos](https://github.com/tv-logo/tv-logos/) for logos.
 - **Stream Profiles table**:
   - Enable/disable each supported `profile` value exposed on stream and playlist URLs.
   - Configure per-profile hardware acceleration preference (`HW Accel`, VAAPI encode path) for transcoding profiles.
@@ -45,7 +45,7 @@ These settings define how Headendarr interacts with external services and how cl
 
 ### Routing Toggles Explained
 
-Headendarr exposes three routing toggles because they control different traffic families.
+Headendarr exposes two routing toggles here because they control different traffic families.
 They are designed to be combined based on your playback setup.
 
 1. **Use CSO for combined playlists, XC, & combined HDHomeRun**
@@ -61,34 +61,26 @@ They are designed to be combined based on your playback setup.
 - Benefit: TVHeadend applies its own buffering/scanning behaviour and centralises stream handling for TVH clients.
 - Trade-off: adds an extra hop (client -> TVH -> Headendarr/upstream) and depends on TVHeadend reachability.
 
-3. **Use CSO stream buffer for TVHeadend mux streams**
-
-- Scope: TVHeadend mux URLs published by Headendarr.
-- Use this when you want TVHeadend pulls to go through the CSO stream path (including TVH remux profile), not directly to source/HLS-proxy URLs.
-- Benefit: connection-limit tracking and buffering behaviour are handled in the CSO stream path for TVHeadend pulls.
-- Trade-off: when limits are exhausted, playback fails fast with a CSO unavailable/limit response rather than silently over-consuming upstream sessions.
-
 ### How To Choose
 
 - **Direct clients, no TVHeadend required**:
   - Enable combined-through-CSO.
   - Disable per-source-through-TVHeadend.
-  - Optional: disable TVH-through-CSO if TVHeadend is not in use.
 
 - **TVHeadend-first deployment (most clients connect to TVHeadend)**:
   - Enable per-source-through-TVHeadend.
-  - Optionally enable TVH-through-CSO for CSO-managed buffering/limit handling on TVH pulls.
+  - Then configure mux stream handling on **TVHeadend Settings -> Stream Buffer**.
   - Combined-through-CSO is optional for direct combined endpoints.
 
 - **Mixed clients (TVHeadend + direct combined playlists/HDHomeRun)**:
   - Enable combined-through-CSO and per-source-through-TVHeadend together.
-  - Enable TVH-through-CSO if you want TVH pulls and direct CSO paths to share CSO-side limit enforcement behaviour.
+  - Choose **TVHeadend Settings -> Stream Buffer = CSO** if you want TVH pulls and direct CSO paths to share CSO-side limit enforcement behaviour.
 
 ### Connection-Limit Behaviour Notes
 
 - Without TVHeadend routing, direct per-source/combined clients are governed by Headendarr routing and CSO/source checks.
 - With per-source-through-TVHeadend enabled, per-source client playback is mediated by TVHeadend.
-- With TVH-through-CSO also enabled, TVHeadend pulls go through CSO stream handling, improving consistency for mixed-client limit enforcement.
+- With **TVHeadend Settings -> Stream Buffer = CSO**, TVHeadend pulls go through CSO stream handling, improving consistency for mixed-client limit enforcement.
 
 ## User Agents
 

@@ -42,7 +42,7 @@ At a high level:
 
 This design allows multiple local clients to share upstream work while preserving source-limit behaviour.
 
-## CSO-related application settings
+## CSO-related settings
 
 These settings control where CSO is used:
 
@@ -54,11 +54,11 @@ These settings control where CSO is used:
    - Moves per-source playlist/HDHR client traffic through TVHeadend-facing paths.
    - Useful when TVHeadend is your primary stream-facing service.
 
-3. **Use CSO stream buffer for TVHeadend mux streams**
+3. **TVHeadend Settings -> Stream Buffer = CSO**
    - Routes TVHeadend mux pulls through CSO stream paths.
    - Improves consistency of buffering/limit handling for mixed-client setups.
 
-See [Application Settings](./application-settings.md) for exact setting definitions.
+See [Application Settings](./application-settings.md) and [TVHeadend Integration](./tvheadend.md) for exact setting definitions.
 
 ## Profiles and output behaviour
 

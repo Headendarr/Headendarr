@@ -15,6 +15,19 @@ from backend.security import generate_stream_key
 from backend.stream_profiles import SUPPORTED_STREAM_PROFILES
 
 
+def resolve_tvh_stream_buffer_mode(settings_section):
+    buffer_mode = str(settings_section.get("tvh_stream_buffer_mode") or "").strip().lower()
+    if buffer_mode in {"disabled", "cso", "custom_ffmpeg"}:
+        return buffer_mode
+    # Add compatibility with the old settings
+    # TODO: Remove this later on
+    if bool(settings_section.get("route_all_tvh_through_cso_stream_buffer", False)):
+        return "cso"
+    if bool(settings_section.get("enable_stream_buffer", False)):
+        return "custom_ffmpeg"
+    return "disabled"
+
+
 def get_home_dir():
     home_dir = os.environ.get("HOME_DIR")
     if home_dir is None:
@@ -191,7 +204,7 @@ class Config:
                 "app_url": None,
                 "route_playlists_through_cso": True,
                 "periodic_channel_stream_health_checks": True,
-                "route_all_tvh_through_cso_stream_buffer": True,
+                "tvh_stream_buffer_mode": "cso",
                 "tvh_cso_stream_profile": "mpegts",
                 "route_playlists_through_tvh": False,
                 "cache_channel_logos": True,
@@ -215,7 +228,6 @@ class Config:
                     },
                 ],
                 "admin_password": "admin",
-                "enable_stream_buffer": True,
                 "default_ffmpeg_pipe_args": "-hide_banner -loglevel error "
                 "-probesize 10M -analyzeduration 0 -fpsprobesize 0 "
                 "-i [URL] -c copy -metadata service_name=[SERVICE_NAME] "
@@ -271,6 +283,31 @@ class Config:
     def read_settings(self):
         yaml_settings = self.read_config_yaml()
         self.settings = recursive_dict_update(copy.deepcopy(self.default_settings), yaml_settings)
+        settings_section = self.settings.get("settings")
+
+        # --- Temp migration from old TVH stream buffer settings.
+        # TODO: Remove this later on...
+        raw_settings_section = yaml_settings.get("settings")
+        legacy_tvh_stream_buffer_keys_present = any(
+            key in raw_settings_section
+            for key in (
+                "route_all_tvh_through_cso_stream_buffer",
+                "enable_stream_buffer",
+            )
+        )
+        has_explicit_tvh_stream_buffer_mode = "tvh_stream_buffer_mode" in raw_settings_section
+        resolved_tvh_stream_buffer_mode = None
+        if has_explicit_tvh_stream_buffer_mode or legacy_tvh_stream_buffer_keys_present:
+            resolved_tvh_stream_buffer_mode = resolve_tvh_stream_buffer_mode(raw_settings_section)
+
+        if isinstance(settings_section, dict) and resolved_tvh_stream_buffer_mode is not None:
+            # Temporary migration bridge: read legacy keys, materialise the new mode, then persist it.
+            settings_section["tvh_stream_buffer_mode"] = resolved_tvh_stream_buffer_mode
+            if legacy_tvh_stream_buffer_keys_present:
+                self._normalize_settings(self.settings)
+                self.write_settings_yaml(self.settings)
+        # ---
+
         return self.settings
 
     def _normalize_settings(self, settings):

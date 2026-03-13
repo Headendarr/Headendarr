@@ -69,7 +69,7 @@ In testing, web playback (for example Chrome/web player) can behave better than 
 ### Steps
 
 1. In Headendarr **Application Settings**, enable **Route per-source playlists & per-source HDHomeRun via TVHeadend**.
-2. In Headendarr **Application Settings**, enable **Use CSO stream buffer for TVHeadend mux streams**.
+2. In Headendarr **TVHeadend Settings**, set **Stream Buffer** to **CSO**.
 3. In Jellyfin's **Live TV** settings page, click **Add tuner device** and complete these steps:
    1. On the next page, select **HD Homerun** as the tuner type.
    2. Copy the tuner URL from **HDHomeRun Tuner Emulators** in **Show connection details** and paste it into the **Tuner IP Address** field.

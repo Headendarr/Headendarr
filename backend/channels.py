@@ -2467,9 +2467,13 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
 
 async def publish_channel_muxes(config):
     settings = config.read_settings()
-    route_all_tvh_through_cso_stream_buffer = bool(
-        settings.get("settings", {}).get("route_all_tvh_through_cso_stream_buffer", False)
-    )
+    # Add compatibility with the old settings (resolve_tvh_stream_buffer_mode)
+    # TODO: Remove this later on
+    from backend.config import resolve_tvh_stream_buffer_mode
+
+    tvh_stream_buffer_mode = resolve_tvh_stream_buffer_mode(settings["settings"])
+    use_cso_tvh_stream_buffer = tvh_stream_buffer_mode == "cso"
+    use_tvh_stream_buffer_wrapper = tvh_stream_buffer_mode != "disabled"
     tvh_stream_username, tvh_stream_key = await get_tvh_stream_auth(config)
     try:
         tic_base_url = await get_tvh_publish_base_url(config)
@@ -2619,7 +2623,7 @@ async def publish_channel_muxes(config):
                         mux_name = f"{mux_name} [{url_hash}]"
                     if not mux_name.lower().startswith("tic-"):
                         mux_name = f"tic-{mux_name}"
-                    if route_all_tvh_through_cso_stream_buffer and source_obj.id:
+                    if use_cso_tvh_stream_buffer and source_obj.id:
                         stream_url = build_cso_source_stream_url(
                             base_url=tic_base_url,
                             stream_id=source_obj.id,
@@ -2643,7 +2647,7 @@ async def publish_channel_muxes(config):
                         url=stream_url,
                         service_name=service_name,
                         use_buffer_wrapper=True,
-                        force_buffer_wrapper=True,
+                        force_buffer_wrapper=use_tvh_stream_buffer_wrapper,
                     )
                     channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
                     mux_conf = {

@@ -85,8 +85,8 @@ For Plex, the recommended workarounds are:
 
 1. **Option #1 (most reliable):** Enable **Route per-source playlists & per-source HDHomeRun via TVHeadend** in **Application Settings**.
    This applies to per-source endpoints and makes TVHeadend the stream client for those routes.
-   For best stability with CSO-backed mux paths, also enable **Use CSO stream buffer for TVHeadend mux streams**.
-   Ensure **TVHeadend Settings** has an FFmpeg stream buffer enabled, for example:
+   For best stability with CSO-backed mux paths, set **TVHeadend Settings -> Stream Buffer** to **CSO**.
+   If you prefer a manual FFmpeg wrapper instead, set **TVHeadend Settings -> Stream Buffer** to **Custom FFmpeg args**, for example:
 
 ```bash
 -hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1
