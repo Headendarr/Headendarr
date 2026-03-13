@@ -233,8 +233,9 @@ class StreamProbe:
         speed = probe.get("avg_speed", 0)
         bitrate = probe.get("avg_bitrate", 0)
         errors = self.report.get("errors", [])
+        has_usable_media = bool(self.report.get("media")) or speed > 0 or bitrate > 50000
 
-        if errors:
+        if errors and not has_usable_media:
             probe["health"] = "critical"
             probe["summary"] = f"Test failed: {errors[0]}"
             return
@@ -246,6 +247,24 @@ class StreamProbe:
             else:
                 probe["health"] = "critical"
                 probe["summary"] = "No data received. The stream appears to be offline or blocked."
+            return
+
+        if errors:
+            if speed >= 1.05:
+                probe["health"] = "good"
+                probe["summary"] = (
+                    f"Stream delivered media successfully ({speed:.2f}x) despite transient probe errors: {errors[0]}"
+                )
+            elif speed >= 0.9:
+                probe["health"] = "fair"
+                probe["summary"] = (
+                    f"Stream delivered media with transient probe errors; playback may be unstable ({speed:.2f}x)."
+                )
+            else:
+                probe["health"] = "poor"
+                probe["summary"] = (
+                    f"Stream delivered media but performance was weak and probe errors occurred ({speed:.2f}x)."
+                )
             return
 
         if speed < 0.9:

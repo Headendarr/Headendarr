@@ -108,16 +108,24 @@ def _classify_health_result(probe: StreamProbe):
     avg_bitrate = float(probe_data.get("avg_bitrate") or 0)
     errors = [str(item).strip() for item in (report.get("errors") or []) if str(item).strip()]
     probe_health = str(probe_data.get("health") or "").strip().lower()
+    media = report.get("media") or {}
+    has_usable_media = bool(media) or avg_speed > 0 or avg_bitrate > 50_000
 
     if str(getattr(probe, "status", "")).strip().lower() == "cancelled":
         return "cancelled", "preempted", avg_speed, avg_bitrate, errors
-    if errors:
-        return "unhealthy", "unreachable", avg_speed, avg_bitrate, errors
+    if not has_usable_media:
+        if errors or probe_health in {"critical", "unknown"}:
+            return "unhealthy", "unreachable", avg_speed, avg_bitrate, errors
+        return "unhealthy", "unstable", avg_speed, avg_bitrate, errors
     if avg_speed > 0 and avg_speed < 0.9:
         return "unhealthy", "too_slow", avg_speed, avg_bitrate, errors
-    if probe_health in {"poor", "critical"}:
+    if probe_health == "poor":
         return "unhealthy", "too_slow", avg_speed, avg_bitrate, errors
     if avg_bitrate <= 50_000:
+        return "unhealthy", "unstable", avg_speed, avg_bitrate, errors
+    if errors:
+        if avg_speed >= 1.05:
+            return "healthy", "healthy", avg_speed, avg_bitrate, errors
         return "unhealthy", "unstable", avg_speed, avg_bitrate, errors
     return "healthy", "healthy", avg_speed, avg_bitrate, errors
 

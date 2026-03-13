@@ -165,11 +165,28 @@ def _serialize_channel_stream_row(row):
         source_id = details_payload.get("source_id") or details_payload.get("failed_source_id")
         return_code = details_payload.get("return_code")
         ffmpeg_error = details_payload.get("ffmpeg_error")
+        metrics = details_payload.get("metrics") or {}
+        avg_speed = metrics.get("avg_speed")
+        avg_bitrate = metrics.get("avg_bitrate")
         segments = []
         if reason:
             segments.append(f"reason={reason}")
         if source_id:
             segments.append(f"source={source_id}")
+        if avg_speed is not None:
+            try:
+                speed_value = float(avg_speed)
+            except (TypeError, ValueError):
+                speed_value = 0.0
+            if speed_value > 0:
+                segments.append(f"avg_speed={speed_value:.2f}x")
+        if avg_bitrate is not None:
+            try:
+                bitrate_value = float(avg_bitrate)
+            except (TypeError, ValueError):
+                bitrate_value = 0.0
+            if bitrate_value > 0:
+                segments.append(f"avg_bitrate={bitrate_value / 1000000:.2f} Mbps")
         if return_code is not None:
             segments.append(f"return_code={return_code}")
         if ffmpeg_error:
