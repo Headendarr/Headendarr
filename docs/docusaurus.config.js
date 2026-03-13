@@ -13,6 +13,15 @@ const config = {
   title: 'Headendarr',
   tagline: 'Self-Hosted IPTV Management & EPG Aggregator for TVHeadend',
   favicon: 'img/icon.png',
+  headTags: [
+    {
+      tagName: 'meta',
+      attributes: {
+        name: 'algolia-site-verification',
+        content: 'A02941BD5047B3FA',
+      },
+    },
+  ],
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
