@@ -31,7 +31,7 @@ from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_u
 from backend.url_resolver import get_request_base_url
 from backend.utils import fast_url_hash, parse_entity_id, is_truthy
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog
+from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog, Playlist
 from backend.datetime_utils import to_utc_iso
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
@@ -98,13 +98,22 @@ async def _fetch_cso_attention_map(channel_ids):
         )
         rows = result.scalars().all()
         sources_result = await session.execute(
-            select(ChannelSource.channel_id, ChannelSource.id).where(ChannelSource.channel_id.in_(normalized_ids))
+            select(
+                ChannelSource.channel_id,
+                ChannelSource.id,
+                ChannelSource.playlist_id,
+                Playlist.enabled,
+            )
+            .outerjoin(Playlist, ChannelSource.playlist_id == Playlist.id)
+            .where(ChannelSource.channel_id.in_(normalized_ids))
         )
         active_sources_by_channel = {}
-        for channel_id, source_id in sources_result.all():
+        for channel_id, source_id, playlist_id, playlist_enabled in sources_result.all():
             channel_key = int(channel_id or 0)
             source_key = int(source_id or 0)
             if channel_key <= 0 or source_key <= 0:
+                continue
+            if playlist_id is not None and not bool(playlist_enabled):
                 continue
             active_sources_by_channel.setdefault(channel_key, set()).add(source_key)
 
