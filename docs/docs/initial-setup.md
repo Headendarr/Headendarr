@@ -34,7 +34,7 @@ If you ever forget your admin password or need to reset it for any reason, you c
 Before adding any sources, it's a good idea to familiarise yourself with the application's settings.
 
 1.  Navigate to **TVHeadend** the side menu. Review the TVHeadend server specific config options.
-2.  Navigate to **Settings** the side menu. Review the options and adjust as you see fit. See the [Application Settings](./configuration/application-settings) guide for a full explanation of each option.
+2.  Navigate to **Settings** the side menu. Review the options and adjust as you see fit. See the [Application Settings](/configuration/application-settings/) guide for a full explanation of each option.
 
 ## 3. Add a Channel Source
 

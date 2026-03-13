@@ -141,5 +141,5 @@ For detailed performance analysis, use the built-in **Stream Diagnostics** tool.
 4.  Review the **Average Speed** and **Bitrate** results. A speed consistently below **1.0x** is the primary cause of buffering.
 
 :::info Interpreting results
-For a detailed guide on understanding these results and fixing buffering issues, see the [Troubleshooting Stream Stability](../guides/troubleshooting-streams) guide.
+For a detailed guide on understanding these results and fixing buffering issues, see the [Troubleshooting Stream Stability](/guides/troubleshooting-streams/) guide.
 :::
