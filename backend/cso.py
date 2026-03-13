@@ -12,7 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import aiohttp
 import aiofiles
@@ -1908,6 +1908,8 @@ class CsoIngestSession:
             for candidate_url in source_urls:
                 variants = await _discover_hls_variants(candidate_url)
                 variant_position = None
+                ingest_url = candidate_url
+                ingest_program_index = int(remembered_program_index or 0)
                 if variants:
                     if remembered_program_index is not None:
                         for idx, item in enumerate(variants):
@@ -1916,7 +1918,10 @@ class CsoIngestSession:
                                 break
                     if variant_position is None:
                         variant_position = len(variants) - 1
-                    program_index = int(variants[variant_position].get("program_index") or 0)
+                    selected_variant = variants[variant_position]
+                    program_index = int(selected_variant.get("program_index") or 0)
+                    ingest_url = (selected_variant.get("variant_url") or "").strip() or candidate_url
+                    ingest_program_index = int(selected_variant.get("ffmpeg_program_index") or 0)
                 else:
                     program_index = int(remembered_program_index or 0)
                     if remembered_program_index is not None:
@@ -1928,8 +1933,8 @@ class CsoIngestSession:
                             program_index,
                         )
                 try:
-                    process = await self._spawn_ingest_process(candidate_url, program_index, source=source)
-                    resolved_url = candidate_url
+                    process = await self._spawn_ingest_process(ingest_url, ingest_program_index, source=source)
+                    resolved_url = ingest_url
                     break
                 except Exception as exc:
                     last_error = exc
@@ -1945,7 +1950,7 @@ class CsoIngestSession:
                             "reason": "ingest_start_failed",
                             "pipeline": "ingest",
                             "error": str(exc),
-                            **_source_event_context(source, source_url=candidate_url),
+                            **_source_event_context(source, source_url=ingest_url),
                         },
                     )
                     continue
@@ -4244,15 +4249,16 @@ async def _discover_hls_variants(url):
                 payload = await response.text()
     except Exception:
         return []
-    return _parse_hls_master_variants(payload)
+    return _parse_hls_playlist_variants(url, payload)
 
 
-def _parse_hls_master_variants(payload):
+def _parse_hls_playlist_variants(base_url, payload):
     lines = [line.strip() for line in (payload or "").splitlines() if line.strip()]
     variants = []
     pending_bandwidth = None
     pending_width = 0
     pending_height = 0
+    is_media_playlist = False
     for line in lines:
         if line.startswith("#EXT-X-STREAM-INF:"):
             bandwidth_match = _HLS_BANDWIDTH_RE.search(line)
@@ -4261,24 +4267,44 @@ def _parse_hls_master_variants(payload):
             pending_width = int(resolution_match.group(1)) if resolution_match else 0
             pending_height = int(resolution_match.group(2)) if resolution_match else 0
             continue
+        if line.startswith(("#EXTINF", "#EXT-X-TARGETDURATION", "#EXT-X-MEDIA-SEQUENCE")):
+            is_media_playlist = True
         if line.startswith("#"):
             continue
         if pending_bandwidth is None:
             # Not a master playlist variant entry.
             continue
+        variant_url = urljoin(base_url, line)
         variants.append(
             {
                 "bandwidth": pending_bandwidth,
                 "width": pending_width,
                 "height": pending_height,
                 "program_index": len(variants),
+                "variant_url": variant_url,
+                "ffmpeg_program_index": 0,
+                "playlist_type": "master",
             }
         )
         pending_bandwidth = None
         pending_width = 0
         pending_height = 0
-    variants.sort(key=lambda item: int(item.get("bandwidth") or 0))
-    return variants
+    if variants:
+        variants.sort(key=lambda item: int(item.get("bandwidth") or 0))
+        return variants
+    if is_media_playlist:
+        return [
+            {
+                "bandwidth": 0,
+                "width": 0,
+                "height": 0,
+                "program_index": 0,
+                "variant_url": base_url,
+                "ffmpeg_program_index": 0,
+                "playlist_type": "media",
+            }
+        ]
+    return []
 
 
 async def resolve_channel_for_stream(channel_id):
