@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps, lru_cache
 
-from quart import request, jsonify, make_response, has_request_context, has_websocket_context, websocket, current_app
+from quart import (
+    request,
+    jsonify,
+    make_response,
+    has_app_context,
+    has_request_context,
+    has_websocket_context,
+    websocket,
+    current_app,
+)
 from sqlalchemy import delete, select, update, or_
 from sqlalchemy.orm import selectinload
 
@@ -545,7 +554,8 @@ async def audit_stream_event(
 
 
 async def cleanup_stream_audit_logs(retention_days: int | None = None) -> int:
-    settings = config.read_settings()
+    app_config = current_app.config.get("APP_CONFIG") if has_app_context() else None
+    settings = app_config.read_settings() if app_config else config.Config().read_settings()
     configured_days = settings.get("settings", {}).get("audit_log_retention_days", 7)
     try:
         days = int(retention_days if retention_days is not None else configured_days)
