@@ -9,6 +9,7 @@ from sqlalchemy import select, and_, cast, Integer
 from backend.api import blueprint
 from backend.auth import streamer_or_admin_required
 from backend.channels import read_config_all_channels
+from backend.dummy_epg import DUMMY_EPG_SOURCE_ID, build_dummy_epg_programmes, sanitise_dummy_epg_interval
 from backend.epgs import _shift_xmltv_window
 from backend.models import Session, EpgChannels, EpgChannelProgrammes
 
@@ -50,29 +51,37 @@ async def api_guide_grid():
         and channel.get("guide", {}).get("epg_id")
         and channel.get("guide", {}).get("channel_id")
     ]
+    dummy_guide_channels = [
+        channel for channel in guide_channels if channel.get("guide", {}).get("epg_id") == DUMMY_EPG_SOURCE_ID
+    ]
+    mapped_guide_channels = [
+        channel for channel in guide_channels if channel.get("guide", {}).get("epg_id") != DUMMY_EPG_SOURCE_ID
+    ]
 
     if not guide_channels:
         return jsonify({"success": True, "channels": [], "programmes": []})
 
-    pairs = {(c["guide"]["epg_id"], c["guide"]["channel_id"]) for c in guide_channels}
+    pairs = {(c["guide"]["epg_id"], c["guide"]["channel_id"]) for c in mapped_guide_channels}
     epg_ids = {p[0] for p in pairs}
     channel_ids = {p[1] for p in pairs}
-    offset_minutes = [int(channel.get("guide", {}).get("offset_minutes", 0) or 0) for channel in guide_channels]
+    offset_minutes = [int(channel.get("guide", {}).get("offset_minutes", 0) or 0) for channel in mapped_guide_channels]
     min_offset_seconds = min(offset_minutes, default=0) * 60
     max_offset_seconds = max(offset_minutes, default=0) * 60
     query_start_ts = start_ts - max_offset_seconds
     query_end_ts = end_ts - min_offset_seconds
 
     async with Session() as session:
-        result = await session.execute(
-            select(EpgChannels).where(
-                and_(
-                    EpgChannels.epg_id.in_(epg_ids),
-                    EpgChannels.channel_id.in_(channel_ids),
+        epg_channels = []
+        if pairs:
+            result = await session.execute(
+                select(EpgChannels).where(
+                    and_(
+                        EpgChannels.epg_id.in_(epg_ids),
+                        EpgChannels.channel_id.in_(channel_ids),
+                    )
                 )
             )
-        )
-        epg_channels = result.scalars().all()
+            epg_channels = result.scalars().all()
         epg_by_pair = {}
         for epg_channel in epg_channels:
             epg_by_pair[(epg_channel.epg_id, epg_channel.channel_id)] = epg_channel.id
@@ -105,7 +114,7 @@ async def api_guide_grid():
                 )
 
         channel_pair_map = defaultdict(list)
-        for channel in guide_channels:
+        for channel in mapped_guide_channels:
             pair = (channel["guide"]["epg_id"], channel["guide"]["channel_id"])
             epg_channel_id = epg_by_pair.get(pair)
             if epg_channel_id:
@@ -137,6 +146,21 @@ async def api_guide_grid():
                 # as Vue uses it for list keys.
                 prog_copy["id"] = f"{programme['id']}-{i}"
                 mapped_programmes.append(prog_copy)
+
+        for channel in dummy_guide_channels:
+            interval_minutes = sanitise_dummy_epg_interval(
+                channel.get("guide", {}).get("dummy_interval_minutes"),
+            )
+            mapped_programmes.extend(
+                build_dummy_epg_programmes(
+                    channel_id=channel["id"],
+                    channel_name=channel.get("name"),
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    interval_minutes=interval_minutes,
+                    offset_minutes=int(channel.get("guide", {}).get("offset_minutes", 0) or 0),
+                )
+            )
 
         return jsonify(
             {

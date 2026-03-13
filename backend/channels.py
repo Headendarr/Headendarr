@@ -19,6 +19,15 @@ import requests
 from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_, update
 from sqlalchemy.orm import joinedload, selectinload
 
+from backend import config as app_config
+from backend.dummy_epg import (
+    DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+    DUMMY_EPG_SOURCE_ID,
+    DUMMY_EPG_SOURCE_NAME,
+    build_dummy_epg_channel_key,
+    parse_dummy_epg_channel_key,
+    sanitise_dummy_epg_interval,
+)
 from backend.ffmpeg import generate_iptv_url
 from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import (
@@ -279,6 +288,95 @@ def _write_json_file(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _dummy_epg_state_path(config_override=None):
+    config_root = getattr(config_override, "config_path", None) or app_config.config_path
+    return os.path.join(config_root, "cache", "channel_dummy_epg.json")
+
+
+def _read_dummy_epg_state(config_override=None):
+    payload = _read_json_file(_dummy_epg_state_path(config_override), {})
+    channels_payload = payload.get("channels", {}) if isinstance(payload, dict) else {}
+    return channels_payload if isinstance(channels_payload, dict) else {}
+
+
+def _write_dummy_epg_state(state, config_override=None):
+    _write_json_file(
+        _dummy_epg_state_path(config_override),
+        {
+            "channels": state,
+            "updated_at": int(time.time()),
+        },
+    )
+
+
+def _read_channel_dummy_epg_settings(channel_id, config_override=None):
+    state = _read_dummy_epg_state(config_override)
+    entry = state.get(str(channel_id))
+    if not isinstance(entry, dict):
+        return None
+    interval_minutes = sanitise_dummy_epg_interval(
+        entry.get("interval_minutes"),
+        default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+    )
+    return {
+        "interval_minutes": interval_minutes,
+        "channel_key": build_dummy_epg_channel_key(interval_minutes),
+    }
+
+
+def _set_channel_dummy_epg_settings(channel_id, interval_minutes, config_override=None):
+    state = _read_dummy_epg_state(config_override)
+    if interval_minutes is None:
+        state.pop(str(channel_id), None)
+    else:
+        state[str(channel_id)] = {
+            "interval_minutes": sanitise_dummy_epg_interval(
+                interval_minutes,
+                default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+            )
+        }
+    _write_dummy_epg_state(state, config_override)
+
+
+def _resolve_dummy_epg_settings_from_guide(guide_info):
+    if not isinstance(guide_info, dict):
+        return None
+    if str(guide_info.get("epg_id") or "").strip() != DUMMY_EPG_SOURCE_ID:
+        return None
+    interval_minutes = parse_dummy_epg_channel_key(guide_info.get("channel_id"))
+    if interval_minutes is None:
+        interval_minutes = sanitise_dummy_epg_interval(
+            guide_info.get("dummy_interval_minutes"),
+            default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+        )
+    return {
+        "interval_minutes": interval_minutes,
+        "channel_key": build_dummy_epg_channel_key(interval_minutes),
+    }
+
+
+def _merge_channel_dummy_epg_payload(channel_payload, dummy_settings):
+    payload = dict(channel_payload or {})
+    guide_payload = dict(payload.get("guide") or {})
+    if dummy_settings:
+        interval_minutes = sanitise_dummy_epg_interval(
+            dummy_settings.get("interval_minutes"),
+            default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+        )
+        guide_payload.update(
+            {
+                "epg_id": DUMMY_EPG_SOURCE_ID,
+                "epg_name": DUMMY_EPG_SOURCE_NAME,
+                "channel_id": build_dummy_epg_channel_key(interval_minutes),
+                "dummy_interval_minutes": interval_minutes,
+            }
+        )
+    else:
+        guide_payload.pop("dummy_interval_minutes", None)
+    payload["guide"] = guide_payload
+    return payload
 
 
 def read_logo_health_map(config):
@@ -1069,6 +1167,7 @@ async def read_config_all_channels(
         filter_playlist_ids = []
 
     return_list = []
+    dummy_epg_state = _read_dummy_epg_state()
 
     async with Session() as session:
         async with session.begin():
@@ -1127,22 +1226,25 @@ async def read_config_all_channels(
                 if output_for_export:
                     cso_profile = profile_from_cso_policy(getattr(result, "cso_policy", None))
                     return_list.append(
-                        {
-                            "enabled": result.enabled,
-                            "name": result.name,
-                            "logo_url": result.logo_url,
-                            "number": result.number,
-                            "cso_enabled": bool(getattr(result, "cso_enabled", False)),
-                            "cso_policy": {"profile": cso_profile},
-                            "cso_profile": cso_profile,
-                            "tags": tags,
-                            "guide": {
-                                "epg_name": result.guide_name,
-                                "channel_id": result.guide_channel_id,
-                                "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
+                        _merge_channel_dummy_epg_payload(
+                            {
+                                "enabled": result.enabled,
+                                "name": result.name,
+                                "logo_url": result.logo_url,
+                                "number": result.number,
+                                "cso_enabled": bool(getattr(result, "cso_enabled", False)),
+                                "cso_policy": {"profile": cso_profile},
+                                "cso_profile": cso_profile,
+                                "tags": tags,
+                                "guide": {
+                                    "epg_name": result.guide_name,
+                                    "channel_id": result.guide_channel_id,
+                                    "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
+                                },
+                                "sources": sources,
                             },
-                            "sources": sources,
-                        }
+                            dummy_epg_state.get(str(result.id)),
+                        )
                     )
                     continue
                 channel_payload = {
@@ -1165,6 +1267,10 @@ async def read_config_all_channels(
                     },
                     "sources": sources,
                 }
+                channel_payload = _merge_channel_dummy_epg_payload(
+                    channel_payload,
+                    dummy_epg_state.get(str(result.id)),
+                )
                 return_list.append(channel_payload)
 
     return return_list
@@ -1173,6 +1279,7 @@ async def read_config_all_channels(
 async def read_config_one_channel(channel_id):
     return_item = {}
     channel_id = parse_entity_id(channel_id, "channel")
+    dummy_settings = _read_channel_dummy_epg_settings(channel_id)
     async with Session() as session:
         result_query = await session.execute(
             select(Channel)
@@ -1226,6 +1333,7 @@ async def read_config_one_channel(channel_id):
             },
             "sources": sources,
         }
+        return_item = _merge_channel_dummy_epg_payload(return_item, dummy_settings)
     return return_item
 
 
@@ -1351,7 +1459,13 @@ async def add_new_channel(config, data, commit=True):
             channel.tags.append(channel_tag)
 
         guide_info = data.get("guide", {})
-        if guide_info.get("epg_id"):
+        dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
+        if dummy_epg_settings:
+            channel.guide_id = None
+            channel.guide_name = None
+            channel.guide_channel_id = None
+            channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+        elif guide_info.get("epg_id"):
             query = await session.execute(select(Epg).where(Epg.id == guide_info["epg_id"]))
             channel_guide_source = query.scalar_one()
             channel.guide_id = channel_guide_source.id
@@ -1449,6 +1563,11 @@ async def add_new_channel(config, data, commit=True):
             await session.commit()
         else:
             await session.flush()
+        _set_channel_dummy_epg_settings(
+            channel.id,
+            dummy_epg_settings.get("interval_minutes") if dummy_epg_settings else None,
+            config,
+        )
         return channel
 
 
@@ -1478,6 +1597,10 @@ async def update_channels_order(config, data):
 async def update_channel(config, channel_id, data):
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
+    dummy_epg_settings_existing = _read_channel_dummy_epg_settings(channel_id, config)
+    dummy_epg_interval_to_persist = (
+        dummy_epg_settings_existing.get("interval_minutes") if dummy_epg_settings_existing else None
+    )
     async with Session() as session:
         async with session.begin():
             query = await session.execute(
@@ -1521,7 +1644,14 @@ async def update_channel(config, channel_id, data):
 
             # Programme Guide
             guide_info = data.get("guide", {})
-            if guide_info.get("epg_id"):
+            dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
+            if dummy_epg_settings:
+                channel.guide_id = None
+                channel.guide_name = None
+                channel.guide_channel_id = None
+                channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+                dummy_epg_interval_to_persist = dummy_epg_settings.get("interval_minutes")
+            elif guide_info.get("epg_id"):
                 query = await session.execute(select(Epg).filter(Epg.id == guide_info["epg_id"]))
                 channel_guide_source = query.scalar_one_or_none()
                 if channel_guide_source:
@@ -1529,16 +1659,19 @@ async def update_channel(config, channel_id, data):
                     channel.guide_name = guide_info.get("epg_name")
                     channel.guide_channel_id = guide_info.get("channel_id")
                     channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+                    dummy_epg_interval_to_persist = None
                 else:
                     channel.guide_id = None
                     channel.guide_name = None
                     channel.guide_channel_id = None
                     channel.guide_offset_minutes = 0
+                    dummy_epg_interval_to_persist = None
             elif "guide" in data:
                 channel.guide_id = None
                 channel.guide_name = None
                 channel.guide_channel_id = None
                 channel.guide_offset_minutes = 0
+                dummy_epg_interval_to_persist = None
 
             # Skip source reconciliation when the incoming payload has no effective
             # source changes and there are no explicit source refresh requests.
@@ -1577,6 +1710,7 @@ async def update_channel(config, channel_id, data):
 
             if not should_reconcile_sources:
                 await session.commit()
+                _set_channel_dummy_epg_settings(channel_id, dummy_epg_interval_to_persist, config)
                 return
 
             # Sources
@@ -1937,6 +2071,7 @@ async def update_channel(config, channel_id, data):
 
             # Commit
             await session.commit()
+    _set_channel_dummy_epg_settings(channel_id, dummy_epg_interval_to_persist, config)
 
 
 async def add_bulk_channels(config, data):
@@ -2067,6 +2202,7 @@ async def delete_channel(channel_id):
             # Remove channel from DB
             await session.delete(channel)
             await session.commit()
+            _set_channel_dummy_epg_settings(channel_id, None)
             return True
 
 

@@ -24,7 +24,13 @@ from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
 from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger, exists, update
-from backend.channels import build_channel_logo_output_url
+from backend.dummy_epg import (
+    DUMMY_EPG_XMLTV_DAYS,
+    build_dummy_epg_programmes,
+    sanitise_dummy_epg_interval,
+    xmltv_datetime_from_timestamp,
+)
+from backend.channels import build_channel_logo_output_url, _read_channel_dummy_epg_settings
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes, EpgProgrammeMetadataCache
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import as_naive_utc, parse_entity_id
@@ -1483,6 +1489,37 @@ async def read_epg_online_metadata_no_matches(search_query="", limit=100, offset
 XMLTV_HOST_PLACEHOLDER = "__TIC_HOST__"
 
 
+def _append_dummy_programmes_to_xml(output_root, channel_info, now_ts):
+    interval_minutes = sanitise_dummy_epg_interval(
+        channel_info.get("dummy_interval_minutes"),
+    )
+    window_start_ts = now_ts
+    window_end_ts = now_ts + (DUMMY_EPG_XMLTV_DAYS * 24 * 60 * 60)
+    dummy_programmes = build_dummy_epg_programmes(
+        channel_id=channel_info["channel_id"],
+        channel_name=channel_info["display_name"],
+        start_ts=window_start_ts,
+        end_ts=window_end_ts,
+        interval_minutes=interval_minutes,
+        offset_minutes=channel_info.get("guide_offset_minutes") or 0,
+    )
+    for dummy_programme in dummy_programmes:
+        output_programme = ET.SubElement(output_root, "programme")
+        output_programme.set("start", xmltv_datetime_from_timestamp(dummy_programme["start_ts"]) or "")
+        output_programme.set("stop", xmltv_datetime_from_timestamp(dummy_programme["stop_ts"]) or "")
+        output_programme.set("start_timestamp", str(dummy_programme["start_ts"]))
+        output_programme.set("stop_timestamp", str(dummy_programme["stop_ts"]))
+        output_programme.set("channel", str(channel_info["channel_id"]))
+
+        title_el = ET.SubElement(output_programme, "title")
+        title_el.text = dummy_programme["title"]
+        title_el.set("lang", "en")
+
+        desc_el = ET.SubElement(output_programme, "desc")
+        desc_el.text = dummy_programme["desc"]
+        desc_el.set("lang", "en")
+
+
 def render_xmltv_payload(config, base_url: str) -> str:
     file_path = os.path.join(config.config_path, "epg.xml")
     with open(file_path, "r", encoding="utf-8") as epg_file:
@@ -1524,6 +1561,7 @@ async def build_custom_epg(config, throttle=False):
     logger.info("Generating custom EPG for TVH based on configured channels.")
     total_start = time.perf_counter()
     phase_seconds = {}
+    now_ts = int(datetime.now(tz=timezone.utc).timestamp())
 
     async def maybe_yield():
         if throttle:
@@ -1558,6 +1596,9 @@ async def build_custom_epg(config, throttle=False):
                 "tags": [tag.name for tag in result.tags],
                 "guide_offset_minutes": int(getattr(result, "guide_offset_minutes", 0) or 0),
                 "source_key": (result.guide_id, result.guide_channel_id),
+                "dummy_interval_minutes": (
+                    (_read_channel_dummy_epg_settings(result.id, config) or {}).get("interval_minutes")
+                ),
             }
         )
         if result.guide_id and result.guide_channel_id:
@@ -1645,6 +1686,10 @@ async def build_custom_epg(config, throttle=False):
         channel_id = channel_info["channel_id"]
         channel_tags = channel_info["tags"]
         guide_offset_minutes = int(channel_info.get("guide_offset_minutes") or 0)
+        if channel_info.get("dummy_interval_minutes"):
+            _append_dummy_programmes_to_xml(output_root, channel_info, now_ts)
+            await maybe_yield()
+            continue
         for epg_channel_programme in programmes_by_output_channel.get(channel_id, []):
             # Create a <programme> element for the output file and copy the attributes from the input programme
             output_programme = ET.SubElement(output_root, "programme")

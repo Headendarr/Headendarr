@@ -97,7 +97,7 @@
             :clearable="false"
             :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
             label="EPG Channel"
-            description="Select the guide channel from the selected EPG source."
+            :description="epgChannelDescription"
             @filter="filterEpg"
           />
 
@@ -310,6 +310,8 @@ import TicTextareaInput from 'components/ui/inputs/TicTextareaInput.vue';
 import TicToggleInput from 'components/ui/inputs/TicToggleInput.vue';
 import TicSelectInput from 'components/ui/inputs/TicSelectInput.vue';
 
+const DUMMY_EPG_SOURCE_ID = '__dummy__';
+
 export default {
   name: 'ChannelInfoDialog',
   components: {
@@ -370,6 +372,7 @@ export default {
       testStreamUrl: '',
       testStreamUserAgent: '',
       testStreamSourceId: null,
+      dummyEpgChannelOptions: [],
     };
   },
   computed: {
@@ -419,6 +422,12 @@ export default {
     },
     csoProfileOptions() {
       return this.csoProfileChoices || [];
+    },
+    epgChannelDescription() {
+      if (this.epgSourceId === DUMMY_EPG_SOURCE_ID) {
+        return 'Select the block size for generated guide entries. Use EPG Offset to shift the start time if needed.';
+      }
+      return 'Select the guide channel from the selected EPG source.';
     },
   },
   watch: {
@@ -504,6 +513,7 @@ export default {
       this.listOfChannelSourcesToRefresh = [];
       this.refreshHint = '';
       this.suggestedStreams = [];
+      this.dummyEpgChannelOptions = this.buildDummyEpgChannelOptions();
       this.updateCurrentEpgChannelOptions();
     },
     captureInitialState() {
@@ -892,14 +902,16 @@ export default {
       this.$q.notify({color: 'positive', message: 'Stream URL copied'});
     },
     fetchEpgData() {
+      this.dummyEpgChannelOptions = this.buildDummyEpgChannelOptions();
       const epgFetch = axios({
         method: 'GET',
         url: '/tic-api/epgs/get',
       }).then((response) => {
-        this.epgSourceOptions = (response.data.data || []).map((epg) => ({
+        const sourceOptions = (response.data.data || []).map((epg) => ({
           label: epg.name,
           value: epg.id,
         }));
+        this.epgSourceOptions = [{label: 'Dummy', value: DUMMY_EPG_SOURCE_ID}, ...sourceOptions];
         this.epgSourceDefaultOptions = [...this.epgSourceOptions];
       });
 
@@ -908,6 +920,7 @@ export default {
         url: '/tic-api/epgs/channels',
       }).then((response) => {
         this.epgChannelAllOptions = {};
+        this.epgChannelAllOptions[DUMMY_EPG_SOURCE_ID] = this.dummyEpgChannelOptions;
         for (const epgId in response.data.data) {
           const epgChannels = response.data.data[epgId];
           this.epgChannelAllOptions[epgId] = epgChannels.map((channelInfo) => ({
@@ -1002,6 +1015,27 @@ export default {
       }
       return this.csoProfileChoices[0]?.value || 'mpegts';
     },
+    buildDummyEpgChannelOptions() {
+      const options = [{label: '30 minutes', value: 'dummy-30m'}];
+      for (let hours = 1; hours <= 24; hours += 1) {
+        options.push({
+          label: hours === 1 ? 'Hourly' : `${hours}-hourly`,
+          value: `dummy-${hours}h`,
+        });
+      }
+      return options;
+    },
+    parseDummyIntervalMinutes(channelKey) {
+      const rawValue = String(channelKey || '').trim().toLowerCase();
+      if (rawValue === 'dummy-30m') {
+        return 30;
+      }
+      const match = rawValue.match(/^dummy-(\d+)h$/);
+      if (!match) {
+        return 30;
+      }
+      return Number.parseInt(match[1], 10) * 60;
+    },
     isChannelSourceDisabled(source) {
       if (!source || source.source_type === 'manual' || !source.playlist_id) {
         return false;
@@ -1024,6 +1058,16 @@ export default {
         this.epgChannelAllOptions[String(this.epgSourceId)] || [];
       this.epgChannelDefaultOptions = selected;
       this.epgChannelOptions = selected;
+      const selectedValues = new Set(selected.map((option) => option.value));
+      if (this.epgSourceId === DUMMY_EPG_SOURCE_ID) {
+        if (!selectedValues.has(this.epgChannel)) {
+          this.epgChannel = selected[0]?.value || 'dummy-30m';
+        }
+        return;
+      }
+      if (this.epgChannel && !selectedValues.has(this.epgChannel)) {
+        this.epgChannel = '';
+      }
     },
     buildChannelPayload(refreshSources) {
       const epgInfo = this.epgSourceOptions.find((item) => item.value === this.epgSourceId);
@@ -1042,6 +1086,9 @@ export default {
           epg_id: this.epgSourceId,
           epg_name: this.epgSourceName,
           channel_id: this.epgChannel,
+          dummy_interval_minutes: this.epgSourceId === DUMMY_EPG_SOURCE_ID
+            ? this.parseDummyIntervalMinutes(this.epgChannel)
+            : null,
           offset_minutes: Number.parseInt(this.epgOffsetMinutes, 10) || 0,
         },
         sources: this.listOfChannelSources,
@@ -1089,6 +1136,9 @@ export default {
                 epg_id: this.epgSourceId,
                 epg_name: this.epgSourceName,
                 channel_id: this.epgChannel,
+                dummy_interval_minutes: this.epgSourceId === DUMMY_EPG_SOURCE_ID
+                  ? this.parseDummyIntervalMinutes(this.epgChannel)
+                  : null,
                 offset_minutes: Number.parseInt(this.epgOffsetMinutes, 10) || 0,
               },
               cso_enabled: this.csoEnabled,
