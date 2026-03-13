@@ -13,6 +13,14 @@ For best compatibility, make sure Plex receives MPEG-TS (`.ts`) streams for thos
 For many sources, forcing audio to AAC with an MPEG-TS output improves Plex stability significantly with minimal extra overhead compared with failed tune/retry loops.
 :::
 
+:::warning Channel Logo Reachability
+Plex does not cache channel logo images for Live TV/DVR. It keeps using the logo URL that Headendarr publishes.
+
+If your Headendarr base URL or logo URLs point to a local-only IP or hostname, Plex apps that are not on that same network, such as mobile apps on Android, may fail to load channel logos in the DVR or guide views.
+
+For reliable logo loading, use a Headendarr URL that your Plex clients can actually reach.
+:::
+
 ## Container configuration
 
 Set `PLEX_SERVERS_JSON` in your Headendarr container environment, then restart the container.
