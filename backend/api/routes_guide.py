@@ -22,8 +22,8 @@ def _shift_programme_window(programme, offset_minutes):
     start_value, stop_value, start_ts, stop_ts = _shift_xmltv_window(
         None,
         None,
-        programme.get("start_timestamp"),
-        programme.get("stop_timestamp"),
+        programme.get("start_ts"),
+        programme.get("stop_ts"),
         offset_minutes,
     )
     try:
