@@ -165,56 +165,36 @@ def _remove_configured_affixes(value: str, prefixes=None, suffixes=None) -> str:
     prefix_tokens = [token for token in (prefixes or []) if token]
     suffix_tokens = [token for token in (suffixes or []) if token]
 
-    def _match_prefix_span(raw_text: str, token: str):
+    def _remove_prefix_once(raw_text: str, token: str) -> str | None:
         token_value = clean_text(token)
         if not token_value:
             return None
-        lower_text = raw_text.lower()
-        if lower_text.startswith(token_value.lower()):
-            return len(token_value)
-        word_bits = re.findall(r"[0-9A-Za-z]+", token_value)
-        if not word_bits:
-            return None
-        pattern = re.compile(
-            r"^\s*" + r"\s*".join(re.escape(bit) for bit in word_bits) + r"(?:\s*[^\w\s]+)?\s*", re.IGNORECASE
-        )
-        match = pattern.match(raw_text)
-        if match:
-            return match.end()
+        if raw_text[: len(token_value)].lower() == token_value.lower():
+            return raw_text.removeprefix(raw_text[: len(token_value)])
         return None
 
-    def _match_suffix_span(raw_text: str, token: str):
+    def _remove_suffix_once(raw_text: str, token: str) -> str | None:
         token_value = clean_text(token)
         if not token_value:
             return None
-        lower_text = raw_text.lower()
-        if lower_text.endswith(token_value.lower()):
-            return len(token_value)
-        word_bits = re.findall(r"[0-9A-Za-z]+", token_value)
-        if not word_bits:
-            return None
-        pattern = re.compile(
-            r"\s*(?:[^\w\s]+\s*)?" + r"\s*".join(re.escape(bit) for bit in word_bits) + r"\s*$", re.IGNORECASE
-        )
-        match = pattern.search(raw_text)
-        if match:
-            return len(raw_text) - match.start()
+        if raw_text[-len(token_value) :].lower() == token_value.lower():
+            return raw_text.removesuffix(raw_text[-len(token_value) :])
         return None
 
     while changed and text:
         changed = False
         for prefix in prefix_tokens:
-            prefix_span = _match_prefix_span(text, prefix)
-            if prefix_span:
-                text = text[prefix_span:].strip(" -_:|*[]()")
+            updated = _remove_prefix_once(text, prefix)
+            if updated is not None:
+                text = updated
                 changed = True
                 break
         if changed:
             continue
         for suffix in suffix_tokens:
-            suffix_span = _match_suffix_span(text, suffix)
-            if suffix_span:
-                text = text[: len(text) - suffix_span].strip(" -_:|*[]()")
+            updated = _remove_suffix_once(text, suffix)
+            if updated is not None:
+                text = updated
                 changed = True
                 break
     return text
@@ -222,7 +202,7 @@ def _remove_configured_affixes(value: str, prefixes=None, suffixes=None) -> str:
 
 def _export_title_from_source_title(title: str, prefixes=None, suffixes=None) -> str:
     cleaned_title = _remove_configured_affixes(title, prefixes=prefixes, suffixes=suffixes)
-    cleaned_title = re.sub(r"\s+", " ", clean_text(cleaned_title)).strip(" -_:|*[]()")
+    cleaned_title = re.sub(r"\s+", " ", clean_text(cleaned_title))
     return cleaned_title or clean_text(title)
 
 
