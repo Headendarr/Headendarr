@@ -111,6 +111,18 @@ const routes = [
     ],
   },
   {
+    name: 'vod',
+    path: '/vod',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/VodPage.vue'),
+        meta: {requiresAuth: true, requiresAdmin: true},
+      },
+    ],
+  },
+  {
     name: 'tv-guide',
     path: '/guide',
     component: () => import('layouts/MainLayout.vue'),

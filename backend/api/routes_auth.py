@@ -47,6 +47,7 @@ def _serialize_user(user: User):
     role_names = [role.name for role in user.roles] if user.roles else []
     is_admin = "admin" in role_names
     dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+    vod_access_mode = "movies_series" if is_admin else (user.vod_access_mode or "none")
     last_login_at = user.last_login_at
     last_stream_key_used_at = user.last_stream_key_used_at
     last_logged_in_at = max(
@@ -68,6 +69,7 @@ def _serialize_user(user: User):
         "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
+        "vod_access_mode": vod_access_mode,
     }
 
 

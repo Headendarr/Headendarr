@@ -25,6 +25,11 @@ from backend.models import (
     Channel,
     ChannelSource,
     CsoEventLog,
+    Playlist,
+    XcAccount,
+    VodCategoryEpisode,
+    VodCategoryItem,
+    XcVodItem,
 )
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
@@ -45,6 +50,7 @@ from backend.utils import clean_key, clean_text, convert_to_int
 from backend.xc_hosts import parse_xc_hosts
 
 logger = logging.getLogger("cso")
+CS_VOD_USE_PROXY_SESSION = True
 CSO_SOURCE_HOLD_DOWN_SECONDS = 20
 CSO_SOURCE_FAILURE_CACHE_TTL_SECONDS = 5 * 60
 CSO_SOURCE_FAILURE_PRIORITY_PENALTY = 1000
@@ -136,6 +142,127 @@ CONTAINER_TO_CONTENT_TYPE = {
 }
 
 
+@dataclass
+class CsoSource:
+    """
+    Unified adapter for all CSO ingest sources (Live TV, VOD, etc).
+    Decouples the core streaming engine from database models.
+    """
+
+    id: int
+    source_type: str  # "channel", "vod_movie", or "vod_episode"
+    url: str
+    playlist_id: int
+    playlist: object | None = None
+    xc_account_id: int | None = None
+    xc_account: object | None = None
+    priority: int = 0
+    channel_id: int | None = None
+    internal_id: int | None = None
+    use_hls_proxy: bool = False
+    probe_details: dict | None = None
+    probe_at: object | None = None
+    container_extension: str | None = None
+
+    @property
+    def playlist_stream_url(self):
+        return self.url
+
+
+async def cso_source_from_vod_source(candidate, upstream_url: str) -> CsoSource:
+    """Wrap a VOD item/episode candidate in a CsoSource adapter."""
+    async with Session() as session:
+        playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
+
+    xc_account = candidate.xc_account
+    if xc_account is None:
+        async with Session() as session:
+            result = await session.execute(
+                select(XcAccount)
+                .where(XcAccount.playlist_id == int(candidate.source_item.playlist_id), XcAccount.enabled.is_(True))
+                .order_by(XcAccount.id.asc())
+            )
+            xc_account = result.scalars().first()
+
+    source_type = "vod_movie" if candidate.content_type == "movie" else "vod_episode"
+
+    source_id = int(candidate.source_item.id)
+    if candidate.episode_source:
+        source_id = int(candidate.episode_source.id)
+
+    probe_details = None
+    probe_at = None
+    if candidate.content_type == "movie":
+        probe_details = (
+            json.loads(candidate.source_item.stream_probe_details)
+            if getattr(candidate.source_item, "stream_probe_details", None)
+            else None
+        )
+        probe_at = getattr(candidate.source_item, "stream_probe_at", None)
+    elif candidate.episode_source:
+        probe_details = (
+            json.loads(candidate.episode_source.stream_probe_details)
+            if getattr(candidate.episode_source, "stream_probe_details", None)
+            else None
+        )
+        probe_at = getattr(candidate.episode_source, "stream_probe_at", None)
+
+    internal_id = int(candidate.group_item.id)
+    if candidate.content_type == "series":
+        # Note: If it's a series, the actual playing item is the episode
+        # We'll try to find the cached episode ID if it's available in the candidate
+        if hasattr(candidate, "episode") and candidate.episode:
+            internal_id = int(candidate.episode.id)
+
+    return CsoSource(
+        id=source_id,
+        source_type=source_type,
+        url=str(upstream_url),
+        playlist_id=int(candidate.source_item.playlist_id),
+        playlist=playlist,
+        xc_account_id=int(xc_account.id) if xc_account is not None else None,
+        xc_account=xc_account,
+        use_hls_proxy=False,
+        priority=0,
+        channel_id=None,
+        internal_id=internal_id,
+        probe_details=probe_details,
+        probe_at=probe_at,
+        container_extension=clean_key(
+            getattr(candidate.episode_source, "container_extension", "")
+            or getattr(candidate.source_item, "container_extension", "")
+            or getattr(candidate.group_item, "container_extension", "")
+        )
+        or None,
+    )
+
+
+def cso_source_from_channel_source(source: ChannelSource) -> CsoSource:
+    """Wrap a ChannelSource database model in a CsoSource adapter."""
+    probe_details = None
+    try:
+        if hasattr(source, "stream_probe_details") and source.stream_probe_details:
+            probe_details = json.loads(source.stream_probe_details)
+    except Exception:
+        pass
+
+    return CsoSource(
+        id=int(source.id),
+        source_type="channel",
+        url=str(getattr(source, "playlist_stream_url", "") or ""),
+        playlist_id=int(getattr(source, "playlist_id", 0) or 0),
+        playlist=getattr(source, "playlist", None),
+        xc_account_id=getattr(source, "xc_account_id", None),
+        xc_account=getattr(source, "xc_account", None),
+        priority=convert_to_int(getattr(source, "priority", 0), 0),
+        channel_id=getattr(source, "channel_id", None),
+        use_hls_proxy=bool(getattr(source, "use_hls_proxy", False)),
+        probe_details=probe_details,
+        probe_at=getattr(source, "stream_probe_at", None),
+        container_extension=None,
+    )
+
+
 async def _get_cso_channel_failed_source_ids(channel_id):
     try:
         channel_id = int(channel_id)
@@ -187,9 +314,9 @@ async def mark_cso_channel_source_temporarily_failed(
     return True
 
 
-def _cso_source_effective_priority(source, failed_source_ids=None):
-    base_priority = convert_to_int(getattr(source, "priority", 0), 0)
-    source_id = convert_to_int(getattr(source, "id", 0), 0)
+def _cso_source_effective_priority(source: CsoSource, failed_source_ids=None):
+    base_priority = source.priority
+    source_id = source.id
     health_status = str(getattr(source, "last_health_check_status", "") or "").strip().lower()
     unhealthy_penalty = CSO_UNHEALTHY_SOURCE_PRIORITY_PENALTY if health_status == "unhealthy" else 0
     temporary_penalty = CSO_SOURCE_FAILURE_PRIORITY_PENALTY if source_id in set(failed_source_ids or set()) else 0
@@ -209,8 +336,8 @@ async def order_cso_channel_sources(sources, channel_id=None):
         candidates,
         key=lambda item: (
             _cso_source_effective_priority(item, failed_source_ids=failed_source_ids),
-            convert_to_int(getattr(item, "priority", 0), 0),
-            -convert_to_int(getattr(item, "id", 0), 0),
+            item.priority,
+            -int(item.id or 0),
         ),
         reverse=True,
     )
@@ -354,24 +481,42 @@ def _resolve_cso_output_policy(policy, use_slate_as_input=False):
     return resolved
 
 
-def source_capacity_key(source):
-    xc_account_id = getattr(source, "xc_account_id", None)
-    playlist_id = getattr(source, "playlist_id", None)
-    if xc_account_id:
-        return f"xc:{int(xc_account_id)}"
-    if playlist_id:
-        return f"playlist:{int(playlist_id)}"
-    return f"source:{int(getattr(source, 'id', 0) or 0)}"
+def _resolve_vod_pipe_container(source: CsoSource | None, source_probe=None):
+    if source is None or source.source_type not in {"vod_movie", "vod_episode"}:
+        return "mpegts"
+
+    container_key = clean_key((source_probe or {}).get("container")) or clean_key(
+        getattr(source, "container_extension", "")
+    )
+    if container_key in {"matroska", "mkv"}:
+        return "matroska"
+    if container_key in {"mp4"}:
+        return "mp4"
+    if container_key in {"webm"}:
+        return "webm"
+    if container_key in {"mpegts", "ts"}:
+        return "mpegts"
+
+    # Unsafe or poorly pipe-friendly source containers should be remuxed to Matroska for the CSO pipe.
+    return "matroska"
 
 
-def source_capacity_limit(source):
-    xc_account = getattr(source, "xc_account", None)
+def source_capacity_key(source: CsoSource):
+    if source.xc_account_id:
+        return f"xc:{int(source.xc_account_id)}"
+    if source.playlist_id:
+        return f"playlist:{int(source.playlist_id)}"
+    return f"source:{int(source.id or 0)}"
+
+
+def source_capacity_limit(source: CsoSource):
+    xc_account = source.xc_account
     if xc_account:
         try:
             return max(0, int(getattr(xc_account, "connection_limit", 0) or 0))
         except Exception:
             return 0
-    playlist = getattr(source, "playlist", None)
+    playlist = source.playlist
     if playlist:
         try:
             return max(0, int(getattr(playlist, "connections", 0) or 0))
@@ -380,30 +525,33 @@ def source_capacity_limit(source):
     return 1_000_000
 
 
-def source_should_use_cso_buffer(source, force_tvh_remux=False):
+def source_should_use_cso_buffer(source: CsoSource, force_tvh_remux=False):
     if force_tvh_remux:
         return True
-    playlist = getattr(source, "playlist", None)
+    playlist = source.playlist if source is not None else None
     return bool(
         getattr(source, "use_hls_proxy", False) and playlist and getattr(playlist, "hls_proxy_use_ffmpeg", False)
     )
 
 
-def _source_event_context(source, source_url=None):
+def _source_event_context(source: CsoSource, source_url=None):
     if not source:
         return {}
-    playlist = getattr(source, "playlist", None)
-    stream_name = clean_text(getattr(source, "playlist_stream_name", ""))
+    playlist = source.playlist
+    stream_name = ""
+    if source.source_type == "channel":
+        stream_name = clean_text(getattr(source, "playlist_stream_name", ""))
+
     playlist_name = clean_text(getattr(playlist, "name", ""))
     payload = {
-        "source_id": getattr(source, "id", None),
-        "playlist_id": getattr(source, "playlist_id", None),
+        "source_id": source.id,
+        "playlist_id": source.playlist_id,
         "playlist_name": playlist_name or None,
         "stream_name": stream_name or None,
-        "source_priority": convert_to_int(getattr(source, "priority", 0), 0),
+        "source_priority": source.priority,
     }
-    if source_url:
-        payload["source_url"] = source_url
+    if source_url or source.url:
+        payload["source_url"] = source_url or source.url
     return payload
 
 
@@ -419,6 +567,7 @@ class CsoStreamPlan:
     content_type: str | None
     error_message: str | None
     status_code: int
+    headers: dict | None = None
     cutoff_seconds: int | None = None
     final_status_code: int | None = None
 
@@ -498,6 +647,245 @@ class CsoCapacityRegistry:
 
 
 cso_capacity_registry = CsoCapacityRegistry()
+
+
+def _vod_passthrough_profile_for_source(candidate) -> str:
+    source_container = clean_key(
+        getattr(getattr(candidate, "episode_source", None), "container_extension", "")
+        or getattr(getattr(candidate, "source_item", None), "container_extension", "")
+        or getattr(getattr(candidate, "group_item", None), "container_extension", "")
+    )
+    return {
+        "ts": "mpegts",
+        "mpegts": "mpegts",
+        "mkv": "matroska",
+        "matroska": "matroska",
+        "mp4": "mp4",
+        "webm": "webm",
+    }.get(source_container, "")
+
+
+def should_use_vod_proxy_session(candidate, requested_profile: str) -> bool:
+    if not CS_VOD_USE_PROXY_SESSION:
+        return False
+    profile_name = clean_key(requested_profile)
+    if not candidate or profile_name in {"", "hls"}:
+        return False
+    return profile_name == _vod_passthrough_profile_for_source(candidate)
+
+
+def _filter_vod_proxy_request_headers(request_headers, source: CsoSource):
+    headers = {}
+    hop_by_hop = {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+    for key, value in (request_headers or {}).items():
+        key_name = str(key or "").strip()
+        if not key_name or clean_key(key_name) in hop_by_hop:
+            continue
+        headers[key_name] = str(value or "")
+    user_agent = _resolve_cso_ingest_user_agent(None, source)
+    if user_agent and "User-Agent" not in headers:
+        headers["User-Agent"] = user_agent
+    return headers
+
+
+def _sanitise_proxy_accept_ranges(value):
+    text = clean_text(value)
+    if not text:
+        return None
+    return "bytes" if "bytes" in text.lower() else None
+
+
+def _proxy_response_headers(status_code, upstream_headers, request_headers=None):
+    response_status = int(status_code or 200)
+    client_requested_range = bool(_header_value(request_headers, "Range"))
+    headers = {}
+
+    content_type = clean_text(_header_value(upstream_headers, "Content-Type"))
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    cache_control = clean_text(_header_value(upstream_headers, "Cache-Control"))
+    if cache_control:
+        headers["Cache-Control"] = cache_control
+
+    content_disposition = clean_text(_header_value(upstream_headers, "Content-Disposition"))
+    if content_disposition:
+        headers["Content-Disposition"] = content_disposition
+
+    etag = clean_text(_header_value(upstream_headers, "ETag"))
+    if etag:
+        headers["ETag"] = etag
+
+    last_modified = clean_text(_header_value(upstream_headers, "Last-Modified"))
+    if last_modified:
+        headers["Last-Modified"] = last_modified
+
+    accept_ranges = _sanitise_proxy_accept_ranges(_header_value(upstream_headers, "Accept-Ranges"))
+    content_range = clean_text(_header_value(upstream_headers, "Content-Range"))
+    content_length = clean_text(_header_value(upstream_headers, "Content-Length"))
+
+    if accept_ranges:
+        headers["Accept-Ranges"] = accept_ranges
+    elif content_range or client_requested_range or response_status in {206, 416}:
+        headers["Accept-Ranges"] = "bytes"
+
+    if response_status in {206, 416} and content_range:
+        headers["Content-Range"] = content_range
+        if content_length:
+            headers["Content-Length"] = content_length
+    elif response_status not in {204, 304} and content_length:
+        headers["Content-Length"] = content_length
+
+    return headers
+
+
+class VodProxySession:
+    def __init__(self, key, source: CsoSource, upstream_url: str, request_headers=None):
+        self.key = str(key)
+        self.source = source
+        self.upstream_url = clean_text(upstream_url)
+        self.request_headers = dict(request_headers or {})
+        self.timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_connect=15, sock_read=None)
+        self.http_session = None
+        self.response = None
+        self.running = False
+        self.capacity_key = source_capacity_key(source)
+        self.capacity_limit = source_capacity_limit(source)
+        self.owner_key = self.key
+        self.status_code = 0
+        self.content_type = None
+        self.response_headers = {}
+        self.last_error = None
+        self.lock = asyncio.Lock()
+        self.first_chunk_logged = False
+
+    async def start(self):
+        startup_failed = False
+        async with self.lock:
+            if self.running:
+                return True
+            reserved = await cso_capacity_registry.try_reserve(
+                self.capacity_key,
+                self.owner_key,
+                self.capacity_limit,
+                slot_id=self.key,
+            )
+            if not reserved:
+                self.last_error = "capacity_blocked"
+                return False
+            try:
+                range_header = _header_value(self.request_headers, "Range")
+                self.http_session = aiohttp.ClientSession(timeout=self.timeout, auto_decompress=False)
+                self.response = await self.http_session.get(
+                    self.upstream_url,
+                    headers=_filter_vod_proxy_request_headers(self.request_headers, self.source),
+                    allow_redirects=True,
+                )
+                self.status_code = int(self.response.status or 502)
+                self.content_type = clean_text(self.response.headers.get("Content-Type")) or None
+                self.response_headers = _proxy_response_headers(
+                    self.status_code,
+                    self.response.headers,
+                    request_headers=self.request_headers,
+                )
+                self.running = True
+                logger.info(
+                    "VOD proxy session started key=%s source_id=%s status=%s client_range=%s content_type=%s content_range=%s accept_ranges=%s upstream_url=%s",
+                    self.key,
+                    getattr(self.source, "id", None),
+                    self.status_code,
+                    range_header or None,
+                    self.content_type,
+                    clean_text(self.response.headers.get("Content-Range")) or None,
+                    clean_text(self.response.headers.get("Accept-Ranges")) or None,
+                    self.upstream_url,
+                )
+                return True
+            except Exception as exc:
+                self.last_error = f"proxy_start_failed:{exc}"
+                startup_failed = True
+        if startup_failed:
+            await self.stop(force=True)
+        return False
+
+    async def iter_bytes(self):
+        try:
+            if self.response is None:
+                return
+            async for chunk in self.response.content.iter_chunked(64 * 1024):
+                if not self.running:
+                    break
+                if chunk:
+                    if not self.first_chunk_logged:
+                        logger.info(
+                            "VOD proxy first chunk key=%s source_id=%s bytes=%s status=%s",
+                            self.key,
+                            getattr(self.source, "id", None),
+                            len(chunk),
+                            self.status_code,
+                        )
+                        self.first_chunk_logged = True
+                    yield chunk
+        finally:
+            await self.stop(force=True)
+
+    async def stop(self, force=False):
+        async with self.lock:
+            if not self.running and self.response is None and self.http_session is None:
+                return
+            self.running = False
+            response = self.response
+            self.response = None
+            http_session = self.http_session
+            self.http_session = None
+        try:
+            if response is not None:
+                response.close()
+        except Exception:
+            pass
+        try:
+            if http_session is not None:
+                await http_session.close()
+        except Exception:
+            pass
+        logger.info(
+            "VOD proxy session stopped key=%s source_id=%s status=%s",
+            self.key,
+            getattr(self.source, "id", None),
+            self.status_code,
+        )
+        await cso_capacity_registry.release(self.capacity_key, self.owner_key, slot_id=self.key)
+        await vod_proxy_session_manager.remove(self.key)
+
+
+class VodProxySessionManager:
+    def __init__(self):
+        self.sessions = {}
+        self.lock = asyncio.Lock()
+
+    async def create(self, key, source: CsoSource, upstream_url: str, request_headers=None):
+        session = VodProxySession(key, source, upstream_url, request_headers=request_headers)
+        async with self.lock:
+            self.sessions[str(key)] = session
+        return session
+
+    async def remove(self, key):
+        async with self.lock:
+            self.sessions.pop(str(key), None)
+
+
+vod_proxy_session_manager = VodProxySessionManager()
 
 
 def _unwrap_local_tic_hls_proxy_url(url, instance_id=None):
@@ -584,10 +972,9 @@ def resolve_source_url_for_stream(source_url, base_url, instance_id, stream_key=
     )
 
 
-def _resolve_source_url_candidates(source, base_url, instance_id, stream_key=None, username=None):
-    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
+def _resolve_source_url_candidates(source: CsoSource, base_url, instance_id, stream_key=None, username=None):
     primary_url = _resolve_source_url(
-        stream_url,
+        source.url,
         base_url=base_url,
         instance_id=instance_id,
         stream_key=stream_key,
@@ -596,11 +983,10 @@ def _resolve_source_url_candidates(source, base_url, instance_id, stream_key=Non
     if not primary_url:
         return []
 
-    xc_account_id = getattr(source, "xc_account_id", None)
-    if not xc_account_id:
+    if not source.xc_account_id:
         return [primary_url]
 
-    playlist = getattr(source, "playlist", None)
+    playlist = source.playlist
     raw_hosts = getattr(playlist, "url", None) if playlist is not None else None
     host_list = parse_xc_hosts(raw_hosts)
     if len(host_list) <= 1:
@@ -627,12 +1013,76 @@ async def emit_channel_stream_event(
     source_id=None,
     playlist_id=None,
     recording_id=None,
+    vod_category_id=None,
+    vod_item_id=None,
+    vod_episode_id=None,
     tvh_subscription_id=None,
     session_id=None,
     event_type,
     severity="info",
     details=None,
+    source: CsoSource | None = None,
 ):
+    async def _resolve_vod_event_targets(event_source: CsoSource):
+        event_category_id = None
+        event_item_id = None
+        event_episode_id = None
+
+        if event_source is None:
+            return event_category_id, event_item_id, event_episode_id
+
+        if event_source.source_type == "vod_movie":
+            event_item_id = convert_to_int(event_source.internal_id or event_source.id, 0)
+            if event_item_id > 0:
+                async with Session() as session:
+                    item = await session.get(VodCategoryItem, event_item_id)
+                if item is not None:
+                    event_category_id = convert_to_int(getattr(item, "category_id", None), 0) or None
+            return event_category_id, event_item_id or None, None
+
+        if event_source.source_type == "vod_episode":
+            event_episode_id = convert_to_int(event_source.internal_id or event_source.id, 0)
+            if event_episode_id > 0:
+                async with Session() as session:
+                    episode = await session.get(VodCategoryEpisode, event_episode_id)
+                    item = (
+                        await session.get(VodCategoryItem, int(episode.category_item_id))
+                        if episode is not None and int(getattr(episode, "category_item_id", 0) or 0) > 0
+                        else None
+                    )
+                if item is not None:
+                    event_item_id = convert_to_int(getattr(item, "id", None), 0) or None
+                    event_category_id = convert_to_int(getattr(item, "category_id", None), 0) or None
+            return event_category_id, event_item_id, event_episode_id or None
+
+        return event_category_id, event_item_id, event_episode_id
+
+    # If a CsoSource adapter is provided, derive the correct database ID based on its type.
+    # This prevents using a VOD ID in the Live TV source_id column (which has a FK constraint).
+    if source is not None:
+        # Clear any passed source_id to prevent FK conflicts if this is VOD
+        source_id = None
+
+        if source.source_type == "channel":
+            source_id = source.id
+        elif source.source_type == "vod_movie":
+            resolved_category_id, resolved_item_id, _resolved_episode_id = await _resolve_vod_event_targets(source)
+            if vod_category_id is None:
+                vod_category_id = resolved_category_id
+            if vod_item_id is None:
+                vod_item_id = resolved_item_id
+        elif source.source_type == "vod_episode":
+            resolved_category_id, resolved_item_id, resolved_episode_id = await _resolve_vod_event_targets(source)
+            if vod_category_id is None:
+                vod_category_id = resolved_category_id
+            if vod_item_id is None:
+                vod_item_id = resolved_item_id
+            if vod_episode_id is None:
+                vod_episode_id = resolved_episode_id
+
+        if playlist_id is None:
+            playlist_id = source.playlist_id
+
     details_json = None
     if details is not None:
         try:
@@ -647,6 +1097,9 @@ async def emit_channel_stream_event(
                     source_id=source_id,
                     playlist_id=playlist_id,
                     recording_id=recording_id,
+                    vod_category_id=vod_category_id,
+                    vod_item_id=vod_item_id,
+                    vod_episode_id=vod_episode_id,
                     tvh_subscription_id=tvh_subscription_id,
                     session_id=session_id,
                     event_type=event_type,
@@ -701,8 +1154,10 @@ def _format_ffmpeg_headers_arg(headers):
 class CsoFfmpegCommandBuilder:
     """Structured FFmpeg command builder for ingest, output, HLS output, and slate sessions."""
 
-    def __init__(self, policy=None):
+    def __init__(self, policy=None, pipe_input_format="mpegts", pipe_output_format="mpegts"):
         self.policy = dict(policy or {})
+        self.pipe_input_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_input_format), "mpegts")
+        self.pipe_output_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_output_format), "mpegts")
 
     @staticmethod
     def video_encoder_for_codec(video_codec: str) -> str:
@@ -807,6 +1262,21 @@ class CsoFfmpegCommandBuilder:
         return command
 
     @staticmethod
+    def _matroska_output_flags():
+        # Configure Matroska for progressive/live output so players see clusters quickly
+        # on non-seekable HTTP streams instead of waiting on larger default buffering.
+        return [
+            "-flush_packets",
+            "1",
+            "-cluster_time_limit",
+            "1000",
+            "-cluster_size_limit",
+            "1048576",
+            "-live",
+            "1",
+        ]
+
+    @staticmethod
     def _pipe_output_target(ffmpeg_format, target="pipe:1"):
         command = []
         if ffmpeg_format == "mp4":
@@ -895,7 +1365,8 @@ class CsoFfmpegCommandBuilder:
         if subtitle_mode == "drop":
             command.append("-sn")
 
-    def _build_mpegts_pipe_input(self, probe_size_bytes, analyse_duration_us, fps_probe_size, low_latency):
+    def _build_pipe_input(self, probe_size_bytes, analyse_duration_us, fps_probe_size, low_latency, pipe_format=None):
+        pipe_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_format), self.pipe_input_format)
         command = []
         if low_latency:
             command += [
@@ -907,7 +1378,7 @@ class CsoFfmpegCommandBuilder:
         command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
         command += [
             "-f",
-            "mpegts",
+            pipe_format,
             "-i",
             "pipe:0",
             "-map",
@@ -978,17 +1449,21 @@ class CsoFfmpegCommandBuilder:
             "copy",
         ]
         command += self._drop_data_streams()
-        command += self._mpegts_output_flags(zero_latency=True)
-        command += self._pipe_output_target("mpegts")
+        if self.pipe_output_format == "mpegts":
+            command += self._mpegts_output_flags(zero_latency=True)
+        elif self.pipe_output_format == "matroska":
+            command += self._matroska_output_flags()
+        command += self._pipe_output_target(self.pipe_output_format)
         return command
 
     def build_output_command(self):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
-        command += self._build_mpegts_pipe_input(
+        command += self._build_pipe_input(
             CSO_OUTPUT_PROBE_SIZE_BYTES,
             CSO_OUTPUT_ANALYSE_DURATION_US,
             CSO_OUTPUT_FPS_PROBE_SIZE,
             low_latency=True,
+            pipe_format=self.pipe_input_format,
         )
         subtitle_mode = self._apply_stream_selection(command)
         mode = self.policy.get("output_mode") or "force_remux"
@@ -998,7 +1473,8 @@ class CsoFfmpegCommandBuilder:
             self._apply_transcode_options(command, subtitle_mode)
         else:
             command += ["-c", "copy"]
-            if ffmpeg_format == "mp4":
+            if ffmpeg_format in ["mp4"]:
+                # TODO: We shouldonly do this if we have an AAC audio source
                 command += ["-bsf:a", "aac_adtstoasc"]
             if subtitle_mode == "drop":
                 command.append("-sn")
@@ -1006,16 +1482,19 @@ class CsoFfmpegCommandBuilder:
         command += self._drop_data_streams()
         if ffmpeg_format == "mpegts":
             command += self._mpegts_output_flags(zero_latency=True)
+        elif ffmpeg_format == "matroska":
+            command += self._matroska_output_flags()
         command += self._pipe_output_target(ffmpeg_format)
         return command
 
     def build_hls_output_command(self, output_dir: Path):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
-        command += self._build_mpegts_pipe_input(
+        command += self._build_pipe_input(
             2 * 1024 * 1024,
             5_000_000,
             CSO_OUTPUT_FPS_PROBE_SIZE,
             low_latency=False,
+            pipe_format=self.pipe_input_format,
         )
         subtitle_mode = self._apply_stream_selection(command)
         hls_policy = _effective_hls_runtime_policy(self.policy)
@@ -1220,8 +1699,8 @@ class CsoFfmpegCommandBuilder:
         return command
 
 
-def _resolve_cso_ingest_user_agent(config, source):
-    playlist = getattr(source, "playlist", None) if source is not None else None
+def _resolve_cso_ingest_user_agent(config, source: CsoSource):
+    playlist = source.playlist if source is not None else None
     playlist_user_agent = clean_text(getattr(playlist, "user_agent", ""))
     if playlist_user_agent:
         return playlist_user_agent
@@ -1242,8 +1721,8 @@ def _resolve_cso_ingest_user_agent(config, source):
     return "VLC/3.0.23 LibVLC/3.0.23"
 
 
-def _resolve_cso_ingest_headers(source):
-    playlist = getattr(source, "playlist", None) if source is not None else None
+def _resolve_cso_ingest_headers(source: CsoSource):
+    playlist = source.playlist if source is not None else None
     try:
         configured = parse_headers_json(getattr(playlist, "hls_proxy_headers", None))
     except ValueError:
@@ -1276,11 +1755,20 @@ def _effective_hls_runtime_policy(policy):
     return dict(policy or {})
 
 
-def should_allow_unavailable_slate(profile_name, channel=None):
+def should_allow_unavailable_slate(profile_name, channel=None, source: CsoSource = None):
+    # VOD and Recordings don't have the same failover concerns as Live TV.
+    # We should always allow slates here to provide better feedback to the user.
+    if source and source.source_type in {"vod_movie", "vod_episode"}:
+        return True
+
+    # For Live TV, check if the channel is forced.
     channel_forced_cso = bool(getattr(channel, "cso_enabled", False)) if channel is not None else False
+
     # For TVH profile traffic, return hard failures unless the channel is explicitly forced through CSO.
+    # This prevents TVH from getting "stuck" on a failing service if it has others to try.
     if profile_name == "tvh" and not channel_forced_cso:
         return False
+
     return True
 
 
@@ -1519,9 +2007,9 @@ class CsoIngestSession:
         self.first_healthy_stream_seen = False
 
     def build_unavailable_stream_plan(
-        self, config, policy, reason, detail_hint="", profile_name="", channel=None, source=None, status_code=503
+        self, policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
     ):
-        allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel)
+        allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel=channel, source=source)
         if not CSO_UNAVAILABLE_SHOW_SLATE or not allow_unavailable_slate or self.slate_session is None:
             message = (
                 "Channel unavailable due to connection limits"
@@ -1540,7 +2028,7 @@ class CsoIngestSession:
             self.slate_session.duration_seconds = resolved_duration
             output_session = CsoOutputSession(
                 key=f"cso-terminal-output-{reason_key}-{unique_suffix}",
-                channel_id=getattr(channel, "id", None) if channel is not None else self.channel_id,
+                channel_id=getattr(channel, "id", None) or (source.channel_id if source else self.channel_id),
                 policy=policy,
                 ingest_session=None,
                 slate_session=self.slate_session,
@@ -1580,15 +2068,19 @@ class CsoIngestSession:
         channel = await resolve_channel_for_stream(self.channel_id)
         if channel:
             async with self.lock:
-                self.sources = list(channel.sources or [])
+                sources = await order_cso_channel_sources(list(channel.sources or []), channel_id=int(channel.id))
+                self.sources = [cso_source_from_channel_source(s) for s in sources]
                 logger.debug(
                     "CSO ingest refreshed sources channel=%s count=%s",
                     self.channel_id,
                     len(self.sources),
                 )
 
-    async def _handle_source_failure(self, source, reason, details=None):
-        source_id = convert_to_int(getattr(source, "id", 0), 0)
+    async def _handle_source_failure(self, source: CsoSource, reason, details=None):
+        if source.source_type != "channel":
+            return
+
+        source_id = int(source.id or 0)
         if source_id <= 0 or int(self.channel_id or 0) <= 0:
             return
 
@@ -1639,13 +2131,21 @@ class CsoIngestSession:
                 self.failover_exhausted = True
                 return
 
-    async def _spawn_ingest_process(self, source_url, program_index, source=None):
+    async def _spawn_ingest_process(self, source_url, program_index, source: CsoSource = None):
         playlist = getattr(source, "playlist", None) if source is not None else None
         source_user_agent = clean_text(getattr(playlist, "user_agent", "")) or self.ingest_user_agent
         source_headers = _resolve_cso_ingest_headers(source)
         source_user_agent = _header_value(source_headers, "User-Agent") or source_user_agent
-        source_probe = load_source_media_shape(source) if source is not None else {}
-        command = CsoFfmpegCommandBuilder().build_ingest_command(
+
+        # Load existing probe details from the adapter
+        source_probe = {}
+        if source is not None and source.probe_details:
+            source_probe = source.probe_details
+        elif source is not None:
+            source_probe = load_source_media_shape(source)
+
+        pipe_format = _resolve_vod_pipe_container(source, source_probe=source_probe)
+        command = CsoFfmpegCommandBuilder(pipe_output_format=pipe_format).build_ingest_command(
             source_url,
             program_index=program_index,
             user_agent=source_user_agent,
@@ -1657,7 +2157,7 @@ class CsoIngestSession:
         logger.info(
             "Starting CSO ingest channel=%s source=%s policy=(%s) source_probe=%s command=%s",
             self.channel_id,
-            getattr(source, "id", None) if source is not None else getattr(self.current_source, "id", None),
+            source.id if source is not None else getattr(self.current_source, "id", None),
             "copy-only-ingest",
             self.current_source_probe or {},
             _redact_ingest_command_for_log(command),
@@ -1682,28 +2182,35 @@ class CsoIngestSession:
             return
         if not self._ingest_probe_is_complete(self.current_source_probe):
             return
-        source_id = getattr(self.current_source, "id", None)
+
+        source = self.current_source
+        source_id = getattr(source, "id", None)
+        source_type = getattr(source, "source_type", "channel")
+
         if not source_id:
             return
+
+        persisted = False
         try:
             persisted = await persist_source_media_shape(
-                source_id, self.current_source_probe, observed_at=utc_now_naive()
+                source_id, self.current_source_probe, observed_at=utc_now_naive(), source_type=source_type
             )
         except Exception:
-            persisted = False
+            pass
+
         if persisted:
             self._current_source_probe_persisted = True
             if enable_cso_ingest_command_debug_logging:
                 logger.info(
-                    "CSO ingest learned live media shape channel=%s source_id=%s probe=%s",
-                    self.channel_id,
+                    "CSO ingest learned live media shape type=%s id=%s probe=%s",
+                    source_type,
                     source_id,
                     dict(self.current_source_probe or {}),
                 )
         elif enable_cso_ingest_command_debug_logging:
             logger.info(
-                "CSO ingest learned live media shape but persist failed channel=%s source_id=%s probe=%s",
-                self.channel_id,
+                "CSO ingest learned live media shape but persist failed type=%s id=%s probe=%s",
+                source_type,
                 source_id,
                 dict(self.current_source_probe or {}),
             )
@@ -1829,19 +2336,17 @@ class CsoIngestSession:
     def _eligible_source_ids_unlocked(self):
         eligible_ids = set()
         for source in self.sources:
-            source_id = getattr(source, "id", None)
-            if source_id is None:
+            if source.id is None:
                 continue
-            playlist = getattr(source, "playlist", None)
+            playlist = source.playlist
             if playlist is not None and not bool(getattr(playlist, "enabled", False)):
                 continue
-            xc_account = getattr(source, "xc_account", None)
+            xc_account = source.xc_account
             if xc_account is not None and not bool(getattr(xc_account, "enabled", False)):
                 continue
-            stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
-            if not stream_url:
+            if not source.url:
                 continue
-            eligible_ids.add(source_id)
+            eligible_ids.add(source.id)
         return eligible_ids
 
     async def _start_best_source_unlocked(
@@ -1855,25 +2360,23 @@ class CsoIngestSession:
         excluded_ids = set(excluded_source_ids or [])
         candidates = await order_cso_channel_sources(self.sources, channel_id=self.channel_id)
         if preferred_source_id is not None:
-            preferred = [source for source in candidates if getattr(source, "id", None) == preferred_source_id]
-            others = [source for source in candidates if getattr(source, "id", None) != preferred_source_id]
+            preferred = [source for source in candidates if source.id == preferred_source_id]
+            others = [source for source in candidates if source.id != preferred_source_id]
             candidates = preferred + others
         saw_capacity_block = False
         for source in candidates:
-            source_id = getattr(source, "id", None)
-            if source_id in excluded_ids:
+            if source.id in excluded_ids:
                 continue
-            hold_until = self.failed_source_until.get(source_id, 0)
+            hold_until = self.failed_source_until.get(source.id, 0)
             if not ignore_hold_down and hold_until > now:
                 continue
-            playlist = getattr(source, "playlist", None)
+            playlist = source.playlist
             if playlist is not None and not bool(getattr(playlist, "enabled", False)):
                 continue
-            xc_account = getattr(source, "xc_account", None)
+            xc_account = source.xc_account
             if xc_account is not None and not bool(getattr(xc_account, "enabled", False)):
                 continue
-            stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
-            if not stream_url:
+            if not source.url:
                 continue
 
             capacity_key = source_capacity_key(source)
@@ -1882,7 +2385,7 @@ class CsoIngestSession:
                 capacity_key,
                 self.capacity_owner_key,
                 capacity_limit,
-                slot_id=source_id,
+                slot_id=source.id,
             )
             if not reserved:
                 saw_capacity_block = True
@@ -1896,14 +2399,14 @@ class CsoIngestSession:
                 username=self.username,
             )
             if not source_urls:
-                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source_id)
+                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source.id)
                 continue
 
             process = None
             resolved_url = ""
             variants = []
             variant_position = None
-            remembered_program_index = self.source_program_index.get(source_id)
+            remembered_program_index = self.source_program_index.get(source.id)
             last_error = None
             for candidate_url in source_urls:
                 variants = await _discover_hls_variants(candidate_url)
@@ -1925,7 +2428,7 @@ class CsoIngestSession:
                         "CSO HLS ingest selected variant channel=%s source_id=%s "
                         "program_index=%s variant_position=%s variant_count=%s ingest_url=%s",
                         self.channel_id,
-                        source_id,
+                        source.id,
                         program_index,
                         variant_position,
                         len(variants),
@@ -1938,7 +2441,7 @@ class CsoIngestSession:
                             "CSO ingest variant discovery empty; reusing remembered program index "
                             "channel=%s source_id=%s program_index=%s",
                             self.channel_id,
-                            source_id,
+                            source.id,
                             program_index,
                         )
                 try:
@@ -1950,8 +2453,7 @@ class CsoIngestSession:
                     await self._handle_source_failure(source, "ingest_start_failed", {"error": str(exc)})
                     await emit_channel_stream_event(
                         channel_id=self.channel_id,
-                        source_id=getattr(source, "id", None),
-                        playlist_id=getattr(source, "playlist_id", None),
+                        source=source,
                         session_id=self.key,
                         event_type="playback_unavailable",
                         severity="warning",
@@ -1969,7 +2471,7 @@ class CsoIngestSession:
                     logger.warning(
                         "CSO ingest failed for all URLs on source channel=%s source_id=%s error=%s",
                         self.channel_id,
-                        source_id,
+                        source.id,
                         last_error,
                     )
                 self.current_source = None
@@ -1987,8 +2489,8 @@ class CsoIngestSession:
             self.hls_variants = variants
             self.current_variant_position = variant_position
             self.current_program_index = program_index
-            if source_id is not None:
-                self.source_program_index[source_id] = int(program_index)
+            if source.id is not None:
+                self.source_program_index[source.id] = int(program_index)
             self.startup_jump_done = True
             self._activate_process_unlocked(process)
             if old_capacity_key:
@@ -1996,8 +2498,7 @@ class CsoIngestSession:
 
             await emit_channel_stream_event(
                 channel_id=self.channel_id,
-                source_id=getattr(source, "id", None),
-                playlist_id=getattr(source, "playlist_id", None),
+                source=source,
                 session_id=self.key,
                 event_type="switch_success",
                 severity="info",
@@ -2006,7 +2507,10 @@ class CsoIngestSession:
                     "pipeline": "ingest",
                     "program_index": self.current_program_index,
                     "variant_count": len(self.hls_variants),
-                    **_source_event_context(source, source_url=self.current_source_url),
+                    **_source_event_context(
+                        self.current_source,
+                        source_url=self.current_source_url,
+                    ),
                 },
             )
             return CsoStartResult(success=True)
@@ -2186,8 +2690,7 @@ class CsoIngestSession:
         )
         await emit_channel_stream_event(
             channel_id=self.channel_id,
-            source_id=getattr(source, "id", None),
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=self.key,
             event_type="health_actioned",
             severity="warning",
@@ -2366,8 +2869,7 @@ class CsoIngestSession:
             event_type = "capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable"
             await emit_channel_stream_event(
                 channel_id=self.channel_id,
-                source_id=failed_source_id,
-                playlist_id=getattr(failed_source, "playlist_id", None),
+                source=failed_source,
                 session_id=self.key,
                 event_type=event_type,
                 severity="warning",
@@ -2385,8 +2887,7 @@ class CsoIngestSession:
 
         await emit_channel_stream_event(
             channel_id=self.channel_id,
-            source_id=failed_source_id,
-            playlist_id=getattr(failed_source, "playlist_id", None),
+            source=failed_source,
             session_id=self.key,
             event_type="switch_attempt",
             severity="warning",
@@ -2484,8 +2985,7 @@ class CsoIngestSession:
         event_type = "capacity_blocked" if last_result.reason == "capacity_blocked" else "playback_unavailable"
         await emit_channel_stream_event(
             channel_id=self.channel_id,
-            source_id=failed_source_id,
-            playlist_id=getattr(failed_source, "playlist_id", None),
+            source=failed_source,
             session_id=self.key,
             event_type=event_type,
             severity="warning",
@@ -2967,7 +3467,14 @@ class CsoOutputSession:
                 )
             self.running = True
             try:
-                command = CsoFfmpegCommandBuilder(self.output_policy).build_output_command()
+                pipe_input_format = _resolve_vod_pipe_container(
+                    getattr(self.ingest_session, "current_source", None),
+                    source_probe=getattr(self.ingest_session, "current_source_probe", None),
+                )
+                command = CsoFfmpegCommandBuilder(
+                    self.output_policy,
+                    pipe_input_format=pipe_input_format,
+                ).build_output_command()
                 logger.info(
                     "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
                     self.channel_id,
@@ -3244,14 +3751,7 @@ class CsoOutputSession:
                     severity = "error" if return_code not in (None, 0) else "warning"
                     await emit_channel_stream_event(
                         channel_id=self.channel_id,
-                        source_id=(
-                            getattr(getattr(self.ingest_session, "current_source", None), "id", None)
-                            or getattr(self.event_source, "id", None)
-                        ),
-                        playlist_id=(
-                            getattr(getattr(self.ingest_session, "current_source", None), "playlist_id", None)
-                            or getattr(self.event_source, "playlist_id", None)
-                        ),
+                        source=(getattr(self.ingest_session, "current_source", None) or self.event_source),
                         session_id=self.key,
                         event_type="playback_unavailable",
                         severity=severity,
@@ -3481,17 +3981,6 @@ class CsoOutputSession:
             _policy_log_label(self.output_policy),
         )
         return_code = None
-        try:
-            if ingest_queue is not None and self.ingest_session is not None:
-                await self.ingest_session.remove_subscriber(self.key)
-        except Exception:
-            pass
-        try:
-            if slate_queue is not None and self.slate_session is not None:
-                await slate_queue.clear()
-                await self.slate_session.remove_subscriber(self.key)
-        except Exception:
-            pass
         if process:
             try:
                 if process.stdin:
@@ -3517,6 +4006,17 @@ class CsoOutputSession:
                                 self.channel_id,
                                 self.key,
                             )
+        try:
+            if ingest_queue is not None and self.ingest_session is not None:
+                await self.ingest_session.remove_subscriber(self.key)
+        except Exception:
+            pass
+        try:
+            if slate_queue is not None and self.slate_session is not None:
+                await slate_queue.clear()
+                await self.slate_session.remove_subscriber(self.key)
+        except Exception:
+            pass
         for task in (read_task, write_task, ingest_recovery_task, stderr_task):
             if not task or task.done():
                 continue
@@ -3687,7 +4187,14 @@ class CsoHlsOutputSession:
                     ),
                     int((time.time() - self.last_activity) * 1000),
                 )
-            command = CsoFfmpegCommandBuilder(self.policy).build_hls_output_command(self.output_dir)
+            pipe_input_format = _resolve_vod_pipe_container(
+                getattr(self.ingest_session, "current_source", None),
+                source_probe=getattr(self.ingest_session, "current_source_probe", None),
+            )
+            command = CsoFfmpegCommandBuilder(
+                self.policy,
+                pipe_input_format=pipe_input_format,
+            ).build_hls_output_command(self.output_dir)
             logger.info(
                 "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
                 self.channel_id,
@@ -4027,16 +4534,6 @@ class CsoHlsOutputSession:
                 0,
                 _policy_log_label(self.runtime_policy),
             )
-        try:
-            if ingest_queue is not None and self.ingest_session is not None:
-                await self.ingest_session.remove_subscriber(self.key)
-        except Exception:
-            pass
-        try:
-            if slate_queue is not None and self.slate_session is not None:
-                await self.slate_session.remove_subscriber(self.key)
-        except Exception:
-            pass
         if process:
             try:
                 process.terminate()
@@ -4052,6 +4549,16 @@ class CsoHlsOutputSession:
                         self.key,
                     )
                     pass
+        try:
+            if ingest_queue is not None and self.ingest_session is not None:
+                await self.ingest_session.remove_subscriber(self.key)
+        except Exception:
+            pass
+        try:
+            if slate_queue is not None and self.slate_session is not None:
+                await self.slate_session.remove_subscriber(self.key)
+        except Exception:
+            pass
         async with self.lock:
             should_cleanup_output_dir = (
                 self.process_token == stop_token and not self.running and not self.process and not self.clients
@@ -4356,9 +4863,9 @@ async def _resolve_username_for_stream_key(config, stream_key):
 
 
 def subscribe_slate_stream(
-    config, policy, reason, detail_hint="", profile_name="", channel=None, source=None, status_code=503
+    policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
 ):
-    allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel)
+    allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel=channel, source=source)
     if not CSO_UNAVAILABLE_SHOW_SLATE or not allow_unavailable_slate:
         message = (
             "Channel unavailable due to connection limits"
@@ -4429,7 +4936,7 @@ async def subscribe_slate_hls(
     source=None,
     status_code=503,
 ):
-    allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel)
+    allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel=channel, source=source)
     if not CSO_UNAVAILABLE_SHOW_SLATE or not allow_unavailable_slate:
         message = (
             "Channel unavailable due to connection limits"
@@ -4495,6 +5002,8 @@ async def subscribe_channel_hls(
         return None, "Channel is disabled", 404
 
     sources = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
+    sources = [cso_source_from_channel_source(s) for s in sources]
+
     if not sources:
         return None, "No available stream source for this channel", 503
 
@@ -4530,8 +5039,7 @@ async def subscribe_channel_hls(
         reason = ingest_session.last_error or "no_available_source"
         await emit_channel_stream_event(
             channel_id=channel.id,
-            source_id=getattr(sources[0], "id", None) if sources else None,
-            playlist_id=getattr(sources[0], "playlist_id", None) if sources else None,
+            source=sources[0] if sources else None,
             session_id=ingest_key,
             event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
             severity="warning",
@@ -4568,8 +5076,7 @@ async def subscribe_channel_hls(
         )
         await emit_channel_stream_event(
             channel_id=channel.id,
-            source_id=getattr(ingest_session.current_source, "id", None),
-            playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+            source=getattr(ingest_session, "current_source", None),
             session_id=output_session_key,
             event_type="playback_unavailable",
             severity="warning",
@@ -4581,10 +5088,9 @@ async def subscribe_channel_hls(
     if is_new_client:
         await emit_channel_stream_event(
             channel_id=channel.id,
-            source_id=getattr(ingest_session.current_source, "id", None),
-            playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+            source=getattr(ingest_session, "current_source", None),
             session_id=output_session_key,
-            event_type="session_start",
+            event_type="session_end",
             severity="info",
             details={
                 "profile": profile,
@@ -4611,11 +5117,12 @@ async def subscribe_source_hls(
     if not source:
         return None, "Stream not found", 404
 
-    playlist = getattr(source, "playlist", None)
+    source = cso_source_from_channel_source(source)
+
+    playlist = source.playlist
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return None, "Stream playlist is disabled", 404
-    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
-    if not stream_url:
+    if not source.url:
         return None, "No available stream source for this channel", 503
 
     source_id = source.id
@@ -4648,8 +5155,7 @@ async def subscribe_source_hls(
         reason = ingest_session.last_error or "no_available_source"
         await emit_channel_stream_event(
             channel_id=channel_id,
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=ingest_key,
             event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
             severity="warning",
@@ -4687,8 +5193,7 @@ async def subscribe_source_hls(
         )
         await emit_channel_stream_event(
             channel_id=channel_id,
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=output_session_key,
             event_type="playback_unavailable",
             severity="warning",
@@ -4700,8 +5205,7 @@ async def subscribe_source_hls(
     if is_new_client:
         await emit_channel_stream_event(
             channel_id=channel_id,
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=output_session_key,
             event_type="session_start",
             severity="info",
@@ -4739,6 +5243,8 @@ async def subscribe_channel_stream(
         return None, None, "Channel is disabled", 404
 
     sources = await order_cso_channel_sources(list(channel.sources or []), channel_id=getattr(channel, "id", None))
+    sources = [cso_source_from_channel_source(s) for s in sources]
+
     if not sources:
         await emit_channel_stream_event(
             channel_id=channel.id,
@@ -4755,7 +5261,9 @@ async def subscribe_channel_stream(
     capacity_owner_key = f"cso-channel-{channel.id}"
     username = await _resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = _resolve_cso_ingest_user_agent(config, sources[0] if sources else None)
-    allow_unavailable_slate = should_allow_unavailable_slate(profile, channel)
+    allow_unavailable_slate = should_allow_unavailable_slate(
+        profile, channel=channel, source=sources[0] if sources else None
+    )
 
     # Init slate pipeline
     slate_session = None
@@ -4805,7 +5313,6 @@ async def subscribe_channel_stream(
         )
         detail_hint = summarize_cso_playback_issue(message) if reason == "playback_unavailable" else ""
         plan = ingest_session.build_unavailable_stream_plan(
-            config,
             policy,
             reason,
             detail_hint=detail_hint,
@@ -4842,7 +5349,6 @@ async def subscribe_channel_stream(
         )
         detail_hint = summarize_cso_playback_issue(reason)
         plan = ingest_session.build_unavailable_stream_plan(
-            config,
             policy,
             "playback_unavailable",
             detail_hint=detail_hint,
@@ -4860,8 +5366,7 @@ async def subscribe_channel_stream(
     content_type = policy_content_type(policy)
     await emit_channel_stream_event(
         channel_id=channel.id,
-        source_id=getattr(ingest_session.current_source, "id", None),
-        playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+        source=ingest_session.current_source,
         session_id=output_session_key,
         event_type="session_start",
         severity="info",
@@ -4890,7 +5395,6 @@ async def subscribe_channel_stream(
                             session_id=output_session_key,
                         )
                         unavailable_plan = ingest_session.build_unavailable_stream_plan(
-                            config,
                             policy,
                             "playback_unavailable",
                             detail_hint=detail_hint,
@@ -4933,8 +5437,7 @@ async def subscribe_channel_stream(
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
                 channel_id=channel.id,
-                source_id=getattr(ingest_session.current_source, "id", None),
-                playlist_id=getattr(ingest_session.current_source, "playlist_id", None),
+                source=getattr(ingest_session, "current_source", None),
                 session_id=output_session_key,
                 event_type="session_end",
                 severity="info",
@@ -4951,6 +5454,406 @@ async def subscribe_channel_stream(
     return build_cso_stream_plan(_generator(), content_type, None, 200)
 
 
+async def subscribe_vod_stream(
+    config,
+    candidate,
+    upstream_url,
+    stream_key,
+    profile,
+    connection_id,
+    episode=None,
+    prebuffer_bytes=0,
+    request_base_url="",
+):
+    """Subscribe a playback client to a VOD item/episode CSO output session."""
+    if not candidate or not candidate.group_item:
+        return build_cso_stream_plan(None, None, "VOD item not found", 404)
+
+    item = candidate.group_item
+    source = await cso_source_from_vod_source(candidate, upstream_url)
+
+    if not source:
+        return build_cso_stream_plan(None, None, "Source not found", 404)
+
+    playlist = source.playlist
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return build_cso_stream_plan(None, None, "Source playlist is disabled", 404)
+
+    if not source.url:
+        return build_cso_stream_plan(None, None, "No available stream source", 503)
+
+    source_id = source.id
+    sources = [source]
+
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-vod-ingest-{source_id}"
+    output_session_key = f"cso-vod-output-{source_id}-{profile}"
+    capacity_owner_key = f"cso-vod-{source_id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, source)
+
+    # Init slate pipeline
+    slate_session = None
+    if CSO_UNAVAILABLE_SHOW_SLATE:
+        slate_session = CsoSlateSession(
+            f"{output_session_key}-slate",
+            config_path=getattr(config, "config_path", ""),
+        )
+
+    # Init ingest pipeline
+    def _ingest_factory():
+        return CsoIngestSession(
+            ingest_key,
+            None,  # channel_id is None for VOD
+            sources,
+            request_base_url=(request_base_url or "").rstrip("/"),
+            instance_id=config.ensure_instance_id(),
+            capacity_owner_key=capacity_owner_key,
+            stream_key=stream_key,
+            username=username,
+            ingest_user_agent=ingest_user_agent,
+            slate_session=slate_session,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    try:
+        from quart import current_app
+
+        ingest_session.app = current_app._get_current_object()
+    except Exception:
+        pass
+    ingest_session.slate_session = slate_session
+    await ingest_session.start()
+
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_available_source"
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            session_id=ingest_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        detail_hint = summarize_cso_playback_issue(reason) if reason == "playback_unavailable" else ""
+        plan = ingest_session.build_unavailable_stream_plan(
+            policy,
+            reason,
+            detail_hint=detail_hint,
+            profile_name=profile,
+            status_code=503,
+        )
+        if plan.generator is not None:
+            return plan
+        return build_cso_stream_plan(None, None, "VOD unavailable because playback could not be started", 503)
+
+    # Init output pipeline
+    def _output_factory():
+        return CsoOutputSession(
+            output_session_key,
+            None,  # channel_id is None for VOD
+            policy,
+            ingest_session,
+            slate_session,
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session.slate_session = slate_session
+    output_session.event_source = source
+    await output_session.start()
+
+    if not output_session.running:
+        reason = output_session.last_error or "output_not_running"
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            session_id=output_session_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        detail_hint = summarize_cso_playback_issue(reason)
+        plan = ingest_session.build_unavailable_stream_plan(
+            policy,
+            "playback_unavailable",
+            detail_hint=detail_hint,
+            profile_name=profile,
+            status_code=503,
+        )
+        if plan.generator is not None:
+            return plan
+        return build_cso_stream_plan(None, None, "VOD unavailable because output pipeline could not be started", 503)
+
+    queue = await output_session.add_client(connection_id, prebuffer_bytes=prebuffer_bytes)
+    content_type = policy_content_type(policy)
+
+    async def _generator():
+        emitted_chunks = 0
+        emitted_bytes = 0
+        last_chunk_ts = 0.0
+        last_progress_log_ts = 0.0
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                now_value = time.time()
+                emitted_chunks += 1
+                emitted_bytes += len(chunk)
+                yield_gap_seconds = 0.0
+                if last_chunk_ts > 0:
+                    yield_gap_seconds = max(0.0, now_value - last_chunk_ts)
+                last_chunk_ts = now_value
+                yield chunk
+                await output_session.touch_client(connection_id)
+                if (now_value - last_progress_log_ts) >= float(CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS):
+                    queue_stats = await queue.stats()
+                    logger.info(
+                        "CSO VOD output consumer progress item=%s output_key=%s connection_id=%s yielded_chunks=%s yielded_bytes=%s yield_gap_ms=%s queue_items=%s queue_bytes=%s queue_max_bytes=%s queue_oldest_age_ms=%s",
+                        item.id,
+                        output_session_key,
+                        connection_id,
+                        emitted_chunks,
+                        emitted_bytes,
+                        int(yield_gap_seconds * 1000),
+                        int(queue_stats.get("queued_items") or 0),
+                        int(queue_stats.get("queued_bytes") or 0),
+                        int(queue_stats.get("max_bytes") or 0),
+                        int(float(queue_stats.get("oldest_age_seconds") or 0.0) * 1000),
+                    )
+                    last_progress_log_ts = now_value
+        finally:
+            await output_session.remove_client(connection_id)
+            await emit_channel_stream_event(
+                vod_category_id=item.category_id,
+                vod_item_id=item.id,
+                vod_episode_id=episode.id if episode else None,
+                source=getattr(ingest_session, "current_source", None),
+                session_id=output_session_key,
+                event_type="session_end",
+                severity="info",
+                details={
+                    "profile": profile,
+                    "connection_id": connection_id,
+                    **_source_event_context(
+                        ingest_session.current_source,
+                        source_url=getattr(ingest_session, "current_source_url", None),
+                    ),
+                },
+            )
+
+    return build_cso_stream_plan(_generator(), content_type, None, 200)
+
+
+async def subscribe_vod_hls(
+    config,
+    candidate,
+    upstream_url,
+    stream_key,
+    profile,
+    connection_id,
+    episode=None,
+    request_base_url="",
+    on_disconnect=None,
+):
+    """Subscribe a playback client to a VOD item/episode CSO HLS output session."""
+    if not candidate or not candidate.group_item:
+        return None, "VOD item not found", 404
+
+    item = candidate.group_item
+    source = await cso_source_from_vod_source(candidate, upstream_url)
+
+    if not source:
+        return None, "Source not found", 404
+
+    playlist = source.playlist
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return None, "Source playlist is disabled", 404
+    if not source.url:
+        return None, "No available stream source", 503
+
+    source_id = source.id
+    sources = [source]
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-vod-ingest-{source_id}"
+    output_session_key = f"cso-vod-hls-output-{source_id}-{profile}"
+    capacity_owner_key = f"cso-vod-{source_id}"
+    username = await _resolve_username_for_stream_key(config, stream_key)
+    ingest_user_agent = _resolve_cso_ingest_user_agent(config, source)
+
+    def _ingest_factory():
+        return CsoIngestSession(
+            ingest_key,
+            None,  # channel_id is None for VOD
+            sources,
+            request_base_url=(request_base_url or "").rstrip("/"),
+            instance_id=config.ensure_instance_id(),
+            capacity_owner_key=capacity_owner_key,
+            stream_key=stream_key,
+            username=username,
+            allow_failover=False,
+            ingest_user_agent=ingest_user_agent,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_available_source"
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            session_id=ingest_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return None, "VOD unavailable because playback could not be started", 503
+
+    def _output_factory():
+        return CsoHlsOutputSession(
+            output_session_key,
+            None,  # channel_id is None for VOD
+            policy,
+            ingest_session,
+            cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        reason = output_session.last_error or "output_not_running"
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            session_id=output_session_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return None, "VOD unavailable because output pipeline could not be started", 503
+
+    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    if is_new_client:
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            source=getattr(ingest_session, "current_source", None),
+            session_id=output_session_key,
+            event_type="session_start",
+            severity="info",
+            details={
+                "profile": profile,
+                "connection_id": connection_id,
+                **_source_event_context(
+                    ingest_session.current_source,
+                    source_url=getattr(ingest_session, "current_source_url", None),
+                ),
+            },
+        )
+    return output_session, None, 200
+
+
+async def subscribe_vod_proxy_stream(
+    candidate,
+    upstream_url,
+    connection_id,
+    request_headers=None,
+    episode=None,
+):
+    if not candidate or not candidate.group_item:
+        return CsoStreamPlan(None, None, "VOD item not found", 404)
+
+    item = candidate.group_item
+    source = await cso_source_from_vod_source(candidate, upstream_url)
+    if not source:
+        return CsoStreamPlan(None, None, "Source not found", 404)
+
+    playlist = source.playlist
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return CsoStreamPlan(None, None, "Source playlist is disabled", 404)
+    if not source.url:
+        return CsoStreamPlan(None, None, "No available stream source", 503)
+
+    session_key = f"vod-proxy-{source.id}-{connection_id}"
+    session = await vod_proxy_session_manager.create(
+        session_key,
+        source,
+        source.url,
+        request_headers=request_headers,
+    )
+    started = await session.start()
+    if not started:
+        reason = session.last_error or "proxy_start_failed"
+        await emit_channel_stream_event(
+            vod_category_id=item.category_id,
+            vod_item_id=item.id,
+            vod_episode_id=episode.id if episode else None,
+            source=source,
+            session_id=session_key,
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+            severity="warning",
+            details={
+                "reason": reason,
+                **_source_event_context(source, source_url=source.url),
+            },
+        )
+        await session.stop(force=True)
+        return CsoStreamPlan(
+            None,
+            None,
+            "Source capacity limit reached" if reason == "capacity_blocked" else "Unable to start proxy stream",
+            503 if reason == "capacity_blocked" else 502,
+        )
+
+    await emit_channel_stream_event(
+        vod_category_id=item.category_id,
+        vod_item_id=item.id,
+        vod_episode_id=episode.id if episode else None,
+        source=source,
+        session_id=session_key,
+        event_type="session_start",
+        severity="info",
+        details={
+            "mode": "proxy",
+            "connection_id": connection_id,
+            **_source_event_context(source, source_url=source.url),
+        },
+    )
+
+    async def _generator():
+        try:
+            async for chunk in session.iter_bytes():
+                yield chunk
+        finally:
+            await emit_channel_stream_event(
+                vod_category_id=item.category_id,
+                vod_item_id=item.id,
+                vod_episode_id=episode.id if episode else None,
+                source=source,
+                session_id=session_key,
+                event_type="session_end",
+                severity="info",
+                details={
+                    "mode": "proxy",
+                    "connection_id": connection_id,
+                    **_source_event_context(source, source_url=source.url),
+                },
+            )
+
+    return CsoStreamPlan(
+        _generator(),
+        session.content_type or policy_content_type({"container": source.container_extension or "matroska"}),
+        None,
+        int(session.status_code or 200),
+        headers=session.response_headers,
+    )
+
+
 async def subscribe_source_stream(
     config,
     source,
@@ -4964,12 +5867,13 @@ async def subscribe_source_stream(
     if not source:
         return build_cso_stream_plan(None, None, "Source not found", 404)
 
-    playlist = getattr(source, "playlist", None)
+    source = cso_source_from_channel_source(source)
+
+    playlist = source.playlist
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return build_cso_stream_plan(None, None, "Source playlist is disabled", 404)
 
-    stream_url = (getattr(source, "playlist_stream_url", None) or "").strip()
-    if not stream_url:
+    if not source.url:
         return build_cso_stream_plan(None, None, "No available stream source for this channel", 503)
 
     source_id = source.id
@@ -4982,7 +5886,9 @@ async def subscribe_source_stream(
     capacity_owner_key = f"cso-source-{source_id}"
     username = await _resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = _resolve_cso_ingest_user_agent(config, source)
-    allow_unavailable_slate = should_allow_unavailable_slate(profile, getattr(source, "channel", None))
+    allow_unavailable_slate = should_allow_unavailable_slate(
+        profile, channel=getattr(source, "channel", None), source=source
+    )
 
     # Init slate pipeline
     slate_session = None
@@ -5015,8 +5921,7 @@ async def subscribe_source_stream(
         reason = ingest_session.last_error or "no_available_source"
         await emit_channel_stream_event(
             channel_id=channel_id,
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=ingest_key,
             event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
             severity="warning",
@@ -5029,7 +5934,6 @@ async def subscribe_source_stream(
         )
         detail_hint = summarize_cso_playback_issue(message) if reason == "playback_unavailable" else ""
         plan = ingest_session.build_unavailable_stream_plan(
-            config,
             policy,
             reason,
             detail_hint=detail_hint,
@@ -5061,8 +5965,7 @@ async def subscribe_source_stream(
         reason = output_session.last_error or "output_not_running"
         await emit_channel_stream_event(
             channel_id=channel_id,
-            source_id=source_id,
-            playlist_id=getattr(source, "playlist_id", None),
+            source=source,
             session_id=output_session_key,
             event_type="playback_unavailable",
             severity="warning",
@@ -5070,7 +5973,6 @@ async def subscribe_source_stream(
         )
         detail_hint = summarize_cso_playback_issue(reason)
         plan = ingest_session.build_unavailable_stream_plan(
-            config,
             policy,
             "playback_unavailable",
             detail_hint=detail_hint,
@@ -5089,8 +5991,7 @@ async def subscribe_source_stream(
     content_type = policy_content_type(policy)
     await emit_channel_stream_event(
         channel_id=channel_id,
-        source_id=source_id,
-        playlist_id=getattr(source, "playlist_id", None),
+        source=source,
         session_id=output_session_key,
         event_type="session_start",
         severity="info",
@@ -5119,7 +6020,6 @@ async def subscribe_source_stream(
                             session_id=output_session_key,
                         )
                         unavailable_plan = ingest_session.build_unavailable_stream_plan(
-                            config,
                             policy,
                             "playback_unavailable",
                             detail_hint=detail_hint,
@@ -5163,8 +6063,7 @@ async def subscribe_source_stream(
             await output_session.remove_client(connection_id)
             await emit_channel_stream_event(
                 channel_id=channel_id,
-                source_id=source_id,
-                playlist_id=getattr(source, "playlist_id", None),
+                source=source,
                 session_id=output_session_key,
                 event_type="session_end",
                 severity="info",

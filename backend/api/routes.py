@@ -319,6 +319,7 @@ async def api_check_auth():
         role_names = [role.name for role in user.roles] if user.roles else []
         is_admin = "admin" in role_names
         dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+        vod_access_mode = "movies_series" if is_admin else (user.vod_access_mode or "none")
         last_login_at = getattr(user, "last_login_at", None)
         last_stream_key_used_at = getattr(user, "last_stream_key_used_at", None)
         last_logged_in_at = max(
@@ -340,6 +341,7 @@ async def api_check_auth():
                     "last_logged_in_at": to_utc_iso(last_logged_in_at),
                     "dvr_access_mode": dvr_access_mode,
                     "dvr_retention_policy": user.dvr_retention_policy or "forever",
+                    "vod_access_mode": vod_access_mode,
                 },
             }
         )
@@ -384,6 +386,7 @@ async def api_get_background_tasks():
         return {
             "task_queue_status": await task_broker.get_status(),
             "current_task": await task_broker.get_currently_running_task(),
+            "current_concurrent_tasks": await task_broker.get_currently_running_concurrent_tasks(),
             "pending_tasks": await task_broker.get_pending_tasks(),
         }
 

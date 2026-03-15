@@ -160,6 +160,9 @@ class StreamActivityTracker:
         source_id=None,
         playlist_id=None,
         xc_account_id=None,
+        vod_category_id=None,
+        vod_item_id=None,
+        vod_episode_id=None,
     ):
         if channel_id and not session.get("channel_id"):
             session["channel_id"] = channel_id
@@ -179,6 +182,12 @@ class StreamActivityTracker:
             session["playlist_id"] = playlist_id
         if xc_account_id and not session.get("xc_account_id"):
             session["xc_account_id"] = xc_account_id
+        if vod_category_id and not session.get("vod_category_id"):
+            session["vod_category_id"] = vod_category_id
+        if vod_item_id and not session.get("vod_item_id"):
+            session["vod_item_id"] = vod_item_id
+        if vod_episode_id and not session.get("vod_episode_id"):
+            session["vod_episode_id"] = vod_episode_id
 
     async def _resolve_metadata(
         self,
@@ -195,6 +204,9 @@ class StreamActivityTracker:
         source_id=None,
         playlist_id=None,
         xc_account_id=None,
+        vod_category_id=None,
+        vod_item_id=None,
+        vod_episode_id=None,
     ):
         resolved_stream_name = stream_name
         resolved_source_url = source_url
@@ -202,6 +214,9 @@ class StreamActivityTracker:
         resolved_source_id = source_id
         resolved_playlist_id = playlist_id
         resolved_xc_account_id = xc_account_id
+        resolved_vod_category_id = vod_category_id
+        resolved_vod_item_id = vod_item_id
+        resolved_vod_episode_id = vod_episode_id
         if not channel_name and not existing_channel_name:
             from backend.channels import build_stream_source_index, resolve_stream_target
 
@@ -226,6 +241,9 @@ class StreamActivityTracker:
             "source_id": resolved_source_id,
             "playlist_id": resolved_playlist_id,
             "xc_account_id": resolved_xc_account_id,
+            "vod_category_id": resolved_vod_category_id,
+            "vod_item_id": resolved_vod_item_id,
+            "vod_episode_id": resolved_vod_episode_id,
         }
 
     async def mark(
@@ -248,6 +266,9 @@ class StreamActivityTracker:
         source_id=None,
         playlist_id=None,
         xc_account_id=None,
+        vod_category_id=None,
+        vod_item_id=None,
+        vod_episode_id=None,
         client_hints=None,
         enrich_metadata=True,
     ):
@@ -299,6 +320,9 @@ class StreamActivityTracker:
             "source_id": source_id,
             "playlist_id": playlist_id,
             "xc_account_id": xc_account_id,
+            "vod_category_id": vod_category_id,
+            "vod_item_id": vod_item_id,
+            "vod_episode_id": vod_episode_id,
         }
         if enrich_metadata:
             resolved_metadata = await self._resolve_metadata(
@@ -314,6 +338,9 @@ class StreamActivityTracker:
                 source_id=source_id,
                 playlist_id=playlist_id,
                 xc_account_id=xc_account_id,
+                vod_category_id=vod_category_id,
+                vod_item_id=vod_item_id,
+                vod_episode_id=vod_episode_id,
             )
 
         async with self.lock:
@@ -722,6 +749,9 @@ async def upsert_stream_activity(
     source_id=None,
     playlist_id=None,
     xc_account_id=None,
+    vod_category_id=None,
+    vod_item_id=None,
+    vod_episode_id=None,
     client_hints=None,
     enrich_metadata=True,
 ):
@@ -744,6 +774,9 @@ async def upsert_stream_activity(
         source_id=source_id,
         playlist_id=playlist_id,
         xc_account_id=xc_account_id,
+        vod_category_id=vod_category_id,
+        vod_item_id=vod_item_id,
+        vod_episode_id=vod_episode_id,
         client_hints=client_hints,
         enrich_metadata=enrich_metadata,
     )

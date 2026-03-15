@@ -14,6 +14,7 @@ from backend.api.tasks import (
     TaskQueueBroker,
     reconcile_dvr_recordings,
     apply_dvr_rules,
+    cleanup_vod_metadata_cache,
     poll_tvh_subscription_status,
     sync_all_users_to_tvh,
     run_periodic_channel_stream_health_checks,
@@ -93,6 +94,20 @@ async def every_30_seconds():
 async def every_6_hours():
     async with app.app_context():
         await cleanup_stream_audit_logs()
+
+
+@scheduler.scheduled_job("interval", id="vod_metadata_cache_cleanup", hours=24, misfire_grace_time=300)
+async def every_24_hours_vod_metadata_cleanup():
+    async with app.app_context():
+        task_broker = await TaskQueueBroker.get_instance()
+        await task_broker.add_task(
+            {
+                "name": "Cleaning XC VOD metadata cache",
+                "function": cleanup_vod_metadata_cache,
+                "args": [app],
+            },
+            priority=26,
+        )
 
 
 @scheduler.scheduled_job("interval", id="tvh_networks_minutely", seconds=60, misfire_grace_time=30)

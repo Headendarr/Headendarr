@@ -635,7 +635,6 @@ async def _hls_start_failure_response(config, channel, effective_profile, error_
         effective_policy = generate_cso_policy_from_profile(config, effective_profile)
         return _response_from_cso_plan(
             subscribe_slate_stream(
-                config,
                 effective_policy,
                 "capacity_blocked",
                 detail_hint="",

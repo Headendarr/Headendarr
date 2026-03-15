@@ -21,7 +21,17 @@ from backend.http_headers import (
     sanitise_headers,
     serialise_headers_json,
 )
-from backend.models import Playlist, PlaylistStreams, Session, XcAccount, db
+from backend.models import (
+    Playlist,
+    PlaylistStreams,
+    Session,
+    VodCategory,
+    VodCategoryXcCategory,
+    XcAccount,
+    XcVodCategory,
+    XcVodItem,
+    db,
+)
 from backend.stream_profiles import resolve_cso_profile_name
 from backend.streaming import build_configured_hls_proxy_url
 from backend.tvheadend.tvh_requests import get_tvh, network_template
@@ -711,6 +721,7 @@ async def _upsert_xc_accounts(session, playlist, data):
 
 async def delete_playlist(config, playlist_id):
     net_uuids = []
+    affected_vod_group_ids = []
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
@@ -731,8 +742,26 @@ async def delete_playlist(config, playlist_id):
             for f in cache_files:
                 if os.path.isfile(f):
                     os.remove(f)
+            group_result = await session.execute(
+                select(VodCategory.id)
+                .join(VodCategoryXcCategory, VodCategoryXcCategory.category_id == VodCategory.id)
+                .join(XcVodCategory, XcVodCategory.id == VodCategoryXcCategory.xc_category_id)
+                .where(XcVodCategory.playlist_id == playlist.id)
+            )
+            affected_vod_group_ids = sorted({int(row[0]) for row in group_result.all() if row and row[0] is not None})
+            await session.execute(delete(XcVodItem).where(XcVodItem.playlist_id == playlist.id))
+            await session.execute(delete(XcVodCategory).where(XcVodCategory.playlist_id == playlist.id))
             # Remove from DB
             await session.delete(playlist)
+    if affected_vod_group_ids:
+        try:
+            from backend.vod import rebuild_vod_group_cache, queue_vod_category_strm_sync
+
+            for group_id in affected_vod_group_ids:
+                await rebuild_vod_group_cache(group_id)
+                await queue_vod_category_strm_sync(group_id)
+        except Exception:
+            logger.exception("Failed to rebuild VOD group caches after deleting playlist #%s", playlist_id)
     _clear_playlist_health(config, playlist_id)
     return net_uuids
 
@@ -931,12 +960,37 @@ async def import_playlist_data(config, playlist_id):
     try:
         if playlist.account_type == XC_ACCOUNT_TYPE:
             logger.info("Updating XC playlist #%s from host - '%s'", playlist_id, playlist.url)
+            xc_started_at = time.perf_counter()
             ok = await _import_xc_playlist_streams(settings, playlist)
             if not ok:
                 raise RuntimeError("Failed to import Xtream Codes source")
+            logger.debug(
+                "XC live import completed for playlist #%s in %.2fs",
+                playlist_id,
+                time.perf_counter() - xc_started_at,
+            )
+            from backend.vod import sync_xc_vod_catalogue
             from backend.channel_suggestions import update_channel_suggestions_for_playlist
 
+            vod_started_at = time.perf_counter()
+            await sync_xc_vod_catalogue(playlist)
+            logger.debug(
+                "XC VOD sync completed for playlist #%s in %.2fs",
+                playlist_id,
+                time.perf_counter() - vod_started_at,
+            )
+            suggestions_started_at = time.perf_counter()
             await update_channel_suggestions_for_playlist(playlist_id)
+            logger.debug(
+                "XC channel suggestions refresh completed for playlist #%s in %.2fs",
+                playlist_id,
+                time.perf_counter() - suggestions_started_at,
+            )
+            logger.debug(
+                "XC source update completed for playlist #%s in %.2fs",
+                playlist_id,
+                time.perf_counter() - xc_started_at,
+            )
             _set_playlist_health(
                 config,
                 playlist_id,

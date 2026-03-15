@@ -37,6 +37,12 @@
                     <q-item-label caption>
                       DVR: {{ dvrModeLabel(user.dvr_access_mode) }}
                     </q-item-label>
+                    <q-item-label caption>
+                      VOD: {{ vodModeLabel(user.vod_access_mode) }}
+                    </q-item-label>
+                    <q-item-label caption>
+                      VOD .strm files: {{ user.vod_generate_strm_files ? 'Enabled' : 'Disabled' }}
+                    </q-item-label>
                     <q-item-label caption class="row items-center q-gutter-xs no-wrap">
                       <span class="text-weight-medium">Streaming key:</span>
                       <span class="text-mono ellipsis">{{ user.streaming_key || '-' }}</span>
@@ -163,6 +169,33 @@
               :disable="form.roles.includes('admin')"
             />
           </template>
+
+          <TicSelectInput
+            v-model="form.vod_access_mode"
+            label="VOD Access"
+            description="Choose whether this streaming user can access movies, TV shows, or both through XC VOD."
+            :options="vodAccessOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+            :disable="form.roles.includes('admin')"
+          />
+          <TicToggleInput
+            v-model="form.vod_generate_strm_files"
+            label="Create VOD .strm Files"
+            description="Enable `.strm` library export generation for this user when VOD categories have `.strm` generation enabled."
+          />
+          <q-banner
+            v-if="form.roles.includes('admin')"
+            rounded
+            dense
+            class="bg-blue-1 text-primary"
+          >
+            Note: Admin users always have VOD access to movies and TV shows.
+          </q-banner>
         </q-form>
       </div>
     </TicDialogWindow>
@@ -259,6 +292,38 @@
                 :disable="isAdminUser(editUser)"
               />
             </template>
+          </div>
+
+          <q-separator class="users-edit-separator" />
+
+          <div class="users-edit-heading">VOD</div>
+          <div class="users-edit-section">
+            <q-banner
+              v-if="isAdminUser(editUser)"
+              rounded
+              dense
+              class="bg-blue-1 text-primary"
+            >
+              NOTE: Admin users always have VOD access to movies and TV shows.
+            </q-banner>
+            <TicSelectInput
+              v-model="form.vod_access_mode"
+              label="VOD Access"
+              description="Choose whether this streaming user can access movies, TV shows, or both through XC VOD."
+              :options="vodAccessOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              :disable="isAdminUser(editUser)"
+            />
+            <TicToggleInput
+              v-model="form.vod_generate_strm_files"
+              label="Create VOD .strm Files"
+              description="Enable `.strm` library export generation for this user when VOD categories have `.strm` generation enabled."
+            />
           </div>
         </q-form>
       </div>
@@ -357,6 +422,8 @@ export default {
         streaming_key: '',
         dvr_access_mode: 'none',
         dvr_retention_policy: 'forever',
+        vod_access_mode: 'none',
+        vod_generate_strm_files: false,
       },
       roleOptions: [
         {label: 'Admin', value: 'admin'},
@@ -366,6 +433,12 @@ export default {
         {label: 'No DVR access', value: 'none'},
         {label: 'Access own recordings only', value: 'read_write_own'},
         {label: 'Grant access to everyone\'s recordings', value: 'read_all_write_own'},
+      ],
+      vodAccessOptions: [
+        {label: 'No VOD access', value: 'none'},
+        {label: 'Movies only', value: 'movies'},
+        {label: 'TV shows only', value: 'series'},
+        {label: 'Movies and TV shows', value: 'movies_series'},
       ],
       retentionPolicyOptions: [
         {label: '1 day', value: '1_day'},
@@ -486,6 +559,7 @@ export default {
         const roles = Array.isArray(nextRoles) ? nextRoles : [];
         if (roles.includes('admin')) {
           this.form.dvr_access_mode = 'read_all_write_own';
+          this.form.vod_access_mode = 'movies_series';
         }
       },
     },
@@ -595,6 +669,8 @@ export default {
         streaming_key: '',
         dvr_access_mode: 'none',
         dvr_retention_policy: 'forever',
+        vod_access_mode: 'none',
+        vod_generate_strm_files: false,
       };
       this.showCreate = true;
     },
@@ -618,6 +694,8 @@ export default {
           roles,
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
+          vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
+          vod_generate_strm_files: !!this.form.vod_generate_strm_files,
         });
         this.showCreate = false;
         await this.loadUsers();
@@ -636,6 +714,8 @@ export default {
         streaming_key: user.streaming_key || '',
         dvr_access_mode: isAdmin ? 'read_all_write_own' : (user.dvr_access_mode || 'none'),
         dvr_retention_policy: user.dvr_retention_policy || 'forever',
+        vod_access_mode: isAdmin ? 'movies_series' : (user.vod_access_mode || 'none'),
+        vod_generate_strm_files: !!user.vod_generate_strm_files,
       };
       this.showEdit = true;
     },
@@ -657,6 +737,8 @@ export default {
           is_active: this.form.is_active,
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
+          vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
+          vod_generate_strm_files: !!this.form.vod_generate_strm_files,
         });
         this.showEdit = false;
         await this.loadUsers();
@@ -752,6 +834,10 @@ export default {
     dvrModeLabel(mode) {
       const found = this.dvrAccessOptions.find((item) => item.value === mode);
       return found ? found.label : 'No DVR access';
+    },
+    vodModeLabel(mode) {
+      const found = this.vodAccessOptions.find((item) => item.value === mode);
+      return found ? found.label : 'No VOD access';
     },
     isAdminUser(user) {
       const roles = Array.isArray(user?.roles) ? user.roles : [];

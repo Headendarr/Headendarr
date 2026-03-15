@@ -59,6 +59,7 @@ services:
       # Recording storage
       - ../dev_env/recordings:/recordings
       - ../dev_env/timeshift:/timeshift
+      - ../dev_env/library:/library
       # Application source passthrough
       - ../:/app
 

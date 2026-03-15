@@ -47,6 +47,13 @@ export default function pollForBackgroundTasks() {
             taskState: 'running',
           });
         }
+        for (let i in (payload.data['current_concurrent_tasks'] || [])) {
+          tasks.push({
+            icon: 'pending',
+            name: payload.data['current_concurrent_tasks'][i],
+            taskState: 'running',
+          });
+        }
         for (let i in payload.data['pending_tasks']) {
           tasks.push({
             icon: 'radio_button_unchecked',

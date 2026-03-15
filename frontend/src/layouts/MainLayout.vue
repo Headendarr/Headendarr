@@ -407,7 +407,7 @@ import {copyToClipboard, useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
-import {useRouter} from 'vue-router';
+import {useRoute, useRouter} from 'vue-router';
 
 const linksList = [
   {
@@ -437,6 +437,14 @@ const linksList = [
     icon: 'queue_play_next',
     link: '/channels',
     adminOnly: true,
+  },
+  {
+    title: 'VOD',
+    caption: 'Curate XC movies and TV series',
+    icon: 'movie',
+    link: '/vod',
+    adminOnly: true,
+    requiresVodAdmin: true,
   },
   {
     title: 'TV Guide',
@@ -505,6 +513,7 @@ export default defineComponent({
   setup() {
     const $q = useQuasar();
     const router = useRouter();
+    const route = useRoute();
     const authStore = useAuthStore();
     const settingsStore = useSettingsStore();
     const uiStore = useUiStore();
@@ -543,6 +552,7 @@ export default defineComponent({
     const streamProfiles = ref({});
     const routePerSourceThroughTvh = ref(false);
     const routeCombinedThroughCso = ref(false);
+    const vodPageVisible = ref(false);
     const tvhCompatibleProfileIds = ref([]);
 
     const loadConnectionDetailsSettings = async ({force = false} = {}) => {
@@ -568,6 +578,19 @@ export default defineComponent({
 
     const handleSettingsUpdated = () => {
       loadConnectionDetailsSettings({force: true});
+    };
+
+    const loadVodStatus = async () => {
+      if (!isAdmin.value) {
+        vodPageVisible.value = false;
+        return;
+      }
+      try {
+        const response = await axios.get('/tic-api/vod/status');
+        vodPageVisible.value = Boolean(response?.data?.data?.show_page);
+      } catch {
+        vodPageVisible.value = false;
+      }
     };
 
     const copyUrlToClipboard = (textToCopy) => {
@@ -655,6 +678,9 @@ export default defineComponent({
       if (isAdmin.value || canViewConnectionDetails.value) {
         loadConnectionDetailsSettings();
       }
+      if (isAdmin.value) {
+        loadVodStatus();
+      }
       if (canViewConnectionDetails.value) {
         axios({
           method: 'get',
@@ -692,6 +718,20 @@ export default defineComponent({
         const theme = uiStore.loadThemeForUser(username);
         uiStore.loadTimeFormatForUser(username);
         $q.dark.set(theme === 'dark');
+        if (isAdmin.value) {
+          loadVodStatus();
+        } else {
+          vodPageVisible.value = false;
+        }
+      },
+    );
+
+    watch(
+      () => route.fullPath,
+      () => {
+        if (isAdmin.value) {
+          loadVodStatus();
+        }
       },
     );
 
@@ -706,6 +746,9 @@ export default defineComponent({
         return false;
       }
       if (link.requiresDvrAccess && !canUseDvr.value) {
+        return false;
+      }
+      if (link.requiresVodAdmin && !vodPageVisible.value) {
         return false;
       }
       const currentPlexAvailability = settingsStore.plexAvailable;
@@ -769,6 +812,7 @@ export default defineComponent({
       streamProfiles,
       routePerSourceThroughTvh,
       routeCombinedThroughCso,
+      vodPageVisible,
       tvhCompatibleProfileIds,
       appUrl,
       appVersionDisplay,

@@ -15,6 +15,7 @@ from backend.users import (
     update_user_roles,
     set_user_active,
     update_user_dvr_settings,
+    update_user_vod_settings,
     reset_user_password,
     rotate_stream_key,
     change_user_password,
@@ -23,11 +24,13 @@ from backend.users import (
     user_has_admin_role,
     delete_user,
 )
+from backend.vod import queue_all_vod_category_strm_syncs
 
 
 def _serialize_user(user: User):
     is_admin = user_has_admin_role(user)
     dvr_access_mode = "read_all_write_own" if is_admin else (user.dvr_access_mode or "none")
+    vod_access_mode = "movies_series" if is_admin else (user.vod_access_mode or "none")
     last_login_at = user.last_login_at
     last_stream_key_used_at = user.last_stream_key_used_at
     last_logged_in_at = max(
@@ -49,6 +52,8 @@ def _serialize_user(user: User):
         "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
+        "vod_access_mode": vod_access_mode,
+        "vod_generate_strm_files": bool(user.vod_generate_strm_files),
     }
 
 
@@ -83,6 +88,8 @@ async def create_user_route():
     roles = data.get("roles") or []
     dvr_access_mode = data.get("dvr_access_mode")
     dvr_retention_policy = data.get("dvr_retention_policy")
+    vod_access_mode = data.get("vod_access_mode")
+    vod_generate_strm_files = data.get("vod_generate_strm_files")
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password are required"}), 400
     try:
@@ -94,8 +101,14 @@ async def create_user_route():
         dvr_access_mode=dvr_access_mode,
         dvr_retention_policy=dvr_retention_policy,
     )
+    await update_user_vod_settings(
+        user.id,
+        vod_access_mode=vod_access_mode,
+        vod_generate_strm_files=vod_generate_strm_files,
+    )
     user = await get_user_by_id(user.id)
     await _queue_user_sync(user.id, user.username)
+    await queue_all_vod_category_strm_syncs(current_app.config["APP_CONFIG"])
     return jsonify({"success": True, "user": _serialize_user(user), "streaming_key": stream_key})
 
 
@@ -107,6 +120,8 @@ async def update_user_route(user_id):
     is_active = data.get("is_active")
     dvr_access_mode = data.get("dvr_access_mode")
     dvr_retention_policy = data.get("dvr_retention_policy")
+    vod_access_mode = data.get("vod_access_mode")
+    vod_generate_strm_files = data.get("vod_generate_strm_files")
     if roles is not None:
         await update_user_roles(user_id, roles)
     if is_active is not None:
@@ -116,10 +131,16 @@ async def update_user_route(user_id):
         dvr_access_mode=dvr_access_mode,
         dvr_retention_policy=dvr_retention_policy,
     )
+    await update_user_vod_settings(
+        user_id,
+        vod_access_mode=vod_access_mode,
+        vod_generate_strm_files=vod_generate_strm_files,
+    )
     user = await get_user_by_id(user_id)
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404
     await _queue_user_sync(user.id, user.username)
+    await queue_all_vod_category_strm_syncs(current_app.config["APP_CONFIG"])
     return jsonify({"success": True, "user": _serialize_user(user)})
 
 
@@ -134,6 +155,7 @@ async def delete_user_route(user_id):
         return jsonify({"success": False, "message": "User not found"}), 404
     if error == "last_admin":
         return jsonify({"success": False, "message": "Cannot delete the last admin user"}), 400
+    await queue_all_vod_category_strm_syncs(current_app.config["APP_CONFIG"])
     return jsonify({"success": True, "username": deleted_username})
 
 
@@ -157,6 +179,7 @@ async def admin_rotate_stream_key(user_id):
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404
     await _queue_user_sync(user.id, user.username)
+    await queue_all_vod_category_strm_syncs(current_app.config["APP_CONFIG"])
     return jsonify({"success": True, "streaming_key": stream_key})
 
 
@@ -192,4 +215,5 @@ async def user_rotate_stream_key():
     if not updated_user:
         return jsonify({"success": False, "message": "User not found"}), 404
     await _queue_user_sync(updated_user.id, updated_user.username)
+    await queue_all_vod_category_strm_syncs(current_app.config["APP_CONFIG"])
     return jsonify({"success": True, "streaming_key": stream_key})

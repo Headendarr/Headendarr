@@ -34,8 +34,23 @@ class TaskQueueBroker:
             self.__status = "running"
             self.__task_queue = PriorityQueue()
             self.__task_names = set()
+            self.__concurrent_tasks = {}
             self.__priority_counter = itertools.count()
             self._queue_lock = Lock()
+
+    @staticmethod
+    def _task_identity(task):
+        if not isinstance(task, dict):
+            return ""
+        identity = str(task.get("task_key") or task.get("name") or "").strip()
+        return identity
+
+    @staticmethod
+    def _task_execution_mode(task):
+        mode = str((task or {}).get("execution_mode") or "serial").strip().lower()
+        if mode not in {"serial", "concurrent"}:
+            return "serial"
+        return mode
 
     @staticmethod
     def initialize(app_logger):
@@ -64,12 +79,44 @@ class TaskQueueBroker:
         return self.__status
 
     async def add_task(self, task, priority=100):
+        identity = self._task_identity(task)
+        execution_mode = self._task_execution_mode(task)
         async with self._queue_lock:
+            if execution_mode == "concurrent":
+                if identity and identity in self.__concurrent_tasks:
+                    self.__logger.debug("Concurrent task already running. Ignoring.")
+                    return
+                loop = asyncio.get_running_loop()
+                task_obj = loop.create_task(self._run_concurrent_task(task, identity))
+                if identity:
+                    self.__concurrent_tasks[identity] = {"name": task["name"], "task": task_obj}
+                else:
+                    anon_identity = f"anon-{id(task_obj)}"
+                    self.__concurrent_tasks[anon_identity] = {"name": task["name"], "task": task_obj}
+                return
+
             if task["name"] in self.__task_names:
                 self.__logger.debug("Task already queued. Ignoring.")
                 return
             await self.__task_queue.put((priority, next(self.__priority_counter), task))
             self.__task_names.add(task["name"])
+
+    async def _run_concurrent_task(self, task, identity):
+        self.__logger.info("Executing concurrent task - %s.", task["name"])
+        try:
+            await task["function"](*task["args"])
+        except Exception as e:
+            self.__logger.exception("Failed to run concurrent task %s - %s", task["name"], str(e))
+        finally:
+            async with self._queue_lock:
+                if identity:
+                    self.__concurrent_tasks.pop(identity, None)
+                else:
+                    stale_keys = [
+                        key for key, value in self.__concurrent_tasks.items() if value.get("name") == task["name"]
+                    ]
+                    for key in stale_keys:
+                        self.__concurrent_tasks.pop(key, None)
 
     async def get_next_task(self):
         async with self._queue_lock:
@@ -110,6 +157,10 @@ class TaskQueueBroker:
 
     async def get_currently_running_task(self):
         return self.__running_task
+
+    async def get_currently_running_concurrent_tasks(self):
+        async with self._queue_lock:
+            return [value["name"] for value in self.__concurrent_tasks.values()]
 
     async def get_pending_tasks(self):
         async with self._queue_lock:
@@ -341,6 +392,14 @@ async def apply_dvr_rules(app):
     from backend.dvr import apply_recurring_rules
 
     await apply_recurring_rules(config)
+
+
+async def cleanup_vod_metadata_cache(app):
+    logger.info("Cleaning up XC VOD metadata cache")
+    from backend.vod import cleanup_stale_vod_metadata_cache
+
+    deleted_count = await cleanup_stale_vod_metadata_cache()
+    logger.info("XC VOD metadata cache cleanup removed %s stale row(s)", deleted_count)
 
 
 async def reconcile_plex_live_tv(app, server_ids=None):

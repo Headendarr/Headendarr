@@ -10,10 +10,12 @@ from backend.models import Session, User, Role
 from backend.oidc import OidcConfig, extract_claim_value, map_roles_from_claims, resolve_username_from_claims
 from backend.security import hash_password, verify_password, needs_rehash, generate_stream_key
 from backend.dvr_profiles import normalize_retention_policy
+from backend.utils import clean_key
 
 
 DEFAULT_ROLES = ("admin", "streamer")
 ALLOWED_DVR_ACCESS_MODES = ("none", "read_write_own", "read_all_write_own")
+ALLOWED_VOD_ACCESS_MODES = ("none", "movies", "series", "movies_series")
 
 
 def user_has_admin_role(user: User | None) -> bool:
@@ -88,6 +90,8 @@ async def create_user(username: str, password: str, role_names=None):
                 streaming_key_created_at=utc_now_naive(),
                 dvr_access_mode="none",
                 dvr_retention_policy="forever",
+                vod_access_mode="none",
+                vod_generate_strm_files=False,
             )
             for role_name in role_names:
                 if not isinstance(role_name, str):
@@ -98,6 +102,7 @@ async def create_user(username: str, password: str, role_names=None):
             if user_has_admin_role(user):
                 # Admin users always have full DVR visibility semantics.
                 user.dvr_access_mode = "read_all_write_own"
+                user.vod_access_mode = "movies_series"
             session.add(user)
         return user, stream_key
 
@@ -119,13 +124,19 @@ async def update_user_roles(user_id: int, role_names):
                     user.roles.append(role)
             if user_has_admin_role(user):
                 user.dvr_access_mode = "read_all_write_own"
+                user.vod_access_mode = "movies_series"
             session.add(user)
             return user
 
 
-def normalize_dvr_access_mode(mode: str | None) -> str:
-    normalized = str(mode or "").strip().lower()
-    return normalized if normalized in ALLOWED_DVR_ACCESS_MODES else "none"
+def clean_dvr_access_mode(mode: str | None) -> str:
+    cleaned = clean_key(mode)
+    return cleaned if cleaned in ALLOWED_DVR_ACCESS_MODES else "none"
+
+
+def clean_vod_access_mode(mode: str | None) -> str:
+    cleaned = clean_key(mode)
+    return cleaned if cleaned in ALLOWED_VOD_ACCESS_MODES else "none"
 
 
 async def update_user_dvr_settings(
@@ -145,9 +156,33 @@ async def update_user_dvr_settings(
                 session.add(user)
                 return user
             if dvr_access_mode is not None:
-                user.dvr_access_mode = normalize_dvr_access_mode(dvr_access_mode)
+                user.dvr_access_mode = clean_dvr_access_mode(dvr_access_mode)
             if dvr_retention_policy is not None:
                 user.dvr_retention_policy = normalize_retention_policy(dvr_retention_policy)
+            session.add(user)
+            return user
+
+
+async def update_user_vod_settings(
+    user_id: int, vod_access_mode: str | None = None, vod_generate_strm_files: bool | None = None
+):
+    async with Session() as session:
+        async with session.begin():
+            result = await session.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
+            user = result.scalars().first()
+            if not user:
+                return None
+            if user_has_admin_role(user):
+                # Keep admin VOD access fixed while allowing .strm export participation to be configured.
+                user.vod_access_mode = "movies_series"
+                if vod_generate_strm_files is not None:
+                    user.vod_generate_strm_files = bool(vod_generate_strm_files)
+                session.add(user)
+                return user
+            if vod_access_mode is not None:
+                user.vod_access_mode = clean_vod_access_mode(vod_access_mode)
+            if vod_generate_strm_files is not None:
+                user.vod_generate_strm_files = bool(vod_generate_strm_files)
             session.add(user)
             return user
 
@@ -335,6 +370,7 @@ async def provision_or_update_oidc_user(claims: dict, config: OidcConfig):
                             streaming_key_created_at=utc_now_naive(),
                             dvr_access_mode="none",
                             dvr_retention_policy="forever",
+                            vod_access_mode="none",
                         )
                         session.add(user)
                         await session.flush()
@@ -364,6 +400,8 @@ async def provision_or_update_oidc_user(claims: dict, config: OidcConfig):
                         user.dvr_access_mode = "read_all_write_own"
                     elif not user.dvr_access_mode:
                         user.dvr_access_mode = "none"
+                    if not user.vod_access_mode:
+                        user.vod_access_mode = "none"
 
                     user.auth_source = "oidc"
                     user.oidc_issuer = oidc_issuer

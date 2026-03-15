@@ -66,6 +66,10 @@
                     label="Use CSO for combined playlists, XC, & combined HDHomeRun"
                     description="Applies only to Headendarr combined endpoints (combined M3U, combined XC, and combined HDHomeRun). Does not change per-source playlist or per-source HDHomeRun URLs."
                   />
+                  <AdmonitionBanner v-if="!routePlaylistsThroughCso" type="warning" class="q-mb-md">
+                    Disabling this removes CSO-based connection tracking and saturation handling for combined XC live
+                    playback and XC VOD playback.
+                  </AdmonitionBanner>
                 </div>
                 <div>
                   <TicToggleInput
@@ -460,7 +464,7 @@ export default defineComponent({
       // Application Settings
       appUrl: ref(null),
       periodicChannelStreamHealthChecks: ref(true),
-      routePlaylistsThroughCso: ref(false),
+      routePlaylistsThroughCso: ref(true),
       routePlaylistsThroughTvh: ref(false),
       cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
@@ -484,7 +488,7 @@ export default defineComponent({
       defSet: ref({
         appUrl: null,
         periodicChannelStreamHealthChecks: true,
-        routePlaylistsThroughCso: false,
+        routePlaylistsThroughCso: true,
         routePlaylistsThroughTvh: false,
         cacheChannelLogos: true,
         streamProfiles: {},

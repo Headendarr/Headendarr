@@ -3,9 +3,7 @@
     <div :class="$q.screen.lt.sm ? 'q-pa-none' : 'q-pa-md'">
       <div class="row">
         <div
-          :class="
-            uiStore.showHelp && !$q.screen.lt.md ? 'col-sm-7 col-md-8 help-main' : 'col-12 help-main help-main--full'
-          "
+          :class="uiStore.showHelp ? 'col-12 col-md-8 help-main' : 'col-12 help-main help-main--full'"
         >
           <q-card flat>
             <div class="dvr-tabs-bar">
@@ -1272,6 +1270,21 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.help-main {
+  transition: flex-basis 0.25s ease, max-width 0.25s ease;
+  padding-right: 8px;
+}
+
+.help-main--full {
+  flex: 0 0 100%;
+  max-width: 100%;
+  padding-right: 0;
+}
+
+.help-panel {
+  padding-left: 8px;
+}
+
 .dvr-tabs-bar {
   background: transparent;
 }
@@ -1339,6 +1352,16 @@ export default defineComponent({
 
 .dvr-list .dvr-list-item:last-child {
   border-bottom: none;
+}
+
+@media (max-width: 1023px) {
+  .help-main {
+    padding-right: 0;
+  }
+
+  .help-panel {
+    padding-left: 0;
+  }
 }
 
 @media (max-width: 599px) {

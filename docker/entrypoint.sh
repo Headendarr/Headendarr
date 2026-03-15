@@ -158,6 +158,8 @@ prepare_dirs_root() {
         chown -R "${runtime_uid}:${runtime_gid}" /recordings
         mkdir -p /timeshift
         chown -R "${runtime_uid}:${runtime_gid}" /timeshift
+        mkdir -p /library
+        chown -R "${runtime_uid}:${runtime_gid}" /library
     else
         print_log warn "tvheadend binary NOT found during root setup phase (PATH=$PATH)"
     fi

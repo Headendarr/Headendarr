@@ -17,7 +17,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import relationship, sessionmaker, declarative_base, backref
+from sqlalchemy.orm import relationship, sessionmaker, declarative_base
 
 from backend import config
 
@@ -42,8 +42,8 @@ class Epg(Base):
     update_schedule = Column(String(16), nullable=False, default="12h")
 
     # Backref to all associated linked channels
-    epg_channels = relationship("EpgChannels", backref="guide", lazy=True, cascade="all, delete-orphan")
-    channels = relationship("Channel", backref="guide", lazy=True, cascade="all, delete-orphan")
+    epg_channels = relationship("EpgChannels", back_populates="guide", cascade="all, delete-orphan")
+    channels = relationship("Channel", back_populates="guide", cascade="all, delete-orphan")
 
     def __repr__(self):
         return "<Epg {}>".format(self.id)
@@ -61,9 +61,11 @@ class EpgChannels(Base):
     # Link with an epg
     epg_id = Column(Integer, ForeignKey("epgs.id"), nullable=False, index=True)
 
+    guide = relationship("Epg", back_populates="epg_channels")
+
     # Backref to all associated linked channels
     epg_channel_programmes = relationship(
-        "EpgChannelProgrammes", backref="channel", lazy=True, cascade="all, delete-orphan"
+        "EpgChannelProgrammes", back_populates="channel", cascade="all, delete-orphan"
     )
 
     def __repr__(self):
@@ -117,6 +119,8 @@ class EpgChannelProgrammes(Base):
 
     # Link with an epg channel
     epg_channel_id = Column(Integer, ForeignKey("epg_channels.id"), nullable=False, index=True)
+
+    channel = relationship("EpgChannels", back_populates="epg_channel_programmes")
 
     def __repr__(self):
         return "<EpgChannelProgrammes {}>".format(self.id)
@@ -183,9 +187,9 @@ class Playlist(Base):
     update_schedule = Column(String(16), nullable=False, default="off")
 
     # Backref to all associated linked sources
-    channel_sources = relationship("ChannelSource", backref="playlist", lazy=True, cascade="all, delete-orphan")
-    playlist_streams = relationship("PlaylistStreams", backref="playlist", lazy=True, cascade="all, delete-orphan")
-    xc_accounts = relationship("XcAccount", backref="playlist", lazy=True, cascade="all, delete-orphan")
+    channel_sources = relationship("ChannelSource", back_populates="playlist", cascade="all, delete-orphan")
+    playlist_streams = relationship("PlaylistStreams", back_populates="playlist", cascade="all, delete-orphan")
+    xc_accounts = relationship("XcAccount", back_populates="playlist", cascade="all, delete-orphan")
 
     def __repr__(self):
         return "<Playlist {}>".format(self.id)
@@ -211,6 +215,8 @@ class PlaylistStreams(Base):
     # Link with a playlist
     playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
 
+    playlist = relationship("Playlist", back_populates="playlist_streams")
+
     def __repr__(self):
         return "<PlaylistStreams {}>".format(self.id)
 
@@ -227,8 +233,212 @@ class XcAccount(Base):
     label = Column(String(255), nullable=True)
     tvh_uuid = Column(String(64), index=True, unique=True)
 
+    playlist = relationship("Playlist", back_populates="xc_accounts")
+
     def __repr__(self):
         return "<XcAccount {}>".format(self.id)
+
+
+class XcVodCategory(Base):
+    __tablename__ = "xc_vod_categories"
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "category_type", "upstream_category_id", name="uq_xc_vod_category_upstream"),
+    )
+    id = Column(Integer, primary_key=True)
+
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=False, index=True)
+    category_type = Column(String(16), nullable=False, index=True)
+    upstream_category_id = Column(String(64), nullable=False, index=True)
+    name = Column(String(500), nullable=False, index=True)
+    parent_id = Column(String(64), nullable=True)
+
+    playlist = relationship("Playlist")
+
+    def __repr__(self):
+        return "<XcVodCategory {}>".format(self.id)
+
+
+class XcVodItem(Base):
+    __tablename__ = "xc_vod_items"
+    __table_args__ = (UniqueConstraint("playlist_id", "item_type", "upstream_item_id", name="uq_xc_vod_item_upstream"),)
+    id = Column(Integer, primary_key=True)
+
+    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=False, index=True)
+    category_id = Column(Integer, ForeignKey("xc_vod_categories.id"), nullable=True, index=True)
+    item_type = Column(String(16), nullable=False, index=True)
+    upstream_item_id = Column(String(64), nullable=False, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    sort_title = Column(String(500), nullable=True, index=True)
+    release_date = Column(String(64), nullable=True)
+    year = Column(String(16), nullable=True)
+    rating = Column(String(64), nullable=True)
+    poster_url = Column(Text, nullable=True)
+    container_extension = Column(String(32), nullable=True)
+    direct_source = Column(Text, nullable=True)
+    added = Column(String(64), nullable=True)
+    summary_json = Column(Text, nullable=True)
+    stream_probe_at = Column(DateTime, nullable=True, unique=False)
+    stream_probe_details = Column(Text, nullable=True, unique=False)
+
+    playlist = relationship("Playlist")
+    category = relationship("XcVodCategory")
+
+    def __repr__(self):
+        return "<XcVodItem {}>".format(self.id)
+
+
+class XcVodMetadataCache(Base):
+    __tablename__ = "xc_vod_metadata_cache"
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "action", "upstream_item_id", name="uq_xc_vod_metadata_cache_lookup"),
+        Index("ix_xc_vod_metadata_cache_expires_at", "expires_at"),
+        Index("ix_xc_vod_metadata_cache_last_requested_at", "last_requested_at"),
+    )
+    id = Column(Integer, primary_key=True)
+
+    playlist_id = Column(Integer, ForeignKey("playlists.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(32), nullable=False, index=True)
+    upstream_item_id = Column(String(128), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    last_requested_at = Column(DateTime, nullable=False, default=func.now())
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=func.now())
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+    playlist = relationship("Playlist")
+
+    def __repr__(self):
+        return "<XcVodMetadataCache {}>".format(self.id)
+
+
+class VodCategory(Base):
+    __tablename__ = "vod_categories"
+    __table_args__ = (UniqueConstraint("content_type", "name", name="uq_vod_category_content_type_name"),)
+    id = Column(Integer, primary_key=True)
+
+    content_type = Column(String(16), nullable=False, index=True)
+    name = Column(String(500), nullable=False, index=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    enabled = Column(Boolean, nullable=False, default=True)
+    profile_id = Column(String(64), nullable=True)
+    generate_strm_files = Column(Boolean, nullable=False, default=False)
+    strm_base_url = Column(String(1024), nullable=True)
+
+    xc_category_links = relationship("VodCategoryXcCategory", back_populates="category", cascade="all, delete-orphan")
+    item_cache = relationship("VodCategoryItem", back_populates="category", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return "<VodCategory {}>".format(self.id)
+
+
+class VodCategoryXcCategory(Base):
+    __tablename__ = "vod_category_xc_categories"
+    __table_args__ = (UniqueConstraint("category_id", "xc_category_id", name="uq_vod_category_xc_category"),)
+    id = Column(Integer, primary_key=True)
+
+    category_id = Column(Integer, ForeignKey("vod_categories.id", ondelete="CASCADE"), nullable=False, index=True)
+    xc_category_id = Column(Integer, ForeignKey("xc_vod_categories.id", ondelete="CASCADE"), nullable=False, index=True)
+    strip_title_prefixes = Column(Text, nullable=True)
+    strip_title_suffixes = Column(Text, nullable=True)
+
+    category = relationship("VodCategory", back_populates="xc_category_links")
+    xc_category = relationship("XcVodCategory")
+
+    def __repr__(self):
+        return "<VodCategoryXcCategory {}>".format(self.id)
+
+
+class VodCategoryItem(Base):
+    __tablename__ = "vod_category_items"
+    __table_args__ = (UniqueConstraint("category_id", "dedupe_key", name="uq_vod_category_item_dedupe"),)
+    id = Column(Integer, primary_key=True)
+
+    category_id = Column(Integer, ForeignKey("vod_categories.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_type = Column(String(16), nullable=False, index=True)
+    dedupe_key = Column(String(512), nullable=False, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    sort_title = Column(String(500), nullable=True, index=True)
+    release_date = Column(String(64), nullable=True)
+    year = Column(String(16), nullable=True)
+    rating = Column(String(64), nullable=True)
+    poster_url = Column(Text, nullable=True)
+    container_extension = Column(String(32), nullable=True)
+    summary_json = Column(Text, nullable=True)
+
+    category = relationship("VodCategory", back_populates="item_cache")
+    source_links = relationship("VodCategoryItemSource", back_populates="category_item", cascade="all, delete-orphan")
+    episode_cache = relationship("VodCategoryEpisode", back_populates="category_item", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return "<VodCategoryItem {}>".format(self.id)
+
+
+class VodCategoryItemSource(Base):
+    __tablename__ = "vod_category_item_sources"
+    __table_args__ = (UniqueConstraint("category_item_id", "source_item_id", name="uq_vod_category_item_source"),)
+    id = Column(Integer, primary_key=True)
+
+    category_item_id = Column(
+        Integer, ForeignKey("vod_category_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_item_id = Column(Integer, ForeignKey("xc_vod_items.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    category_item = relationship("VodCategoryItem", back_populates="source_links")
+    source_item = relationship("XcVodItem")
+
+    def __repr__(self):
+        return "<VodCategoryItemSource {}>".format(self.id)
+
+
+class VodCategoryEpisode(Base):
+    __tablename__ = "vod_category_episodes"
+    __table_args__ = (UniqueConstraint("category_item_id", "dedupe_key", name="uq_vod_category_episode_dedupe"),)
+    id = Column(Integer, primary_key=True)
+
+    category_item_id = Column(
+        Integer, ForeignKey("vod_category_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dedupe_key = Column(String(512), nullable=False, index=True)
+    season_number = Column(Integer, nullable=True)
+    episode_number = Column(Integer, nullable=True)
+    title = Column(String(500), nullable=True)
+    container_extension = Column(String(32), nullable=True)
+    summary_json = Column(Text, nullable=True)
+    stream_probe_at = Column(DateTime, nullable=True, unique=False)
+    stream_probe_details = Column(Text, nullable=True, unique=False)
+
+    category_item = relationship("VodCategoryItem", back_populates="episode_cache")
+    source_links = relationship("VodCategoryEpisodeSource", back_populates="episode", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return "<VodCategoryEpisode {}>".format(self.id)
+
+
+class VodCategoryEpisodeSource(Base):
+    __tablename__ = "vod_category_episode_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "episode_id", "category_item_source_id", "upstream_episode_id", name="uq_vod_category_episode_source"
+        ),
+    )
+    id = Column(Integer, primary_key=True)
+
+    episode_id = Column(Integer, ForeignKey("vod_category_episodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    category_item_source_id = Column(
+        Integer, ForeignKey("vod_category_item_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    upstream_episode_id = Column(String(128), nullable=False, index=True)
+    season_number = Column(Integer, nullable=True)
+    episode_number = Column(Integer, nullable=True)
+    title = Column(String(500), nullable=True)
+    container_extension = Column(String(32), nullable=True)
+    summary_json = Column(Text, nullable=True)
+
+    episode = relationship("VodCategoryEpisode", back_populates="source_links")
+    category_item_source = relationship("VodCategoryItemSource")
+
+    def __repr__(self):
+        return "<VodCategoryEpisodeSource {}>".format(self.id)
 
 
 channels_tags_association_table = Table(
@@ -258,8 +468,13 @@ class Channel(Base):
     guide_channel_id = Column(String(64), index=False, unique=False)
     guide_offset_minutes = Column(Integer, nullable=False, unique=False, default=0)
 
+    guide = relationship("Epg", back_populates="channels")
+
     # Backref to all associated linked sources
-    sources = relationship("ChannelSource", backref="channel", lazy=True, cascade="all, delete-orphan")
+    sources = relationship("ChannelSource", back_populates="channel", cascade="all, delete-orphan")
+    suggestions = relationship("ChannelSuggestion", back_populates="channel", cascade="all, delete-orphan")
+    recording_rules = relationship("RecordingRule", back_populates="channel", cascade="all, delete-orphan")
+    recordings = relationship("Recording", back_populates="channel", cascade="all, delete-orphan")
 
     # Specify many-to-many relationships
     tags = relationship("ChannelTag", secondary=channels_tags_association_table)
@@ -301,6 +516,8 @@ class ChannelSource(Base):
     priority = Column(String(500), index=True, unique=False)
     tvh_uuid = Column(String(500), index=True, unique=False)
 
+    channel = relationship("Channel", back_populates="sources")
+    playlist = relationship("Playlist", back_populates="channel_sources")
     xc_account = relationship("XcAccount")
 
     def __repr__(self):
@@ -325,7 +542,7 @@ class ChannelSuggestion(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    channel = relationship("Channel", backref=backref("suggestions", cascade="all, delete-orphan"))
+    channel = relationship("Channel", back_populates="suggestions")
     playlist = relationship("Playlist")
 
     def __repr__(self):
@@ -346,7 +563,8 @@ class RecordingRule(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     # Backref to channel
-    channel = relationship("Channel", backref="recording_rules")
+    channel = relationship("Channel", back_populates="recording_rules")
+    recordings = relationship("Recording", back_populates="rule", cascade="all, delete-orphan")
 
     def __repr__(self):
         return "<RecordingRule {}>".format(self.id)
@@ -375,8 +593,8 @@ class Recording(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    channel = relationship("Channel", backref="recordings")
-    rule = relationship("RecordingRule", backref="recordings")
+    channel = relationship("Channel", back_populates="recordings")
+    rule = relationship("RecordingRule", back_populates="recordings")
 
     def __repr__(self):
         return "<Recording {}>".format(self.id)
@@ -410,6 +628,8 @@ class User(Base):
     tvh_sync_updated_at = Column(DateTime, nullable=True)
     dvr_access_mode = Column(String(32), nullable=False, default="none")
     dvr_retention_policy = Column(String(32), nullable=False, default="forever")
+    vod_access_mode = Column(String(32), nullable=False, default="none")
+    vod_generate_strm_files = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -460,7 +680,7 @@ class StreamAuditLog(Base):
     __tablename__ = "stream_audit_logs"
     id = Column(Integer, primary_key=True)
 
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
     severity = Column(String(16), nullable=False, default="info", server_default="info")
     endpoint = Column(Text, nullable=True)
@@ -485,8 +705,13 @@ class CsoEventLog(Base):
     id = Column(Integer, primary_key=True)
     channel_id = Column(Integer, ForeignKey("channels.id", ondelete="SET NULL"), nullable=True, index=True)
     source_id = Column(Integer, ForeignKey("channel_sources.id", ondelete="SET NULL"), nullable=True, index=True)
-    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id", ondelete="SET NULL"), nullable=True, index=True)
     recording_id = Column(Integer, ForeignKey("recordings.id", ondelete="SET NULL"), nullable=True, index=True)
+    vod_category_id = Column(Integer, ForeignKey("vod_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    vod_item_id = Column(Integer, ForeignKey("vod_category_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    vod_episode_id = Column(
+        Integer, ForeignKey("vod_category_episodes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     tvh_subscription_id = Column(String(128), nullable=True, index=True)
     session_id = Column(String(128), nullable=True, index=True)
     event_type = Column(String(64), index=True, nullable=False)
@@ -498,6 +723,9 @@ class CsoEventLog(Base):
     source = relationship("ChannelSource")
     playlist = relationship("Playlist")
     recording = relationship("Recording")
+    vod_category = relationship("VodCategory")
+    vod_item = relationship("VodCategoryItem")
+    vod_episode = relationship("VodCategoryEpisode")
 
     def __repr__(self):
         return "<CsoEventLog {}>".format(self.id)

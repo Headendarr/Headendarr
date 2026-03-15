@@ -8,7 +8,7 @@ from fractions import Fraction
 from sqlalchemy import select
 
 from backend.http_headers import sanitise_headers
-from backend.models import ChannelSource, Session
+from backend.models import ChannelSource, VodCategoryEpisode, XcVodItem, Session
 
 
 def _clean_text(value):
@@ -160,7 +160,7 @@ def choose_channel_media_shape(sources):
     return {}
 
 
-async def persist_source_media_shape(source_id, media_shape, observed_at=None):
+async def persist_source_media_shape(source_id, media_shape, observed_at=None, source_type="channel"):
     try:
         parsed_source_id = int(source_id)
     except Exception:
@@ -173,7 +173,13 @@ async def persist_source_media_shape(source_id, media_shape, observed_at=None):
 
     async with Session() as session:
         async with session.begin():
-            source = await session.get(ChannelSource, parsed_source_id)
+            if source_type == "vod_movie":
+                source = await session.get(XcVodItem, parsed_source_id)
+            elif source_type == "vod_episode":
+                source = await session.get(VodCategoryEpisode, parsed_source_id)
+            else:
+                source = await session.get(ChannelSource, parsed_source_id)
+
             if source is None:
                 return False
             source.stream_probe_at = observed_value
@@ -181,7 +187,7 @@ async def persist_source_media_shape(source_id, media_shape, observed_at=None):
     return True
 
 
-async def get_source_media_shape(source_id):
+async def get_source_media_shape(source_id, source_type="channel"):
     try:
         parsed_source_id = int(source_id)
     except Exception:
@@ -189,7 +195,13 @@ async def get_source_media_shape(source_id):
     if parsed_source_id <= 0:
         return {}
     async with Session() as session:
-        result = await session.execute(select(ChannelSource).where(ChannelSource.id == parsed_source_id))
+        if source_type == "vod_movie":
+            result = await session.execute(select(XcVodItem).where(XcVodItem.id == parsed_source_id))
+        elif source_type == "vod_episode":
+            result = await session.execute(select(VodCategoryEpisode).where(VodCategoryEpisode.id == parsed_source_id))
+        else:
+            result = await session.execute(select(ChannelSource).where(ChannelSource.id == parsed_source_id))
+
         source = result.scalars().first()
     if source is None:
         return {}
