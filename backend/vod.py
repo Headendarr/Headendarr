@@ -309,6 +309,30 @@ def _resolve_group_output_extension(group_profile_id: str | None, source_contain
     return _profile_extension(effective_profile, fallback_extension=source_container_extension)
 
 
+def _merge_strip_rules_for_source_categories(source_category_ids: list[int], strip_rules: dict[int, tuple[list[str], list[str]]]):
+    merged_prefixes: list[str] = []
+    merged_suffixes: list[str] = []
+    seen_prefixes: set[str] = set()
+    seen_suffixes: set[str] = set()
+
+    for source_category_id in source_category_ids or []:
+        prefixes, suffixes = strip_rules.get(int(source_category_id), ([], []))
+        for token in prefixes:
+            token_key = str(token)
+            if token_key in seen_prefixes:
+                continue
+            seen_prefixes.add(token_key)
+            merged_prefixes.append(token)
+        for token in suffixes:
+            token_key = str(token)
+            if token_key in seen_suffixes:
+                continue
+            seen_suffixes.add(token_key)
+            merged_suffixes.append(token)
+
+    return merged_prefixes, merged_suffixes
+
+
 def _batched(values, size=2000):
     batch_size = max(1, int(size or 2000))
     items = list(values or [])
@@ -852,9 +876,13 @@ async def sync_vod_category_strm_files(config, category_id: int):
                 .where(VodCategoryItemSource.category_item_id.in_(item_ids))
                 .order_by(VodCategoryItemSource.category_item_id.asc(), VodCategoryItemSource.id.asc())
             )
-            source_category_by_item_id = {}
+            source_categories_by_item_id = {}
             for category_item_id, source_category_id in source_result.all():
-                source_category_by_item_id.setdefault(int(category_item_id), int(source_category_id or 0))
+                category_item_key = int(category_item_id)
+                source_category_key = int(source_category_id or 0)
+                source_categories_by_item_id.setdefault(category_item_key, [])
+                if source_category_key not in source_categories_by_item_id[category_item_key]:
+                    source_categories_by_item_id[category_item_key].append(source_category_key)
 
         if content_type == VOD_KIND_SERIES and item_ids:
             refresh_stats = await _refresh_series_items(item_ids)
@@ -878,8 +906,8 @@ async def sync_vod_category_strm_files(config, category_id: int):
             episodes_by_item_id = {}
 
         for item in item_batch:
-            source_category_id = source_category_by_item_id.get(int(item.id), 0)
-            strip_prefixes, strip_suffixes = strip_rules.get(int(source_category_id), ([], []))
+            source_category_ids = source_categories_by_item_id.get(int(item.id), [])
+            strip_prefixes, strip_suffixes = _merge_strip_rules_for_source_categories(source_category_ids, strip_rules)
 
             if content_type == VOD_KIND_MOVIE:
                 display_name = _vod_movie_display_name(item, prefixes=strip_prefixes, suffixes=strip_suffixes)
