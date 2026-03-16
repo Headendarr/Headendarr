@@ -545,6 +545,50 @@ def _xml_text(parent, tag, text, attrib=None):
     return None
 
 
+def _xml_multi_text(parent, tag, values):
+    for value in values:
+        _xml_text(parent, tag, value)
+
+
+def _summary_movie_info(summary: dict) -> dict:
+    movie_data = summary.get("movie_data")
+    if isinstance(movie_data, dict):
+        return movie_data
+    return {}
+
+
+def _summary_sources(summary: dict) -> list[dict]:
+    sources = [summary, _summary_info(summary), _summary_movie_info(summary)]
+    return [source for source in sources if isinstance(source, dict)]
+
+
+def _first_summary_value(summary: dict, *keys):
+    for source in _summary_sources(summary):
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, "", [], {}):
+                return value
+    return None
+
+
+def _extract_year_from_title(value: str) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    match = re.search(r"(19|20)\d{2}\s*$", text)
+    return match.group(0) if match else ""
+
+
+def _nfo_year(item, summary: dict) -> str:
+    return (
+        clean_text(getattr(item, "year", ""))
+        or _extract_year(summary)
+        or _extract_year(_summary_info(summary))
+        or _extract_year(_summary_movie_info(summary))
+        or _extract_year_from_title(getattr(item, "title", ""))
+    )
+
+
 def _clean_nfo_title(title: str, year: str) -> str:
     if not year:
         return title
@@ -553,53 +597,98 @@ def _clean_nfo_title(title: str, year: str) -> str:
 
 
 def _add_nfo_unique_ids(root, summary):
-    info = summary.get("info") or summary.get("movie_data") or {}
     for id_key in ["imdb", "tmdb", "tvdb"]:
-        val = clean_text(info.get(f"{id_key}_id") or summary.get(f"{id_key}_id"))
+        val = clean_text(_first_summary_value(summary, f"{id_key}_id"))
         if val:
             # Kodi/Jellyfin format: <uniqueid type="imdb" default="true">tt12345</uniqueid>
             _xml_text(root, "uniqueid", val, {"type": id_key, "default": "true" if id_key == "imdb" else "false"})
 
 
+def _nfo_text_values(value) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, list):
+        values = []
+        for item in value:
+            if isinstance(item, dict):
+                name = clean_text(item.get("name") or item.get("title") or item.get("value"))
+                if name:
+                    values.append(name)
+            else:
+                text = clean_text(item)
+                if text:
+                    values.append(text)
+        return values
+    text = clean_text(value)
+    if not text:
+        return []
+    if "," in text:
+        split_values = [clean_text(part) for part in text.split(",")]
+        return [item for item in split_values if item]
+    return [text]
+
+
+def _add_nfo_cast(root, value):
+    if value in (None, "", [], {}):
+        return
+    entries = value if isinstance(value, list) else [value]
+    for entry in entries:
+        actor_name = ""
+        actor_role = ""
+        if isinstance(entry, dict):
+            actor_name = clean_text(entry.get("name") or entry.get("actor") or entry.get("title"))
+            actor_role = clean_text(entry.get("role") or entry.get("character"))
+        else:
+            actor_name = clean_text(entry)
+        if not actor_name:
+            continue
+        actor_el = ET.SubElement(root, "actor")
+        _xml_text(actor_el, "name", actor_name)
+        _xml_text(actor_el, "role", actor_role)
+
+
 def _generate_movie_nfo(item: VodCategoryItem) -> str:
     summary = _load_summary(item.summary_json)
     root = ET.Element("movie")
-    year = clean_text(item.year)
+    year = _nfo_year(item, summary)
     title = _clean_nfo_title(item.title, year)
+    sort_title = _clean_nfo_title(item.sort_title or item.title, year)
 
     _xml_text(root, "title", title)
-    _xml_text(root, "sorttitle", item.sort_title)
+    _xml_text(root, "sorttitle", sort_title)
     _xml_text(root, "year", year)
 
     _add_nfo_unique_ids(root, summary)
 
-    _xml_text(root, "plot", summary.get("plot") or summary.get("description"))
-    _xml_text(root, "outline", summary.get("plot") or summary.get("description"))
-    _xml_text(root, "tagline", summary.get("tagline"))
-    _xml_text(root, "rating", summary.get("rating") or summary.get("rating_5based"))
-    _xml_text(root, "premiered", item.release_date or summary.get("releaseDate"))
-    _xml_text(root, "genre", summary.get("genre"))
-    _xml_text(root, "director", summary.get("director"))
-    _xml_text(root, "cast", summary.get("cast"))
+    plot = _first_summary_value(summary, "plot", "description", "overview")
+    _xml_text(root, "plot", plot)
+    _xml_text(root, "outline", plot)
+    _xml_text(root, "tagline", _first_summary_value(summary, "tagline"))
+    _xml_text(root, "rating", _first_summary_value(summary, "rating", "rating_5based"))
+    _xml_text(root, "premiered", clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")))
+    _xml_multi_text(root, "genre", _nfo_text_values(_first_summary_value(summary, "genre", "genres")))
+    _xml_multi_text(root, "director", _nfo_text_values(_first_summary_value(summary, "director", "directors")))
+    _add_nfo_cast(root, _first_summary_value(summary, "cast", "actors"))
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
 def _generate_series_nfo(item: VodCategoryItem) -> str:
     summary = _load_summary(item.summary_json)
     root = ET.Element("tvshow")
-    year = clean_text(item.year)
+    year = _nfo_year(item, summary)
     title = _clean_nfo_title(item.title, year)
+    sort_title = _clean_nfo_title(item.sort_title or item.title, year)
 
     _xml_text(root, "title", title)
-    _xml_text(root, "sorttitle", item.sort_title)
+    _xml_text(root, "sorttitle", sort_title)
     _xml_text(root, "year", year)
 
     _add_nfo_unique_ids(root, summary)
 
-    _xml_text(root, "plot", summary.get("plot"))
-    _xml_text(root, "rating", summary.get("rating") or summary.get("rating_5based"))
-    _xml_text(root, "premiered", item.release_date or summary.get("releaseDate"))
-    _xml_text(root, "genre", summary.get("genre"))
+    _xml_text(root, "plot", _first_summary_value(summary, "plot", "description", "overview"))
+    _xml_text(root, "rating", _first_summary_value(summary, "rating", "rating_5based"))
+    _xml_text(root, "premiered", clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")))
+    _xml_multi_text(root, "genre", _nfo_text_values(_first_summary_value(summary, "genre", "genres")))
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
