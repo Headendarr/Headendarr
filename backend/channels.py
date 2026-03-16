@@ -2510,6 +2510,16 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
                 }
                 logo_health_state[str(result.id)] = logo_status
                 logo_refresh_count += 1
+            elif not cache_channel_logos:
+                # When logo caching is disabled, the UI renders the source logo URL directly.
+                # At this point we do not want to flag this as a cache-based failure from placeholder 
+                # or missing cached logo data. So just log it and carry on.
+                logo_health_state[str(result.id)] = {
+                    "status": "ok",
+                    "error": None,
+                    "source_logo_url": logo_url,
+                    "updated_at": int(time.time()),
+                }
             elif str(result.id) not in logo_health_state:
                 # Backfill status for rows that already had cached logos before health tracking existed.
                 cached_is_placeholder = isinstance(result.logo_base64, str) and result.logo_base64.endswith(
