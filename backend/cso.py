@@ -315,7 +315,7 @@ async def mark_cso_channel_source_temporarily_failed(
 
 
 def _cso_source_effective_priority(source: CsoSource, failed_source_ids=None):
-    base_priority = source.priority
+    base_priority = convert_to_int(getattr(source, "priority", None), 0)
     source_id = source.id
     health_status = str(getattr(source, "last_health_check_status", "") or "").strip().lower()
     unhealthy_penalty = CSO_UNHEALTHY_SOURCE_PRIORITY_PENALTY if health_status == "unhealthy" else 0
@@ -336,7 +336,7 @@ async def order_cso_channel_sources(sources, channel_id=None):
         candidates,
         key=lambda item: (
             _cso_source_effective_priority(item, failed_source_ids=failed_source_ids),
-            item.priority,
+            convert_to_int(getattr(item, "priority", None), 0),
             -int(item.id or 0),
         ),
         reverse=True,
