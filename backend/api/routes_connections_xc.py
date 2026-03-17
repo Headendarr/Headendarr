@@ -29,12 +29,12 @@ from backend.vod import (
     build_vod_activity_metadata,
     build_curated_category_payloads,
     build_curated_item_payloads,
-    build_upstream_playback_url,
     fetch_series_info_payload,
     fetch_vod_info_payload,
-    resolve_episode_playback,
-    resolve_movie_playback,
+    resolve_episode_playback_candidates,
+    resolve_movie_playback_candidates,
     resolve_vod_profile_id,
+    select_vod_playback_target,
     user_can_access_vod_kind,
 )
 
@@ -476,14 +476,23 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
     stream_key = user.streaming_key
     if not _xc_vod_allowed(user, VOD_KIND_MOVIE):
         return jsonify({"error": "Forbidden"}), 403
-    candidate = await resolve_movie_playback(int(item_id))
-    if candidate is None:
+    candidates = await resolve_movie_playback_candidates(int(item_id))
+    if not candidates:
         return jsonify({"error": "Not found"}), 404
+    profile = _xc_vod_profile(candidates[0], ext=ext)
+    use_proxy_session = CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidates[0], profile)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(
+        candidates,
+        prefer_local_cache=use_proxy_session,
+    )
     connection_id = _get_connection_id()
-    upstream_url = await build_upstream_playback_url(candidate)
-    if not upstream_url:
+    if selection_error == "capacity_blocked" and not upstream_url:
+        return jsonify({"error": "Source capacity limit reached"}), 503
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url and selection_error not in {None, "capacity_blocked"}:
         return jsonify({"error": "Stream unavailable"}), 404
-    if not _combined_cso_enabled():
+    if upstream_url and not _combined_cso_enabled():
         return redirect(upstream_url, code=302)
 
     config = current_app.config["APP_CONFIG"]
@@ -511,14 +520,14 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
         channel_name=activity_metadata.get("channel_name"),
         channel_logo_url=activity_metadata.get("channel_logo_url"),
         stream_name=activity_metadata.get("stream_name"),
-        source_url=upstream_url,
+        source_url=upstream_url or identity,
         display_url=activity_metadata.get("display_url"),
         vod_item_id=candidate.group_item.id,
         vod_category_id=candidate.group_item.category_id,
         enrich_metadata=False,
     )
 
-    if CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidate, profile):
+    if use_proxy_session:
         plan = await subscribe_vod_proxy_stream(
             candidate,
             upstream_url,
@@ -526,6 +535,8 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
             request_headers=dict(request.headers),
         )
     else:
+        if not upstream_url:
+            return jsonify({"error": "Stream unavailable"}), 404
         plan = await subscribe_vod_stream(
             config,
             candidate,
@@ -559,14 +570,24 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
     stream_key = user.streaming_key
     if not _xc_vod_allowed(user, VOD_KIND_SERIES):
         return jsonify({"error": "Forbidden"}), 403
-    candidate, episode_map = await resolve_episode_playback(int(episode_id))
-    if candidate is None or episode_map is None:
+    candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
+    if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
+    profile = _xc_vod_profile(candidates[0], ext=ext)
+    use_proxy_session = CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidates[0], profile)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(
+        candidates,
+        episode=episode_map,
+        prefer_local_cache=use_proxy_session,
+    )
     connection_id = _get_connection_id()
-    upstream_url = await build_upstream_playback_url(candidate, episode_mapping=episode_map)
-    if not upstream_url:
+    if selection_error == "capacity_blocked" and not upstream_url:
+        return jsonify({"error": "Source capacity limit reached"}), 503
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url and selection_error not in {None, "capacity_blocked"}:
         return jsonify({"error": "Stream unavailable"}), 404
-    if not _combined_cso_enabled():
+    if upstream_url and not _combined_cso_enabled():
         return redirect(upstream_url, code=302)
 
     config = current_app.config["APP_CONFIG"]
@@ -594,7 +615,7 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
         channel_name=activity_metadata.get("channel_name"),
         channel_logo_url=activity_metadata.get("channel_logo_url"),
         stream_name=activity_metadata.get("stream_name"),
-        source_url=upstream_url,
+        source_url=upstream_url or identity,
         display_url=activity_metadata.get("display_url"),
         vod_item_id=candidate.group_item.id,
         vod_category_id=candidate.group_item.category_id,
@@ -602,7 +623,7 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
         enrich_metadata=False,
     )
 
-    if CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidate, profile):
+    if use_proxy_session:
         plan = await subscribe_vod_proxy_stream(
             candidate,
             upstream_url,
@@ -611,6 +632,8 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
             episode=episode_map,
         )
     else:
+        if not upstream_url:
+            return jsonify({"error": "Stream unavailable"}), 404
         plan = await subscribe_vod_stream(
             config,
             candidate,
@@ -642,10 +665,14 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
     if not user or not user.is_active or user.streaming_key != password:
         return jsonify({"error": "Unauthorized"}), 401
     stream_key = user.streaming_key
-    candidate = await resolve_movie_playback(int(item_id))
-    if candidate is None:
+    candidates = await resolve_movie_playback_candidates(int(item_id))
+    if not candidates:
         return jsonify({"error": "Not found"}), 404
-    upstream_url = await build_upstream_playback_url(candidate)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url:
+        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -673,10 +700,14 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
     if not user or not user.is_active or user.streaming_key != password:
         return jsonify({"error": "Unauthorized"}), 401
     stream_key = user.streaming_key
-    candidate = await resolve_movie_playback(int(item_id))
-    if candidate is None:
+    candidates = await resolve_movie_playback_candidates(int(item_id))
+    if not candidates:
         return jsonify({"error": "Not found"}), 404
-    upstream_url = await build_upstream_playback_url(candidate)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url:
+        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -700,10 +731,14 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
     if not user or not user.is_active or user.streaming_key != password:
         return jsonify({"error": "Unauthorized"}), 401
     stream_key = user.streaming_key
-    candidate, episode_map = await resolve_episode_playback(int(episode_id))
-    if candidate is None or episode_map is None:
+    candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
+    if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
-    upstream_url = await build_upstream_playback_url(candidate, episode_mapping=episode_map)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode_map)
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url:
+        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -732,10 +767,14 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
     if not user or not user.is_active or user.streaming_key != password:
         return jsonify({"error": "Unauthorized"}), 401
     stream_key = user.streaming_key
-    candidate, episode_map = await resolve_episode_playback(int(episode_id))
-    if candidate is None or episode_map is None:
+    candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
+    if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
-    upstream_url = await build_upstream_playback_url(candidate, episode_mapping=episode_map)
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode_map)
+    if not candidate:
+        return jsonify({"error": "Not found"}), 404
+    if not upstream_url:
+        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],

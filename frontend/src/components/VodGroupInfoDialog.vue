@@ -64,56 +64,77 @@
           <h5 class="q-my-none">Upstream Source Categories</h5>
 
           <q-list bordered separator class="rounded-borders">
-            <q-item
-              v-for="(category, index) in selectedCategories"
-              :key="category.local_key"
-              class="q-px-none rounded-borders channel-source-row vod-category-row"
+            <draggable
+              v-model="selectedCategories"
+              group="vod-upstream-categories"
+              item-key="local_key"
+              handle=".handle"
+              :component-data="{tag: 'ul', name: 'flip-list', type: 'transition'}"
+              v-bind="dragOptions"
             >
-              <q-item-section side class="q-px-sm q-mx-sm" style="max-width: 60px">
-                <q-item-label lines="1" class="text-left">
-                  <span class="text-weight-medium">{{ index + 1 }}</span>
-                </q-item-label>
-              </q-item-section>
+              <template #item="{element: category, index}">
+                <q-item
+                  :key="category.local_key"
+                  class="q-px-none rounded-borders channel-source-row vod-category-row"
+                >
+                  <q-item-section avatar class="handle q-px-sm q-mx-sm">
+                    <q-avatar rounded>
+                      <q-icon name="format_line_spacing" style="max-width: 30px; cursor: grab">
+                        <q-tooltip class="bg-white text-primary">Drag to set source category priority</q-tooltip>
+                      </q-icon>
+                    </q-avatar>
+                  </q-item-section>
 
-              <q-separator inset vertical class="gt-xs" />
+                  <q-separator inset vertical class="gt-xs" />
 
-              <q-item-section top class="q-mx-md">
-                <q-item-label lines="1" class="text-left">
-                  <span class="text-weight-medium">{{ category.name }}</span>
-                </q-item-label>
-                <q-item-label caption class="row items-center justify-between no-wrap q-gutter-sm">
-                  <span class="ellipsis">{{ category.playlist_name }}</span>
-                  <q-btn
-                    dense
-                    flat
-                    no-caps
-                    color="primary"
-                    class="source-settings-toggle"
-                    :label="isCategoryConfigOpen(category) ? 'Hide settings' : 'Category Settings'"
-                    :icon-right="isCategoryConfigOpen(category) ? 'expand_less' : 'expand_more'"
-                    @click="toggleCategoryConfig(category)"
-                  />
-                </q-item-label>
+                  <q-item-section side class="q-px-sm q-mx-sm" style="max-width: 60px">
+                    <q-item-label lines="1" class="text-left">
+                      <span class="text-weight-medium">{{ index + 1 }}</span>
+                    </q-item-label>
+                  </q-item-section>
 
-                <div v-if="isCategoryConfigOpen(category)" class="sub-setting source-config-panel q-mt-md">
-                  <TicTextInput
-                    v-model="category.strip_title_prefixes"
-                    label="Strip Title Prefixes"
-                    description="Optional. Separate multiple values with commas. Example: `EN:`, `EN ★`, `FR ★`. Use this so matching movies and TV series from multiple XC sources can deduplicate correctly."
-                  />
+                  <q-separator inset vertical class="gt-xs" />
 
-                  <TicTextInput
-                    v-model="category.strip_title_suffixes"
-                    label="Strip Title Suffixes"
-                    description="Optional. Separate multiple values with commas. Example: `- 2025`, `[4K]`. Use this when providers append labels that would otherwise stop cross-source deduplication."
-                  />
-                </div>
-              </q-item-section>
+                  <q-item-section top class="q-mx-md">
+                    <q-item-label lines="1" class="text-left">
+                      <span class="text-weight-medium">{{ category.name }}</span>
+                    </q-item-label>
+                    <q-item-label caption class="row items-center justify-between no-wrap q-gutter-sm">
+                      <span class="ellipsis">{{ category.playlist_name }}</span>
+                      <q-btn
+                        dense
+                        flat
+                        no-caps
+                        color="primary"
+                        class="source-settings-toggle"
+                        :label="isCategoryConfigOpen(category) ? 'Hide settings' : 'Category Settings'"
+                        :icon-right="isCategoryConfigOpen(category) ? 'expand_less' : 'expand_more'"
+                        @click="toggleCategoryConfig(category)"
+                      />
+                    </q-item-label>
 
-              <q-item-section side class="q-mr-md channel-source-actions">
-                <TicListActions :actions="categoryActions" @action="(action) => onCategoryAction(action, category)" />
-              </q-item-section>
-            </q-item>
+                    <div v-if="isCategoryConfigOpen(category)" class="sub-setting source-config-panel q-mt-md">
+                      <TicTextInput
+                        v-model="category.strip_title_prefixes"
+                        label="Strip Title Prefixes"
+                        description="Optional. Separate multiple values with commas. Example: `EN:`, `EN ★`, `FR ★`. Use this so matching movies and TV series from multiple XC sources can deduplicate correctly."
+                      />
+
+                      <TicTextInput
+                        v-model="category.strip_title_suffixes"
+                        label="Strip Title Suffixes"
+                        description="Optional. Separate multiple values with commas. Example: `- 2025`, `[4K]`. Use this when providers append labels that would otherwise stop cross-source deduplication."
+                      />
+                    </div>
+                  </q-item-section>
+
+                  <q-item-section side class="q-mr-md channel-source-actions">
+                    <TicListActions :actions="categoryActions"
+                                    @action="(action) => onCategoryAction(action, category)" />
+                  </q-item-section>
+                </q-item>
+              </template>
+            </draggable>
           </q-list>
 
           <div class="row q-gutter-sm justify-end">
@@ -127,6 +148,7 @@
 
 <script>
 import axios from 'axios';
+import draggable from 'vuedraggable';
 import VodSourceCategorySelectorDialog from 'components/VodSourceCategorySelectorDialog.vue';
 import {
   AdmonitionBanner,
@@ -142,6 +164,7 @@ export default {
   name: 'VodCategoryInfoDialog',
   components: {
     AdmonitionBanner,
+    draggable,
     TicButton,
     TicDialogWindow,
     TicListActions,
@@ -177,6 +200,16 @@ export default {
     };
   },
   computed: {
+    dragOptions() {
+      return {
+        animation: 100,
+        group: 'vod-upstream-categories',
+        ghostClass: 'ghost',
+        direction: 'vertical',
+        delay: 200,
+        delayOnTouchOnly: true,
+      };
+    },
     isDirty() {
       if (!this.initialStateSignature) {
         return false;
@@ -262,6 +295,7 @@ export default {
         this.strmBaseUrl = category.strm_base_url || '';
         this.selectedCategories = (category.categories || []).map((categoryItem) => this.withLocalKey({
           id: categoryItem.id,
+          priority: Number(categoryItem.priority || 0),
           playlist_id: categoryItem.playlist_id,
           playlist_name: categoryItem.playlist_name,
           name: categoryItem.name,
@@ -346,6 +380,7 @@ export default {
         strmBaseUrl: this.strmBaseUrl,
         selectedCategories: (this.selectedCategories || []).map((category) => ({
           id: category.id,
+          priority: Number(category.priority || 0),
           strip_title_prefixes: category.strip_title_prefixes || '',
           strip_title_suffixes: category.strip_title_suffixes || '',
         })),
@@ -395,6 +430,8 @@ export default {
         category_ids: categoryIds,
         category_configs: (this.selectedCategories || []).map((category) => ({
           category_id: category.id,
+          priority: (this.selectedCategories || []).length
+            - (this.selectedCategories || []).findIndex((item) => item.local_key === category.local_key),
           strip_title_prefixes: this.splitStripRules(category.strip_title_prefixes),
           strip_title_suffixes: this.splitStripRules(category.strip_title_suffixes),
         })),
@@ -515,6 +552,7 @@ export default {
           }
           nextCategories.push(this.withLocalKey({
             id: category.id,
+            priority: 0,
             playlist_id: category.playlist_id,
             playlist_name: category.playlist_name,
             name: category.name,

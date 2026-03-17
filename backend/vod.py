@@ -89,6 +89,66 @@ class VodPlaybackCandidate:
     episode: VodCategoryEpisode | None = None
 
 
+def _vod_link_priority_value(link: VodCategoryXcCategory | None, fallback: int = 0) -> int:
+    if link is None:
+        return int(fallback)
+    try:
+        return int(getattr(link, "priority", fallback) or fallback)
+    except Exception:
+        return int(fallback)
+
+
+def _ordered_vod_category_links(links) -> list[VodCategoryXcCategory]:
+    ordered = list(links or [])
+    if not ordered:
+        return []
+    fallback_rank = len(ordered)
+    decorated = []
+    for index, link in enumerate(ordered):
+        priority = _vod_link_priority_value(link, fallback=fallback_rank - index)
+        decorated.append((priority, index, link))
+    decorated.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in decorated]
+
+
+def _ordered_vod_category_ids(links) -> list[int]:
+    return [int(link.xc_category_id) for link in _ordered_vod_category_links(links) if getattr(link, "xc_category_id", None)]
+
+
+def _vod_category_priority_map(links) -> dict[int, int]:
+    ordered_links = _ordered_vod_category_links(links)
+    fallback_rank = len(ordered_links)
+    priority_map = {}
+    for index, link in enumerate(ordered_links):
+        category_id = int(getattr(link, "xc_category_id", 0) or 0)
+        if category_id <= 0:
+            continue
+        priority_map[category_id] = _vod_link_priority_value(link, fallback=fallback_rank - index)
+    return priority_map
+
+
+def _build_category_config_map(raw_category_configs) -> dict[int, dict[str, object]]:
+    category_config_map = {}
+    category_count = len(raw_category_configs or [])
+    for index, item in enumerate(raw_category_configs or []):
+        if not isinstance(item, dict):
+            continue
+        category_id = item.get("category_id")
+        if not str(category_id).isdigit():
+            continue
+        priority_value = item.get("priority")
+        if str(priority_value).isdigit():
+            priority = int(priority_value)
+        else:
+            priority = category_count - index
+        category_config_map[int(category_id)] = {
+            "priority": int(priority),
+            "strip_title_prefixes": _strip_config_tokens(item.get("strip_title_prefixes")),
+            "strip_title_suffixes": _strip_config_tokens(item.get("strip_title_suffixes")),
+        }
+    return category_config_map
+
+
 def user_can_access_vod_kind(user: User | None, kind: str) -> bool:
     if user_has_admin_role(user):
         return True
@@ -149,9 +209,86 @@ def build_vod_activity_metadata(candidate, episode=None) -> dict[str, str]:
     }
 
 
-def _clean_lower(value) -> str:
-    return clean_text(value).lower()
+def build_local_cache_source(
+    candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None
+) -> "CsoSource | None":
+    if candidate is None or getattr(candidate, "group_item", None) is None:
+        return None
+    internal_id = int(candidate.group_item.id)
+    source_type = "vod_movie"
+    if episode is not None:
+        source_type = "vod_episode"
+        internal_id = int(episode.id)
+    from backend.cso import CsoSource
 
+    return CsoSource(
+        id=internal_id,
+        source_type=source_type,
+        url="",
+        playlist_id=int(getattr(candidate.source_item, "playlist_id", 0) or 0),
+        internal_id=internal_id,
+        container_extension=getattr(candidate.episode_source, "container_extension", "")
+        or getattr(candidate.source_item, "container_extension", "")
+        or getattr(candidate.group_item, "container_extension", ""),
+    )
+
+
+async def vod_cache_is_complete(candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None) -> bool:
+    source = build_local_cache_source(candidate, episode=episode)
+    if source is None:
+        return False
+    from backend.cso import vod_cache_manager
+
+    entry = await vod_cache_manager.get(source)
+    if entry is None:
+        return False
+    return bool(entry.complete and entry.final_path.exists())
+
+
+async def vod_candidate_has_capacity(candidate: VodPlaybackCandidate, upstream_url: str) -> bool:
+    from backend.cso import (
+        cso_capacity_registry,
+        cso_source_from_vod_source,
+        source_capacity_key,
+        source_capacity_limit,
+    )
+
+    source = await cso_source_from_vod_source(candidate, upstream_url)
+    if source is None:
+        return False
+    limit = int(source_capacity_limit(source) or 0)
+    if limit <= 0:
+        return True
+    usage = await cso_capacity_registry.get_usage(source_capacity_key(source))
+    return int(usage.get("total") or 0) < limit
+
+
+async def select_vod_playback_target(
+    candidates: list[VodPlaybackCandidate],
+    episode: VodCategoryEpisode | None = None,
+    prefer_local_cache: bool = False,
+) -> tuple[VodPlaybackCandidate | None, str | None, str | None]:
+    if not candidates:
+        return None, None, "not_found"
+    preferred_candidate = candidates[0]
+    if prefer_local_cache and await vod_cache_is_complete(preferred_candidate, episode=episode):
+        return preferred_candidate, "", None
+
+    blocked_capacity = False
+    saw_stream_url = False
+    for candidate in candidates:
+        upstream_url = await build_upstream_playback_url(candidate, episode_mapping=episode)
+        if not upstream_url:
+            continue
+        saw_stream_url = True
+        if not await vod_candidate_has_capacity(candidate, upstream_url):
+            blocked_capacity = True
+            continue
+        return candidate, upstream_url, None
+
+    if blocked_capacity and saw_stream_url:
+        return preferred_candidate, "", "capacity_blocked"
+    return preferred_candidate, "", "stream_unavailable"
 
 def _extract_year(payload: dict) -> str:
     for key in ("year", "releaseDate", "release_date", "releasedate"):
@@ -164,7 +301,7 @@ def _extract_year(payload: dict) -> str:
     return ""
 
 
-def _strip_config_tokens(raw_value) -> list[str]:
+def _strip_config_tokens(raw_value: object) -> list[str]:
     if raw_value is None:
         return []
     if isinstance(raw_value, list):
@@ -181,7 +318,7 @@ def _strip_config_tokens(raw_value) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def _store_strip_config(tokens) -> str | None:
+def _store_strip_config(tokens: list[str] | None) -> str | None:
     cleaned = [clean_text(item) for item in (tokens or []) if clean_text(item)]
     if not cleaned:
         return None
@@ -196,7 +333,7 @@ def _group_category_strip_suffixes(group_category: VodCategoryXcCategory | None)
     return _strip_config_tokens(getattr(group_category, "strip_title_suffixes", None))
 
 
-def _remove_configured_affixes(value: str, prefixes=None, suffixes=None) -> str:
+def _remove_configured_affixes(value: str, prefixes: list[str] | None = None, suffixes: list[str] | None = None) -> str:
     text = clean_text(value)
     if not text:
         return ""
@@ -239,35 +376,52 @@ def _remove_configured_affixes(value: str, prefixes=None, suffixes=None) -> str:
     return text
 
 
-def _export_title_from_source_title(title: str, prefixes=None, suffixes=None) -> str:
+def _export_title_from_source_title(
+    title: str, prefixes: list[str] | None = None, suffixes: list[str] | None = None
+) -> str:
     cleaned_title = _remove_configured_affixes(title, prefixes=prefixes, suffixes=suffixes)
     cleaned_title = re.sub(r"\s+", " ", clean_text(cleaned_title))
     return cleaned_title or clean_text(title)
 
 
-def _filtered_title(value, prefixes=None, suffixes=None) -> str:
+def _filtered_title(value: str, prefixes: list[str] | None = None, suffixes: list[str] | None = None) -> str:
     stripped = _remove_configured_affixes(value, prefixes=prefixes, suffixes=suffixes)
     filtered_text = stripped.casefold()
     filtered_text = re.sub(r"\s+", " ", filtered_text)
     return filtered_text.strip()
 
 
-def _dedupe_key_from_values(kind: str, title, year, prefixes=None, suffixes=None) -> str:
-    filtered_title = _filtered_title(title, prefixes=prefixes, suffixes=suffixes) or _clean_lower(title)
+def _dedupe_key_from_values(
+    kind: str,
+    title: str,
+    year: str,
+    prefixes: list[str] | None = None,
+    suffixes: list[str] | None = None,
+) -> str:
+    filtered_title = _filtered_title(title, prefixes=prefixes, suffixes=suffixes) or clean_key(title)
     return f"{clean_vod_content_type(kind)}::{filtered_title}::{clean_text(year)}"
 
 
-def _dedupe_key(kind: str, payload: dict, prefixes=None, suffixes=None) -> str:
+def _dedupe_key(
+    kind: str, payload: dict[str, object], prefixes: list[str] | None = None, suffixes: list[str] | None = None
+) -> str:
     title = payload.get("name") or payload.get("title")
     year = _extract_year(payload)
     return _dedupe_key_from_values(kind, title, year, prefixes=prefixes, suffixes=suffixes)
 
 
-def _dedupe_key_for_item(item: XcVodItem, prefixes=None, suffixes=None) -> str:
+def _dedupe_key_for_item(item: XcVodItem, prefixes: list[str] | None = None, suffixes: list[str] | None = None) -> str:
     return _dedupe_key_from_values(item.item_type, item.title, item.year, prefixes=prefixes, suffixes=suffixes)
 
 
-def _episode_dedupe_key(season_number, episode_number, title, prefixes=None, suffixes=None, tmdb_id=None):
+def _episode_dedupe_key(
+    season_number: int | None,
+    episode_number: int | None,
+    title: str,
+    prefixes: list[str] | None = None,
+    suffixes: list[str] | None = None,
+    tmdb_id: str | None = None,
+) -> str:
     tmdb_value = clean_text(tmdb_id)
     if tmdb_value:
         return f"tmdb::{tmdb_value}"
@@ -275,15 +429,15 @@ def _episode_dedupe_key(season_number, episode_number, title, prefixes=None, suf
     episode_text = str(int(episode_number)) if str(episode_number).isdigit() else ""
     if season_text or episode_text:
         return f"s{season_text}e{episode_text}"
-    filtered_title = _filtered_title(title, prefixes=prefixes, suffixes=suffixes) or _clean_lower(title)
+    filtered_title = _filtered_title(title, prefixes=prefixes, suffixes=suffixes) or clean_key(title)
     return f"title::{filtered_title}"
 
 
-def _summary_json(payload: dict) -> str:
+def _summary_json(payload: dict[str, object]) -> str:
     return json.dumps(payload or {}, sort_keys=True)
 
 
-def _load_summary(summary_json: str | None) -> dict:
+def _load_summary(summary_json: str | None) -> dict[str, object]:
     try:
         parsed = json.loads(summary_json or "{}")
     except Exception:
@@ -291,7 +445,7 @@ def _load_summary(summary_json: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _summary_info(summary: dict) -> dict:
+def _summary_info(summary: dict[str, object]) -> dict[str, object]:
     info = summary.get("info")
     if isinstance(info, dict):
         return info
@@ -302,13 +456,13 @@ def _summary_info(summary: dict) -> dict:
     return {}
 
 
-def _poster_url(payload: dict, kind: str) -> str:
+def _poster_url(payload: dict[str, object], kind: str) -> str:
     if kind == VOD_KIND_MOVIE:
         return clean_text(payload.get("stream_icon") or payload.get("cover") or payload.get("movie_image"))
     return clean_text(payload.get("cover") or payload.get("cover_big") or payload.get("stream_icon"))
 
 
-def _container_extension(payload: dict) -> str:
+def _container_extension(payload: dict[str, object]) -> str:
     text = clean_text(payload.get("container_extension")).lstrip(".").lower()
     if text:
         return text
@@ -348,7 +502,9 @@ def _resolve_group_output_extension(group_profile_id: str | None, source_contain
     return _profile_extension(effective_profile, fallback_extension=source_container_extension)
 
 
-def _merge_strip_rules_for_source_categories(source_category_ids: list[int], strip_rules: dict[int, tuple[list[str], list[str]]]):
+def _merge_strip_rules_for_source_categories(
+    source_category_ids: list[int], strip_rules: dict[int, tuple[list[str], list[str]]]
+) -> tuple[list[str], list[str]]:
     merged_prefixes: list[str] = []
     merged_suffixes: list[str] = []
     seen_prefixes: set[str] = set()
@@ -372,14 +528,14 @@ def _merge_strip_rules_for_source_categories(source_category_ids: list[int], str
     return merged_prefixes, merged_suffixes
 
 
-def _batched(values, size=2000):
+def _batched(values, size: int = 2000):
     batch_size = max(1, int(size or 2000))
     items = list(values or [])
     for index in range(0, len(items), batch_size):
         yield items[index : index + batch_size]
 
 
-def _metadata_expiry(now_utc=None):
+def _metadata_expiry(now_utc: datetime | None = None) -> datetime | None:
     now_value = now_utc or datetime.now(timezone.utc)
     return as_naive_utc(now_value + timedelta(seconds=METADATA_CACHE_TTL_SECONDS))
 
@@ -395,7 +551,7 @@ def _fallback_profile_for_container(container_extension: str) -> str:
     return _FORCED_SAFE_VOD_PROFILE_BY_CONTAINER.get(container_key, _DEFAULT_UNSAFE_VOD_PROFILE)
 
 
-def _load_payload_json(payload_json: str | None):
+def _load_payload_json(payload_json: str | None) -> dict | list | None:
     try:
         payload = json.loads(payload_json or "{}")
     except Exception:
@@ -403,7 +559,7 @@ def _load_payload_json(payload_json: str | None):
     return payload if isinstance(payload, (dict, list)) else None
 
 
-def _cache_payload_json(payload) -> str:
+def _cache_payload_json(payload: object) -> str:
     return json.dumps(payload if payload is not None else {}, sort_keys=True)
 
 
@@ -411,21 +567,23 @@ def _vod_category_type_dir_name(content_type: str) -> str:
     return "Movies" if clean_vod_content_type(content_type) == VOD_KIND_MOVIE else "Shows"
 
 
-def _vod_export_slug(value, fallback="category") -> str:
+def _vod_export_slug(value: object, fallback: str = "category") -> str:
     text = clean_text(value).casefold()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = re.sub(r"-{2,}", "-", text).strip("-")
     return text or clean_text(fallback) or "category"
 
 
-def _vod_safe_name(value, fallback="item") -> str:
+def _vod_safe_name(value: object, fallback: str = "item") -> str:
     text = clean_text(value) or clean_text(fallback) or "item"
     text = re.sub(r'[\\/:*?"<>|]+', " ", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text or clean_text(fallback) or "item"
 
 
-def _vod_movie_display_name(item: VodCategoryItem, prefixes=None, suffixes=None) -> str:
+def _vod_movie_display_name(
+    item: VodCategoryItem, prefixes: list[str] | None = None, suffixes: list[str] | None = None
+) -> str:
     title = _export_title_from_source_title(getattr(item, "title", ""), prefixes=prefixes, suffixes=suffixes)
     year = clean_text(getattr(item, "year", ""))
     if year:
@@ -437,7 +595,9 @@ def _vod_movie_display_name(item: VodCategoryItem, prefixes=None, suffixes=None)
     return title
 
 
-def _vod_series_display_name(item: VodCategoryItem, prefixes=None, suffixes=None) -> str:
+def _vod_series_display_name(
+    item: VodCategoryItem, prefixes: list[str] | None = None, suffixes: list[str] | None = None
+) -> str:
     title = _export_title_from_source_title(getattr(item, "title", ""), prefixes=prefixes, suffixes=suffixes)
     year = clean_text(getattr(item, "year", ""))
     if year:
@@ -448,7 +608,12 @@ def _vod_series_display_name(item: VodCategoryItem, prefixes=None, suffixes=None
     return title
 
 
-def _vod_episode_display_name(series_name: str, episode: VodCategoryEpisode, prefixes=None, suffixes=None) -> str:
+def _vod_episode_display_name(
+    series_name: str,
+    episode: VodCategoryEpisode,
+    prefixes: list[str] | None = None,
+    suffixes: list[str] | None = None,
+) -> str:
     season_number = int(getattr(episode, "season_number", 0) or 0)
     episode_number = int(getattr(episode, "episode_number", 0) or 0)
     # Jellyfin recommended: Series Name SXXEXX
@@ -466,7 +631,7 @@ def _vod_strm_registry_path(root_path: Path | None = None) -> Path:
     return (root_path or _VOD_STRM_ROOT) / _VOD_STRM_REGISTRY_FILE
 
 
-def _load_vod_strm_registry_sync(root_path: Path | None = None) -> dict:
+def _load_vod_strm_registry_sync(root_path: Path | None = None) -> dict[str, object]:
     registry_path = _vod_strm_registry_path(root_path)
     if not registry_path.exists():
         return {}
@@ -476,7 +641,7 @@ def _load_vod_strm_registry_sync(root_path: Path | None = None) -> dict:
         return {}
 
 
-def _write_vod_strm_registry_sync(registry: dict, root_path: Path | None = None):
+def _write_vod_strm_registry_sync(registry: dict[str, object], root_path: Path | None = None):
     root = root_path or _VOD_STRM_ROOT
     root.mkdir(parents=True, exist_ok=True)
     registry_path = _vod_strm_registry_path(root)
@@ -576,7 +741,7 @@ def _write_nfo_file_sync(file_path: Path, nfo_content: str, root_path: Path | No
     full_path.write_text(nfo_content, encoding="utf-8")
 
 
-def _xml_text(parent, tag, text, attrib=None):
+def _xml_text(parent, tag: str, text: object, attrib: dict[str, str] | None = None):
     if text:
         el = ET.SubElement(parent, tag, attrib or {})
         el.text = str(text)
@@ -584,24 +749,24 @@ def _xml_text(parent, tag, text, attrib=None):
     return None
 
 
-def _xml_multi_text(parent, tag, values):
+def _xml_multi_text(parent, tag: str, values: list[str]):
     for value in values:
         _xml_text(parent, tag, value)
 
 
-def _summary_movie_info(summary: dict) -> dict:
+def _summary_movie_info(summary: dict[str, object]) -> dict[str, object]:
     movie_data = summary.get("movie_data")
     if isinstance(movie_data, dict):
         return movie_data
     return {}
 
 
-def _summary_sources(summary: dict) -> list[dict]:
+def _summary_sources(summary: dict[str, object]) -> list[dict[str, object]]:
     sources = [summary, _summary_info(summary), _summary_movie_info(summary)]
     return [source for source in sources if isinstance(source, dict)]
 
 
-def _first_summary_value(summary: dict, *keys):
+def _first_summary_value(summary: dict[str, object], *keys: str):
     for source in _summary_sources(summary):
         for key in keys:
             value = source.get(key)
@@ -618,7 +783,7 @@ def _extract_year_from_title(value: str) -> str:
     return match.group(0) if match else ""
 
 
-def _nfo_year(item, summary: dict) -> str:
+def _nfo_year(item: VodCategoryItem, summary: dict[str, object]) -> str:
     return (
         clean_text(getattr(item, "year", ""))
         or _extract_year(summary)
@@ -635,7 +800,7 @@ def _clean_nfo_title(title: str, year: str) -> str:
     return re.sub(rf"[\s\-()]*{re.escape(str(year))}\s*$", "", title).strip(" -_:|*[]()")
 
 
-def _add_nfo_unique_ids(root, summary):
+def _add_nfo_unique_ids(root, summary: dict[str, object]):
     for id_key in ["imdb", "tmdb", "tvdb"]:
         val = clean_text(_first_summary_value(summary, f"{id_key}_id"))
         if val:
@@ -643,7 +808,7 @@ def _add_nfo_unique_ids(root, summary):
             _xml_text(root, "uniqueid", val, {"type": id_key, "default": "true" if id_key == "imdb" else "false"})
 
 
-def _nfo_text_values(value) -> list[str]:
+def _nfo_text_values(value: object) -> list[str]:
     if value in (None, "", [], {}):
         return []
     if isinstance(value, list):
@@ -667,7 +832,7 @@ def _nfo_text_values(value) -> list[str]:
     return [text]
 
 
-def _add_nfo_cast(root, value):
+def _add_nfo_cast(root, value: object):
     if value in (None, "", [], {}):
         return
     entries = value if isinstance(value, list) else [value]
@@ -753,7 +918,7 @@ def _generate_episode_nfo(episode: VodCategoryEpisode) -> str:
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
-async def _get_db_cached_metadata(playlist_id: int, action: str, upstream_item_id: str):
+async def _get_db_cached_metadata(playlist_id: int, action: str, upstream_item_id: str) -> dict | list | None:
     now_utc = datetime.now(timezone.utc)
     async with Session() as session:
         result = await session.execute(
@@ -779,7 +944,9 @@ async def _get_db_cached_metadata(playlist_id: int, action: str, upstream_item_i
         return _load_payload_json(cache_row.payload_json)
 
 
-async def _set_db_cached_metadata(playlist_id: int, action: str, upstream_item_id: str, payload):
+async def _set_db_cached_metadata(
+    playlist_id: int, action: str, upstream_item_id: str, payload: object
+):
     now_utc = datetime.now(timezone.utc)
     async with Session() as session:
         async with session.begin():
@@ -811,7 +978,7 @@ async def _set_db_cached_metadata(playlist_id: int, action: str, upstream_item_i
                 cache_row.expires_at = _metadata_expiry(now_utc)
 
 
-async def cleanup_stale_vod_metadata_cache():
+async def cleanup_stale_vod_metadata_cache() -> int:
     started_at = time.perf_counter()
     now_utc = datetime.now(timezone.utc)
     async with Session() as session:
@@ -828,13 +995,13 @@ async def cleanup_stale_vod_metadata_cache():
     return deleted_count
 
 
-async def _load_vod_category_for_export(category_id: int):
+async def _load_vod_category_for_export(category_id: int) -> VodCategory | None:
     async with Session() as session:
         result = await session.execute(select(VodCategory).where(VodCategory.id == int(category_id)))
         return result.scalars().first()
 
 
-async def _eligible_vod_export_users(category: VodCategory):
+async def _eligible_vod_export_users(category: VodCategory) -> list[User]:
     async with Session() as session:
         result = await session.execute(select(User).options(selectinload(User.roles)).where(User.is_active.is_(True)))
         users = result.scalars().all()
@@ -861,7 +1028,7 @@ def _vod_sync_subprocess_log_level(line: str, fallback_level: int) -> int:
     return fallback_level
 
 
-async def sync_vod_library_subprocess(category_id: int = None):
+async def sync_vod_library_subprocess(category_id: int | None = None) -> bool:
     project_root = Path(__file__).resolve().parents[1]
     args = [sys.executable, "-m", "backend.scripts.sync_vod_library"]
     if category_id:
@@ -892,7 +1059,7 @@ async def sync_vod_library_subprocess(category_id: int = None):
         raise RuntimeError(f"VOD sync subprocess for {label} failed with code {rc}")
 
 
-async def _refresh_series_items(item_ids, concurrency=VOD_SYNC_SERIES_REFRESH_CONCURRENCY):
+async def _refresh_series_items(item_ids, concurrency: int = VOD_SYNC_SERIES_REFRESH_CONCURRENCY):
     semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
     successes = 0
     failures = 0
@@ -923,7 +1090,7 @@ async def _refresh_series_items(item_ids, concurrency=VOD_SYNC_SERIES_REFRESH_CO
     }
 
 
-async def sync_vod_category_strm_files(config, category_id: int):
+async def sync_vod_category_strm_files(config, category_id: int) -> bool:
     started_at = time.perf_counter()
     category = await _load_vod_category_for_export(int(category_id))
 
@@ -1128,7 +1295,7 @@ async def sync_vod_category_strm_files(config, category_id: int):
     return {"category_id": int(category.id), "files": total_files}
 
 
-async def queue_vod_category_strm_sync(category_id: int):
+async def queue_vod_category_strm_sync(category_id: int) -> bool:
     from backend.api.tasks import TaskQueueBroker
 
     category = await _load_vod_category_for_export(int(category_id))
@@ -1152,7 +1319,7 @@ async def queue_vod_category_strm_sync(category_id: int):
     )
 
 
-async def queue_all_vod_category_strm_syncs(config=None):
+async def queue_all_vod_category_strm_syncs(config=None) -> int:
     from backend.api.tasks import TaskQueueBroker
 
     task_broker = await TaskQueueBroker.get_instance()
@@ -1173,7 +1340,7 @@ async def _delete_ids_in_batches(session, model, ids):
         await session.execute(delete(model).where(model.id.in_(batch)))
 
 
-async def _get_primary_xc_account(playlist_id: int):
+async def _get_primary_xc_account(playlist_id: int) -> XcAccount | None:
     async with Session() as session:
         result = await session.execute(
             select(XcAccount)
@@ -1183,7 +1350,7 @@ async def _get_primary_xc_account(playlist_id: int):
         return result.scalars().first()
 
 
-async def _xc_request(session, host_url, params, retries=3):
+async def _xc_request(session, host_url: str, params: dict[str, str], retries: int = 3):
     url = f"{str(host_url).rstrip('/')}/player_api.php"
     last_error = None
     for attempt in range(1, int(retries) + 1):
@@ -1202,7 +1369,7 @@ async def _xc_request(session, host_url, params, retries=3):
     return {}
 
 
-def _resolve_source_request_headers(settings, playlist):
+def _resolve_source_request_headers(settings, playlist: Playlist) -> dict[str, str]:
     headers = {}
     user_agent = clean_text(getattr(playlist, "user_agent", ""))
     if user_agent:
@@ -1220,7 +1387,7 @@ def _resolve_source_request_headers(settings, playlist):
     return headers
 
 
-async def _choose_working_xc_host(playlist: Playlist):
+async def _choose_working_xc_host(playlist: Playlist) -> tuple[str | None, XcAccount | None]:
     account = await _get_primary_xc_account(int(playlist.id))
     if account is None:
         return None, None
@@ -1243,7 +1410,7 @@ async def _choose_working_xc_host(playlist: Playlist):
     return None, account
 
 
-async def _choose_working_xc_host_for_account(playlist: Playlist, account: XcAccount):
+async def _choose_working_xc_host_for_account(playlist: Playlist, account: XcAccount) -> tuple[str | None, XcAccount | None]:
     if playlist is None or account is None:
         return None, None
     hosts = parse_xc_hosts(getattr(playlist, "url", ""))
@@ -1265,7 +1432,7 @@ async def _choose_working_xc_host_for_account(playlist: Playlist, account: XcAcc
     return None, account
 
 
-async def _get_enabled_xc_accounts(session, playlist_id: int):
+async def _get_enabled_xc_accounts(session, playlist_id: int) -> list[XcAccount]:
     result = await session.execute(
         select(XcAccount)
         .where(XcAccount.playlist_id == int(playlist_id), XcAccount.enabled.is_(True))
@@ -1274,7 +1441,7 @@ async def _get_enabled_xc_accounts(session, playlist_id: int):
     return result.scalars().all()
 
 
-async def _select_account_for_playlist(playlist: Playlist):
+async def _select_account_for_playlist(playlist: Playlist) -> tuple[str | None, XcAccount | None]:
     if playlist is None:
         return None, None
     async with Session() as session:
@@ -1501,7 +1668,7 @@ async def _upsert_vod_type(playlist_id: int, kind: str, categories: list[dict], 
                 )
 
 
-async def rebuild_vod_group_caches_for_playlist(playlist_id: int):
+async def rebuild_vod_group_caches_for_playlist(playlist_id: int) -> int:
     async with Session() as session:
         result = await session.execute(
             select(VodCategory.id)
@@ -1514,7 +1681,7 @@ async def rebuild_vod_group_caches_for_playlist(playlist_id: int):
         await queue_rebuild_vod_group_cache(group_id)
 
 
-async def queue_rebuild_vod_group_cache(group_id: int):
+async def queue_rebuild_vod_group_cache(group_id: int) -> bool:
     from backend.api.tasks import TaskQueueBroker
 
     async with Session() as session:
@@ -1538,7 +1705,7 @@ async def queue_rebuild_vod_group_cache(group_id: int):
     )
 
 
-async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True):
+async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True) -> bool:
     async with Session() as session:
         async with session.begin():
             result = await session.execute(
@@ -1550,7 +1717,8 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True):
             if group is None:
                 return False
 
-            category_ids = [int(link.xc_category_id) for link in group.xc_category_links or []]
+            ordered_links = _ordered_vod_category_links(group.xc_category_links)
+            category_ids = _ordered_vod_category_ids(ordered_links)
             if not category_ids:
                 return True
             strip_rules_by_category_id = {
@@ -1558,8 +1726,9 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True):
                     _group_category_strip_prefixes(link),
                     _group_category_strip_suffixes(link),
                 )
-                for link in (group.xc_category_links or [])
+                for link in ordered_links
             }
+            category_priority_by_id = _vod_category_priority_map(ordered_links)
 
             source_result = await session.execute(
                 select(XcVodItem)
@@ -1567,9 +1736,15 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True):
                     XcVodItem.category_id.in_(category_ids),
                     XcVodItem.item_type == group.content_type,
                 )
-                .order_by(XcVodItem.title.asc(), XcVodItem.id.asc())
             )
-            source_items = source_result.scalars().all()
+            source_items = sorted(
+                source_result.scalars().all(),
+                key=lambda item: (
+                    -int(category_priority_by_id.get(int(getattr(item, "category_id", 0) or 0), 0)),
+                    clean_text(getattr(item, "title", "")).lower(),
+                    int(getattr(item, "id", 0) or 0),
+                ),
+            )
             buckets = {}
             for source_item in source_items:
                 strip_prefixes, strip_suffixes = strip_rules_by_category_id.get(
@@ -1673,7 +1848,7 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True):
     return True
 
 
-async def get_vod_page_state():
+async def get_vod_page_state() -> dict[str, bool]:
     async with Session() as session:
         playlist_result = await session.execute(select(func.count(Playlist.id)).where(Playlist.account_type == "XC"))
         category_result = await session.execute(select(func.count(XcVodCategory.id)))
@@ -1686,7 +1861,7 @@ async def get_vod_page_state():
         }
 
 
-async def list_upstream_vod_categories(content_type: str, source_playlist_id=None):
+async def list_upstream_vod_categories(content_type: str, source_playlist_id: int | None = None) -> list[dict[str, object]]:
     content_type = clean_vod_content_type(content_type)
     async with Session() as session:
         stmt = (
@@ -1716,7 +1891,7 @@ async def list_upstream_vod_categories(content_type: str, source_playlist_id=Non
         return rows
 
 
-async def list_vod_groups(content_type: str):
+async def list_vod_groups(content_type: str) -> list[dict[str, object]]:
     content_type = clean_vod_content_type(content_type)
     async with Session() as session:
         stmt = (
@@ -1749,6 +1924,7 @@ async def list_vod_groups(content_type: str):
                     "categories": [
                         {
                             "id": link.xc_category.id,
+                            "priority": _vod_link_priority_value(link),
                             "playlist_id": link.xc_category.playlist_id,
                             "playlist_name": getattr(link.xc_category.playlist, "name", ""),
                             "name": link.xc_category.name,
@@ -1756,7 +1932,7 @@ async def list_vod_groups(content_type: str):
                             "strip_title_prefixes": _group_category_strip_prefixes(link),
                             "strip_title_suffixes": _group_category_strip_suffixes(link),
                         }
-                        for link in group.xc_category_links or []
+                        for link in _ordered_vod_category_links(group.xc_category_links)
                         if link.xc_category is not None
                     ],
                 }
@@ -1764,21 +1940,11 @@ async def list_vod_groups(content_type: str):
         return groups
 
 
-async def create_vod_group(payload: dict):
+async def create_vod_group(payload: dict[str, object]) -> int:
     content_type = clean_vod_content_type(payload.get("content_type"))
     category_ids = [int(item) for item in (payload.get("category_ids") or []) if str(item).isdigit()]
     raw_category_configs = payload.get("category_configs") or []
-    category_config_map = {}
-    for item in raw_category_configs:
-        if not isinstance(item, dict):
-            continue
-        category_id = item.get("category_id")
-        if not str(category_id).isdigit():
-            continue
-        category_config_map[int(category_id)] = {
-            "strip_title_prefixes": _strip_config_tokens(item.get("strip_title_prefixes")),
-            "strip_title_suffixes": _strip_config_tokens(item.get("strip_title_suffixes")),
-        }
+    category_config_map = _build_category_config_map(raw_category_configs)
     async with Session() as session:
         async with session.begin():
             group = VodCategory(
@@ -1798,6 +1964,7 @@ async def create_vod_group(payload: dict):
                     VodCategoryXcCategory(
                         category_id=group.id,
                         xc_category_id=category_id,
+                        priority=int(category_config.get("priority") or 0),
                         strip_title_prefixes=_store_strip_config(category_config.get("strip_title_prefixes")),
                         strip_title_suffixes=_store_strip_config(category_config.get("strip_title_suffixes")),
                     )
@@ -1807,20 +1974,10 @@ async def create_vod_group(payload: dict):
     return group_id
 
 
-async def update_vod_group(group_id: int, payload: dict):
+async def update_vod_group(group_id: int, payload: dict[str, object]) -> bool:
     category_ids = [int(item) for item in (payload.get("category_ids") or []) if str(item).isdigit()]
     raw_category_configs = payload.get("category_configs") or []
-    category_config_map = {}
-    for item in raw_category_configs:
-        if not isinstance(item, dict):
-            continue
-        category_id = item.get("category_id")
-        if not str(category_id).isdigit():
-            continue
-        category_config_map[int(category_id)] = {
-            "strip_title_prefixes": _strip_config_tokens(item.get("strip_title_prefixes")),
-            "strip_title_suffixes": _strip_config_tokens(item.get("strip_title_suffixes")),
-        }
+    category_config_map = _build_category_config_map(raw_category_configs)
     async with Session() as session:
         async with session.begin():
             group = await session.get(VodCategory, int(group_id))
@@ -1848,6 +2005,7 @@ async def update_vod_group(group_id: int, payload: dict):
                         VodCategoryXcCategory(
                             category_id=int(group_id),
                             xc_category_id=category_id,
+                            priority=int(category_config.get("priority") or 0),
                             strip_title_prefixes=_store_strip_config(category_config.get("strip_title_prefixes")),
                             strip_title_suffixes=_store_strip_config(category_config.get("strip_title_suffixes")),
                         )
@@ -1856,7 +2014,7 @@ async def update_vod_group(group_id: int, payload: dict):
     return True
 
 
-async def delete_vod_group(group_id: int):
+async def delete_vod_group(group_id: int) -> bool:
     async with Session() as session:
         async with session.begin():
             group = await session.get(VodCategory, int(group_id))
@@ -1867,7 +2025,7 @@ async def delete_vod_group(group_id: int):
     return True
 
 
-async def _group_rows_for_user(kind: str):
+async def _group_rows_for_user(kind: str) -> list[VodCategory]:
     async with Session() as session:
         stmt = (
             select(VodCategory)
@@ -1879,7 +2037,7 @@ async def _group_rows_for_user(kind: str):
         return result.scalars().all()
 
 
-async def build_curated_category_payloads(kind: str):
+async def build_curated_category_payloads(kind: str) -> list[dict[str, object]]:
     rows = await _group_rows_for_user(clean_vod_content_type(kind))
     return [
         {
@@ -1891,7 +2049,7 @@ async def build_curated_category_payloads(kind: str):
     ]
 
 
-async def build_curated_item_payloads(kind: str, category_id=None):
+async def build_curated_item_payloads(kind: str, category_id: int | None = None) -> list[dict[str, object]]:
     kind = clean_vod_content_type(kind)
     async with Session() as session:
         stmt = (
@@ -1949,7 +2107,7 @@ async def build_curated_item_payloads(kind: str, category_id=None):
     return results
 
 
-async def _get_group_item_source_rows(group_item_id: int, item_type: str):
+async def _get_group_item_source_rows(group_item_id: int, item_type: str) -> list:
     async with Session() as session:
         stmt = (
             select(VodCategoryItemSource, XcVodItem, VodCategoryItem, VodCategory)
@@ -1968,7 +2126,7 @@ async def _get_group_item_source_rows(group_item_id: int, item_type: str):
         return result.all()
 
 
-async def fetch_vod_info_payload(item_id: int):
+async def fetch_vod_info_payload(item_id: int) -> dict[str, object] | None:
     rows = await _get_group_item_source_rows(int(item_id), VOD_KIND_MOVIE)
     candidate = await _select_playback_candidate(rows, VOD_KIND_MOVIE)
     if candidate is None:
@@ -1996,7 +2154,7 @@ async def fetch_vod_info_payload(item_id: int):
     return payload
 
 
-async def fetch_series_info_payload(item_id: int):
+async def fetch_series_info_payload(item_id: int) -> dict[str, object] | None:
     rows = await _get_group_item_source_rows(int(item_id), VOD_KIND_SERIES)
     if not rows:
         return None
@@ -2006,7 +2164,9 @@ async def fetch_series_info_payload(item_id: int):
     return payload
 
 
-async def _fetch_upstream_metadata(source_item: XcVodItem, action: str, upstream_item_id: str, param_name: str):
+async def _fetch_upstream_metadata(
+    source_item: XcVodItem, action: str, upstream_item_id: str, param_name: str
+) -> dict | list | None:
     cached = await _get_db_cached_metadata(int(source_item.playlist_id), action, upstream_item_id)
     if cached is not None:
         return cached
@@ -2114,7 +2274,7 @@ async def _fetch_upstream_metadata(source_item: XcVodItem, action: str, upstream
     return None
 
 
-async def _rebuild_series_episode_cache(group_item_id: int, rows):
+async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, object] | None:
     source_payloads = []
     representative_payload = None
     group_profile_id = ""
@@ -2123,11 +2283,11 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows):
         group_profile_id = clean_text(getattr(group, "profile_id", "")) or group_profile_id
         if not strip_rules_by_category_id:
             strip_rules_by_category_id = {
-                int(link.category_id): (
+                int(link.xc_category_id): (
                     _group_category_strip_prefixes(link),
                     _group_category_strip_suffixes(link),
                 )
-                for link in (group.xc_category_links or [])
+                for link in _ordered_vod_category_links(group.xc_category_links)
             }
         payload = await _fetch_upstream_metadata(
             source_item, "get_series_info", str(source_item.upstream_item_id), "series_id"
@@ -2300,12 +2460,17 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows):
     return representative_payload
 
 
-async def resolve_movie_playback(item_id: int):
+async def resolve_movie_playback(item_id: int) -> VodPlaybackCandidate | None:
+    candidates = await resolve_movie_playback_candidates(int(item_id))
+    return candidates[0] if candidates else None
+
+
+async def resolve_movie_playback_candidates(item_id: int) -> list[VodPlaybackCandidate]:
     rows = await _get_group_item_source_rows(int(item_id), VOD_KIND_MOVIE)
-    return await _select_playback_candidate(rows, VOD_KIND_MOVIE)
+    return await _build_playback_candidates(rows, VOD_KIND_MOVIE)
 
 
-async def resolve_episode_playback(episode_id: int):
+async def resolve_episode_playback(episode_id: int) -> tuple[VodPlaybackCandidate | None, VodCategoryEpisode | None]:
     async with Session() as session:
         result = await session.execute(
             select(
@@ -2332,17 +2497,72 @@ async def resolve_episode_playback(episode_id: int):
         (source_link, source_item, group_item, group, episode_source)
         for _episode, episode_source, source_link, source_item, group_item, group in rows
     ]
-    candidate = await _select_playback_candidate(candidate_rows, VOD_KIND_SERIES)
+    candidates = await _build_playback_candidates(candidate_rows, VOD_KIND_SERIES)
+    candidate = candidates[0] if candidates else None
     if candidate:
         candidate.episode = episode_row
     return candidate, episode_row
 
 
-async def _select_playback_candidate(rows, item_type: str):
-    if not rows:
-        return None
+async def resolve_episode_playback_candidates(
+    episode_id: int,
+) -> tuple[list[VodPlaybackCandidate], VodCategoryEpisode | None]:
+    async with Session() as session:
+        result = await session.execute(
+            select(
+                VodCategoryEpisode,
+                VodCategoryEpisodeSource,
+                VodCategoryItemSource,
+                XcVodItem,
+                VodCategoryItem,
+                VodCategory,
+            )
+            .join(VodCategoryEpisodeSource, VodCategoryEpisodeSource.episode_id == VodCategoryEpisode.id)
+            .join(VodCategoryItemSource, VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id)
+            .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
+            .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .where(VodCategoryEpisode.id == int(episode_id))
+            .options(joinedload(XcVodItem.playlist), selectinload(VodCategory.xc_category_links))
+        )
+        rows = result.all()
+        if not rows:
+            return [], None
+        episode_row = rows[0][0]
+    candidate_rows = [
+        (source_link, source_item, group_item, group, episode_source)
+        for _episode, episode_source, source_link, source_item, group_item, group in rows
+    ]
+    candidates = await _build_playback_candidates(candidate_rows, VOD_KIND_SERIES)
+    for candidate in candidates:
+        candidate.episode = episode_row
+    return candidates, episode_row
+
+
+def _candidate_row_priority(row) -> int:
+    if len(row) == 5:
+        _source_link, source_item, _group_item, group, _episode_source = row
+    else:
+        _source_link, source_item, _group_item, group = row
+    priority_map = _vod_category_priority_map(getattr(group, "xc_category_links", None))
+    return int(priority_map.get(int(getattr(source_item, "category_id", 0) or 0), 0))
+
+
+def _ordered_playback_rows(rows) -> list:
+    ordered_rows = list(rows or [])
+    ordered_rows.sort(
+        key=lambda row: (
+            -_candidate_row_priority(row),
+            int(getattr(row[0], "id", 0) or 0),
+        )
+    )
+    return ordered_rows
+
+
+async def _build_playback_candidates(rows, item_type: str) -> list[VodPlaybackCandidate]:
+    candidates = []
     fallback = None
-    for row in rows:
+    for row in _ordered_playback_rows(rows):
         if len(row) == 5:
             source_link, source_item, group_item, group, episode_source = row
         else:
@@ -2353,30 +2573,29 @@ async def _select_playback_candidate(rows, item_type: str):
         if playlist is None:
             continue
         host_url, xc_account = await _select_account_for_playlist(playlist)
+        candidate = VodPlaybackCandidate(
+            group_item=group_item,
+            source_link=source_link,
+            source_item=source_item,
+            group=group,
+            content_type=item_type,
+            xc_account=xc_account,
+            host_url=host_url,
+            episode_source=episode_source,
+        )
         if host_url and xc_account is not None:
-            candidate = VodPlaybackCandidate(
-                group_item=group_item,
-                source_link=source_link,
-                source_item=source_item,
-                group=group,
-                content_type=item_type,
-                xc_account=xc_account,
-                host_url=host_url,
-                episode_source=episode_source,
-            )
-            return candidate
+            candidates.append(candidate)
+            continue
         if fallback is None:
-            fallback = VodPlaybackCandidate(
-                group_item=group_item,
-                source_link=source_link,
-                source_item=source_item,
-                group=group,
-                content_type=item_type,
-                xc_account=None,
-                host_url=None,
-                episode_source=episode_source,
-            )
-    return fallback
+            fallback = candidate
+    if candidates:
+        return candidates
+    return [fallback] if fallback is not None else []
+
+
+async def _select_playback_candidate(rows, item_type: str) -> VodPlaybackCandidate | None:
+    candidates = await _build_playback_candidates(rows, item_type)
+    return candidates[0] if candidates else None
 
 
 def resolve_vod_profile_id(candidate: VodPlaybackCandidate) -> str:
@@ -2401,7 +2620,7 @@ def resolve_vod_output_extension(candidate: VodPlaybackCandidate) -> str:
 
 async def build_upstream_playback_url(
     candidate: VodPlaybackCandidate, episode_mapping: VodCategoryEpisode | None = None
-):
+) -> str:
     host_url = clean_text(candidate.host_url)
     account = candidate.xc_account
     if not host_url or account is None:

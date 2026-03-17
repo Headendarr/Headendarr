@@ -338,6 +338,7 @@ class VodCategoryXcCategory(Base):
 
     category_id = Column(Integer, ForeignKey("vod_categories.id", ondelete="CASCADE"), nullable=False, index=True)
     xc_category_id = Column(Integer, ForeignKey("xc_vod_categories.id", ondelete="CASCADE"), nullable=False, index=True)
+    priority = Column(Integer, nullable=False, default=0, server_default="0")
     strip_title_prefixes = Column(Text, nullable=True)
     strip_title_suffixes = Column(Text, nullable=True)
 
@@ -513,7 +514,7 @@ class ChannelSource(Base):
     last_health_check_metrics = Column(Text, nullable=True, unique=False)
     stream_probe_at = Column(DateTime, nullable=True, unique=False)
     stream_probe_details = Column(Text, nullable=True, unique=False)
-    priority = Column(String(500), index=True, unique=False)
+    priority = Column(Integer, index=True, unique=False, nullable=False, default=0, server_default="0")
     tvh_uuid = Column(String(500), index=True, unique=False)
 
     channel = relationship("Channel", back_populates="sources")

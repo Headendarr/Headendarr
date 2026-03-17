@@ -1865,7 +1865,7 @@ async def update_channel(config, channel_id, data):
                             account_source.auto_update = bool(source_info.get("auto_update", False))
                             if account_source.id:
                                 new_source_ids.append(account_source.id)
-                            account_source.priority = str(priority)
+                            account_source.priority = int(priority)
                             priority -= 1
                             new_sources.append(account_source)
                         continue
@@ -2005,7 +2005,7 @@ async def update_channel(config, channel_id, data):
                                 break
                         channel_source.auto_update = bool(source_info.get("auto_update", False))
                 # Update source priority (higher means higher priority)
-                channel_source.priority = str(priority)
+                channel_source.priority = int(priority)
                 priority -= 1
                 # Append to list of new sources
                 new_sources.append(channel_source)
@@ -3338,18 +3338,11 @@ def candidate_urls(value: str | None) -> list[str]:
     return candidates
 
 
-def priority_rank(value: str | None) -> int:
-    try:
-        return int(str(value or "").strip())
-    except Exception:
-        return 1_000_000
-
-
 _SOURCE_INDEX_CACHE = {"index": None, "expires": 0}
 _SOURCE_INDEX_BUILD_LOCK = asyncio.Lock()
 
 
-def _build_stream_source_index_maps(rows, stream_rows):
+def _build_stream_source_index_maps(rows, stream_rows) -> dict[str, dict]:
     exact_map = {}
     tvh_uuid_map = {}
     name_map = {}
@@ -3368,7 +3361,7 @@ def _build_stream_source_index_maps(rows, stream_rows):
             "stream_url": stream_url,
             "priority": str(row.get("priority") or ""),
         }
-        p_rank = priority_rank(payload.get("priority"))
+        p_rank = convert_to_int(payload.get("priority"), 1_000_000)
         ranking = (0, p_rank)  # Default ranking for non-URL matches
 
         tvh_uuid = row.get("tvh_uuid")

@@ -901,6 +901,14 @@ class VodCacheManager:
         self.entries = {}
         self.lock = asyncio.Lock()
 
+    async def get(self, source: CsoSource):
+        key = _vod_cache_asset_key(source)
+        async with self.lock:
+            entry = self.entries.get(key)
+            if entry is not None:
+                entry.touch()
+            return entry
+
     async def get_or_create(self, source: CsoSource, upstream_url: str):
         key = _vod_cache_asset_key(source)
         async with self.lock:
@@ -6654,19 +6662,24 @@ async def subscribe_vod_proxy_stream(
     connection_id,
     request_headers=None,
     episode=None,
+    source_override=None,
 ):
     if not candidate or not candidate.group_item:
         return CsoStreamPlan(None, None, "VOD item not found", 404)
 
     item = candidate.group_item
-    source = await cso_source_from_vod_source(candidate, upstream_url)
+    source = source_override or await cso_source_from_vod_source(candidate, upstream_url)
     if not source:
         return CsoStreamPlan(None, None, "Source not found", 404)
 
     playlist = source.playlist
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return CsoStreamPlan(None, None, "Source playlist is disabled", 404)
+    local_cache_ready = False
     if not source.url:
+        entry = await vod_cache_manager.get_or_create(source, upstream_url or "")
+        local_cache_ready = bool(entry.complete and entry.final_path.exists())
+    if not source.url and not local_cache_ready:
         return CsoStreamPlan(None, None, "No available stream source", 503)
 
     session_key = f"vod-proxy-{source.id}-{connection_id}"
