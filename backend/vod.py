@@ -73,7 +73,7 @@ _FORCED_SAFE_VOD_PROFILE_BY_CONTAINER = {
 }
 _DEFAULT_UNSAFE_VOD_PROFILE = "matroska"
 _VOD_STRM_ROOT = Path(os.environ.get("LIBRARY_EXPORT_PATH", "/library"))
-_VOD_STRM_REGISTRY_FILE = ".headendarr-vod-registry.json"
+_VOD_STRM_REGISTRY_FILE = ".tic-vod-registry.json"
 
 
 @dataclass
