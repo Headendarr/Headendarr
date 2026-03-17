@@ -158,7 +158,25 @@
         <div class="col-12 col-lg-6">
           <q-card flat class="dashboard-card">
             <q-card-section>
-              <div class="text-subtitle1 text-primary">Storage Utilization</div>
+              <div class="text-subtitle1 text-primary">Storage Utilisation</div>
+              <div class="storage-legend text-grey-7 q-mt-sm">
+                <span class="storage-legend__item">
+                  <span class="storage-legend__swatch storage-legend__swatch--path" />
+                  Path data
+                </span>
+                <span class="storage-legend__item">
+                  <span class="storage-legend__swatch storage-legend__swatch--other" />
+                  Other disk use
+                </span>
+                <span class="storage-legend__item">
+                  <span class="storage-legend__swatch storage-legend__swatch--available" />
+                  Available
+                </span>
+                <span class="storage-legend__item">
+                  <span class="storage-legend__swatch storage-legend__swatch--reserved" />
+                  Reserved
+                </span>
+              </div>
             </q-card-section>
             <q-separator />
             <q-list separator>
@@ -167,16 +185,27 @@
                   <q-item-label>{{ item.label }}</q-item-label>
                   <q-item-label caption>{{ item.path || '-' }}</q-item-label>
                   <div v-if="item.exists" class="q-mt-sm">
-                    <q-linear-progress
-                      rounded
-                      size="10px"
-                      color="primary"
-                      track-color="grey-4"
-                      :value="utilizationRatio(item.used_bytes, item.total_bytes)"
-                    />
-                    <div class="text-caption text-grey-7 storage-utilization-text">
-                      Used {{ formatBytes(item.used_bytes) }} of {{ formatBytes(item.total_bytes) }}
-                      ({{ formatPercent(item.used_bytes, item.total_bytes) }})
+                    <div class="storage-bar">
+                      <div
+                        class="storage-bar__segment storage-bar__segment--path"
+                        :style="{width: formatRatio(item.path_data_bytes, item.total_bytes)}"
+                      />
+                      <div
+                        class="storage-bar__segment storage-bar__segment--other"
+                        :style="{width: formatRatio(item.other_used_bytes, item.total_bytes)}"
+                      />
+                      <div
+                        class="storage-bar__segment storage-bar__segment--available"
+                        :style="{width: formatRatio(item.available_bytes, item.total_bytes)}"
+                      />
+                      <div
+                        class="storage-bar__segment storage-bar__segment--reserved"
+                        :style="{width: formatRatio(item.reserved_bytes, item.total_bytes)}"
+                      />
+                    </div>
+                    <div class="text-caption text-grey-7 q-mt-sm storage-summary-line">
+                      Path data {{ formatBytes(item.path_data_bytes) }} | Available
+                      {{ formatBytes(item.available_bytes) }} of {{ formatBytes(item.total_bytes) }}
                     </div>
                   </div>
                   <q-item-label v-else caption class="text-warning q-mt-sm">Path unavailable</q-item-label>
@@ -334,21 +363,13 @@ export default defineComponent({
       }
       return `${amount.toFixed(amount >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
     },
-    formatPercent(used, total) {
+    formatRatio(used, total) {
       const u = Number(used || 0);
       const t = Number(total || 0);
       if (!t) {
         return '0%';
       }
-      return `${Math.min(100, Math.max(0, (u / t) * 100)).toFixed(1)}%`;
-    },
-    utilizationRatio(used, total) {
-      const u = Number(used || 0);
-      const t = Number(total || 0);
-      if (!t) {
-        return 0;
-      }
-      return Math.min(1, Math.max(0, u / t));
+      return `${Math.min(100, Math.max(0, (u / t) * 100))}%`;
     },
     activityAgeLabel(seconds) {
       const value = Math.max(0, Number(seconds || 0));
@@ -539,8 +560,75 @@ export default defineComponent({
   max-width: 100%;
 }
 
-.storage-utilization-text {
-  text-align: right;
+.storage-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--tic-elevated-border);
+}
+
+.storage-bar__segment {
+  height: 100%;
+}
+
+.storage-bar__segment--path {
+  background: var(--q-secondary);
+}
+
+.storage-bar__segment--other {
+  background: var(--q-primary);
+}
+
+.storage-bar__segment--available {
+  background: rgba(33, 186, 69, 0.75);
+}
+
+.storage-bar__segment--reserved {
+  background: rgba(243, 156, 18, 0.55);
+}
+
+.storage-summary-line {
+  line-height: 1.35;
+}
+
+.storage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 0.72rem;
+}
+
+.storage-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.2;
+}
+
+.storage-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.storage-legend__swatch--path {
+  background: var(--q-secondary);
+}
+
+.storage-legend__swatch--other {
+  background: var(--q-primary);
+}
+
+.storage-legend__swatch--available {
+  background: rgba(33, 186, 69, 0.75);
+}
+
+.storage-legend__swatch--reserved {
+  background: rgba(243, 156, 18, 0.55);
 }
 
 .channels-summary {

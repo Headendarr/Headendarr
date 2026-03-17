@@ -5,13 +5,13 @@ from __future__ import annotations
 import base64
 import asyncio
 import os
+import stat
 from pathlib import Path
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from quart import current_app, jsonify
 from sqlalchemy import select
 
-from backend import config as backend_config
 from backend.api import blueprint
 from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts, _fetch_cso_attention_map
 from backend.audit_view import build_device_label, serialize_audit_row
@@ -26,19 +26,78 @@ from backend.channels import (
 from backend.models import Channel, ChannelSource, Session, StreamAuditLog, User
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.config import Config
 
 _CHANNEL_ISSUE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}
 _CHANNEL_ISSUE_SUMMARY_CACHE_LOCK = asyncio.Lock()
+_STORAGE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}
+_STORAGE_SUMMARY_CACHE_LOCK = asyncio.Lock()
+
+def _measure_path_bytes(target: Path) -> int:
+    try:
+        stat_result = target.lstat()
+    except OSError:
+        return 0
+
+    if stat.S_ISREG(stat_result.st_mode):
+        blocks = getattr(stat_result, "st_blocks", None)
+        if isinstance(blocks, int) and blocks > 0:
+            return int(blocks * 512)
+        return int(stat_result.st_size)
+
+    if not stat.S_ISDIR(stat_result.st_mode):
+        return 0
+
+    total_bytes = 0
+    stack = [target]
+    seen_dirs: set[tuple[int, int]] = set()
+    seen_files: set[tuple[int, int]] = set()
+    while stack:
+        current = stack.pop()
+        try:
+            current_stat = current.lstat()
+        except OSError:
+            continue
+        current_key = (current_stat.st_dev, current_stat.st_ino)
+        if current_key in seen_dirs:
+            continue
+        seen_dirs.add(current_key)
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    entry_key = (entry_stat.st_dev, entry_stat.st_ino)
+                    if stat.S_ISDIR(entry_stat.st_mode):
+                        if entry_key not in seen_dirs:
+                            stack.append(Path(entry.path))
+                        continue
+                    if not stat.S_ISREG(entry_stat.st_mode) or entry_key in seen_files:
+                        continue
+                    seen_files.add(entry_key)
+                    blocks = getattr(entry_stat, "st_blocks", None)
+                    if isinstance(blocks, int) and blocks > 0:
+                        total_bytes += int(blocks * 512)
+                    else:
+                        total_bytes += int(entry_stat.st_size)
+        except OSError:
+            continue
+    return total_bytes
 
 
-def _path_usage(path: str, label: str):
+def _path_usage(path: str, label: str) -> dict[str, object]:
     payload = {
         "label": label,
         "path": path,
         "exists": False,
         "total_bytes": None,
-        "used_bytes": None,
-        "free_bytes": None,
+        "filesystem_used_bytes": None,
+        "available_bytes": None,
+        "path_data_bytes": None,
+        "other_used_bytes": None,
+        "reserved_bytes": None,
     }
     if not path:
         return payload
@@ -49,34 +108,49 @@ def _path_usage(path: str, label: str):
             return payload
         usage = os.statvfs(str(target))
         total = usage.f_blocks * usage.f_frsize
-        free = usage.f_bavail * usage.f_frsize
-        used = max(total - free, 0)
+        available = usage.f_bavail * usage.f_frsize
+        filesystem_used = max((usage.f_blocks - usage.f_bfree) * usage.f_frsize, 0)
+        path_data_bytes = _measure_path_bytes(target)
+        other_used_bytes = max(filesystem_used - path_data_bytes, 0)
+        reserved_bytes = max(total - filesystem_used - available, 0)
         payload["exists"] = True
         payload["total_bytes"] = int(total)
-        payload["used_bytes"] = int(used)
-        payload["free_bytes"] = int(free)
+        payload["filesystem_used_bytes"] = int(filesystem_used)
+        payload["available_bytes"] = int(available)
+        payload["path_data_bytes"] = int(path_data_bytes)
+        payload["other_used_bytes"] = int(other_used_bytes)
+        payload["reserved_bytes"] = int(reserved_bytes)
     except Exception:
         return payload
     return payload
 
 
-def _parse_db_path():
-    uri = backend_config.sqlalchemy_database_uri
-    if not uri.startswith("sqlite"):
-        return {"label": "Database", "uri": uri, "path": None}
-    # sqlite path forms:
-    # sqlite:////abs/path.db
-    # sqlite:///relative/path.db
-    raw = uri.replace("sqlite:///", "", 1)
-    raw = unquote(raw)
-    if raw.startswith("/"):
-        path = raw
-    else:
-        path = str((Path.cwd() / raw).resolve())
-    return {"label": "Database", "uri": uri, "path": path}
+def _build_storage_items(app_config: Config) -> list[dict[str, object]]:
+    return [
+        _path_usage(app_config.config_path, "Configuration"),
+        _path_usage(os.environ.get("TVH_RECORDINGS_PATH", "/recordings"), "Recordings"),
+        _path_usage(os.environ.get("TVH_TIMESHIFT_PATH", "/timeshift"), "Timeshift"),
+        _path_usage(os.environ.get("LIBRARY_EXPORT_PATH", "/library"), "Library"),
+    ]
 
 
-def _app_version_payload():
+async def _storage_summary_cached(app_config: Config) -> list[dict[str, object]]:
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    cached = _STORAGE_SUMMARY_CACHE.get("data")
+    if cached is not None and now < float(_STORAGE_SUMMARY_CACHE.get("expires_at") or 0.0):
+        return cached
+    async with _STORAGE_SUMMARY_CACHE_LOCK:
+        cached = _STORAGE_SUMMARY_CACHE.get("data")
+        if cached is not None and now < float(_STORAGE_SUMMARY_CACHE.get("expires_at") or 0.0):
+            return cached
+        data = await asyncio.to_thread(_build_storage_items, app_config)
+        _STORAGE_SUMMARY_CACHE["data"] = data
+        _STORAGE_SUMMARY_CACHE["expires_at"] = now + 15.0
+        return data
+
+
+def _app_version_payload() -> dict[str, str | None]:
     version = os.environ.get("APP_VERSION")
     git_sha = os.environ.get("GIT_SHA")
     if version:
@@ -92,7 +166,7 @@ def _app_version_payload():
         return {"version": None, "git_sha": git_sha}
 
 
-async def _recent_audit(limit: int = 10):
+async def _recent_audit(limit: int = 10) -> list[dict[str, object]]:
     stmt = (
         select(
             StreamAuditLog.id.label("id"),
@@ -117,7 +191,7 @@ async def _recent_audit(limit: int = 10):
     return [serialize_audit_row(dict(row)) for row in rows]
 
 
-async def _channel_issue_summary():
+async def _channel_issue_summary() -> dict[str, object]:
     config = current_app.config["APP_CONFIG"]
     channels = await read_config_all_channels(include_status=True)
     mux_map = None
@@ -175,9 +249,9 @@ async def _channel_issue_summary():
     }
 
 
-async def _channel_issue_summary_cached():
+async def _channel_issue_summary_cached() -> dict[str, object]:
     ttl_seconds = float(os.environ.get("DASHBOARD_CHANNEL_ISSUE_CACHE_TTL_SECONDS", "10") or 10)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     now = loop.time()
     cached = _CHANNEL_ISSUE_SUMMARY_CACHE.get("data")
     expires_at = _CHANNEL_ISSUE_SUMMARY_CACHE.get("expires_at", 0.0)
@@ -260,14 +334,7 @@ async def api_dashboard_activity():
 @admin_auth_required
 async def api_dashboard_summary():
     app_config = current_app.config["APP_CONFIG"]
-    db_info = _parse_db_path()
-    storage_items = [
-        _path_usage(app_config.config_path, "Configuration"),
-        _path_usage(os.environ.get("TVH_RECORDINGS_PATH", "/recordings"), "Recordings"),
-        _path_usage(os.environ.get("TVH_TIMESHIFT_PATH", "/timeshift"), "Timeshift"),
-    ]
-    if db_info.get("path"):
-        storage_items.append(_path_usage(db_info["path"], "Database"))
+    storage_items = await _storage_summary_cached(app_config)
 
     summary = {
         "version": _app_version_payload(),
