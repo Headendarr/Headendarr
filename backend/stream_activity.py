@@ -148,6 +148,20 @@ class StreamActivityTracker:
         return dict(new_hints)
 
     @staticmethod
+    def _prefer_metadata_value(current_value, new_value, placeholder_prefixes=None):
+        new_text = str(new_value or "").strip()
+        if not new_text:
+            return current_value
+        current_text = str(current_value or "").strip()
+        if not current_text:
+            return new_text
+        lowered = current_text.lower()
+        for prefix in (placeholder_prefixes or []):
+            if lowered.startswith(str(prefix).lower()):
+                return new_text
+        return current_value
+
+    @staticmethod
     def _apply_sticky_metadata(
         session,
         *,
@@ -166,16 +180,29 @@ class StreamActivityTracker:
     ):
         if channel_id and not session.get("channel_id"):
             session["channel_id"] = channel_id
-        if channel_name and not session.get("channel_name"):
-            session["channel_name"] = channel_name
-        if channel_logo_url and not session.get("channel_logo_url"):
-            session["channel_logo_url"] = channel_logo_url
-        if stream_name and not session.get("stream_name"):
-            session["stream_name"] = stream_name
-        if source_url and not session.get("source_url"):
-            session["source_url"] = source_url
-        if display_url and not session.get("display_url"):
-            session["display_url"] = display_url
+        session["channel_name"] = StreamActivityTracker._prefer_metadata_value(
+            session.get("channel_name"),
+            channel_name,
+            placeholder_prefixes=("/xc/", "/movie/", "/series/"),
+        )
+        session["channel_logo_url"] = StreamActivityTracker._prefer_metadata_value(
+            session.get("channel_logo_url"),
+            channel_logo_url,
+        )
+        session["stream_name"] = StreamActivityTracker._prefer_metadata_value(
+            session.get("stream_name"),
+            stream_name,
+            placeholder_prefixes=("/xc/", "/movie/", "/series/"),
+        )
+        session["source_url"] = StreamActivityTracker._prefer_metadata_value(
+            session.get("source_url"),
+            source_url,
+        )
+        session["display_url"] = StreamActivityTracker._prefer_metadata_value(
+            session.get("display_url"),
+            display_url,
+            placeholder_prefixes=("/xc/", "/movie/", "/series/"),
+        )
         if source_id and not session.get("source_id"):
             session["source_id"] = source_id
         if playlist_id and not session.get("playlist_id"):

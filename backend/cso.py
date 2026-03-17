@@ -16,6 +16,8 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import aiohttp
 import aiofiles
+import requests
+import urllib3
 from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
@@ -87,6 +89,10 @@ CSO_OUTPUT_SLATE_POLL_INTERVAL_SECONDS = 0.25
 CSO_OUTPUT_PIPE_POLL_INTERVAL_SECONDS = 0.25
 MPEGTS_PACKET_SIZE_BYTES = 188
 MPEGTS_CHUNK_BYTES = MPEGTS_PACKET_SIZE_BYTES * 87
+VOD_CACHE_ROOT = Path("/timeshift/vod")
+VOD_CACHE_TTL_SECONDS = 10 * 60
+VOD_CACHE_CHUNK_BYTES = 64 * 1024
+VOD_CACHE_METADATA_TIMEOUT_SECONDS = 10
 CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS = {
     "default": 10,
     "capacity_blocked": 10,
@@ -688,9 +694,18 @@ def _filter_vod_proxy_request_headers(request_headers, source: CsoSource):
         "upgrade",
         "content-length",
     }
-    for key, value in (request_headers or {}).items():
+    allowed_passthrough = {"range", "if-range"}
+    for key, value in (_resolve_cso_ingest_headers(source) or {}).items():
         key_name = str(key or "").strip()
         if not key_name or clean_key(key_name) in hop_by_hop:
+            continue
+        text_value = clean_text(value)
+        if text_value:
+            headers[key_name] = text_value
+    for key, value in (request_headers or {}).items():
+        key_name = str(key or "").strip()
+        lowered = clean_key(key_name)
+        if not key_name or lowered in hop_by_hop or lowered not in allowed_passthrough:
             continue
         headers[key_name] = str(value or "")
     user_agent = _resolve_cso_ingest_user_agent(None, source)
@@ -749,6 +764,529 @@ def _proxy_response_headers(status_code, upstream_headers, request_headers=None)
 
     return headers
 
+def _parse_range_request(range_header: str | None, total_size: int | None = None):
+    text = clean_text(range_header)
+    if not text or not text.lower().startswith("bytes="):
+        return None
+    spec = text[6:].strip()
+    if "," in spec or "-" not in spec:
+        return None
+    start_text, end_text = spec.split("-", 1)
+    start = None
+    end = None
+    if start_text.strip():
+        if not start_text.strip().isdigit():
+            return None
+        start = int(start_text.strip())
+    if end_text.strip():
+        if not end_text.strip().isdigit():
+            return None
+        end = int(end_text.strip())
+    if total_size is not None:
+        if start is None:
+            suffix = int(end or 0)
+            if suffix <= 0:
+                return None
+            if suffix >= total_size:
+                start = 0
+            else:
+                start = max(0, total_size - suffix)
+            end = max(0, total_size - 1)
+        else:
+            if start >= total_size:
+                return {"unsatisfied": True, "start": start, "end": None}
+            if end is None or end >= total_size:
+                end = total_size - 1
+        if end is not None and start is not None and end < start:
+            return None
+    return {"start": start, "end": end, "raw": text}
+
+
+def _is_from_start_request(request_headers=None):
+    parsed = _parse_range_request(_header_value(request_headers, "Range"))
+    if parsed is None:
+        return True
+    start = parsed.get("start")
+    return start in {None, 0}
+
+
+def _vod_cache_asset_parts(source: CsoSource):
+    source_type = clean_key(getattr(source, "source_type", ""))
+    internal_id = int(getattr(source, "internal_id", 0) or 0)
+    if source_type == "vod_episode":
+        return "episode", internal_id
+    return "movie", internal_id
+
+
+def _vod_cache_asset_key(source: CsoSource):
+    asset_kind, internal_id = _vod_cache_asset_parts(source)
+    return f"{asset_kind}:{internal_id}"
+
+
+def _vod_cache_paths(source: CsoSource):
+    asset_kind, internal_id = _vod_cache_asset_parts(source)
+    final_path = VOD_CACHE_ROOT / asset_kind / str(internal_id)
+    return final_path, final_path.with_name(f"{final_path.name}.part")
+
+
+def _vod_content_type_for_source(source: CsoSource):
+    extension = clean_key(getattr(source, "container_extension", ""))
+    if extension:
+        return CONTAINER_TO_CONTENT_TYPE.get(extension)
+    return None
+
+
+def _build_vod_local_response_headers(total_size: int, metadata_headers=None, start=0, end=None, include_length=True):
+    headers = {}
+    meta = dict(metadata_headers or {})
+    for key in ("Content-Type", "Cache-Control", "Content-Disposition", "ETag", "Last-Modified"):
+        value = clean_text(meta.get(key))
+        if value:
+            headers[key] = value
+    headers["Accept-Ranges"] = "bytes"
+    if end is None:
+        end = max(0, int(total_size or 0) - 1)
+    if include_length:
+        headers["Content-Length"] = str(max(0, int(end) - int(start) + 1))
+    if start > 0 or end < max(0, int(total_size or 0) - 1):
+        headers["Content-Range"] = f"bytes {int(start)}-{int(end)}/{int(total_size)}"
+    return headers
+
+
+@dataclass
+class VodCacheEntry:
+    key: str
+    source: CsoSource
+    upstream_url: str
+    final_path: Path
+    part_path: Path
+    expected_size: int | None = None
+    bytes_written: int = 0
+    complete: bool = False
+    failed_reason: str | None = None
+    metadata_headers: dict | None = None
+    content_type: str | None = None
+    last_access_ts: float = 0.0
+    active_sessions: int = 0
+    active_readers: int = 0
+    downloader_owner_key: str | None = None
+    download_task: asyncio.Task | None = None
+    probe_lock: asyncio.Lock | None = None
+    state_lock: asyncio.Lock | None = None
+    ready_event: asyncio.Event | None = None
+    progress_event: asyncio.Event | None = None
+
+    def __post_init__(self):
+        if self.probe_lock is None:
+            self.probe_lock = asyncio.Lock()
+        if self.state_lock is None:
+            self.state_lock = asyncio.Lock()
+        if self.ready_event is None:
+            self.ready_event = asyncio.Event()
+        if self.progress_event is None:
+            self.progress_event = asyncio.Event()
+        if not self.last_access_ts:
+            self.last_access_ts = time.time()
+
+    def touch(self):
+        self.last_access_ts = time.time()
+
+    @property
+    def downloader_running(self):
+        return self.download_task is not None and not self.download_task.done()
+
+
+class VodCacheManager:
+    def __init__(self):
+        self.entries = {}
+        self.lock = asyncio.Lock()
+
+    async def get_or_create(self, source: CsoSource, upstream_url: str):
+        key = _vod_cache_asset_key(source)
+        async with self.lock:
+            entry = self.entries.get(key)
+            if entry is None:
+                final_path, part_path = _vod_cache_paths(source)
+                entry = VodCacheEntry(
+                    key=key,
+                    source=source,
+                    upstream_url=clean_text(upstream_url),
+                    final_path=final_path,
+                    part_path=part_path,
+                )
+                self.entries[key] = entry
+            else:
+                entry.upstream_url = clean_text(upstream_url) or entry.upstream_url
+                entry.source = source
+                if entry.complete and entry.final_path.exists() and not entry.expected_size:
+                    try:
+                        entry.expected_size = int(entry.final_path.stat().st_size or 0)
+                    except Exception:
+                        entry.expected_size = None
+            if entry.complete and not entry.content_type:
+                entry.content_type = _vod_content_type_for_source(source)
+            entry.touch()
+            return entry
+
+    async def import_existing_files(self):
+        now_ts = time.time()
+        imported = 0
+        removed_parts = 0
+        async with self.lock:
+            for asset_kind in ("movie", "episode"):
+                asset_dir = VOD_CACHE_ROOT / asset_kind
+                if not asset_dir.exists() or not asset_dir.is_dir():
+                    continue
+                for path in sorted(asset_dir.iterdir()):
+                    if not path.is_file():
+                        continue
+                    if path.suffix == ".part":
+                        try:
+                            path.unlink(missing_ok=True)
+                            removed_parts += 1
+                        except Exception:
+                            logger.warning("Failed to remove orphaned VOD cache part file path=%s", path)
+                        continue
+                    file_name = clean_text(path.name)
+                    if not file_name.isdigit():
+                        continue
+                    internal_id = int(file_name)
+                    key = f"{asset_kind}:{internal_id}"
+                    expected_size = 0
+                    try:
+                        expected_size = int(path.stat().st_size or 0)
+                    except Exception:
+                        expected_size = 0
+                    if expected_size <= 0:
+                        continue
+                    source_type = "vod_movie" if asset_kind == "movie" else "vod_episode"
+                    source = CsoSource(
+                        id=internal_id,
+                        source_type=source_type,
+                        url="",
+                        playlist_id=0,
+                        internal_id=internal_id,
+                    )
+                    entry = self.entries.get(key)
+                    if entry is None:
+                        entry = VodCacheEntry(
+                            key=key,
+                            source=source,
+                            upstream_url="",
+                            final_path=path,
+                            part_path=path.with_name(f"{path.name}.part"),
+                        )
+                        self.entries[key] = entry
+                    else:
+                        entry.source = source
+                        entry.final_path = path
+                        entry.part_path = path.with_name(f"{path.name}.part")
+                    entry.expected_size = expected_size
+                    entry.bytes_written = expected_size
+                    entry.complete = True
+                    entry.failed_reason = None
+                    entry.metadata_headers = entry.metadata_headers or {}
+                    entry.content_type = entry.content_type or _vod_content_type_for_source(source)
+                    entry.last_access_ts = now_ts
+                    imported += 1
+        if imported or removed_parts:
+            logger.info(
+                "Imported existing VOD cache files imported=%s removed_orphan_parts=%s root=%s",
+                imported,
+                removed_parts,
+                VOD_CACHE_ROOT,
+            )
+        return {"imported": imported, "removed_orphan_parts": removed_parts}
+
+    async def attach_session(self, entry: VodCacheEntry):
+        async with entry.state_lock:
+            entry.active_sessions = int(entry.active_sessions or 0) + 1
+            entry.touch()
+
+    async def detach_session(self, entry: VodCacheEntry):
+        task_to_cancel = None
+        async with entry.state_lock:
+            entry.active_sessions = max(0, int(entry.active_sessions or 0) - 1)
+            entry.touch()
+            if (
+                int(entry.active_sessions or 0) <= 0
+                and int(entry.active_readers or 0) <= 0
+                and not entry.complete
+                and entry.download_task is not None
+                and not entry.download_task.done()
+            ):
+                task_to_cancel = entry.download_task
+        if task_to_cancel is None:
+            return
+        task_to_cancel.cancel()
+        try:
+            await task_to_cancel
+        except BaseException:
+            pass
+        async with entry.state_lock:
+            entry.bytes_written = 0
+            entry.failed_reason = "cancelled_no_clients"
+            entry.ready_event.set()
+            entry.progress_event.set()
+        if entry.part_path.exists():
+            await asyncio.to_thread(entry.part_path.unlink, True)
+
+    async def cleanup(self, idle_seconds=VOD_CACHE_TTL_SECONDS):
+        now_ts = time.time()
+        async with self.lock:
+            entries = list(self.entries.values())
+        removed = 0
+        for entry in entries:
+            if entry.downloader_running or entry.active_readers > 0 or entry.active_sessions > 0:
+                continue
+            if (now_ts - float(entry.last_access_ts or 0)) < max(30, int(idle_seconds or 0)):
+                continue
+            await self._remove_entry(entry)
+            removed += 1
+        return removed
+
+    async def _remove_entry(self, entry: VodCacheEntry):
+        async with entry.state_lock:
+            task = entry.download_task
+            entry.download_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        if entry.final_path.exists():
+            await asyncio.to_thread(entry.final_path.unlink, True)
+        if entry.part_path.exists():
+            await asyncio.to_thread(entry.part_path.unlink, True)
+        async with self.lock:
+            current = self.entries.get(entry.key)
+            if current is entry:
+                self.entries.pop(entry.key, None)
+
+
+vod_cache_manager = VodCacheManager()
+
+
+async def _probe_vod_cache_metadata(source: CsoSource, upstream_url: str, request_headers=None):
+    headers = _filter_vod_proxy_request_headers(request_headers, source)
+    headers.pop("Range", None)
+    timeout = aiohttp.ClientTimeout(total=VOD_CACHE_METADATA_TIMEOUT_SECONDS, connect=10, sock_connect=10, sock_read=10)
+    async with aiohttp.ClientSession(timeout=timeout, auto_decompress=False) as session:
+        try:
+            response = await session.request("HEAD", upstream_url, headers=headers, allow_redirects=True)
+            try:
+                if int(response.status or 0) == 200:
+                    size_header = clean_text(response.headers.get("Content-Length"))
+                    if size_header.isdigit():
+                        return {
+                            "size": int(size_header),
+                            "headers": dict(response.headers),
+                            "status": int(response.status or 200),
+                        }
+            finally:
+                await response.release()
+        except Exception as exc:
+            logger.info(
+                "VOD cache metadata HEAD probe failed source_id=%s upstream_url=%s error=%s",
+                getattr(source, "id", None),
+                upstream_url,
+                exc,
+            )
+        response = await session.get(
+            upstream_url,
+            headers={**headers, "Range": "bytes=0-0"},
+            allow_redirects=True,
+        )
+        try:
+            content_range = clean_text(response.headers.get("Content-Range"))
+            total_size = None
+            if "/" in content_range:
+                tail = content_range.rsplit("/", 1)[-1].strip()
+                if tail.isdigit():
+                    total_size = int(tail)
+            if total_size:
+                return {
+                    "size": int(total_size),
+                    "headers": dict(response.headers),
+                    "status": int(response.status or 206),
+                }
+        finally:
+            await response.release()
+    return {"size": None, "headers": {}, "status": 0}
+
+
+async def _vod_cache_has_space(required_bytes: int):
+    if required_bytes <= 0:
+        return False
+    usage = await asyncio.to_thread(shutil.disk_usage, str(VOD_CACHE_ROOT.parent))
+    return int(usage.free or 0) >= int(required_bytes)
+
+
+async def _ensure_vod_cache_ready(
+    entry: VodCacheEntry,
+    request_headers=None,
+    require_size=False,
+):
+    async with entry.probe_lock:
+        entry.touch()
+        if entry.complete and entry.final_path.exists() and entry.expected_size:
+            return {
+                "cacheable": True,
+                "size_known": True,
+                "expected_size": int(entry.expected_size),
+                "complete": True,
+            }
+        if entry.expected_size and entry.metadata_headers is not None:
+            return {
+                "cacheable": True,
+                "size_known": True,
+                "expected_size": int(entry.expected_size),
+                "complete": False,
+            }
+        probe = await _probe_vod_cache_metadata(entry.source, entry.upstream_url, request_headers=request_headers)
+        expected_size = int(probe.get("size") or 0)
+        if expected_size <= 0:
+            entry.failed_reason = "size_unknown"
+            if require_size:
+                return {
+                    "cacheable": False,
+                    "size_known": False,
+                    "expected_size": None,
+                    "reason": "size_unknown",
+                }
+            return {
+                "cacheable": False,
+                "size_known": False,
+                "expected_size": None,
+                "reason": "size_unknown",
+            }
+        has_space = await _vod_cache_has_space(expected_size * 2)
+        if not has_space:
+            entry.failed_reason = "insufficient_space"
+            return {
+                "cacheable": False,
+                "size_known": True,
+                "expected_size": expected_size,
+                "reason": "insufficient_space",
+            }
+        entry.expected_size = expected_size
+        entry.metadata_headers = _proxy_response_headers(int(probe.get("status") or 200), probe.get("headers") or {})
+        entry.content_type = clean_text(_header_value(probe.get("headers") or {}, "Content-Type")) or None
+        return {
+            "cacheable": True,
+            "size_known": True,
+            "expected_size": expected_size,
+            "complete": False,
+        }
+
+
+async def _start_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_headers=None):
+    async with entry.state_lock:
+        if entry.complete:
+            return True
+        if entry.downloader_running:
+            return True
+        if not entry.expected_size:
+            return False
+        reserved = await cso_capacity_registry.try_reserve(
+            source_capacity_key(entry.source),
+            owner_key,
+            source_capacity_limit(entry.source),
+            slot_id=owner_key,
+        )
+        if not reserved:
+            entry.failed_reason = "capacity_blocked"
+            return False
+        entry.downloader_owner_key = owner_key
+        entry.failed_reason = None
+        entry.ready_event.clear()
+        entry.progress_event.clear()
+        entry.download_task = asyncio.create_task(
+            _run_vod_cache_download(entry, owner_key, request_headers=request_headers),
+            name=f"vod-cache-{entry.key}",
+        )
+        return True
+
+
+async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_headers=None):
+    headers = _filter_vod_proxy_request_headers(request_headers, entry.source)
+    headers["Range"] = "bytes=0-"
+    await asyncio.to_thread(entry.part_path.parent.mkdir, 0o755, True, True)
+    http_session = None
+    response = None
+    iterator = None
+    try:
+        if entry.part_path.exists():
+            await asyncio.to_thread(entry.part_path.unlink, True)
+        http_session = requests.Session()
+        response = await asyncio.to_thread(
+            lambda: http_session.get(
+                entry.upstream_url,
+                headers=headers,
+                allow_redirects=True,
+                stream=True,
+                timeout=(15, 30),
+            )
+        )
+        status_code = int(response.status_code or 502)
+        if status_code >= 400:
+            entry.failed_reason = f"download_status_{status_code}"
+            entry.ready_event.set()
+            return
+        entry.metadata_headers = _proxy_response_headers(status_code, response.headers)
+        entry.content_type = clean_text(response.headers.get("Content-Type")) or entry.content_type
+        size_header = clean_text(response.headers.get("Content-Length"))
+        if not entry.expected_size and size_header.isdigit():
+            entry.expected_size = int(size_header)
+        entry.ready_event.set()
+        bytes_written = 0
+        iterator = response.iter_content(chunk_size=VOD_CACHE_CHUNK_BYTES)
+        async with aiofiles.open(entry.part_path, "wb") as handle:
+            while True:
+                chunk = await asyncio.to_thread(next, iterator, None)
+                if not chunk:
+                    break
+                await handle.write(chunk)
+                bytes_written += len(chunk)
+                entry.bytes_written = bytes_written
+                entry.touch()
+                entry.progress_event.set()
+                entry.progress_event = asyncio.Event()
+            await handle.flush()
+        if entry.expected_size and bytes_written >= entry.expected_size:
+            await asyncio.to_thread(os.replace, entry.part_path, entry.final_path)
+            entry.complete = True
+            entry.bytes_written = bytes_written
+            entry.failed_reason = None
+            logger.info("VOD cache completed asset=%s bytes=%s path=%s", entry.key, bytes_written, entry.final_path)
+        else:
+            entry.failed_reason = "download_incomplete"
+        entry.touch()
+    except asyncio.CancelledError:
+        entry.failed_reason = "cancelled"
+        raise
+    except Exception as exc:
+        entry.failed_reason = f"download_failed:{exc}"
+        logger.warning("VOD cache download failed asset=%s error=%s", entry.key, exc)
+    finally:
+        entry.ready_event.set()
+        entry.progress_event.set()
+        try:
+            if response is not None:
+                await asyncio.to_thread(response.close)
+        except Exception:
+            pass
+        try:
+            if http_session is not None:
+                await asyncio.to_thread(http_session.close)
+        except Exception:
+            pass
+        await cso_capacity_registry.release(source_capacity_key(entry.source), owner_key, slot_id=owner_key)
+        async with entry.state_lock:
+            entry.downloader_owner_key = None
+            entry.download_task = None
+
 
 class VodProxySession:
     def __init__(self, key, source: CsoSource, upstream_url: str, request_headers=None):
@@ -759,6 +1297,9 @@ class VodProxySession:
         self.timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_connect=15, sock_read=None)
         self.http_session = None
         self.response = None
+        self.blocking_session = None
+        self.blocking_response = None
+        self.blocking_iterator = None
         self.running = False
         self.capacity_key = source_capacity_key(source)
         self.capacity_limit = source_capacity_limit(source)
@@ -769,34 +1310,152 @@ class VodProxySession:
         self.last_error = None
         self.lock = asyncio.Lock()
         self.first_chunk_logged = False
+        self.cache_entry = None
+        self.local_only = False
+        self.local_start = 0
+        self.local_end = None
+        self.local_size = None
+        self.direct_owner_key = f"{self.key}:direct"
+        self.cache_owner_key = f"{self.key}:cache"
+        self.cache_session_attached = False
+        self.direct_next_offset = 0
+        self.requested_end = None
+        self.direct_retry_attempts = 0
+        self.max_direct_retry_attempts = 1
 
     async def start(self):
         startup_failed = False
         async with self.lock:
             if self.running:
                 return True
-            reserved = await cso_capacity_registry.try_reserve(
-                self.capacity_key,
-                self.owner_key,
-                self.capacity_limit,
-                slot_id=self.key,
-            )
-            if not reserved:
-                self.last_error = "capacity_blocked"
-                return False
             try:
                 range_header = _header_value(self.request_headers, "Range")
-                self.http_session = aiohttp.ClientSession(timeout=self.timeout, auto_decompress=False)
-                self.response = await self.http_session.get(
-                    self.upstream_url,
-                    headers=_filter_vod_proxy_request_headers(self.request_headers, self.source),
-                    allow_redirects=True,
+                self.cache_entry = await vod_cache_manager.get_or_create(self.source, self.upstream_url)
+                await vod_cache_manager.attach_session(self.cache_entry)
+                self.cache_session_attached = True
+                self.cache_entry.touch()
+                cache_meta = await _ensure_vod_cache_ready(self.cache_entry, request_headers=self.request_headers)
+                from_start = _is_from_start_request(self.request_headers)
+                parsed_range = _parse_range_request(range_header, total_size=self.cache_entry.expected_size)
+                self.direct_next_offset = int(parsed_range.get("start") or 0) if parsed_range else 0
+                self.requested_end = int(parsed_range.get("end")) if parsed_range and parsed_range.get("end") is not None else None
+
+                if self.cache_entry.complete and self.cache_entry.expected_size:
+                    self.local_only = True
+                    self.local_size = int(self.cache_entry.expected_size)
+                    if parsed_range and parsed_range.get("unsatisfied"):
+                        self.status_code = 416
+                        self.content_type = self.cache_entry.content_type
+                        self.response_headers = _build_vod_local_response_headers(
+                            self.local_size,
+                            metadata_headers=self.cache_entry.metadata_headers,
+                            start=0,
+                            end=max(0, self.local_size - 1),
+                            include_length=False,
+                        )
+                        self.response_headers["Content-Range"] = f"bytes */{self.local_size}"
+                    else:
+                        start = int(parsed_range.get("start") or 0) if parsed_range else 0
+                        end = (
+                            int(parsed_range.get("end"))
+                            if parsed_range and parsed_range.get("end") is not None
+                            else max(0, self.local_size - 1)
+                        )
+                        self.local_start = start
+                        self.local_end = end
+                        self.status_code = 206 if parsed_range else 200
+                        self.content_type = self.cache_entry.content_type
+                        self.response_headers = _build_vod_local_response_headers(
+                            self.local_size,
+                            metadata_headers=self.cache_entry.metadata_headers,
+                            start=start,
+                            end=end,
+                        )
+                    self.running = True
+                    logger.info(
+                        "VOD proxy session serving local cache key=%s source_id=%s range=%s path=%s",
+                        self.key,
+                        getattr(self.source, "id", None),
+                        range_header or None,
+                        self.cache_entry.final_path,
+                    )
+                    return True
+
+                if from_start and cache_meta.get("cacheable") and self.cache_entry.expected_size:
+                    started_cache = await _start_vod_cache_download(
+                        self.cache_entry,
+                        self.cache_owner_key,
+                        request_headers=self.request_headers,
+                    )
+                    if started_cache:
+                        await asyncio.wait_for(self.cache_entry.ready_event.wait(), timeout=15)
+                        if self.cache_entry.failed_reason and not self.cache_entry.complete:
+                            logger.warning(
+                                "VOD cache start failed; falling back to direct proxy key=%s source_id=%s reason=%s",
+                                self.key,
+                                getattr(self.source, "id", None),
+                                self.cache_entry.failed_reason,
+                            )
+                        else:
+                            self.local_only = True
+                            self.local_start = 0
+                            self.local_end = max(0, int(self.cache_entry.expected_size or 0) - 1)
+                            self.local_size = int(self.cache_entry.expected_size or 0)
+                            self.status_code = 200
+                            self.content_type = self.cache_entry.content_type
+                            self.response_headers = _build_vod_local_response_headers(
+                                self.local_size,
+                                metadata_headers=self.cache_entry.metadata_headers,
+                                start=0,
+                                end=self.local_end,
+                            )
+                            self.running = True
+                            logger.info(
+                                "VOD proxy session started local-tail key=%s source_id=%s status=%s content_type=%s upstream_url=%s",
+                                self.key,
+                                getattr(self.source, "id", None),
+                                self.status_code,
+                                self.content_type,
+                                self.upstream_url,
+                            )
+                            return True
+                    else:
+                        logger.warning(
+                            "VOD cache downloader unavailable for start-of-file playback key=%s source_id=%s reason=%s",
+                            self.key,
+                            getattr(self.source, "id", None),
+                            self.cache_entry.failed_reason,
+                        )
+
+                reserved = await cso_capacity_registry.try_reserve(
+                    self.capacity_key,
+                    self.owner_key,
+                    self.capacity_limit,
+                    slot_id=self.direct_owner_key,
                 )
-                self.status_code = int(self.response.status or 502)
-                self.content_type = clean_text(self.response.headers.get("Content-Type")) or None
+                if not reserved:
+                    self.last_error = "capacity_blocked"
+                    return False
+
+                proxy_headers = _filter_vod_proxy_request_headers(self.request_headers, self.source)
+                if not _header_value(proxy_headers, "Range"):
+                    proxy_headers["Range"] = "bytes=0-"
+                self.blocking_session = requests.Session()
+                self.blocking_response = await asyncio.to_thread(
+                    lambda: self.blocking_session.get(
+                        self.upstream_url,
+                        headers=proxy_headers,
+                        allow_redirects=True,
+                        stream=True,
+                        timeout=(15, 30),
+                    )
+                )
+                self.blocking_iterator = self.blocking_response.iter_content(chunk_size=64 * 1024)
+                self.status_code = int(self.blocking_response.status_code or 502)
+                self.content_type = clean_text(self.blocking_response.headers.get("Content-Type")) or None
                 self.response_headers = _proxy_response_headers(
                     self.status_code,
-                    self.response.headers,
+                    self.blocking_response.headers,
                     request_headers=self.request_headers,
                 )
                 self.running = True
@@ -807,24 +1466,154 @@ class VodProxySession:
                     self.status_code,
                     range_header or None,
                     self.content_type,
-                    clean_text(self.response.headers.get("Content-Range")) or None,
-                    clean_text(self.response.headers.get("Accept-Ranges")) or None,
+                    clean_text(self.blocking_response.headers.get("Content-Range")) or None,
+                    clean_text(self.blocking_response.headers.get("Accept-Ranges")) or None,
                     self.upstream_url,
                 )
+                if not from_start and cache_meta.get("cacheable") and self.cache_entry and not self.cache_entry.downloader_running:
+                    await _start_vod_cache_download(
+                        self.cache_entry,
+                        self.cache_owner_key,
+                        request_headers=self.request_headers,
+                    )
                 return True
             except Exception as exc:
                 self.last_error = f"proxy_start_failed:{exc}"
+                logger.warning(
+                    "VOD proxy session failed to start key=%s source_id=%s error=%s",
+                    self.key,
+                    getattr(self.source, "id", None),
+                    exc,
+                )
                 startup_failed = True
         if startup_failed:
             await self.stop(force=True)
         return False
 
+    async def _close_direct_upstream(self):
+        blocking_response = self.blocking_response
+        self.blocking_response = None
+        blocking_session = self.blocking_session
+        self.blocking_session = None
+        self.blocking_iterator = None
+        try:
+            if blocking_response is not None:
+                await asyncio.to_thread(blocking_response.close)
+        except Exception:
+            pass
+        try:
+            if blocking_session is not None:
+                await asyncio.to_thread(blocking_session.close)
+        except Exception:
+            pass
+
+    async def _switch_to_local_from_offset(self, offset: int):
+        entry = self.cache_entry
+        if entry is None:
+            return False
+        current_written = int(entry.expected_size or 0) if entry.complete else int(entry.bytes_written or 0)
+        if not entry.complete and current_written <= int(offset):
+            return False
+        self.local_only = True
+        self.local_start = int(offset)
+        self.local_end = self.requested_end
+        if entry.complete and entry.expected_size:
+            self.local_size = int(entry.expected_size)
+        await self._close_direct_upstream()
+        logger.info(
+            "VOD proxy session switched to local cache key=%s source_id=%s offset=%s complete=%s",
+            self.key,
+            getattr(self.source, "id", None),
+            int(offset),
+            bool(entry.complete),
+        )
+        return True
+
+    async def _retry_direct_upstream_from_offset(self, offset: int):
+        if self.direct_retry_attempts >= self.max_direct_retry_attempts:
+            return False
+        proxy_headers = _filter_vod_proxy_request_headers(self.request_headers, self.source)
+        proxy_headers["Range"] = f"bytes={max(0, int(offset))}-"
+        await self._close_direct_upstream()
+        session = requests.Session()
+        try:
+            response = await asyncio.to_thread(
+                lambda: session.get(
+                    self.upstream_url,
+                    headers=proxy_headers,
+                    allow_redirects=True,
+                    stream=True,
+                    timeout=(15, 30),
+                )
+            )
+        except Exception:
+            try:
+                await asyncio.to_thread(session.close)
+            except Exception:
+                pass
+            raise
+        status_code = int(response.status_code or 502)
+        if status_code >= 400:
+            try:
+                await asyncio.to_thread(response.close)
+            except Exception:
+                pass
+            try:
+                await asyncio.to_thread(session.close)
+            except Exception:
+                pass
+            self.last_error = f"proxy_retry_status_{status_code}"
+            return False
+        self.blocking_session = session
+        self.blocking_response = response
+        self.blocking_iterator = response.iter_content(chunk_size=64 * 1024)
+        self.direct_retry_attempts += 1
+        logger.warning(
+            "VOD proxy upstream retry key=%s source_id=%s offset=%s status=%s attempt=%s",
+            self.key,
+            getattr(self.source, "id", None),
+            int(offset),
+            status_code,
+            self.direct_retry_attempts,
+        )
+        return True
+
     async def iter_bytes(self):
         try:
-            if self.response is None:
+            if self.local_only and self.cache_entry is not None:
+                async for chunk in self._iter_local_bytes():
+                    yield chunk
                 return
-            async for chunk in self.response.content.iter_chunked(64 * 1024):
+            if self.blocking_response is None:
+                return
+            while True:
                 if not self.running:
+                    break 
+                try:
+                    chunk = await asyncio.to_thread(next, self.blocking_iterator, None)
+                except (
+                    requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.ConnectionError,
+                    urllib3.exceptions.ProtocolError,
+                    ConnectionResetError,
+                ) as exc:
+                    if not self.running:
+                        break
+                    logger.warning(
+                        "VOD proxy upstream read interrupted key=%s source_id=%s offset=%s error=%s",
+                        self.key,
+                        getattr(self.source, "id", None),
+                        int(self.direct_next_offset),
+                        exc,
+                    )
+                    if await self._switch_to_local_from_offset(self.direct_next_offset):
+                        async for local_chunk in self._iter_local_bytes():
+                            yield local_chunk
+                        return
+                    retried = await self._retry_direct_upstream_from_offset(self.direct_next_offset)
+                    if retried:
+                        continue
+                    self.last_error = f"proxy_read_failed:{exc}"
                     break
                 if chunk:
                     if not self.first_chunk_logged:
@@ -836,19 +1625,101 @@ class VodProxySession:
                             self.status_code,
                         )
                         self.first_chunk_logged = True
+                    self.direct_next_offset += len(chunk)
                     yield chunk
+                else:
+                    break
         finally:
             await self.stop(force=True)
 
+    async def _iter_local_bytes(self):
+        entry = self.cache_entry
+        if entry is None:
+            return
+        if self.status_code == 416:
+            return
+        entry.active_readers += 1
+        entry.touch()
+        target_path = entry.final_path if entry.complete and entry.final_path.exists() else entry.part_path
+        offset = int(self.local_start or 0)
+        final_end = int(self.local_end) if self.local_end is not None else None
+        try:
+            while self.running:
+                current_written = int(entry.expected_size or 0) if entry.complete else int(entry.bytes_written or 0)
+                if final_end is not None and offset > final_end:
+                    break
+                if offset >= current_written and not entry.complete:
+                    if entry.failed_reason and not entry.downloader_running:
+                        break
+                    await entry.progress_event.wait()
+                    continue
+                available_end = current_written - 1
+                if final_end is not None:
+                    available_end = min(available_end, final_end)
+                if available_end < offset:
+                    if entry.complete:
+                        break
+                    if entry.failed_reason and not entry.downloader_running:
+                        break
+                    await entry.progress_event.wait()
+                    continue
+                if not target_path.exists():
+                    target_path = entry.final_path if entry.complete and entry.final_path.exists() else entry.part_path
+                async with aiofiles.open(target_path, "rb") as handle:
+                    await handle.seek(offset)
+                    while self.running:
+                        current_written = int(entry.expected_size or 0) if entry.complete else int(entry.bytes_written or 0)
+                        max_end = current_written - 1
+                        if final_end is not None:
+                            max_end = min(max_end, final_end)
+                        remaining = max_end - offset + 1
+                        if remaining <= 0:
+                            break
+                        chunk = await handle.read(min(VOD_CACHE_CHUNK_BYTES, remaining))
+                        if not chunk:
+                            break
+                        if not self.first_chunk_logged:
+                            logger.info(
+                                "VOD proxy first local chunk key=%s source_id=%s bytes=%s status=%s",
+                                self.key,
+                                getattr(self.source, "id", None),
+                                len(chunk),
+                                self.status_code,
+                            )
+                            self.first_chunk_logged = True
+                        offset += len(chunk)
+                        entry.touch()
+                        yield chunk
+                        if final_end is not None and offset > final_end:
+                            return
+                        if not self.running:
+                            return
+                if entry.complete and offset >= int(entry.expected_size or 0):
+                    break
+        finally:
+            entry.active_readers = max(0, int(entry.active_readers or 0) - 1)
+            entry.touch()
+
     async def stop(self, force=False):
         async with self.lock:
-            if not self.running and self.response is None and self.http_session is None:
+            if (
+                not self.running
+                and self.response is None
+                and self.http_session is None
+                and self.blocking_response is None
+                and self.blocking_session is None
+            ):
                 return
             self.running = False
             response = self.response
             self.response = None
             http_session = self.http_session
             self.http_session = None
+            blocking_response = self.blocking_response
+            self.blocking_response = None
+            blocking_session = self.blocking_session
+            self.blocking_session = None
+            self.blocking_iterator = None
         try:
             if response is not None:
                 response.close()
@@ -859,13 +1730,26 @@ class VodProxySession:
                 await http_session.close()
         except Exception:
             pass
+        try:
+            if blocking_response is not None:
+                await asyncio.to_thread(blocking_response.close)
+        except Exception:
+            pass
+        try:
+            if blocking_session is not None:
+                await asyncio.to_thread(blocking_session.close)
+        except Exception:
+            pass
         logger.info(
             "VOD proxy session stopped key=%s source_id=%s status=%s",
             self.key,
             getattr(self.source, "id", None),
             self.status_code,
         )
-        await cso_capacity_registry.release(self.capacity_key, self.owner_key, slot_id=self.key)
+        await cso_capacity_registry.release(self.capacity_key, self.owner_key, slot_id=self.direct_owner_key)
+        if self.cache_entry is not None and self.cache_session_attached:
+            await vod_cache_manager.detach_session(self.cache_entry)
+            self.cache_session_attached = False
         await vod_proxy_session_manager.remove(self.key)
 
 
@@ -886,6 +1770,10 @@ class VodProxySessionManager:
 
 
 vod_proxy_session_manager = VodProxySessionManager()
+
+
+async def cleanup_vod_proxy_cache():
+    return await vod_cache_manager.cleanup()
 
 
 def _unwrap_local_tic_hls_proxy_url(url, instance_id=None):
@@ -4672,9 +5560,11 @@ def _increment_external_count(external_counts, key):
 
 
 def is_internal_cso_activity(endpoint: str, display_url: str = "") -> bool:
-    endpoint_value = endpoint or ""
+    endpoint_value = clean_text(endpoint)
     display_url_value = clean_key(display_url)
     if "/tic-api/cso/channel/" in endpoint_value or "/tic-api/cso/channel_stream/" in endpoint_value:
+        return True
+    if endpoint_value.startswith("/xc/movie/") or endpoint_value.startswith("/xc/series/"):
         return True
     if endpoint_value.startswith("/tic-tvh/") and "tic-cso-" in display_url_value:
         return True

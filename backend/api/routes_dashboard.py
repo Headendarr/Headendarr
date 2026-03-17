@@ -224,12 +224,12 @@ async def api_dashboard_activity():
                 source_index,
                 related_urls=row.get("related_urls") or [],
             )
-            channel_id = resolved.get("channel_id")
-            channel_name = resolved.get("channel_name")
-            channel_logo_url = resolved.get("channel_logo_url")
-            display_url = resolved.get("display_url")
-            source_url = resolved.get("source_url")
-            stream_name = resolved.get("stream_name")
+            channel_id = channel_id or resolved.get("channel_id")
+            channel_name = channel_name or resolved.get("channel_name")
+            channel_logo_url = channel_logo_url or resolved.get("channel_logo_url")
+            display_url = display_url or resolved.get("display_url")
+            source_url = source_url or resolved.get("source_url")
+            stream_name = stream_name or resolved.get("stream_name")
 
         data.append(
             {

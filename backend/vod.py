@@ -33,7 +33,6 @@ from backend.models import (
     XcVodItem,
     XcVodMetadataCache,
 )
-from backend.cso import CsoSource
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_profiles import get_stream_profile_definitions
 from backend.url_resolver import get_tvh_publish_base_url
@@ -108,6 +107,46 @@ def clean_vod_content_type(value) -> str:
     if text in {VOD_KIND_SERIES, "tv", "show", "shows"}:
         return VOD_KIND_SERIES
     return VOD_KIND_MOVIE
+
+
+def build_vod_activity_metadata(candidate, episode=None) -> dict[str, str]:
+    group_item = getattr(candidate, "group_item", None)
+    series_title = clean_text(getattr(group_item, "title", ""))
+    poster_url = clean_text(getattr(group_item, "poster_url", ""))
+    release_year = clean_text(getattr(group_item, "year", ""))
+
+    if episode is None:
+        movie_title = series_title or "Movie"
+        if release_year:
+            movie_title = f"{movie_title} ({release_year})"
+        return {
+            "channel_name": movie_title,
+            "channel_logo_url": poster_url,
+            "stream_name": movie_title,
+            "display_url": f"VOD Movie: {movie_title}",
+        }
+
+    episode_title = clean_text(getattr(episode, "title", ""))
+    season_number = getattr(episode, "season_number", None)
+    episode_number = getattr(episode, "episode_number", None)
+    if season_number is not None and episode_number is not None:
+        episode_label = f"S{int(season_number):02d}E{int(episode_number):02d}"
+    elif episode_number is not None:
+        episode_label = f"Episode {int(episode_number)}"
+    else:
+        episode_label = ""
+    title_parts = [part for part in (series_title, episode_label) if part]
+    activity_title = " - ".join(title_parts) or series_title or episode_title or "Series episode"
+    display_parts = [part for part in (episode_label, episode_title) if part]
+    display_value = f"VOD Series: {series_title}" if series_title else "Series episode"
+    if display_parts:
+        display_value = f"{display_value} ({' - '.join(display_parts)})"
+    return {
+        "channel_name": activity_title,
+        "channel_logo_url": poster_url,
+        "stream_name": episode_title or activity_title,
+        "display_url": display_value,
+    }
 
 
 def _clean_lower(value) -> str:

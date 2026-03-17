@@ -21,6 +21,7 @@ from backend.api.tasks import (
     reconcile_plex_live_tv,
 )
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
+from backend.cso import cleanup_vod_proxy_cache, vod_cache_manager
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
 from backend.auth import cleanup_stream_audit_logs, audit_stream_event
 from backend import create_app, config
@@ -110,8 +111,8 @@ async def every_24_hours_vod_metadata_cleanup():
         )
 
 
-@scheduler.scheduled_job("interval", id="tvh_networks_minutely", seconds=60, misfire_grace_time=30)
-async def every_60_seconds_networks():
+@scheduler.scheduled_job("interval", id="do_60_seconds", seconds=60, misfire_grace_time=30)
+async def every_60_seconds():
     async with app.app_context():
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task(
@@ -119,6 +120,16 @@ async def every_60_seconds_networks():
                 "name": "Configuring TVH networks (periodic)",
                 "function": update_tvh_networks,
                 "args": [app],
+            },
+            priority=12,
+        )
+        await task_broker.add_task(
+            {
+                "name": "Cleaning VOD proxy cache",
+                "function": cleanup_vod_proxy_cache,
+                "args": [],
+                "task_key": "vod-proxy-cache-cleanup",
+                "execution_mode": "concurrent",
             },
             priority=12,
         )
@@ -259,6 +270,7 @@ async def hourly_epg_check():
 async def main():
     async with app.app_context():
         await load_stream_activity_state()
+        await vod_cache_manager.import_existing_files()
         try:
             await audit_stream_event(
                 None,

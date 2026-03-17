@@ -26,6 +26,7 @@ from backend.users import get_user_by_username
 from backend.vod import (
     VOD_KIND_MOVIE,
     VOD_KIND_SERIES,
+    build_vod_activity_metadata,
     build_curated_category_payloads,
     build_curated_item_payloads,
     build_upstream_playback_url,
@@ -497,6 +498,7 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
     identity = f"/xc/movie/{int(item_id)}"
     request_client_ip = get_request_client_ip()
     request_user_agent = request.headers.get("User-Agent")
+    activity_metadata = build_vod_activity_metadata(candidate)
 
     await upsert_stream_activity(
         identity,
@@ -506,9 +508,11 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
         ip_address=request_client_ip,
         user_agent=request_user_agent,
         perform_audit=False,
-        stream_name=candidate.group_item.title,
+        channel_name=activity_metadata.get("channel_name"),
+        channel_logo_url=activity_metadata.get("channel_logo_url"),
+        stream_name=activity_metadata.get("stream_name"),
         source_url=upstream_url,
-        display_url=identity,
+        display_url=activity_metadata.get("display_url"),
         vod_item_id=candidate.group_item.id,
         vod_category_id=candidate.group_item.category_id,
         enrich_metadata=False,
@@ -577,6 +581,7 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
     identity = f"/xc/series/{int(episode_id)}"
     request_client_ip = get_request_client_ip()
     request_user_agent = request.headers.get("User-Agent")
+    activity_metadata = build_vod_activity_metadata(candidate, episode=episode_map)
 
     await upsert_stream_activity(
         identity,
@@ -586,9 +591,11 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
         ip_address=request_client_ip,
         user_agent=request_user_agent,
         perform_audit=False,
-        stream_name=candidate.group_item.title,
+        channel_name=activity_metadata.get("channel_name"),
+        channel_logo_url=activity_metadata.get("channel_logo_url"),
+        stream_name=activity_metadata.get("stream_name"),
         source_url=upstream_url,
-        display_url=identity,
+        display_url=activity_metadata.get("display_url"),
         vod_item_id=candidate.group_item.id,
         vod_category_id=candidate.group_item.category_id,
         vod_episode_id=episode_map.id,
