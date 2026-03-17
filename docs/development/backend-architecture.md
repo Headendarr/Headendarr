@@ -6,7 +6,8 @@ This page documents backend runtime behaviour and integration boundaries.
 
 - APScheduler in `run.py` triggers the background-task loop every 10 seconds.
 - Queue execution is managed by `backend/api/tasks.py` (`TaskQueueBroker`).
-- Tasks execute sequentially (single active task at a time).
+- Serial tasks execute sequentially (single active serial task at a time).
+- Tasks explicitly marked `execution_mode: "concurrent"` run outside the serial queue with per-task identity deduplication.
 - If a run is already active, a concurrent scheduler tick is skipped.
 
 ## Background Task Patterns

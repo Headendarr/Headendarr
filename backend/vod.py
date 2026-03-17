@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import aiohttp
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.models import (
@@ -995,6 +995,61 @@ async def cleanup_stale_vod_metadata_cache() -> int:
     return deleted_count
 
 
+async def _touch_vod_metadata_cache_for_group_items(item_ids: list[int], action: str) -> int:
+    valid_item_ids = []
+    for item_id in item_ids:
+        try:
+            item_id_value = int(item_id)
+        except Exception:
+            continue
+        if item_id_value > 0:
+            valid_item_ids.append(item_id_value)
+    valid_item_ids = sorted(set(valid_item_ids))
+    action_text = clean_text(action)
+    if not valid_item_ids or not action_text:
+        return 0
+
+    now_utc = datetime.now(timezone.utc)
+    touched_count = 0
+    async with Session() as session:
+        async with session.begin():
+            source_rows = await session.execute(
+                select(XcVodItem.playlist_id, XcVodItem.upstream_item_id)
+                .join(VodCategoryItemSource, VodCategoryItemSource.source_item_id == XcVodItem.id)
+                .where(VodCategoryItemSource.category_item_id.in_(valid_item_ids))
+                .distinct()
+            )
+            upstream_ids_by_playlist: dict[int, list[str]] = {}
+            for playlist_id, upstream_item_id in source_rows.all():
+                try:
+                    playlist_key = int(playlist_id)
+                except Exception:
+                    continue
+                upstream_item_text = clean_text(upstream_item_id)
+                if not upstream_item_text:
+                    continue
+                upstream_ids_by_playlist.setdefault(playlist_key, []).append(upstream_item_text)
+
+            for playlist_id, upstream_item_ids in upstream_ids_by_playlist.items():
+                unique_upstream_ids = sorted(set(upstream_item_ids))
+                for batch in _batched(unique_upstream_ids):
+                    result = await session.execute(
+                        update(XcVodMetadataCache)
+                        .where(
+                            XcVodMetadataCache.playlist_id == int(playlist_id),
+                            XcVodMetadataCache.action == action_text,
+                            XcVodMetadataCache.upstream_item_id.in_(batch),
+                        )
+                        .values(
+                            last_requested_at=as_naive_utc(now_utc),
+                            expires_at=_metadata_expiry(now_utc),
+                            updated_at=as_naive_utc(now_utc),
+                        )
+                    )
+                    touched_count += int(result.rowcount or 0)
+    return touched_count
+
+
 async def _load_vod_category_for_export(category_id: int) -> VodCategory | None:
     async with Session() as session:
         result = await session.execute(select(VodCategory).where(VodCategory.id == int(category_id)))
@@ -1163,6 +1218,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
     for batch_index, item_batch in enumerate(_batched(category_items, size=VOD_SYNC_ITEM_BATCH_SIZE), start=1):
         await asyncio.sleep(0)
         item_ids = [int(item.id) for item in item_batch]
+        metadata_touch_count = 0
 
         async with Session() as session:
             source_result = await session.execute(
@@ -1199,6 +1255,12 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
         else:
             refresh_stats = None
             episodes_by_item_id = {}
+
+        if item_ids:
+            metadata_touch_count = await _touch_vod_metadata_cache_for_group_items(
+                item_ids,
+                "get_vod_info" if content_type == VOD_KIND_MOVIE else "get_series_info",
+            )
 
         for item in item_batch:
             source_category_ids = source_categories_by_item_id.get(int(item.id), [])
@@ -1272,7 +1334,8 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                     total_files += 1
 
         logger.info(
-            "VOD .strm sync batch complete category='%s' batch=%s items=%s/%s total_files=%s refresh_successes=%s refresh_failures=%s elapsed=%.2fs",
+            "VOD .strm sync batch complete category='%s' batch=%s items=%s/%s total_files=%s refresh_successes=%s "
+            "refresh_failures=%s metadata_touched=%s elapsed=%.2fs",
             category_name,
             batch_index,
             min(batch_index * int(VOD_SYNC_ITEM_BATCH_SIZE), item_count),
@@ -1280,6 +1343,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
             total_files,
             refresh_stats["successes"] if refresh_stats else 0,
             refresh_stats["failures"] if refresh_stats else 0,
+            metadata_touch_count,
             time.perf_counter() - started_at,
         )
 

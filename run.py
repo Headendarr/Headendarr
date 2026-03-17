@@ -72,6 +72,8 @@ async def every_15_seconds():
                 "name": "Polling TVHeadend subscription status",
                 "function": poll_tvh_subscription_status,
                 "args": [app],
+                "task_key": "poll-tvh-subscription-status",
+                "execution_mode": "concurrent",
             },
             priority=5,
         )
@@ -86,6 +88,8 @@ async def every_30_seconds():
                 "name": "Reconciling DVR recordings",
                 "function": reconcile_dvr_recordings,
                 "args": [app],
+                "task_key": "reconcile-dvr-recordings",
+                "execution_mode": "concurrent",
             },
             priority=20,
         )
@@ -106,6 +110,8 @@ async def every_24_hours_vod_metadata_cleanup():
                 "name": "Cleaning XC VOD metadata cache",
                 "function": cleanup_vod_metadata_cache,
                 "args": [app],
+                "task_key": "cleanup-vod-metadata-cache",
+                "execution_mode": "concurrent",
             },
             priority=26,
         )
@@ -152,6 +158,8 @@ async def every_5_mins():
                 "name": "Reconciling Plex Live TV tuners (periodic)",
                 "function": reconcile_plex_live_tv,
                 "args": [app, None],
+                "task_key": "reconcile-plex-live-tv-periodic",
+                "execution_mode": "concurrent",
             },
             priority=24,
         )
@@ -180,6 +188,8 @@ async def every_5_mins_health_checks():
                 "name": "Periodic channel stream health checks",
                 "function": run_periodic_channel_stream_health_checks,
                 "args": [app],
+                "task_key": "periodic-channel-stream-health-checks",
+                "execution_mode": "concurrent",
             },
             priority=22,
         )
