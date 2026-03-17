@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=python:3.12-trixie
+ARG BASE_IMAGE=python:3.13-trixie
 FROM ${BASE_IMAGE} AS base_image
 
 #  _____ ____   ___  _   _ _____ _____ _   _ ____    ____ _____  _    ____ _____
