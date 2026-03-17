@@ -187,6 +187,7 @@
             v-model="form.vod_generate_strm_files"
             label="Create VOD .strm Files"
             description="Enable `.strm` library export generation for this user when VOD categories have `.strm` generation enabled."
+            :disable="!form.roles.includes('admin') && form.vod_access_mode === 'none'"
           />
           <q-banner
             v-if="form.roles.includes('admin')"
@@ -323,6 +324,7 @@
               v-model="form.vod_generate_strm_files"
               label="Create VOD .strm Files"
               description="Enable `.strm` library export generation for this user when VOD categories have `.strm` generation enabled."
+              :disable="!isAdminUser(editUser) && form.vod_access_mode === 'none'"
             />
           </div>
         </q-form>
@@ -561,10 +563,20 @@ export default {
           this.form.dvr_access_mode = 'read_all_write_own';
           this.form.vod_access_mode = 'movies_series';
         }
+        this.enforceVodSettingsConsistency();
       },
+    },
+    'form.vod_access_mode'() {
+      this.enforceVodSettingsConsistency();
     },
   },
   methods: {
+    enforceVodSettingsConsistency() {
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
+      if (!roles.includes('admin') && this.form.vod_access_mode === 'none') {
+        this.form.vod_generate_strm_files = false;
+      }
+    },
     async loadUsers() {
       this.loading = true;
       try {
@@ -672,6 +684,7 @@ export default {
         vod_access_mode: 'none',
         vod_generate_strm_files: false,
       };
+      this.enforceVodSettingsConsistency();
       this.showCreate = true;
     },
     onCreateDialogAction(action) {
@@ -695,7 +708,9 @@ export default {
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
           vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
-          vod_generate_strm_files: !!this.form.vod_generate_strm_files,
+          vod_generate_strm_files: !isAdmin && this.form.vod_access_mode === 'none'
+            ? false
+            : !!this.form.vod_generate_strm_files,
         });
         this.showCreate = false;
         await this.loadUsers();
@@ -717,6 +732,7 @@ export default {
         vod_access_mode: isAdmin ? 'movies_series' : (user.vod_access_mode || 'none'),
         vod_generate_strm_files: !!user.vod_generate_strm_files,
       };
+      this.enforceVodSettingsConsistency();
       this.showEdit = true;
     },
     onEditDialogAction(action) {
@@ -738,7 +754,9 @@ export default {
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
           vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
-          vod_generate_strm_files: !!this.form.vod_generate_strm_files,
+          vod_generate_strm_files: !isAdmin && this.form.vod_access_mode === 'none'
+            ? false
+            : !!this.form.vod_generate_strm_files,
         });
         this.showEdit = false;
         await this.loadUsers();

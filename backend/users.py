@@ -181,6 +181,10 @@ async def update_user_vod_settings(
                 return user
             if vod_access_mode is not None:
                 user.vod_access_mode = clean_vod_access_mode(vod_access_mode)
+            if clean_vod_access_mode(user.vod_access_mode) == "none":
+                user.vod_generate_strm_files = False
+                session.add(user)
+                return user
             if vod_generate_strm_files is not None:
                 user.vod_generate_strm_files = bool(vod_generate_strm_files)
             session.add(user)

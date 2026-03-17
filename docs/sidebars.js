@@ -39,6 +39,7 @@ const sidebars = {
             "configuration/epgs",
             "configuration/channels",
             "configuration/tv-guide-dvr",
+            "configuration/video-on-demand",
             {
               type: "category",
               label: "Connectivity",
@@ -47,6 +48,7 @@ const sidebars = {
                 "configuration/connectivity/endpoints",
                 "configuration/connectivity/plex",
                 "configuration/connectivity/jellyfin",
+                "configuration/connectivity/kodi",
               ],
             },
             "configuration/hls-proxies",

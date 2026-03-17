@@ -322,6 +322,7 @@ class VodCategory(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     profile_id = Column(String(64), nullable=True)
     generate_strm_files = Column(Boolean, nullable=False, default=False)
+    expose_http_library = Column(Boolean, nullable=False, default=False)
     strm_base_url = Column(String(1024), nullable=True)
 
     xc_category_links = relationship("VodCategoryXcCategory", back_populates="category", cascade="all, delete-orphan")

@@ -38,9 +38,20 @@ dictConfig(
 
 # Custom logging filter that ignores log messages for a specific endpoints
 class IgnoreLoggingRoutesFilter(logging.Filter):
-    def filter(self, record):
-        if "/tic-api/get-background-tasks" in record.getMessage():
+    def filter(self, record: logging.LogRecord) -> bool:
+        from backend.api.routes_vod import ignored_library_probe_suffixes
+
+        message = record.getMessage().casefold()
+        if "/tic-api/get-background-tasks" in message:
             return False
+        if  "/tic-api/library" in message:
+            # DOnt log any of the /library paths that we are ignoring
+            start = message.find("/tic-api/library")
+            if start != -1:
+                end = message.find(" ", start)
+                path = message[start:] if end == -1 else message[start:end]
+                if path.endswith(ignored_library_probe_suffixes):
+                    return False
         return True
 
 

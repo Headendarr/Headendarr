@@ -35,6 +35,7 @@ from backend.utils import convert_to_int
 
 _TVH_PROXY_CONNECT_TIMEOUT = float(os.environ.get("TVH_PROXY_CONNECT_TIMEOUT_SECONDS", "15"))
 _TVH_PROXY_STREAM_READ_TIMEOUT = float(os.environ.get("TVH_PROXY_STREAM_READ_TIMEOUT_SECONDS", "120"))
+_INDEX_HTML_CACHE = {}
 
 
 @blueprint.route("/")
@@ -65,7 +66,20 @@ async def serve_frontend(path=None):
 
 async def _serve_file(directory, filename):
     try:
-        response = await send_from_directory(directory, filename)
+        if str(filename) == "index.html":
+            file_path = os.path.join(directory, filename)
+            try:
+                mtime = os.path.getmtime(file_path)
+            except OSError:
+                return "File not found", 404
+            cached = _INDEX_HTML_CACHE.get(file_path)
+            if cached is None or cached.get("mtime") != mtime:
+                with open(file_path, "rb") as handle:
+                    payload = handle.read()
+                _INDEX_HTML_CACHE[file_path] = {"mtime": mtime, "payload": payload}
+            response = Response(_INDEX_HTML_CACHE[file_path]["payload"], content_type="text/html; charset=utf-8")
+        else:
+            response = await send_from_directory(directory, filename)
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

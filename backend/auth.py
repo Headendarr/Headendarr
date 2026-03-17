@@ -9,6 +9,7 @@ from datetime import timedelta
 from functools import wraps, lru_cache
 
 from quart import (
+    Response,
     request,
     jsonify,
     make_response,
@@ -155,6 +156,12 @@ _user_stream_key_last_used_throttle = _UserLastUsedThrottle(min_interval_seconds
 
 def unauthorized_response(message="Unauthorized"):
     return jsonify({"success": False, "message": message}), 401
+
+
+def unauthorized_basic_auth_response(realm="Restricted", message="Unauthorized"):
+    response = Response(str(message), status=401, content_type="text/plain; charset=utf-8")
+    response.headers["WWW-Authenticate"] = f'Basic realm="{realm}"'
+    return response
 
 
 def forbidden_response(message="Forbidden"):

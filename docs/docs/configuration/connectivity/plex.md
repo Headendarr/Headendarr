@@ -6,6 +6,10 @@ title: Plex
 
 Use this guide to connect Plex Live TV & DVR to Headendarr using HDHomeRun tuner emulation and XMLTV guide data.
 
+The recommended setup is the managed Plex integration using `PLEX_SERVERS_JSON`. That gives Headendarr a direct way to keep Plex tuners, channel mappings, and DVR settings aligned with your Headendarr configuration, which makes ongoing Plex management much easier.
+
+If you do not want to provide a Plex token to the Headendarr container, you can still connect Plex manually. That path works, but you will be responsible for adding tuners and maintaining the setup yourself.
+
 :::warning HLS Proxy Remux Limitation
 Plex Live TV/DVR can have playback issues with HLS (`.m3u8`) channel streams.
 For best compatibility, make sure Plex receives MPEG-TS (`.ts`) streams for those channels.
@@ -24,6 +28,8 @@ For reliable logo loading, use a Headendarr URL that your Plex clients can actua
 ## Container configuration
 
 Set `PLEX_SERVERS_JSON` in your Headendarr container environment, then restart the container.
+
+This is the preferred Plex setup because it unlocks automatic Plex management inside Headendarr instead of treating Plex as a one-time manual tuner setup.
 
 Example `docker-compose.yml` snippet:
 
@@ -61,6 +67,16 @@ Use this form to generate a valid `PLEX_SERVERS_JSON` environment variable value
 
 After `PLEX_SERVERS_JSON` is valid and the container has restarted, open **Plex Settings** in Headendarr.
 
+For most users, the most important settings are:
+
+- **Headendarr base URL**: the address Plex should use to reach Headendarr's HDHomeRun and XMLTV endpoints
+- **Stream user**: the Headendarr user whose stream key will be published to Plex
+- **Default tuner mode**:
+  - **Per source** if you want one managed Plex tuner per Headendarr source
+  - **Combined** if you want one shared managed tuner
+
+Once those are correct, Headendarr can do most of the ongoing Plex maintenance for you.
+
 Each configured Plex server exposes these groups of settings:
 
 - **Connection**
@@ -83,27 +99,47 @@ Settings on this page auto-save. Headendarr then queues a Plex reconcile run aft
 
 Plex tuner reconciliation runs whenever Plex settings are saved in Headendarr, and otherwise runs on the background scheduler every 5 minutes to keep Plex aligned with the current Headendarr configuration.
 
-During reconciliation, Headendarr automatically keeps Plex Live TV in sync with the channels and mappings you manage in Headendarr. It can create missing managed tuners, attach new tuners to the correct Plex DVR, update existing tuners in place when settings change, and refresh channel mappings after source or channel changes. It also includes safety checks to avoid deleting the last tuner on a Plex DVR, which helps prevent Plex from dropping the whole DVR configuration and protects your existing DVR setup and recordings. The goal is that you manage channels, guide mappings, and source changes in Headendarr, and Headendarr handles keeping Plex up to date for you.
+In practice, this means you manage channels, guide mappings, and source changes in Headendarr, and Headendarr handles keeping Plex up to date for you.
 
-## Manually configure
+During reconciliation, Headendarr can:
+
+- create missing managed tuners
+- attach new tuners to the correct Plex DVR
+- update existing tuners in place when settings change
+- refresh channel mappings after source or channel changes
+- remove stale managed tuners
+
+It also includes safety checks to avoid deleting the last tuner on a Plex DVR, which helps prevent Plex from dropping the whole DVR configuration and protects your existing DVR setup and recordings.
+
+## Manual setup
+
+Use this path only if you do not want to provide a Plex token to the Headendarr container and would rather manage the Plex side manually.
 
 ### Steps
 
-For Plex, the recommended workarounds are:
+Plex works best here when it receives MPEG-TS compatible streams. Before adding the tuner in Plex, use one of these compatibility options:
 
-1. **Option #1 (most reliable):** Enable **Route per-source playlists & per-source HDHomeRun via TVHeadend** in **Application Settings**.
-   This applies to per-source endpoints and makes TVHeadend the stream client for those routes.
-   For best stability with CSO-backed mux paths, set **TVHeadend Settings -> Stream Buffer** to **CSO**.
-   If you prefer a manual FFmpeg wrapper instead, set **TVHeadend Settings -> Stream Buffer** to **Custom FFmpeg args**, for example:
+#### In Headendarr:
+
+Option #1 (most reliable)
+
+1. Enable **Route per-source playlists & per-source HDHomeRun via TVHeadend** in **Application Settings**.
+2. This applies to per-source endpoints and makes TVHeadend the stream client for those routes.
+3. For best stability with CSO-backed mux paths, set **TVHeadend Settings -> Stream Buffer** to **CSO**.
+4. If you prefer a manual FFmpeg wrapper instead, set **TVHeadend Settings -> Stream Buffer** to **Custom FFmpeg args**, for example:
 
 ```bash
 -hide_banner -loglevel error -probesize 10M -analyzeduration 0 -fpsprobesize 0 -i [URL] -c copy -metadata service_name=[SERVICE_NAME] -f mpegts pipe:1
 ```
 
-2. **Option #2:** Enable **Use HLS Proxy** and **Enable FFmpeg remux** on the source in **Stream Source Settings** so HLS sources are remuxed to MPEG-TS.
+Option #2
+
+1. Enable **Use HLS Proxy** and **Enable FFmpeg remux** on the source in **Stream Source Settings** so HLS sources are remuxed to MPEG-TS.
+
+In Plex:
 
 1. Navigate to the **Live TV & DVR** page in Plex.
-1. Click **Set Up Plex Tuner**.
+2. Click **Set Up Plex Tuner**.
 
 [![Plex add first tuner](/img/screenshots/plex-setup-add-first-tuner.png)](/img/screenshots/plex-setup-add-first-tuner.png)
 

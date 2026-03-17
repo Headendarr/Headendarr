@@ -42,6 +42,19 @@
             description="Enable per-user `.strm` export generation for this VOD category. Headendarr writes files under `/library/<username>/<category-type>/<category-name>/...` for users who currently have access to this VOD content and are configured to create VOD `.strm` files."
           />
 
+          <TicTextInput
+            v-if="generateStrmFiles"
+            v-model="strmBaseUrl"
+            label="Library Base URL"
+            description="Required. Set the external base URL used inside generated `.strm` files for this category. Example: `http://192.168.1.117:9985`."
+          />
+
+          <TicToggleInput
+            v-model="exposeHttpLibrary"
+            label="Expose HTTP Library"
+            description="Publish this curated VOD category in the authenticated HTTP library under `/tic-api/library/<category-type>/<category-name>/...` so clients such as Kodi can browse it over Basic auth using the stream key as the password."
+          />
+
           <AdmonitionBanner v-if="generateStrmFiles && contentType === 'series'" type="warning" class="q-mt-sm">
             Generating `.strm` files for TV series requires additional episode lookups for each series so Headendarr
             can build season and episode file names. This background process can take some time for large categories.
@@ -51,13 +64,6 @@
             `.strm` generation for this category will do nothing unless at least one user is configured to create VOD
             `.strm` files. In most cases, enabling this for a single user is enough.
           </AdmonitionBanner>
-
-          <TicTextInput
-            v-if="generateStrmFiles"
-            v-model="strmBaseUrl"
-            label="Library Base URL"
-            description="Required. Set the external base URL used inside generated `.strm` files for this category. Example: `http://192.168.1.117:9985`."
-          />
 
           <q-separator />
 
@@ -186,6 +192,7 @@ export default {
       sortOrder: 0,
       profileId: null,
       generateStrmFiles: false,
+      exposeHttpLibrary: false,
       strmBaseUrl: '',
       selectedCategories: [],
       availableCategories: [],
@@ -292,6 +299,7 @@ export default {
         this.sortOrder = Number(category.sort_order || 0);
         this.profileId = category.profile_id || null;
         this.generateStrmFiles = !!category.generate_strm_files;
+        this.exposeHttpLibrary = !!category.expose_http_library;
         this.strmBaseUrl = category.strm_base_url || '';
         this.selectedCategories = (category.categories || []).map((categoryItem) => this.withLocalKey({
           id: categoryItem.id,
@@ -311,6 +319,7 @@ export default {
         this.sortOrder = Number(nextSortOrder || 10);
         this.profileId = null;
         this.generateStrmFiles = false;
+        this.exposeHttpLibrary = false;
         this.strmBaseUrl = '';
         this.selectedCategories = [];
       }
@@ -377,6 +386,7 @@ export default {
         sortOrder: this.sortOrder,
         profileId: this.profileId,
         generateStrmFiles: this.generateStrmFiles,
+        exposeHttpLibrary: this.exposeHttpLibrary,
         strmBaseUrl: this.strmBaseUrl,
         selectedCategories: (this.selectedCategories || []).map((category) => ({
           id: category.id,
@@ -432,6 +442,7 @@ export default {
         sort_order: this.sortOrder,
         profile_id: this.profileId,
         generate_strm_files: !!this.generateStrmFiles,
+        expose_http_library: !!this.exposeHttpLibrary,
         strm_base_url: String(this.strmBaseUrl || '').trim(),
         category_ids: categoryIds,
         category_configs: (this.selectedCategories || []).map((category) => ({

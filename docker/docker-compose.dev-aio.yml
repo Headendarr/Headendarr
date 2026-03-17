@@ -62,6 +62,10 @@ services:
       - ../dev_env/library:/library
       # Application source passthrough
       - ../:/app
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
     ## # DEVICES:
     ## devices:

@@ -4,7 +4,7 @@ title: Jellyfin
 
 # Jellyfin
 
-Use this guide to connect Jellyfin Live TV to Headendarr.
+Use this guide to connect Jellyfin Live TV and curated VOD to Headendarr.
 
 :::warning Jellyfin stream compatibility
 Jellyfin Live TV does **not** reliably accept HLS input in this setup. Prefer MPEG-TS based streams.
@@ -20,13 +20,18 @@ Recommended profile order for Jellyfin:
 
 If you use the Jellyfin TVHeadend plugin, Jellyfin connects directly to the TVHeadend backend (not Headendarr playlist endpoints).
 
-This is the recommended default if you prefer plugin-based TVH integration.
+This is the recommended default if you want the most reliable live TV connection handling in Jellyfin today.
+
+It also brings two practical benefits:
+
+- Jellyfin can use TVHeadend's DVR workflow for recordings.
+- If you already use TVHeadend for other clients, Jellyfin joins that same backend model instead of creating a separate direct-play path.
 
 :::warning Plugin trade-offs
 This plugin path is valid, but it has known downsides in some environments:
 
 - Plugin compatibility can lag behind Jellyfin releases.
-- It can force transcoding in cases where direct stream paths would not.
+- It can force transcoding in cases where direct stream paths would not, so this path is not always the most efficient one.
 - Channel tune/start can be slower than direct playlist paths.
 
 :::
@@ -55,6 +60,8 @@ Plugin references:
 ## Option #2: Per-source HDHomeRun via TVHeadend
 
 This is a valid option if you want tuner-device behaviour and per-source connection-limit behaviour in Jellyfin.
+
+Choose this option if you specifically want HDHomeRun-style tuner behaviour in Jellyfin and want each source to retain its own connection-limit behaviour.
 
 :::warning Issue with Jellyfin client behaviour
 Some Jellyfin client paths can keep HDHomeRun-style shared streams open after playback appears to stop. In practice this means stream slots can remain occupied longer than expected, which can affect connection limits.
@@ -88,6 +95,8 @@ In testing, web playback (for example Chrome/web player) can behave better than 
 
 Multiple per-source M3U tuners can cause duplicate channels in Jellyfin (Jellyfin issue [#632](https://github.com/jellyfin/jellyfin/issues/632)). Using one combined M3U tuner avoids that duplication pattern.
 
+Choose this option if you want the simplest direct Jellyfin setup and are happy to use one shared playlist instead of tuner-device behaviour.
+
 :::note Duplicates with multiple M3U tuners
 With multiple M3U tuner entries, Jellyfin treats playlist entries as channel records. Matching channels across separate playlists are usually shown as duplicates.
 
@@ -119,3 +128,99 @@ Reference: Jellyfin issue [#632](https://github.com/jellyfin/jellyfin/issues/632
 [![Jellyfin XMLTV provider setup with recommended fields](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)](/img/screenshots/jellyfin-setup-copy-xmltv-url.png)
 
 6. Run channel/guide mapping and test playback.
+
+## Video On Demand (VOD)
+
+This is the best option if you want Jellyfin to access the curated VOD as a normal media library.
+
+With this approach, Headendarr generates `.strm` files and NFO metadata under the library export path, and Jellyfin scans those directories as movie and TV libraries.
+
+The result feels much closer to a normal Jellyfin library than an IPTV catalogue. Users can browse curated films and shows with regular posters, metadata, seasons, and episode structure inside the standard Jellyfin interface.
+
+### How it works
+
+By default, Headendarr writes exports under:
+
+`/library`
+
+The generated structure is user-specific and grouped by content type and category slug:
+
+- Movies:
+  - `/library/<username>/Movies/<category-slug>/`
+- Shows:
+  - `/library/<username>/Shows/<category-slug>/`
+
+Examples:
+
+- `/library/myuser/Movies/curated-movies/`
+- `/library/myuser/Shows/curated-shows/`
+
+Within those category folders, Headendarr writes scraper-friendly directory structures such as:
+
+- movie folder:
+  - `Tenet (2020)/Tenet (2020).strm`
+- show folder:
+  - `3 Body Problem (2024)/Season 01/3 Body Problem S01E01.strm`
+
+If Headendarr and Jellyfin run in separate containers, mount the same host library path into Jellyfin so it can read the exported files.
+
+Example:
+
+- Headendarr writes to a host path such as `/srv/media/tic-library`
+- mount that same host path into Jellyfin
+- then add the relevant subdirectories to Jellyfin as libraries
+
+```
+services:
+  headendarr:
+    image: ghcr.io/headendarr/headendarr:latest
+    volumes:
+      - type: bind
+        source: /srv/media/tic-library
+        target: /library
+        bind:
+          selinux: z
+...
+  jellyfin:
+    image: ghcr.io/jellyfin/jellyfin:latest
+    volumes:
+      - type: bind
+        source: /srv/media/tic-library
+        target: /library
+        bind:
+          selinux: z
+```
+
+### Steps
+
+In Headendarr:
+
+1. Enable **Generate STRM files** on the VOD category you want to expose.
+2. In **Users**, make sure one of the streamer users has the required VOD access configured and has **Create VOD .strm Files** enabled.
+
+In Jellyfin:
+
+3. Add a new media library:
+   1. Use **Movies** for paths under `/library/<username>/Movies/...`
+   2. Use **Shows** for paths under `/library/<username>/Shows/...`
+4. Point Jellyfin at the relevant exported category path, for example:
+   1. `/library/myuser/Movies/curated-movies/`
+   2. `/library/myuser/Shows/curated-shows/`
+5. Review the library settings before saving:
+   1. Disable **Real-time monitoring**.
+   2. Make sure **Save artwork into media folders** is disabled.
+   3. Disable all trick-play image options:
+      1. **Enable trickplay image extraction**
+      2. **Extract trickplay images during library scan**
+      3. **Save trickplay images next to media**
+   4. Disable all chapter image extraction options:
+      1. **Enable chapter image extraction**
+      2. **Extract chapter images during library scan**
+6. Save and let Jellyfin scan the library.
+7. Set up a scheduled scan for these libraries in Jellyfin instead of relying on real-time monitoring.
+
+:::warning Recommended Jellyfin library behaviour for VOD STRM libraries
+These settings are recommended because Jellyfin can otherwise try to read large numbers of `.strm` items in parallel while generating trick-play images, chapter images, or other file-derived assets. That can consume a lot of upstream XC connections for a long time and waste bandwidth without adding much value in this setup.
+
+Real-time monitoring should also be disabled for these VOD libraries. Headendarr rebuilds `.strm` files when VOD content is changed, which means files can be deleted and recreated as part of normal updates. If Jellyfin watches those folders continuously, it can trigger repeated rescans and extra churn. In practice, scheduled library scans are a better fit for this workflow.
+:::

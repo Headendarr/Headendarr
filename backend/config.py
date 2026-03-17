@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import subprocess
+import threading
 from urllib.parse import quote_plus
 
 import aiofiles
@@ -190,6 +191,9 @@ class Config:
         self.instance_id_file = os.path.join(self.config_path, "instance_id.json")
         # Set default settings
         self.settings = None
+        self._settings_cache = None
+        self._settings_cache_mtime = None
+        self._settings_cache_lock = threading.Lock()
         self.tvh_local = is_tvh_process_running_locally_sync()
         self.default_settings = {
             "settings": {
@@ -274,6 +278,9 @@ class Config:
 
     def write_settings_yaml(self, data):
         write_yaml(self.config_file, data)
+        with self._settings_cache_lock:
+            self._settings_cache = None
+            self._settings_cache_mtime = None
 
     def read_config_yaml(self):
         if not os.path.exists(self.config_file):
@@ -281,7 +288,20 @@ class Config:
         return read_yaml(self.config_file)
 
     def read_settings(self):
-        yaml_settings = self.read_config_yaml()
+        if not os.path.exists(self.config_file):
+            self.create_default_settings_yaml()
+
+        try:
+            current_mtime = os.path.getmtime(self.config_file)
+        except OSError:
+            current_mtime = None
+
+        with self._settings_cache_lock:
+            if self._settings_cache is not None and self._settings_cache_mtime == current_mtime:
+                self.settings = copy.deepcopy(self._settings_cache)
+                return self.settings
+
+        yaml_settings = read_yaml(self.config_file)
         self.settings = recursive_dict_update(copy.deepcopy(self.default_settings), yaml_settings)
         settings_section = self.settings.get("settings")
 
@@ -307,6 +327,10 @@ class Config:
                 self._normalize_settings(self.settings)
                 self.write_settings_yaml(self.settings)
         # ---
+
+        with self._settings_cache_lock:
+            self._settings_cache = copy.deepcopy(self.settings)
+            self._settings_cache_mtime = current_mtime if current_mtime is not None else os.path.getmtime(self.config_file)
 
         return self.settings
 
