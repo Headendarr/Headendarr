@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import aiofiles
 import aiohttp
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.orm import joinedload
 
 from backend.ffmpeg import ffprobe_file
@@ -22,6 +22,7 @@ from backend.http_headers import (
     serialise_headers_json,
 )
 from backend.models import (
+    CsoEventLog,
     Playlist,
     PlaylistStreams,
     Session,
@@ -749,6 +750,9 @@ async def delete_playlist(config, playlist_id):
                 .where(XcVodCategory.playlist_id == playlist.id)
             )
             affected_vod_group_ids = sorted({int(row[0]) for row in group_result.all() if row and row[0] is not None})
+            await session.execute(
+                update(CsoEventLog).where(CsoEventLog.playlist_id == playlist.id).values(playlist_id=None)
+            )
             await session.execute(delete(XcVodItem).where(XcVodItem.playlist_id == playlist.id))
             await session.execute(delete(XcVodCategory).where(XcVodCategory.playlist_id == playlist.id))
             # Remove from DB
