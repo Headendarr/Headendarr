@@ -315,7 +315,7 @@ def _strip_config_tokens(raw_value: object) -> list[str]:
         parsed = None
     if isinstance(parsed, list):
         return [clean_text(item) for item in parsed if clean_text(item)]
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    return [token.strip() for token in re.split(r"[\n,]+", text) if token.strip()]
 
 
 def _store_strip_config(tokens: list[str] | None) -> str | None:

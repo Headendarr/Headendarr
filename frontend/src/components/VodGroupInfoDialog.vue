@@ -117,13 +117,13 @@
                       <TicTextInput
                         v-model="category.strip_title_prefixes"
                         label="Strip Title Prefixes"
-                        description="Optional. Separate multiple values with commas. Example: `EN:`, `EN ★`, `FR ★`. Use this so matching movies and TV series from multiple XC sources can deduplicate correctly."
+                        description="Optional. Separate multiple values with commas. Example: `EN:,EN ✪,EN ★,[FR]`. Use this so matching movies and TV series from multiple XC sources can deduplicate correctly."
                       />
 
                       <TicTextInput
                         v-model="category.strip_title_suffixes"
                         label="Strip Title Suffixes"
-                        description="Optional. Separate multiple values with commas. Example: `- 2025`, `[4K]`. Use this when providers append labels that would otherwise stop cross-source deduplication."
+                        description="Optional. Separate multiple values with commas. Example: `- 2025,[4K]`. Use this when providers append labels that would otherwise stop cross-source deduplication."
                       />
                     </div>
                   </q-item-section>
@@ -300,8 +300,8 @@ export default {
           playlist_name: categoryItem.playlist_name,
           name: categoryItem.name,
           item_count: categoryItem.item_count || 0,
-          strip_title_prefixes: (categoryItem.strip_title_prefixes || []).join('\n'),
-          strip_title_suffixes: (categoryItem.strip_title_suffixes || []).join('\n'),
+          strip_title_prefixes: this.formatStripRules(categoryItem.strip_title_prefixes),
+          strip_title_suffixes: this.formatStripRules(categoryItem.strip_title_suffixes),
           config_open: false,
         }));
       } else {
@@ -400,6 +400,12 @@ export default {
         return;
       }
       this.selectedCategories = (this.selectedCategories || []).filter((item) => item.local_key !== category.local_key);
+    },
+    formatStripRules(value) {
+      if (Array.isArray(value)) {
+        return value.map((item) => String(item || '').trim()).filter(Boolean).join(', ');
+      }
+      return String(value || '').trim();
     },
     splitStripRules(value) {
       return String(value || '').split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
