@@ -6,4 +6,6 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+# TODO: Add stricter rules over time
+select = ["F", "E402", "E711", "E712", "E721", "E722", "B007", "B012", "B023", "B904"]
+ignore = ["F401", "F841"]

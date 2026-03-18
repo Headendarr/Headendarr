@@ -6,6 +6,7 @@ import os
 import secrets
 import subprocess
 import threading
+from typing import TypeAlias
 from urllib.parse import quote_plus
 
 import aiofiles
@@ -14,6 +15,8 @@ from mergedeep import merge
 
 from backend.security import generate_stream_key
 from backend.stream_profiles import SUPPORTED_STREAM_PROFILES
+
+UserFileData: TypeAlias = dict[str, object]
 
 
 def resolve_tvh_stream_buffer_mode(settings_section):
@@ -74,7 +77,7 @@ def is_tvh_process_running_locally_sync():
         return False
 
 
-async def get_user_file(directory, username):
+async def get_user_file(directory: str, username: str) -> tuple[str | None, UserFileData | None]:
     if os.path.exists(directory) and os.listdir(directory):
         for filename in os.listdir(directory):
             file_path = os.path.join(directory, filename)
@@ -93,7 +96,7 @@ async def get_user_file(directory, username):
 async def update_accesscontrol_files():
     accesscontrol_path = os.path.join(get_home_dir(), ".tvheadend", "accesscontrol")
     file_path, data = await get_user_file(accesscontrol_path, "tic-admin")
-    if data:
+    if data and file_path:
         data["prefix"] = "0.0.0.0/0,::/0"
         async with aiofiles.open(file_path, "w") as outfile:
             await outfile.write(json.dumps(data, indent=4))
@@ -180,7 +183,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 class Config:
-    runtime_key = ""
+    runtime_key: int = 0
 
     def __init__(self, **kwargs):
         # Set default directories
