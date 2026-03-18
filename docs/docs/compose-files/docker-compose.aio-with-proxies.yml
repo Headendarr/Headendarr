@@ -58,6 +58,7 @@ services:
       # Recording storage
       - /data/containers/tvh-iptv/tic-recordings:/recordings
       - /data/containers/tvh-iptv/tic-timeshift:/timeshift
+      - /data/containers/tvh-iptv/tic-library:/library
 
     ## # DEVICES:
     ## devices:

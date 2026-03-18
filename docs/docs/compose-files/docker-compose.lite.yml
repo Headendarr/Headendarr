@@ -66,6 +66,7 @@ services:
       - /data/containers/tvh-iptv/tvh-config:/config
       - /data/containers/tvh-iptv/tvh-recordings:/recordings
       - /data/containers/tvh-iptv/tvh-timeshift:/timeshift
+      - /data/containers/tvh-iptv/tvh-library:/library
 
     ## # DEVICES:
     ## devices:
