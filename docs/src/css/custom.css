@@ -4,41 +4,41 @@
 
 /* Root variables for light mode */
 :root {
-  --ifm-color-primary: #201335;
-  --ifm-color-primary-dark: #1b102d;
-  --ifm-color-primary-darker: #190f2a;
-  --ifm-color-primary-darkest: #140c22;
-  --ifm-color-primary-light: #25163d;
-  --ifm-color-primary-lighter: #271840;
-  --ifm-color-primary-lightest: #2c1b48;
+  --ifm-color-primary: #1787aa;
+  --ifm-color-primary-dark: #15799a;
+  --ifm-color-primary-darker: #147291;
+  --ifm-color-primary-darkest: #105e77;
+  --ifm-color-primary-light: #1995ba;
+  --ifm-color-primary-lighter: #1a9cc3;
+  --ifm-color-primary-lightest: #24add7;
   --ifm-code-font-size: 95%;
 
-  --ifm-hero-background-color: #f7f7f7;
+  --ifm-hero-background-color: #f4fafc;
   --ifm-hero-text-color: var(--ifm-color-primary);
 
-  --ifm-color-secondary: #4f4789;
-  --ifm-color-accent: #ffb17a;
+  --ifm-color-secondary: #79d2c0;
+  --ifm-color-accent: #f59e7a;
 
   --ifm-font-color-base: #222; /* Darker base text for readability */
 }
 
 /* Root variables for dark mode */
 [data-theme="dark"] {
-  --ifm-color-primary: #6353a4; /* Lighter primary for dark mode */
-  --ifm-color-primary-dark: #4f4789;
-  --ifm-color-primary-darker: #453e7a;
-  --ifm-color-primary-darkest: #3b356a;
-  --ifm-color-primary-light: #7769bf;
-  --ifm-color-primary-lighter: #8c7fd5;
-  --ifm-color-primary-lightest: #a195e0;
+  --ifm-color-primary: #59bfdc;
+  --ifm-color-primary-dark: #3ab2d5;
+  --ifm-color-primary-darker: #2aaacf;
+  --ifm-color-primary-darkest: #2189a7;
+  --ifm-color-primary-light: #79cbe3;
+  --ifm-color-primary-lighter: #89d2e7;
+  --ifm-color-primary-lightest: #a7deee;
 
-  --ifm-hero-background-color: #121212;
+  --ifm-hero-background-color: #0b0f14;
   --ifm-hero-text-color: #fff;
 
-  --ifm-color-secondary: #ffb17a;
-  --ifm-color-accent: #4f4789;
+  --ifm-color-secondary: #79d2c0;
+  --ifm-color-accent: #f59e7a;
 
-  --ifm-background-color: #121212;
+  --ifm-background-color: #0b0f14;
   --ifm-font-color-base: #eee;
 }
 
@@ -49,19 +49,19 @@
 
 .button--secondary {
   --ifm-button-background-color: var(--ifm-color-secondary);
-  --ifm-button-color: #fff;
+  --ifm-button-color: #0d2731;
   --ifm-button-border-color: var(--ifm-color-secondary);
 }
 
 .button--secondary:hover {
   --ifm-button-background-color: var(--ifm-color-accent);
-  --ifm-button-color: #fff;
+  --ifm-button-color: #12212d;
   --ifm-button-border-color: var(--ifm-color-accent);
 }
 
 /* Footer Customization */
 .footer {
-  --ifm-footer-background-color: #1a0f2b;
+  --ifm-footer-background-color: #0f1720;
   --ifm-footer-color: rgba(255, 255, 255, 0.7);
   --ifm-footer-link-color: #ffffff;
   --ifm-footer-title-color: var(--ifm-color-accent);

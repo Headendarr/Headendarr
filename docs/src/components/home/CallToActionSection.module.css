@@ -31,16 +31,24 @@
 }
 
 .ctaButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
   padding: 1rem 3rem;
   font-size: 1.25rem;
   font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
   text-transform: uppercase;
   letter-spacing: 1px;
+  white-space: normal;
   border-radius: 50px;
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
   transition: all 0.3s !important;
-  background-color: #ffb17a !important; /* Hardcoded orange */
-  color: #1a0f2b !important; /* Dark purple text */
+  background-color: var(--ifm-color-accent) !important;
+  color: #10212c !important;
   border: none !important;
 }
 
@@ -48,6 +56,6 @@
   transform: translateY(-3px) !important;
   box-shadow: 0 15px 30px rgba(0, 0, 0, 0.4) !important;
   background-color: #ffffff !important;
-  color: #1a0f2b !important;
+  color: #10212c !important;
   text-decoration: none !important;
 }
