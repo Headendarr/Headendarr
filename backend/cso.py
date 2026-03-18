@@ -764,6 +764,7 @@ def _proxy_response_headers(status_code, upstream_headers, request_headers=None)
 
     return headers
 
+
 def _parse_range_request(range_header: str | None, total_size: int | None = None):
     text = clean_text(range_header)
     if not text or not text.lower().startswith("bytes="):
@@ -1346,7 +1347,9 @@ class VodProxySession:
                 from_start = _is_from_start_request(self.request_headers)
                 parsed_range = _parse_range_request(range_header, total_size=self.cache_entry.expected_size)
                 self.direct_next_offset = int(parsed_range.get("start") or 0) if parsed_range else 0
-                self.requested_end = int(parsed_range.get("end")) if parsed_range and parsed_range.get("end") is not None else None
+                self.requested_end = (
+                    int(parsed_range.get("end")) if parsed_range and parsed_range.get("end") is not None else None
+                )
 
                 if self.cache_entry.complete and self.cache_entry.expected_size:
                     self.local_only = True
@@ -1478,7 +1481,12 @@ class VodProxySession:
                     clean_text(self.blocking_response.headers.get("Accept-Ranges")) or None,
                     self.upstream_url,
                 )
-                if not from_start and cache_meta.get("cacheable") and self.cache_entry and not self.cache_entry.downloader_running:
+                if (
+                    not from_start
+                    and cache_meta.get("cacheable")
+                    and self.cache_entry
+                    and not self.cache_entry.downloader_running
+                ):
                     await _start_vod_cache_download(
                         self.cache_entry,
                         self.cache_owner_key,
@@ -1596,7 +1604,7 @@ class VodProxySession:
                 return
             while True:
                 if not self.running:
-                    break 
+                    break
                 try:
                     chunk = await asyncio.to_thread(next, self.blocking_iterator, None)
                 except (
@@ -1676,7 +1684,9 @@ class VodProxySession:
                 async with aiofiles.open(target_path, "rb") as handle:
                     await handle.seek(offset)
                     while self.running:
-                        current_written = int(entry.expected_size or 0) if entry.complete else int(entry.bytes_written or 0)
+                        current_written = (
+                            int(entry.expected_size or 0) if entry.complete else int(entry.bytes_written or 0)
+                        )
                         max_end = current_written - 1
                         if final_end is not None:
                             max_end = min(max_end, final_end)
@@ -3375,7 +3385,7 @@ class CsoIngestSession:
                 self.current_capacity_key = None
                 self.running = False
                 self.process = None
-                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source_id)
+                await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source.id)
                 continue
             old_capacity_key = self.current_capacity_key
             old_source_id = getattr(self.current_source, "id", None)
@@ -5761,7 +5771,7 @@ async def _resolve_username_for_stream_key(config, stream_key):
 
 
 def subscribe_slate_stream(
-    policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
+    config, policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
 ):
     allow_unavailable_slate = should_allow_unavailable_slate(profile_name, channel=channel, source=source)
     if not CSO_UNAVAILABLE_SHOW_SLATE or not allow_unavailable_slate:

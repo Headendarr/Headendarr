@@ -116,7 +116,9 @@ def _ordered_vod_category_links(links) -> list[VodCategoryXcCategory]:
 
 
 def _ordered_vod_category_ids(links) -> list[int]:
-    return [int(link.xc_category_id) for link in _ordered_vod_category_links(links) if getattr(link, "xc_category_id", None)]
+    return [
+        int(link.xc_category_id) for link in _ordered_vod_category_links(links) if getattr(link, "xc_category_id", None)
+    ]
 
 
 def _vod_category_priority_map(links) -> dict[int, int]:
@@ -171,13 +173,10 @@ def user_has_vod_access(user: User | None) -> bool:
     return mode in {VOD_ACCESS_MOVIES, VOD_ACCESS_SERIES, VOD_ACCESS_BOTH}
 
 
-def clean_vod_content_type(value) -> str:
-    text = clean_key(value)
-    if text in {VOD_KIND_MOVIE, "movies", "vod"}:
-        return VOD_KIND_MOVIE
-    if text in {VOD_KIND_SERIES, "tv", "show", "shows"}:
-        return VOD_KIND_SERIES
-    return VOD_KIND_MOVIE
+def require_vod_content_type(value) -> str:
+    if value in {VOD_KIND_MOVIE, VOD_KIND_SERIES}:
+        return value
+    raise ValueError("content_type must be 'movie' or 'series'")
 
 
 def build_vod_activity_metadata(candidate, episode=None) -> dict[str, str]:
@@ -220,9 +219,7 @@ def build_vod_activity_metadata(candidate, episode=None) -> dict[str, str]:
     }
 
 
-def build_local_cache_source(
-    candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None
-) -> "CsoSource | None":
+def build_local_cache_source(candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None):
     if candidate is None or getattr(candidate, "group_item", None) is None:
         return None
     internal_id = int(candidate.group_item.id)
@@ -300,6 +297,7 @@ async def select_vod_playback_target(
     if blocked_capacity and saw_stream_url:
         return preferred_candidate, "", "capacity_blocked"
     return preferred_candidate, "", "stream_unavailable"
+
 
 def _extract_year(payload: dict) -> str:
     for key in ("year", "releaseDate", "release_date", "releasedate"):
@@ -410,15 +408,7 @@ def _dedupe_key_from_values(
     suffixes: list[str] | None = None,
 ) -> str:
     filtered_title = _filtered_title(title, prefixes=prefixes, suffixes=suffixes) or clean_key(title)
-    return f"{clean_vod_content_type(kind)}::{filtered_title}::{clean_text(year)}"
-
-
-def _dedupe_key(
-    kind: str, payload: dict[str, object], prefixes: list[str] | None = None, suffixes: list[str] | None = None
-) -> str:
-    title = payload.get("name") or payload.get("title")
-    year = _extract_year(payload)
-    return _dedupe_key_from_values(kind, title, year, prefixes=prefixes, suffixes=suffixes)
+    return f"{kind}::{filtered_title}::{clean_text(year)}"
 
 
 def _dedupe_key_for_item(item: XcVodItem, prefixes: list[str] | None = None, suffixes: list[str] | None = None) -> str:
@@ -575,7 +565,7 @@ def _cache_payload_json(payload: object) -> str:
 
 
 def _vod_category_type_dir_name(content_type: str) -> str:
-    return "Movies" if clean_vod_content_type(content_type) == VOD_KIND_MOVIE else "Shows"
+    return "Shows" if content_type == VOD_KIND_SERIES else "Movies"
 
 
 def _vod_export_slug(value: object, fallback: str = "category") -> str:
@@ -643,37 +633,91 @@ def _vod_season_dir_name(episode: VodCategoryEpisode) -> str:
     return f"Season {season_number:02d}"
 
 
-def _vod_strm_registry_path(root_path: Path | None = None) -> Path:
-    return (root_path or _VOD_STRM_ROOT) / _VOD_STRM_REGISTRY_FILE
-
-
-def _load_vod_strm_registry_sync(root_path: Path | None = None) -> dict[str, object]:
-    registry_path = _vod_strm_registry_path(root_path)
+def load_vod_strm_registry_sync() -> dict[str, object]:
+    registry_path = _VOD_STRM_ROOT / _VOD_STRM_REGISTRY_FILE
     if not registry_path.exists():
         return {}
     try:
-        return json.loads(registry_path.read_text(encoding="utf-8"))
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    registry: dict[str, object] = {}
+    for key, entry in payload.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        relative_dir = entry.get("relative_dir")
+        if not isinstance(relative_dir, str) or not relative_dir:
+            continue
+        files = entry.get("files")
+        dirs = entry.get("dirs")
+        registry[key] = {
+            "relative_dir": relative_dir,
+            "files": [value for value in files if isinstance(value, str) and value] if isinstance(files, list) else [],
+            "dirs": [value for value in dirs if isinstance(value, str) and value] if isinstance(dirs, list) else [],
+        }
+    return registry
 
 
-def _write_vod_strm_registry_sync(registry: dict[str, object], root_path: Path | None = None):
-    root = root_path or _VOD_STRM_ROOT
-    root.mkdir(parents=True, exist_ok=True)
-    registry_path = _vod_strm_registry_path(root)
+def write_vod_strm_registry_sync(registry: dict[str, object]):
+    _VOD_STRM_ROOT.mkdir(parents=True, exist_ok=True)
+    registry_path = _VOD_STRM_ROOT / _VOD_STRM_REGISTRY_FILE
     registry_path.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _remove_vod_export_path_sync(relative_path: str, root_path: Path | None = None):
-    if not clean_text(relative_path):
+def remove_vod_export_path_sync(relative_path: str):
+    if not relative_path:
         return
-    target_path = (root_path or _VOD_STRM_ROOT) / relative_path
+    target_path = _VOD_STRM_ROOT / relative_path
     if target_path.exists():
         shutil.rmtree(target_path, ignore_errors=True)
 
 
 def _vod_export_registry_key(user_id: int, category_id: int) -> str:
     return f"{int(user_id)}:{int(category_id)}"
+
+
+def _scan_vod_export_tree_sync(relative_dir: str) -> tuple[set[str], set[str]]:
+    if not relative_dir:
+        return set(), set()
+    target_dir = _VOD_STRM_ROOT / relative_dir
+    if not target_dir.exists():
+        return set(), set()
+
+    tracked_dirs = {relative_dir}
+    tracked_files = set()
+    for current_root, dir_names, file_names in os.walk(target_dir):
+        current_path = Path(current_root)
+        current_relative = current_path.relative_to(_VOD_STRM_ROOT).as_posix()
+        if current_relative:
+            tracked_dirs.add(current_relative)
+        for dir_name in dir_names:
+            tracked_dirs.add((current_path / dir_name).relative_to(_VOD_STRM_ROOT).as_posix())
+        for file_name in file_names:
+            tracked_files.add((current_path / file_name).relative_to(_VOD_STRM_ROOT).as_posix())
+    return tracked_files, tracked_dirs
+
+
+def _remove_vod_export_file_sync(relative_path: str):
+    if not relative_path:
+        return
+    target_path = _VOD_STRM_ROOT / relative_path
+    if target_path.exists():
+        target_path.unlink(missing_ok=True)
+
+
+def _remove_vod_export_dir_if_empty_sync(relative_path: str):
+    if not relative_path:
+        return
+    target_path = _VOD_STRM_ROOT / relative_path
+    if not target_path.exists():
+        return
+    try:
+        target_path.rmdir()
+    except OSError:
+        return
 
 
 def _vod_export_base_url_from_settings(config) -> str:
@@ -688,20 +732,22 @@ def _vod_export_base_url_from_settings(config) -> str:
 def _category_requires_vod_library_sync(category: VodCategory | None) -> bool:
     if category is None:
         return False
-    return bool(getattr(category, "generate_strm_files", False)) or bool(getattr(category, "expose_http_library", False))
+    return bool(getattr(category, "generate_strm_files", False)) or bool(
+        getattr(category, "expose_http_library", False)
+    )
 
 
-def _vod_http_library_index_path(root_path: Path | None = None) -> Path:
-    return (root_path or _VOD_HTTP_LIBRARY_ROOT) / _VOD_HTTP_LIBRARY_INDEX_FILE
+def _vod_http_library_index_path() -> Path:
+    return _VOD_HTTP_LIBRARY_ROOT / _VOD_HTTP_LIBRARY_INDEX_FILE
 
 
 def _vod_http_category_manifest_relpath(content_type: str, category_id: int) -> str:
-    manifest_dir = "movies" if clean_vod_content_type(content_type) == VOD_KIND_MOVIE else "shows"
+    manifest_dir = "shows" if content_type == VOD_KIND_SERIES else "movies"
     return f"{manifest_dir}/{int(category_id)}.json"
 
 
-def _vod_http_category_manifest_path(content_type: str, category_id: int, root_path: Path | None = None) -> Path:
-    return (root_path or _VOD_HTTP_LIBRARY_ROOT) / _vod_http_category_manifest_relpath(content_type, category_id)
+def _vod_http_category_manifest_path(content_type: str, category_id: int) -> Path:
+    return _VOD_HTTP_LIBRARY_ROOT / _vod_http_category_manifest_relpath(content_type, category_id)
 
 
 def _load_json_file_sync(file_path: Path) -> dict[str, object]:
@@ -719,33 +765,32 @@ def _write_json_file_sync(file_path: Path, payload: dict[str, object]):
     file_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _load_vod_http_library_index_sync(root_path: Path | None = None) -> dict[str, object]:
-    return _load_json_file_sync(_vod_http_library_index_path(root_path))
+def load_vod_http_library_index_sync() -> dict[str, object]:
+    return _load_json_file_sync(_vod_http_library_index_path())
 
 
-def _write_vod_http_library_index_sync(index_payload: dict[str, object], root_path: Path | None = None):
-    root = root_path or _VOD_HTTP_LIBRARY_ROOT
-    root.mkdir(parents=True, exist_ok=True)
-    _write_json_file_sync(_vod_http_library_index_path(root), index_payload)
+def _write_vod_http_library_index_sync(index_payload: dict[str, object]):
+    _VOD_HTTP_LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
+    _write_json_file_sync(_vod_http_library_index_path(), index_payload)
 
 
-def _remove_vod_http_library_manifest_sync(content_type: str, category_id: int, root_path: Path | None = None):
-    manifest_path = _vod_http_category_manifest_path(content_type, category_id, root_path=root_path)
+def remove_vod_http_library_manifest_sync(content_type: str, category_id: int):
+    manifest_path = _vod_http_category_manifest_path(content_type, category_id)
     if manifest_path.exists():
         manifest_path.unlink(missing_ok=True)
     cache_key = str(manifest_path)
     _vod_http_manifest_cache.pop(cache_key, None)
 
 
-def _upsert_vod_http_library_index_entry_sync(category: VodCategory, root_path: Path | None = None):
-    index_payload = _load_vod_http_library_index_sync(root_path)
+def _upsert_vod_http_library_index_entry_sync(category: VodCategory):
+    index_payload = load_vod_http_library_index_sync()
     categories = [row for row in (index_payload.get("categories") or []) if isinstance(row, dict)]
     category_id = int(category.id)
     manifest_relpath = _vod_http_category_manifest_relpath(category.content_type, category_id)
     entry = {
         "category_id": category_id,
         "category_name": category.name,
-        "content_type": clean_vod_content_type(category.content_type),
+        "content_type": category.content_type,
         "content_dir": _vod_category_type_dir_name(category.content_type),
         "category_slug": _vod_export_slug(category.name, fallback=f"category-{category_id}"),
         "root_path": f"{_vod_category_type_dir_name(category.content_type)}/{_vod_export_slug(category.name, fallback=f'category-{category_id}')}",
@@ -763,16 +808,16 @@ def _upsert_vod_http_library_index_entry_sync(category: VodCategory, root_path: 
     )
     index_payload["categories"] = next_categories
     index_payload["generated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_vod_http_library_index_sync(index_payload, root_path=root_path)
+    _write_vod_http_library_index_sync(index_payload)
 
 
-def _remove_vod_http_library_index_entry_sync(category_id: int, root_path: Path | None = None):
-    index_payload = _load_vod_http_library_index_sync(root_path)
+def remove_vod_http_library_index_entry_sync(category_id: int):
+    index_payload = load_vod_http_library_index_sync()
     categories = [row for row in (index_payload.get("categories") or []) if isinstance(row, dict)]
     next_categories = [row for row in categories if int(row.get("category_id") or 0) != int(category_id)]
     index_payload["categories"] = next_categories
     index_payload["generated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_vod_http_library_index_sync(index_payload, root_path=root_path)
+    _write_vod_http_library_index_sync(index_payload)
 
 
 def _ensure_unique_relative_path(relative_path: Path, used_paths: set[str], unique_suffix: str) -> Path:
@@ -801,7 +846,9 @@ def _vod_http_manifest_dir_node() -> dict[str, object]:
     return {"type": "dir", "children": []}
 
 
-def _vod_http_manifest_add_child(manifest: dict[str, object], parent_key: str, child_name: str, child_path: str, child_kind: str):
+def _vod_http_manifest_add_child(
+    manifest: dict[str, object], parent_key: str, child_name: str, child_path: str, child_kind: str
+):
     nodes = manifest.setdefault("nodes", {})
     parent_node = nodes.setdefault(parent_key, _vod_http_manifest_dir_node())
     children = parent_node.setdefault("children", [])
@@ -839,7 +886,7 @@ def _build_vod_http_category_manifest(category: VodCategory) -> dict[str, object
         "category_id": int(category.id),
         "category_name": category.name,
         "category_slug": _vod_export_slug(category.name, fallback=f"category-{int(category.id)}"),
-        "content_type": clean_vod_content_type(category.content_type),
+        "content_type": category.content_type,
         "content_dir": _vod_category_type_dir_name(category.content_type),
         "root_path": f"{_vod_category_type_dir_name(category.content_type)}/{_vod_export_slug(category.name, fallback=f'category-{int(category.id)}')}",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -847,66 +894,97 @@ def _build_vod_http_category_manifest(category: VodCategory) -> dict[str, object
     }
 
 
-def _write_vod_http_category_manifest_sync(category: VodCategory, manifest: dict[str, object], root_path: Path | None = None):
-    manifest_path = _vod_http_category_manifest_path(category.content_type, int(category.id), root_path=root_path)
+def _write_vod_http_category_manifest_sync(category: VodCategory, manifest: dict[str, object], include_in_index: bool):
+    manifest_path = _vod_http_category_manifest_path(category.content_type, int(category.id))
     _write_json_file_sync(manifest_path, manifest)
     _vod_http_manifest_cache.pop(str(manifest_path), None)
-    _upsert_vod_http_library_index_entry_sync(category, root_path=root_path)
-
-
-def _prepare_vod_category_export_dirs_sync(
-    category_id: int, current_users_info: list[dict], root_path: Path | None = None
-):
-    """
-    Cleans up old directories for this category and prepares new ones.
-    current_users_info: list of {"user_id": int, "relative_dir": Path}
-    """
-    root = root_path or _VOD_STRM_ROOT
-    root.mkdir(parents=True, exist_ok=True)
-    registry = _load_vod_strm_registry_sync(root)
-    category_suffix = f":{int(category_id)}"
-
-    # 1. Identify what we currently want
-    desired_keys = {f"{int(info['user_id'])}{category_suffix}": info["relative_dir"] for info in current_users_info}
-
-    # 2. Cleanup registry and disk for entries that are no longer desired or have changed paths
-    for key in list(registry.keys()):
-        if key.endswith(category_suffix):
-            old_rel_path = registry[key].get("relative_dir")
-            new_rel_path = desired_keys.get(key)
-
-            if new_rel_path is None or str(new_rel_path) != str(old_rel_path):
-                # Remove old directory if it exists
-                if old_rel_path:
-                    _remove_vod_export_path_sync(old_rel_path, root)
-                registry.pop(key)
-
-    # 3. Prepare fresh directories for the current run
-    for key, rel_path in desired_keys.items():
-        target_dir = root / rel_path
-        if target_dir.exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        registry[key] = {"relative_dir": str(rel_path)}
-
-    _write_vod_strm_registry_sync(registry, root)
-
-
-def _write_strm_file_sync(file_path: Path, url: str, root_path: Path | None = None):
-    root = root_path or _VOD_STRM_ROOT
-    full_path = root / file_path
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text(f"{url}\n", encoding="utf-8")
-    # logger.debug("Wrote VOD .strm file path='%s'", file_path)
-
-
-def _write_nfo_file_sync(file_path: Path, nfo_content: str, root_path: Path | None = None):
-    if not nfo_content:
+    if include_in_index:
+        _upsert_vod_http_library_index_entry_sync(category)
         return
-    root = root_path or _VOD_STRM_ROOT
-    full_path = root / file_path
+    remove_vod_http_library_index_entry_sync(int(category.id))
+
+
+def _write_text_file_if_changed(file_path: Path, content: str) -> bool:
+    """Write a text file only when its content has actually changed."""
+    full_path = _VOD_STRM_ROOT / file_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text(nfo_content, encoding="utf-8")
+    if full_path.exists():
+        try:
+            if full_path.read_text(encoding="utf-8") == content:
+                return False
+        except Exception:
+            pass
+    full_path.write_text(content, encoding="utf-8")
+    return True
+
+
+def _sync_vod_category_export_files_sync(category_id: int, export_states: dict[str, dict[str, object]]):
+    """Remove stale export paths for a category and write the files described by this run."""
+    _VOD_STRM_ROOT.mkdir(parents=True, exist_ok=True)
+    registry = load_vod_strm_registry_sync()
+    category_suffix = f":{int(category_id)}"
+    desired_keys = set(export_states.keys())
+
+    # Remove old export folders that should not exist any more.
+    for key in list(registry.keys()):
+        if not key.endswith(category_suffix):
+            continue
+        entry = registry.get(key)
+        old_rel_path = entry["relative_dir"] if entry else ""
+        state = export_states.get(key)
+        if state is None:
+            if old_rel_path:
+                remove_vod_export_path_sync(old_rel_path)
+            registry.pop(key, None)
+            continue
+
+        new_rel_path = str(state["relative_dir"])
+        if old_rel_path and new_rel_path and old_rel_path != new_rel_path:
+            remove_vod_export_path_sync(old_rel_path)
+            registry.pop(key, None)
+
+    # Go through each export folder and compare it with what we just built.
+    for key, state in export_states.items():
+        relative_dir = state["relative_dir"]
+        target_dir = _VOD_STRM_ROOT / relative_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        existing_entry = registry.get(key)
+        tracked_files = set(existing_entry["files"]) if existing_entry else set()
+        tracked_dirs = set(existing_entry["dirs"]) if existing_entry else set()
+        if not tracked_files and not tracked_dirs:
+            tracked_files, tracked_dirs = _scan_vod_export_tree_sync(relative_dir)
+
+        expected_files = set(state["files"].keys())
+        expected_dirs = set(state["dirs"])
+        expected_dirs.add(relative_dir)
+
+        # Delete files we had before but did not write this time.
+        for stale_file in sorted(tracked_files - expected_files):
+            _remove_vod_export_file_sync(stale_file)
+
+        # Delete empty folders from the bottom up.
+        stale_dirs = sorted(tracked_dirs - expected_dirs, key=lambda value: (value.count("/"), value), reverse=True)
+        for stale_dir in stale_dirs:
+            _remove_vod_export_dir_if_empty_sync(stale_dir)
+
+        for file_path, content in state["files"].items():
+            _write_text_file_if_changed(Path(file_path), content)
+
+        registry[key] = {
+            "relative_dir": relative_dir,
+            "files": sorted(expected_files),
+            "dirs": sorted(expected_dirs),
+        }
+
+    # Remove old registry entries after their folders are gone.
+    for key in [
+        entry_key
+        for entry_key in registry.keys()
+        if entry_key.endswith(category_suffix) and entry_key not in desired_keys
+    ]:
+        registry.pop(key, None)
+
+    write_vod_strm_registry_sync(registry)
 
 
 def _xml_text(parent, tag: str, text: object, attrib: dict[str, str] | None = None):
@@ -1037,7 +1115,11 @@ def _generate_movie_nfo(item: VodCategoryItem) -> str:
     _xml_text(root, "outline", plot)
     _xml_text(root, "tagline", _first_summary_value(summary, "tagline"))
     _xml_text(root, "rating", _first_summary_value(summary, "rating", "rating_5based"))
-    _xml_text(root, "premiered", clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")))
+    _xml_text(
+        root,
+        "premiered",
+        clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")),
+    )
     _xml_multi_text(root, "genre", _nfo_text_values(_first_summary_value(summary, "genre", "genres")))
     _xml_multi_text(root, "director", _nfo_text_values(_first_summary_value(summary, "director", "directors")))
     _add_nfo_cast(root, _first_summary_value(summary, "cast", "actors"))
@@ -1059,7 +1141,11 @@ def _generate_series_nfo(item: VodCategoryItem) -> str:
 
     _xml_text(root, "plot", _first_summary_value(summary, "plot", "description", "overview"))
     _xml_text(root, "rating", _first_summary_value(summary, "rating", "rating_5based"))
-    _xml_text(root, "premiered", clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")))
+    _xml_text(
+        root,
+        "premiered",
+        clean_text(item.release_date) or clean_text(_first_summary_value(summary, "releaseDate", "release_date")),
+    )
     _xml_multi_text(root, "genre", _nfo_text_values(_first_summary_value(summary, "genre", "genres")))
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
@@ -1112,9 +1198,7 @@ async def _get_db_cached_metadata(playlist_id: int, action: str, upstream_item_i
         return _load_payload_json(cache_row.payload_json)
 
 
-async def _set_db_cached_metadata(
-    playlist_id: int, action: str, upstream_item_id: str, payload: object
-):
+async def _set_db_cached_metadata(playlist_id: int, action: str, upstream_item_id: str, payload: object):
     now_utc = datetime.now(timezone.utc)
     async with Session() as session:
         async with session.begin():
@@ -1224,7 +1308,7 @@ async def _load_vod_category_for_export(category_id: int) -> VodCategory | None:
         return result.scalars().first()
 
 
-async def _eligible_vod_export_users(category: VodCategory) -> list[User]:
+async def eligible_vod_export_users(category: VodCategory) -> list[User]:
     async with Session() as session:
         result = await session.execute(select(User).options(selectinload(User.roles)).where(User.is_active.is_(True)))
         users = result.scalars().all()
@@ -1239,7 +1323,7 @@ async def _eligible_vod_export_users(category: VodCategory) -> list[User]:
 
 def _build_vod_strm_url(base_url: str, user: User, content_type: str, item_id: int, extension: str) -> str:
     suffix = clean_text(extension).lstrip(".").lower() or "mp4"
-    route_name = "movie" if clean_vod_content_type(content_type) == VOD_KIND_MOVIE else "series"
+    route_name = "series" if content_type == VOD_KIND_SERIES else "movie"
     return f"{str(base_url).rstrip('/')}/{route_name}/{quote(user.username)}/{quote(user.streaming_key)}/{int(item_id)}.{suffix}"
 
 
@@ -1316,9 +1400,9 @@ async def _refresh_series_items(item_ids, concurrency: int = VOD_SYNC_SERIES_REF
 async def sync_vod_category_strm_files(config, category_id: int) -> bool:
     started_at = time.perf_counter()
     category = await _load_vod_category_for_export(int(category_id))
-    category_name = getattr(category, "name", f"Category {category_id}") if category is not None else f"Category {category_id}"
-    http_library_enabled = bool(getattr(category, "expose_http_library", False)) if category is not None else False
-    strm_enabled = bool(getattr(category, "generate_strm_files", False)) if category is not None else False
+    category_name = (
+        getattr(category, "name", f"Category {category_id}") if category is not None else f"Category {category_id}"
+    )
 
     # If category is deleted, disabled, or has no library outputs enabled, clean up.
     if (
@@ -1326,12 +1410,12 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
         or not bool(getattr(category, "enabled", False))
         or not _category_requires_vod_library_sync(category)
     ):
-        await asyncio.to_thread(_prepare_vod_category_export_dirs_sync, int(category_id), [])
-        await asyncio.to_thread(_remove_vod_http_library_index_entry_sync, int(category_id))
+        await asyncio.to_thread(_sync_vod_category_export_files_sync, int(category_id), {})
+        await asyncio.to_thread(remove_vod_http_library_index_entry_sync, int(category_id))
         if category is not None:
             await asyncio.to_thread(
-                _remove_vod_http_library_manifest_sync,
-                clean_vod_content_type(getattr(category, "content_type", "")),
+                remove_vod_http_library_manifest_sync,
+                getattr(category, "content_type", ""),
                 int(category.id),
             )
         if category is None:
@@ -1344,41 +1428,47 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
         )
         return {"category_id": int(category_id), "users": 0, "files": 0, "removed_only": True}
 
-    content_type = clean_vod_content_type(getattr(category, "content_type", ""))
+    http_library_enabled = bool(category.expose_http_library)
+    strm_enabled = bool(category.generate_strm_files)
+    content_type = category.content_type
     kind_label = "Movie" if content_type == VOD_KIND_MOVIE else "Series"
 
-    users = await _eligible_vod_export_users(category)
+    # Work out which users currently need exported library files for this category.
+    users = await eligible_vod_export_users(category)
     if not users and not http_library_enabled:
-        await asyncio.to_thread(_prepare_vod_category_export_dirs_sync, int(category_id), [])
-        await asyncio.to_thread(_remove_vod_http_library_index_entry_sync, int(category.id))
-        await asyncio.to_thread(_remove_vod_http_library_manifest_sync, content_type, int(category.id))
-        return {"category_id": int(category.id), "users": 0}
+        # Nothing needs to be written, but we still keep an empty per-category manifest on disk.
+        category_manifest = _build_vod_http_category_manifest(category)
+        category_manifest["exports"] = []
+        category_manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
+        await asyncio.to_thread(_sync_vod_category_export_files_sync, int(category.id), {})
+        await asyncio.to_thread(_write_vod_http_category_manifest_sync, category, category_manifest, False)
+        return {"category_id": int(category.id), "users": 0, "files": 0}
 
     # Prepare for export
-    base_url = clean_text(getattr(category, "strm_base_url", ""))
+    base_url = category.strm_base_url or ""
     if strm_enabled and (not base_url or not urlparse(base_url).netloc):
+        # TODO: Remove get_tvh_publish_base_url fallback at a later date. This is slated for removal (maybe)
         base_url = _vod_export_base_url_from_settings(config) or await get_tvh_publish_base_url(config)
 
     content_type_dir = _vod_category_type_dir_name(category.content_type)
     category_slug = _vod_export_slug(category.name, fallback=f"category-{int(category.id)}")
 
-    # Map current users to their target directories
-    current_users_info = []
+    # This export map is the source of truth for the STRM/NFO cleanup and write pass later on.
+    export_states = {}
     for user in users:
         relative_dir = (
             Path(_vod_safe_name(user.username, fallback=f"user-{user.id}")) / content_type_dir / category_slug
         )
-        current_users_info.append({"user_id": int(user.id), "relative_dir": relative_dir})
-
-    # Registry-aware cleanup and directory preparation
-    await asyncio.to_thread(
-        _prepare_vod_category_export_dirs_sync,
-        int(category.id),
-        current_users_info if strm_enabled else [],
-    )
+        if not strm_enabled:
+            continue
+        export_states[_vod_export_registry_key(int(user.id), int(category.id))] = {
+            "relative_dir": relative_dir.as_posix(),
+            "files": {},
+            "dirs": {relative_dir.as_posix()},
+        }
 
     async with Session() as session:
-        # Get all items in this category
+        # Load the curated items and any title-strip rules once up front for the whole category.
         item_result = await session.execute(
             select(VodCategoryItem)
             .where(VodCategoryItem.category_id == int(category.id))
@@ -1396,7 +1486,9 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
         }
 
     total_files = 0
-    http_manifest = _build_vod_http_category_manifest(category) if http_library_enabled else None
+    # Build one per-category manifest in memory and use it for both HTTP library data and export summaries.
+    category_manifest = _build_vod_http_category_manifest(category)
+    category_manifest["exports"] = []
     used_http_paths: set[str] = set()
     item_count = len(category_items)
     for batch_index, item_batch in enumerate(_batched(category_items, size=VOD_SYNC_ITEM_BATCH_SIZE), start=1):
@@ -1420,6 +1512,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                     source_categories_by_item_id[category_item_key].append(source_category_key)
 
         if content_type == VOD_KIND_SERIES and item_ids:
+            # Series exports need fresh episode data before we can build either export output.
             refresh_stats = await _refresh_series_items(item_ids)
             async with Session() as session:
                 episode_result = await session.execute(
@@ -1446,6 +1539,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                 "get_vod_info" if content_type == VOD_KIND_MOVIE else "get_series_info",
             )
 
+        # Build the export plan and HTTP nodes for this batch without touching disk yet.
         for item in item_batch:
             source_category_ids = source_categories_by_item_id.get(int(item.id), [])
             strip_prefixes, strip_suffixes = _merge_strip_rules_for_source_categories(source_category_ids, strip_rules)
@@ -1474,16 +1568,19 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                         movie_folder = relative_dir / display_name
                         strm_path = movie_folder / f"{display_name}.strm"
                         nfo_path = movie_folder / f"{display_name}.nfo"
-
-                        url = _build_vod_strm_url(base_url, user, VOD_KIND_MOVIE, item.id, extension)
-                        _write_strm_file_sync(strm_path, url)
-                        _write_nfo_file_sync(nfo_path, movie_nfo)
+                        export_state = export_states[_vod_export_registry_key(int(user.id), int(category.id))]
+                        export_state["dirs"].update({movie_folder.as_posix()})
+                        export_state["files"][
+                            strm_path.as_posix()
+                        ] = f"{_build_vod_strm_url(base_url, user, VOD_KIND_MOVIE, item.id, extension)}\n"
+                        if movie_nfo:
+                            export_state["files"][nfo_path.as_posix()] = movie_nfo
                         total_files += 1
 
-                if http_manifest is not None:
-                    _vod_http_manifest_ensure_dir(http_manifest, http_movie_folder)
+                if http_library_enabled:
+                    _vod_http_manifest_ensure_dir(category_manifest, http_movie_folder)
                     _vod_http_manifest_add_file(
-                        http_manifest,
+                        category_manifest,
                         http_movie_folder / f"{display_name}.{extension}",
                         "movie_file",
                         {
@@ -1495,7 +1592,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                 continue
 
             episodes = episodes_by_item_id.get(int(item.id), [])
-            skip_http_series_export = http_manifest is not None and not episodes
+            skip_http_series_export = http_library_enabled and not episodes
             if skip_http_series_export:
                 logger.debug(
                     "Skipping HTTP library export for series item without episode cache category='%s' item_id=%s title='%s'",
@@ -1505,7 +1602,9 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                 )
             series_display_name = _vod_series_display_name(item, prefixes=strip_prefixes, suffixes=strip_suffixes)
             series_nfo = _generate_series_nfo(item)
-            http_series_folder = _ensure_unique_relative_path(Path(series_display_name), used_http_paths, str(int(item.id)))
+            http_series_folder = _ensure_unique_relative_path(
+                Path(series_display_name), used_http_paths, str(int(item.id))
+            )
             logger.debug(
                 "Exporting VOD series .strm category='%s' item_id=%s title='%s' users=%s episodes=%s",
                 category_name,
@@ -1518,10 +1617,14 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
             if strm_enabled:
                 for user in users:
                     relative_dir = (
-                        Path(_vod_safe_name(user.username, fallback=f"user-{user.id}")) / content_type_dir / category_slug
+                        Path(_vod_safe_name(user.username, fallback=f"user-{user.id}"))
+                        / content_type_dir
+                        / category_slug
                     )
                     series_folder = relative_dir / series_display_name
-                    _write_nfo_file_sync(series_folder / "tvshow.nfo", series_nfo)
+                    export_state = export_states[_vod_export_registry_key(int(user.id), int(category.id))]
+                    export_state["dirs"].update({series_folder.as_posix()})
+                    export_state["files"][(series_folder / "tvshow.nfo").as_posix()] = series_nfo
 
                     for episode in episodes:
                         file_stem = _vod_episode_display_name(
@@ -1530,20 +1633,23 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                         strm_name = f"{file_stem}.strm"
                         nfo_name = f"{file_stem}.nfo"
                         season_dir = _vod_season_dir_name(episode)
-                        extension = _resolve_group_output_extension(category.profile_id, episode.container_extension or "")
+                        extension = _resolve_group_output_extension(
+                            category.profile_id, episode.container_extension or ""
+                        )
 
                         episode.category_item = item
                         episode_nfo = _generate_episode_nfo(episode)
                         file_path = series_folder / season_dir / strm_name
                         nfo_path = series_folder / season_dir / nfo_name
-
-                        url = _build_vod_strm_url(base_url, user, VOD_KIND_SERIES, episode.id, extension)
-                        _write_strm_file_sync(file_path, url)
-                        _write_nfo_file_sync(nfo_path, episode_nfo)
+                        export_state["dirs"].add((series_folder / season_dir).as_posix())
+                        export_state["files"][
+                            file_path.as_posix()
+                        ] = f"{_build_vod_strm_url(base_url, user, VOD_KIND_SERIES, episode.id, extension)}\n"
+                        export_state["files"][nfo_path.as_posix()] = episode_nfo
                         total_files += 1
 
-            if http_manifest is not None and not skip_http_series_export:
-                _vod_http_manifest_ensure_dir(http_manifest, http_series_folder)
+            if http_library_enabled and not skip_http_series_export:
+                _vod_http_manifest_ensure_dir(category_manifest, http_series_folder)
                 episode_used_paths: set[str] = set()
                 for episode in episodes:
                     file_stem = _vod_episode_display_name(
@@ -1558,7 +1664,7 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                         str(int(episode.id)),
                     )
                     _vod_http_manifest_add_file(
-                        http_manifest,
+                        category_manifest,
                         media_path,
                         "episode_file",
                         {
@@ -1583,12 +1689,26 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
             time.perf_counter() - started_at,
         )
 
-    if http_manifest is not None:
-        http_manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
-        await asyncio.to_thread(_write_vod_http_category_manifest_sync, category, http_manifest)
-    else:
-        await asyncio.to_thread(_remove_vod_http_library_index_entry_sync, int(category.id))
-        await asyncio.to_thread(_remove_vod_http_library_manifest_sync, content_type, int(category.id))
+    category_manifest["exports"] = [
+        {
+            "key": key,
+            "relative_dir": state["relative_dir"],
+            "files": sorted(state["files"].keys()),
+            "dirs": sorted(state["dirs"]),
+        }
+        for key, state in sorted(export_states.items())
+    ]
+    category_manifest["generated_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Apply the STRM/NFO export plan first, then persist the category manifest that describes the result.
+    await asyncio.to_thread(
+        _sync_vod_category_export_files_sync,
+        int(category.id),
+        export_states if strm_enabled else {},
+    )
+    await asyncio.to_thread(
+        _write_vod_http_category_manifest_sync, category, category_manifest, bool(http_library_enabled)
+    )
 
     logger.info(
         "VOD library sync completed for %s category='%s' users=%s items=%s total_files=%s http_library=%s elapsed=%.2fs",
@@ -1611,7 +1731,7 @@ async def queue_vod_category_strm_sync(category_id: int) -> bool:
         return
 
     category_name = getattr(category, "name", f"Category {category_id}")
-    content_type = clean_vod_content_type(getattr(category, "content_type", ""))
+    content_type = category.content_type
     kind_label = "Movie" if content_type == VOD_KIND_MOVIE else "Series"
 
     task_broker = await TaskQueueBroker.get_instance()
@@ -1718,7 +1838,9 @@ async def _choose_working_xc_host(playlist: Playlist) -> tuple[str | None, XcAcc
     return None, account
 
 
-async def _choose_working_xc_host_for_account(playlist: Playlist, account: XcAccount) -> tuple[str | None, XcAccount | None]:
+async def _choose_working_xc_host_for_account(
+    playlist: Playlist, account: XcAccount
+) -> tuple[str | None, XcAccount | None]:
     if playlist is None or account is None:
         return None, None
     hosts = parse_xc_hosts(getattr(playlist, "url", ""))
@@ -1870,7 +1992,7 @@ async def sync_xc_vod_catalogue(playlist: Playlist):
 
 
 async def _upsert_vod_type(playlist_id: int, kind: str, categories: list[dict], items: list[dict]):
-    kind = clean_vod_content_type(kind)
+    kind = require_vod_content_type(kind)
     async with Session() as session:
         async with session.begin():
             existing_categories_result = await session.execute(
@@ -1997,7 +2119,7 @@ async def queue_rebuild_vod_group_cache(group_id: int) -> bool:
         if group is None:
             return
         category_name = group.name
-        content_type = clean_vod_content_type(group.content_type)
+        content_type = group.content_type
         kind_label = "Movie" if content_type == VOD_KIND_MOVIE else "Series"
 
     task_broker = await TaskQueueBroker.get_instance()
@@ -2039,8 +2161,7 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True) -> boo
             category_priority_by_id = _vod_category_priority_map(ordered_links)
 
             source_result = await session.execute(
-                select(XcVodItem)
-                .where(
+                select(XcVodItem).where(
                     XcVodItem.category_id.in_(category_ids),
                     XcVodItem.item_type == group.content_type,
                 )
@@ -2169,8 +2290,10 @@ async def get_vod_page_state() -> dict[str, bool]:
         }
 
 
-async def list_upstream_vod_categories(content_type: str, source_playlist_id: int | None = None) -> list[dict[str, object]]:
-    content_type = clean_vod_content_type(content_type)
+async def list_upstream_vod_categories(
+    content_type: str, source_playlist_id: int | None = None
+) -> list[dict[str, object]]:
+    content_type = require_vod_content_type(content_type)
     async with Session() as session:
         stmt = (
             select(XcVodCategory, Playlist.name)
@@ -2200,7 +2323,7 @@ async def list_upstream_vod_categories(content_type: str, source_playlist_id: in
 
 
 async def list_vod_groups(content_type: str) -> list[dict[str, object]]:
-    content_type = clean_vod_content_type(content_type)
+    content_type = require_vod_content_type(content_type)
     async with Session() as session:
         stmt = (
             select(VodCategory)
@@ -2250,7 +2373,7 @@ async def list_vod_groups(content_type: str) -> list[dict[str, object]]:
 
 
 async def create_vod_group(payload: dict[str, object]) -> int:
-    content_type = clean_vod_content_type(payload.get("content_type"))
+    content_type = require_vod_content_type(payload.get("content_type"))
     category_ids = [int(item) for item in (payload.get("category_ids") or []) if str(item).isdigit()]
     raw_category_configs = payload.get("category_configs") or []
     category_config_map = _build_category_config_map(raw_category_configs)
@@ -2374,7 +2497,8 @@ async def resolve_vod_http_library_path(subpath: str) -> tuple[dict[str, object]
         (
             row
             for row in categories
-            if clean_text(row.get("content_dir")) == content_dir and clean_text(row.get("category_slug")) == category_slug
+            if clean_text(row.get("content_dir")) == content_dir
+            and clean_text(row.get("category_slug")) == category_slug
         ),
         None,
     )
@@ -2384,7 +2508,9 @@ async def resolve_vod_http_library_path(subpath: str) -> tuple[dict[str, object]
     manifest_relpath = clean_text(category_entry.get("manifest_path"))
     if not manifest_relpath:
         return index_payload, None
-    manifest_payload = await asyncio.to_thread(_load_cached_vod_http_manifest_sync, _VOD_HTTP_LIBRARY_ROOT / manifest_relpath)
+    manifest_payload = await asyncio.to_thread(
+        _load_cached_vod_http_manifest_sync, _VOD_HTTP_LIBRARY_ROOT / manifest_relpath
+    )
     nodes = manifest_payload.get("nodes") if isinstance(manifest_payload, dict) else {}
     if not isinstance(nodes, dict):
         return index_payload, None
@@ -2422,7 +2548,7 @@ async def _group_rows_for_user(kind: str) -> list[VodCategory]:
 
 
 async def build_curated_category_payloads(kind: str) -> list[dict[str, object]]:
-    rows = await _group_rows_for_user(clean_vod_content_type(kind))
+    rows = await _group_rows_for_user(kind)
     return [
         {
             "category_id": str(row.id),
@@ -2434,7 +2560,7 @@ async def build_curated_category_payloads(kind: str) -> list[dict[str, object]]:
 
 
 async def build_curated_item_payloads(kind: str, category_id: int | None = None) -> list[dict[str, object]]:
-    kind = clean_vod_content_type(kind)
+    kind = require_vod_content_type(kind)
     async with Session() as session:
         stmt = (
             select(VodCategoryItem, VodCategory)

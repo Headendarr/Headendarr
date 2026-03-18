@@ -14,12 +14,12 @@ from backend.auth import (
     unauthorized_basic_auth_response,
 )
 from backend.vod import (
-    clean_vod_content_type,
     create_vod_group,
     delete_vod_group,
     get_vod_page_state,
     list_upstream_vod_categories,
     list_vod_groups,
+    require_vod_content_type,
     resolve_vod_http_library_path,
     user_has_vod_access,
     update_vod_group,
@@ -46,7 +46,10 @@ async def vod_status():
 @blueprint.route("/tic-api/vod/categories", methods=["GET"])
 @admin_auth_required
 async def vod_categories():
-    content_type = clean_vod_content_type(request.args.get("content_type"))
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     playlist_id = request.args.get("playlist_id")
     return jsonify(
         {
@@ -62,7 +65,10 @@ async def vod_categories():
 @blueprint.route("/tic-api/vod/groups", methods=["GET"])
 @admin_auth_required
 async def vod_groups():
-    content_type = clean_vod_content_type(request.args.get("content_type"))
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     return jsonify({"success": True, "data": await list_vod_groups(content_type)})
 
 
@@ -70,7 +76,10 @@ async def vod_groups():
 @admin_auth_required
 async def create_vod_group_route():
     payload = await request.get_json(force=True, silent=True) or {}
-    group_id = await create_vod_group(payload)
+    try:
+        group_id = await create_vod_group(payload)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
     return jsonify({"success": True, "group_id": group_id})
 
 
@@ -211,9 +220,6 @@ def _append_vod_library_prop(parent: ET.Element, request_path: str, child: dict[
     if kind == "dir":
         ET.SubElement(resource_type, "{DAV:}collection")
         ET.SubElement(prop, "{DAV:}getcontenttype").text = "httpd/unix-directory"
-    elif kind == "nfo_file":
-        ET.SubElement(prop, "{DAV:}getcontenttype").text = str(child.get("content_type") or "application/xml")
-        ET.SubElement(prop, "{DAV:}getcontentlength").text = str(len(str(child.get("content") or "").encode("utf-8")))
     else:
         extension = str(child.get("extension") or "").strip(".") or "mp4"
         ET.SubElement(prop, "{DAV:}getcontenttype").text = _vod_library_media_content_type(extension)
@@ -292,14 +298,8 @@ async def vod_http_library(subpath: str = ""):
         body = _render_vod_http_directory(request.path, children)
         return Response(body, headers=headers, content_type="text/html; charset=utf-8")
 
-    node = resolved.get("node") or {}
-    if node_type == "nfo_file":
-        content_type = str(node.get("content_type") or "application/xml; charset=utf-8")
-        if request.method == "HEAD":
-            return Response("", headers=headers, content_type=content_type)
-        return Response(str(node.get("content") or ""), headers=headers, content_type=content_type)
-
     if node_type in {"movie_file", "episode_file"}:
+        node = resolved.get("node") or {}
         extension = str(node.get("extension") or "").strip(".") or "mp4"
         if request.method == "HEAD":
             return Response("", headers=headers, content_type=_vod_library_media_content_type(extension))

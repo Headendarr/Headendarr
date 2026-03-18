@@ -9,17 +9,17 @@ from sqlalchemy import or_, select
 from backend import create_app
 from backend.models import Session, VodCategory, User
 from backend.vod import (
-    _load_vod_http_library_index_sync,
-    _remove_vod_http_library_index_entry_sync,
-    _remove_vod_http_library_manifest_sync,
+    load_vod_http_library_index_sync,
+    remove_vod_http_library_index_entry_sync,
+    remove_vod_http_library_manifest_sync,
     rebuild_vod_group_cache,
     sync_vod_category_strm_files,
-    _load_vod_strm_registry_sync,
-    _write_vod_strm_registry_sync,
-    _remove_vod_export_path_sync,
-    clean_vod_content_type,
-    _eligible_vod_export_users,
-    _VOD_STRM_ROOT,
+    load_vod_strm_registry_sync,
+    write_vod_strm_registry_sync,
+    remove_vod_export_path_sync,
+    eligible_vod_export_users,
+    VOD_KIND_MOVIE,
+    VOD_KIND_SERIES,
 )
 
 logger = logging.getLogger("tic.vod-sync-script")
@@ -56,8 +56,7 @@ async def _run(single_category_id: int = None):
 
             # Global cleanup pass
             logger.info("Performing global VOD export cleanup...")
-            root = _VOD_STRM_ROOT
-            registry = _load_vod_strm_registry_sync(root)
+            registry = load_vod_strm_registry_sync()
 
             # Get ALL valid current keys across ALL enabled categories
             active_http_category_ids = set()
@@ -72,7 +71,7 @@ async def _run(single_category_id: int = None):
             all_valid_keys = set()
             for cat in active_categories:
                 if bool(getattr(cat, "generate_strm_files", False)):
-                    users = await _eligible_vod_export_users(cat)
+                    users = await eligible_vod_export_users(cat)
                     cat_suffix = f":{int(cat.id)}"
                     for user in users:
                         all_valid_keys.add(f"{int(user.id)}{cat_suffix}")
@@ -87,24 +86,24 @@ async def _run(single_category_id: int = None):
                     old_path = entry.get("relative_dir")
                     if old_path:
                         logger.info("Cleaning up stale VOD directory: %s", old_path)
-                        _remove_vod_export_path_sync(old_path, root)
+                        remove_vod_export_path_sync(old_path)
                         cleaned_count += 1
 
             if cleaned_count > 0:
-                _write_vod_strm_registry_sync(registry, root)
+                write_vod_strm_registry_sync(registry)
                 logger.info("Global cleanup finished. Removed %s stale entries/directories.", cleaned_count)
             else:
                 logger.info("Global cleanup finished. Nothing to remove.")
 
-            http_index = _load_vod_http_library_index_sync()
+            http_index = load_vod_http_library_index_sync()
             for entry in [row for row in (http_index.get("categories") or []) if isinstance(row, dict)]:
                 category_id = int(entry.get("category_id") or 0)
                 if category_id <= 0 or category_id in active_http_category_ids:
                     continue
-                _remove_vod_http_library_index_entry_sync(category_id)
-                content_type = clean_vod_content_type(entry.get("content_type"))
-                if content_type:
-                    _remove_vod_http_library_manifest_sync(content_type, category_id)
+                remove_vod_http_library_index_entry_sync(category_id)
+                content_type = str(entry.get("content_type") or "")
+                if content_type in {VOD_KIND_MOVIE, VOD_KIND_SERIES}:
+                    remove_vod_http_library_manifest_sync(content_type, category_id)
 
 
 def main():

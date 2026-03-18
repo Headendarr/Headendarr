@@ -207,20 +207,12 @@ In Jellyfin:
    1. `/library/myuser/Movies/curated-movies/`
    2. `/library/myuser/Shows/curated-shows/`
 5. Review the library settings before saving:
-   1. Disable **Real-time monitoring**.
-   2. Make sure **Save artwork into media folders** is disabled.
-   3. Disable all trick-play image options:
+   1. Make sure **Save artwork into media folders** is disabled.
+   2. Disable all trick-play image options:
       1. **Enable trickplay image extraction**
       2. **Extract trickplay images during library scan**
       3. **Save trickplay images next to media**
-   4. Disable all chapter image extraction options:
+   3. Disable all chapter image extraction options:
       1. **Enable chapter image extraction**
       2. **Extract chapter images during library scan**
 6. Save and let Jellyfin scan the library.
-7. Set up a scheduled scan for these libraries in Jellyfin instead of relying on real-time monitoring.
-
-:::warning Recommended Jellyfin library behaviour for VOD STRM libraries
-These settings are recommended because Jellyfin can otherwise try to read large numbers of `.strm` items in parallel while generating trick-play images, chapter images, or other file-derived assets. That can consume a lot of upstream XC connections for a long time and waste bandwidth without adding much value in this setup.
-
-Real-time monitoring should also be disabled for these VOD libraries. Headendarr rebuilds `.strm` files when VOD content is changed, which means files can be deleted and recreated as part of normal updates. If Jellyfin watches those folders continuously, it can trigger repeated rescans and extra churn. In practice, scheduled library scans are a better fit for this workflow.
-:::
