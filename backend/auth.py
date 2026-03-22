@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-import base64
 import asyncio
+import base64
 import ipaddress
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import wraps, lru_cache
+from functools import lru_cache, wraps
 
 from quart import (
     Response,
-    request,
-    jsonify,
-    make_response,
+    current_app,
     has_app_context,
     has_request_context,
     has_websocket_context,
+    jsonify,
+    make_response,
+    request,
     websocket,
-    current_app,
 )
-from sqlalchemy import delete, select, update, or_
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from backend import config
+from backend.auth_rate_limit import precheck_stream_key_rate_limit, record_stream_key_failure
 from backend.datetime_utils import utc_now_naive
-from backend.models import Session, User, UserSession, StreamAuditLog
+from backend.models import Session, StreamAuditLog, User, UserSession
 from backend.security import hash_session_token
 
 
@@ -154,6 +155,16 @@ class _UserLastUsedThrottle:
 _user_stream_key_last_used_throttle = _UserLastUsedThrottle(min_interval_seconds=60)
 
 
+@dataclass
+class StreamAuthResult:
+    user: object | None
+    stream_key: str | None
+    failure_key: str | None = None
+    rate_limited: bool = False
+    retry_after: int = 0
+    missing_credentials: bool = False
+
+
 def unauthorized_response(message="Unauthorized"):
     return jsonify({"success": False, "message": message}), 401
 
@@ -161,6 +172,19 @@ def unauthorized_response(message="Unauthorized"):
 def unauthorized_basic_auth_response(realm="Restricted", message="Unauthorized"):
     response = Response(str(message), status=401, content_type="text/plain; charset=utf-8")
     response.headers["WWW-Authenticate"] = f'Basic realm="{realm}"'
+    return response
+
+
+def rate_limited_response(message="Too many requests", retry_after: int = 60):
+    response = jsonify({"success": False, "message": message})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(max(1, int(retry_after or 1)))
+    return response
+
+
+def rate_limited_basic_auth_response(message="Too many requests", retry_after: int = 60):
+    response = Response(str(message), status=429, content_type="text/plain; charset=utf-8")
+    response.headers["Retry-After"] = str(max(1, int(retry_after or 1)))
     return response
 
 
@@ -407,20 +431,31 @@ def _extract_stream_key():
     return request.args.get("stream_key") or request.args.get("password")
 
 
-async def get_user_from_stream_key():
+def _extract_stream_auth_credentials() -> tuple[str | None, str | None]:
+    stream_key = None
+    failure_key = None
+    if request.view_args and request.view_args.get("stream_key"):
+        stream_key = request.view_args.get("stream_key")
+        failure_key = f"path:{stream_key}"
+        return stream_key, failure_key
+
+    query_stream_key = request.args.get("stream_key") or request.args.get("password")
+    if query_stream_key:
+        stream_key = query_stream_key
+        failure_key = f"query:{query_stream_key}"
+        return stream_key, failure_key
+
+    basic_username, basic_password = _get_basic_auth_credentials()
+    if basic_password:
+        stream_key = basic_password
+        failure_key = f"basic:{basic_username or ''}:{basic_password}"
+    return stream_key, failure_key
+
+
+async def _lookup_stream_auth_user(stream_key: str):
     user_from_token = await get_user_from_token()
     if user_from_token:
         return user_from_token
-    # Extract the required stream key
-    #   This will revert to using the password
-    stream_key = _extract_stream_key()
-    if not stream_key:
-        basic_username, basic_password = _get_basic_auth_credentials()
-        if basic_password:
-            stream_key = basic_password
-    if not stream_key:
-        return None
-
     # First attempt to see if the user is the TVH user
     try:
         config = current_app.config.get("APP_CONFIG") if has_request_context() else None
@@ -451,6 +486,39 @@ async def get_user_from_stream_key():
     return user
 
 
+async def get_user_from_stream_key():
+    stream_key, _failure_key = _extract_stream_auth_credentials()
+    if not stream_key:
+        return await get_user_from_token()
+    return await _lookup_stream_auth_user(stream_key)
+
+
+async def authenticate_stream_request() -> StreamAuthResult:
+    user_from_token = await get_user_from_token()
+    if user_from_token:
+        return StreamAuthResult(user=user_from_token, stream_key=None)
+
+    stream_key, failure_key = _extract_stream_auth_credentials()
+    if not stream_key:
+        return StreamAuthResult(user=None, stream_key=None, missing_credentials=True)
+
+    limiter_result = await precheck_stream_key_rate_limit(get_request_client_ip())
+    if not limiter_result.allowed:
+        return StreamAuthResult(
+            user=None,
+            stream_key=stream_key,
+            failure_key=failure_key,
+            rate_limited=True,
+            retry_after=limiter_result.retry_after,
+        )
+
+    user = await _lookup_stream_auth_user(stream_key)
+    if not user or not user.is_active:
+        await record_stream_key_failure(get_request_client_ip(), failure_key)
+        return StreamAuthResult(user=None, stream_key=stream_key, failure_key=failure_key)
+    return StreamAuthResult(user=user, stream_key=stream_key, failure_key=failure_key)
+
+
 async def mark_stream_key_usage(user):
     if not user or not getattr(user, "id", None) or is_tvh_backend_stream_user(user):
         return
@@ -469,15 +537,17 @@ async def mark_stream_key_usage(user):
 def stream_key_required(func):
     @wraps(func)
     async def decorated_function(*args, **kwargs):
-        user = await get_user_from_stream_key()
+        auth_result = await authenticate_stream_request()
+        if auth_result.rate_limited:
+            return rate_limited_response(
+                "Too many invalid stream key attempts. Please try again later.",
+                auth_result.retry_after,
+            )
+        user = auth_result.user
         if not user or not user.is_active:
             return unauthorized_response()
         request._stream_user = user
-        stream_key = _extract_stream_key()
-        if not stream_key:
-            _, basic_password = _get_basic_auth_credentials()
-            stream_key = basic_password
-        request._stream_key = stream_key
+        request._stream_key = auth_result.stream_key
         await mark_stream_key_usage(user)
         ip_address = get_request_client_ip()
         user_agent = request.headers.get("User-Agent")

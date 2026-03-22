@@ -490,6 +490,11 @@ auth_login_user_window_seconds = _env_int("TIC_AUTH_LOGIN_USER_WINDOW_SECONDS", 
 auth_login_user_max_attempts = _env_int("TIC_AUTH_LOGIN_USER_MAX_ATTEMPTS", 5)
 auth_login_cooldown_base_seconds = _env_int("TIC_AUTH_LOGIN_COOLDOWN_BASE_SECONDS", 2)
 auth_login_cooldown_max_seconds = _env_int("TIC_AUTH_LOGIN_COOLDOWN_MAX_SECONDS", 60)
+auth_stream_key_ip_window_seconds = _env_int("TIC_AUTH_STREAM_KEY_IP_WINDOW_SECONDS", 600)
+auth_stream_key_ip_max_distinct_failures = _env_int("TIC_AUTH_STREAM_KEY_IP_MAX_DISTINCT_FAILURES", 4)
+auth_stream_key_cooldown_base_seconds = _env_int("TIC_AUTH_STREAM_KEY_COOLDOWN_BASE_SECONDS", 60)
+auth_stream_key_cooldown_increment_seconds = _env_int("TIC_AUTH_STREAM_KEY_COOLDOWN_INCREMENT_SECONDS", 30)
+auth_stream_key_cooldown_max_seconds = _env_int("TIC_AUTH_STREAM_KEY_COOLDOWN_MAX_SECONDS", 600)
 
 auth_oidc_start_ip_window_seconds = _env_int("TIC_AUTH_OIDC_START_IP_WINDOW_SECONDS", 600)
 auth_oidc_start_ip_max_attempts = _env_int("TIC_AUTH_OIDC_START_IP_MAX_ATTEMPTS", 60)

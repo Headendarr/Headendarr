@@ -9,8 +9,9 @@ from quart import Response, jsonify, request
 from backend.api import blueprint
 from backend.auth import (
     admin_auth_required,
-    get_user_from_stream_key,
+    authenticate_stream_request,
     mark_stream_key_usage,
+    rate_limited_basic_auth_response,
     unauthorized_basic_auth_response,
 )
 from backend.vod import (
@@ -21,9 +22,9 @@ from backend.vod import (
     list_vod_groups,
     require_vod_content_type,
     resolve_vod_http_library_path,
-    user_has_vod_access,
     update_vod_group,
     user_can_access_vod_kind,
+    user_has_vod_access,
 )
 
 ignored_library_probe_suffixes = (
@@ -133,11 +134,7 @@ def _render_vod_http_directory(current_path: str, children: list[dict[str, objec
 
 def _category_children_for_content_dir(index_payload: dict[str, object], content_dir: str) -> list[dict[str, object]]:
     categories = [row for row in (index_payload.get("categories") or []) if isinstance(row, dict)]
-    filtered = [
-        row
-        for row in categories
-        if str(row.get("content_dir") or "") == content_dir
-    ]
+    filtered = [row for row in categories if str(row.get("content_dir") or "") == content_dir]
     filtered.sort(key=lambda row: (str(row.get("category_name") or "").casefold(), int(row.get("category_id") or 0)))
     return [
         {
@@ -162,7 +159,9 @@ def _is_unauthenticated_probe_path(subpath: str) -> bool:
     return lower_path.endswith(ignored_library_probe_suffixes)
 
 
-def _vod_library_collection_children(index_payload: dict[str, object], resolved: dict[str, object], user) -> list[dict[str, object]]:
+def _vod_library_collection_children(
+    index_payload: dict[str, object], resolved: dict[str, object], user
+) -> list[dict[str, object]]:
     node_type = str(resolved.get("type") or "")
     if node_type == "root":
         children = []
@@ -185,7 +184,9 @@ def _vod_library_collection_children(index_payload: dict[str, object], resolved:
 
     node = resolved.get("node") or {}
     raw_children = list(node.get("children") or [])
-    raw_children.sort(key=lambda child: (0 if child.get("kind") == "dir" else 1, str(child.get("name") or "").casefold()))
+    raw_children.sort(
+        key=lambda child: (0 if child.get("kind") == "dir" else 1, str(child.get("name") or "").casefold())
+    )
     children = []
     for child in raw_children:
         child_name = str(child.get("name") or "")
@@ -213,7 +214,9 @@ def _append_vod_library_prop(parent: ET.Element, request_path: str, child: dict[
     ET.SubElement(response, "{DAV:}href").text = _vod_library_propfind_href(request_path, child)
     propstat = ET.SubElement(response, "{DAV:}propstat")
     prop = ET.SubElement(propstat, "{DAV:}prop")
-    display_name = str(child.get("name") or "") if child is not None else request_path.rstrip("/").split("/")[-1] or "library"
+    display_name = (
+        str(child.get("name") or "") if child is not None else request_path.rstrip("/").split("/")[-1] or "library"
+    )
     ET.SubElement(prop, "{DAV:}displayname").text = display_name
     resource_type = ET.SubElement(prop, "{DAV:}resourcetype")
     kind = str(child.get("kind") or "") if child is not None else "dir"
@@ -251,7 +254,13 @@ async def vod_http_library(subpath: str = ""):
     if _is_unauthenticated_probe_path(subpath):
         return Response("Not found", status=404, content_type="text/plain; charset=utf-8")
 
-    user = await get_user_from_stream_key()
+    auth_result = await authenticate_stream_request()
+    if auth_result.rate_limited:
+        return rate_limited_basic_auth_response(
+            "Too many invalid stream key attempts. Please try again later.",
+            auth_result.retry_after,
+        )
+    user = auth_result.user
     if not user or not user.is_active:
         return unauthorized_basic_auth_response(realm="VOD Library")
     if not user_has_vod_access(user):
