@@ -4,13 +4,19 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from quart import request, jsonify, Response, redirect, current_app
+from quart import Response, current_app, jsonify, redirect, request
 
 from backend.api import blueprint
 from backend.api.connections_common import resolve_channel_stream_url
-from backend.auth import get_request_client_ip
 from backend.api.routes_connections_epg import build_xmltv_response
-from backend.auth import audit_stream_event, mark_stream_key_usage
+from backend.auth import (
+    audit_stream_event,
+    get_request_client_ip,
+    mark_stream_key_usage,
+    precheck_stream_auth_limit,
+    record_failed_stream_auth,
+)
+from backend.channels import build_channel_logo_output_url, read_config_all_channels
 from backend.cso import (
     CS_VOD_USE_PROXY_SESSION,
     should_use_vod_proxy_session,
@@ -18,7 +24,6 @@ from backend.cso import (
     subscribe_vod_proxy_stream,
     subscribe_vod_stream,
 )
-from backend.channels import read_config_all_channels, build_channel_logo_output_url
 from backend.playlists import build_m3u_playlist_content, read_config_all_playlists
 from backend.stream_activity import stop_stream_activity, touch_stream_activity, upsert_stream_activity
 from backend.url_resolver import get_request_base_url, get_request_host_info
@@ -26,9 +31,9 @@ from backend.users import get_user_by_username
 from backend.vod import (
     VOD_KIND_MOVIE,
     VOD_KIND_SERIES,
-    build_vod_activity_metadata,
     build_curated_category_payloads,
     build_curated_item_payloads,
+    build_vod_activity_metadata,
     fetch_series_info_payload,
     fetch_vod_info_payload,
     resolve_episode_playback_candidates,
@@ -62,16 +67,44 @@ _xc_cache = _TTLCache()
 _XC_ALLOWED_PROFILES = {"default", "mpegts", "h264-aac-mpegts"}
 
 
-async def _xc_auth_user():
-    username = request.args.get("username") or ""
-    password = request.args.get("password") or ""
+def _xc_rate_limited_response(message: str, retry_after: int):
+    response = jsonify({"error": message})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(max(1, int(retry_after or 1)))
+    return response
+
+
+async def _xc_auth_user(username: str | None = None, password: str | None = None):
+    username = str(username or request.args.get("username") or "").strip()
+    password = str(password or request.args.get("password") or "").strip()
     if not username or not password:
-        return None, ("Missing username or password", 400)
+        return None, (jsonify({"error": "Missing username or password"}), 400)
+
+    failure_key = f"xc:{username}:{password}"
+    limiter_result = await precheck_stream_auth_limit(failure_key=failure_key, attempted_username=username)
+    if not limiter_result.allowed:
+        return None, _xc_rate_limited_response(
+            "Too many invalid stream key attempts. Please try again later.",
+            limiter_result.retry_after,
+        )
+
     user = await get_user_by_username(username)
     if not user or not user.is_active:
-        return None, ("Unauthorized", 401)
+        failure_result = await record_failed_stream_auth(failure_key=failure_key, attempted_username=username)
+        if not failure_result.allowed:
+            return None, _xc_rate_limited_response(
+                "Too many invalid stream key attempts. Please try again later.",
+                failure_result.retry_after,
+            )
+        return None, (jsonify({"error": "Unauthorized"}), 401)
     if user.streaming_key != password:
-        return None, ("Unauthorized", 401)
+        failure_result = await record_failed_stream_auth(failure_key=failure_key, attempted_username=username)
+        if not failure_result.allowed:
+            return None, _xc_rate_limited_response(
+                "Too many invalid stream key attempts. Please try again later.",
+                failure_result.retry_after,
+            )
+        return None, (jsonify({"error": "Unauthorized"}), 401)
     await mark_stream_key_usage(user)
     return user, None
 
@@ -299,7 +332,7 @@ def _combined_cso_enabled() -> bool:
 async def xc_get():
     user, error = await _xc_auth_user()
     if error:
-        return jsonify({"error": error[0]}), error[1]
+        return error
     await audit_stream_event(user, "xc_get", request.path)
 
     cache_key = f"xc_m3u:{user.id}:ts_only"
@@ -340,7 +373,7 @@ async def xc_get():
 async def xc_xmltv():
     user, error = await _xc_auth_user()
     if error:
-        return jsonify({"error": error[0]}), error[1]
+        return error
     await audit_stream_event(user, "xc_xmltv", request.path)
     return await build_xmltv_response()
 
@@ -349,7 +382,7 @@ async def xc_xmltv():
 async def xc_player_api():
     user, error = await _xc_auth_user()
     if error:
-        return jsonify({"error": error[0]}), error[1]
+        return error
     await audit_stream_event(user, "xc_player_api", request.path)
 
     action = request.args.get("action")
@@ -429,7 +462,7 @@ async def xc_player_api():
 async def xc_panel_api():
     user, error = await _xc_auth_user()
     if error:
-        return jsonify({"error": error[0]}), error[1]
+        return error
     await audit_stream_event(user, "xc_panel_api", request.path)
 
     _xc_cache.set("xc_max_connections", await _get_max_connections(), ttl_seconds=60)
@@ -442,10 +475,9 @@ async def xc_panel_api():
 @blueprint.route("/<username>/<password>/<stream_id>", methods=["GET"])
 @blueprint.route("/<username>/<password>/<stream_id>.<ext>", methods=["GET"])
 async def xc_stream(username: str, password: str, stream_id: str, ext: str = None):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
-    await mark_stream_key_usage(user)
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     await audit_stream_event(user, "xc_stream", request.path)
 
     channel_map = await _get_channel_map()
@@ -470,9 +502,9 @@ async def xc_stream(username: str, password: str, stream_id: str, ext: str = Non
 @blueprint.route("/movie/<username>/<password>/<item_id>", methods=["GET"])
 @blueprint.route("/movie/<username>/<password>/<item_id>.<ext>", methods=["GET"])
 async def xc_movie_stream(username: str, password: str, item_id: str, ext: str = None):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     if not _xc_vod_allowed(user, VOD_KIND_MOVIE):
         return jsonify({"error": "Forbidden"}), 403
@@ -564,9 +596,9 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str =
 @blueprint.route("/series/<username>/<password>/<episode_id>", methods=["GET"])
 @blueprint.route("/series/<username>/<password>/<episode_id>.<ext>", methods=["GET"])
 async def xc_series_episode_stream(username: str, password: str, episode_id: str, ext: str = None):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     if not _xc_vod_allowed(user, VOD_KIND_SERIES):
         return jsonify({"error": "Forbidden"}), 403
@@ -661,9 +693,9 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
 
 @blueprint.route("/movie/<username>/<password>/<int:item_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
 async def xc_movie_hls_playlist(username: str, password: str, item_id: int, connection_id: str):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     candidates = await resolve_movie_playback_candidates(int(item_id))
     if not candidates:
@@ -672,7 +704,10 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url:
-        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
+        return Response(
+            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
+            status=503 if selection_error == "capacity_blocked" else 404,
+        )
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -696,9 +731,9 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
 
 @blueprint.route("/movie/<username>/<password>/<int:item_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
 async def xc_movie_hls_segment(username: str, password: str, item_id: int, connection_id: str, segment_name: str):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     candidates = await resolve_movie_playback_candidates(int(item_id))
     if not candidates:
@@ -707,7 +742,10 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url:
-        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
+        return Response(
+            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
+            status=503 if selection_error == "capacity_blocked" else 404,
+        )
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -727,9 +765,9 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
 
 @blueprint.route("/series/<username>/<password>/<int:episode_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
 async def xc_series_hls_playlist(username: str, password: str, episode_id: int, connection_id: str):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
     if not candidates or episode_map is None:
@@ -738,7 +776,10 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url:
-        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
+        return Response(
+            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
+            status=503 if selection_error == "capacity_blocked" else 404,
+        )
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],
@@ -763,9 +804,9 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
 
 @blueprint.route("/series/<username>/<password>/<int:episode_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
 async def xc_series_hls_segment(username: str, password: str, episode_id: int, connection_id: str, segment_name: str):
-    user = await get_user_by_username(username)
-    if not user or not user.is_active or user.streaming_key != password:
-        return jsonify({"error": "Unauthorized"}), 401
+    user, error = await _xc_auth_user(username, password)
+    if error:
+        return error
     stream_key = user.streaming_key
     candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
     if not candidates or episode_map is None:
@@ -774,7 +815,10 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url:
-        return Response("Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable", status=503 if selection_error == "capacity_blocked" else 404)
+        return Response(
+            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
+            status=503 if selection_error == "capacity_blocked" else 404,
+        )
 
     output_session, error_message, status = await subscribe_vod_hls(
         current_app.config["APP_CONFIG"],

@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
+import hashlib
 import ipaddress
 import time
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from backend import config
-from backend.auth_rate_limit import precheck_stream_key_rate_limit, record_stream_key_failure
+from backend.auth_rate_limit import RateLimitResult, precheck_stream_key_rate_limit, record_stream_key_failure
 from backend.datetime_utils import utc_now_naive
 from backend.models import Session, StreamAuditLog, User, UserSession
 from backend.security import hash_session_token
@@ -431,6 +432,85 @@ def _extract_stream_key():
     return request.args.get("stream_key") or request.args.get("password")
 
 
+def _stream_auth_source_label(failure_key: str | None) -> str:
+    prefix = str(failure_key or "").split(":", 1)[0].strip().lower()
+    if prefix in {"basic", "query", "path", "xc"}:
+        return prefix
+    return "unknown"
+
+
+def _stream_auth_fingerprint(failure_key: str | None) -> str:
+    value = str(failure_key or "").strip()
+    if not value:
+        return "unknown"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+async def log_rate_limited_stream_auth(
+    retry_after: int,
+    failure_key: str | None = None,
+    attempted_username: str | None = None,
+    reason: str = "blocked",
+):
+    ip_address = get_request_client_ip()
+    user_agent = request.headers.get("User-Agent") if has_request_context() else None
+    path = request.path if has_request_context() else ""
+    source = _stream_auth_source_label(failure_key)
+    fingerprint = _stream_auth_fingerprint(failure_key)
+    username_text = str(attempted_username or "").strip() or "-"
+    current_app.logger.warning(
+        "STREAM AUTH RATE LIMITED: reason=%s ip=%s path=%s source=%s retry_after=%ss username=%s credential=%s ua=%s",
+        reason,
+        ip_address or "unknown",
+        path or "-",
+        source,
+        max(1, int(retry_after or 1)),
+        username_text,
+        fingerprint,
+        user_agent or "-",
+    )
+    await audit_stream_event(
+        None,
+        "stream_auth_rate_limited",
+        path or "/",
+        details=(
+            f"reason={reason} source={source} retry_after={max(1, int(retry_after or 1))}s "
+            f"username={username_text} credential={fingerprint}"
+        ),
+        ip_address=ip_address,
+        user_agent=user_agent,
+        severity="warning",
+    )
+
+
+async def precheck_stream_auth_limit(
+    failure_key: str | None = None, attempted_username: str | None = None
+) -> RateLimitResult:
+    limiter_result = await precheck_stream_key_rate_limit(get_request_client_ip())
+    if not limiter_result.allowed:
+        await log_rate_limited_stream_auth(
+            limiter_result.retry_after,
+            failure_key=failure_key,
+            attempted_username=attempted_username,
+            reason="precheck_block",
+        )
+    return limiter_result
+
+
+async def record_failed_stream_auth(
+    failure_key: str | None = None, attempted_username: str | None = None
+) -> RateLimitResult:
+    failure_result = await record_stream_key_failure(get_request_client_ip(), failure_key)
+    if not failure_result.allowed:
+        await log_rate_limited_stream_auth(
+            failure_result.retry_after,
+            failure_key=failure_key,
+            attempted_username=attempted_username,
+            reason="failure_threshold",
+        )
+    return failure_result
+
+
 def _extract_stream_auth_credentials() -> tuple[str | None, str | None]:
     stream_key = None
     failure_key = None
@@ -502,7 +582,7 @@ async def authenticate_stream_request() -> StreamAuthResult:
     if not stream_key:
         return StreamAuthResult(user=None, stream_key=None, missing_credentials=True)
 
-    limiter_result = await precheck_stream_key_rate_limit(get_request_client_ip())
+    limiter_result = await precheck_stream_auth_limit(failure_key=failure_key)
     if not limiter_result.allowed:
         return StreamAuthResult(
             user=None,
@@ -514,7 +594,15 @@ async def authenticate_stream_request() -> StreamAuthResult:
 
     user = await _lookup_stream_auth_user(stream_key)
     if not user or not user.is_active:
-        await record_stream_key_failure(get_request_client_ip(), failure_key)
+        failure_result = await record_failed_stream_auth(failure_key=failure_key)
+        if not failure_result.allowed:
+            return StreamAuthResult(
+                user=None,
+                stream_key=stream_key,
+                failure_key=failure_key,
+                rate_limited=True,
+                retry_after=failure_result.retry_after,
+            )
         return StreamAuthResult(user=None, stream_key=stream_key, failure_key=failure_key)
     return StreamAuthResult(user=user, stream_key=stream_key, failure_key=failure_key)
 

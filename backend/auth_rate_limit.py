@@ -120,7 +120,7 @@ class _DistinctValueFailureLimiter:
     async def record_failure(self, key: str, value: str | None):
         value_text = str(value or "").strip()
         if not value_text:
-            return
+            return RateLimitResult(True, retry_after=0)
         now = time.time()
         hashed_value = hashlib.sha256(value_text.encode("utf-8")).hexdigest()
         async with self._lock:
@@ -133,7 +133,10 @@ class _DistinctValueFailureLimiter:
                 cooldown = self.cooldown_base_seconds
                 if over_limit > 0:
                     cooldown += self.cooldown_increment_seconds * ((2**over_limit) - 1)
-                self._cooldown_until[key] = now + min(self.cooldown_max_seconds, cooldown)
+                bounded_cooldown = min(self.cooldown_max_seconds, cooldown)
+                self._cooldown_until[key] = now + bounded_cooldown
+                return RateLimitResult(False, retry_after=bounded_cooldown)
+            return RateLimitResult(True, retry_after=0)
 
 
 _login_ip_failures = _FailureBackoffLimiter(
@@ -213,8 +216,8 @@ async def precheck_stream_key_rate_limit(ip_address: str | None) -> RateLimitRes
 
 async def record_stream_key_failure(ip_address: str | None, stream_key: str | None):
     if not _enabled():
-        return
-    await _stream_key_ip_failures.record_failure(_ip_key(ip_address), stream_key)
+        return RateLimitResult(True, retry_after=0)
+    return await _stream_key_ip_failures.record_failure(_ip_key(ip_address), stream_key)
 
 
 async def check_oidc_start_rate_limit(ip_address: str | None) -> RateLimitResult:
