@@ -1475,6 +1475,7 @@ async def add_new_channel(config, data, commit=True):
 
         new_sources = []
         playlist_stream_cache = {}
+        priority = len(data.get("sources", []))
         for source_info in data.get("sources", []):
             is_manual = source_info.get("source_type") == "manual" or not source_info.get("playlist_id")
             if is_manual:
@@ -1488,8 +1489,10 @@ async def add_new_channel(config, data, commit=True):
                         playlist_stream_url=stream_url,
                         use_hls_proxy=bool(source_info.get("use_hls_proxy", False)),
                         auto_update=False,
+                        priority=int(priority),
                     )
                 )
+                priority -= 1
                 continue
 
             query = await session.execute(select(Playlist).where(Playlist.id == source_info["playlist_id"]))
@@ -1535,8 +1538,10 @@ async def add_new_channel(config, data, commit=True):
                             playlist_stream_name=source_info["stream_name"],
                             playlist_stream_url=stream_url,
                             auto_update=bool(source_info.get("auto_update", False)),
+                            priority=int(priority),
                         )
                     )
+                    priority -= 1
             else:
                 stream_url = _apply_playlist_hls_proxy(
                     playlist_info,
@@ -1549,8 +1554,10 @@ async def add_new_channel(config, data, commit=True):
                         playlist_stream_name=source_info["stream_name"],
                         playlist_stream_url=stream_url,
                         auto_update=bool(source_info.get("auto_update", False)),
+                        priority=int(priority),
                     )
                 )
+                priority -= 1
 
         if new_sources:
             channel.sources = new_sources
