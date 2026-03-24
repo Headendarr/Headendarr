@@ -185,15 +185,37 @@
         </div>
         <div class="drawer-scroll">
           <q-list>
-            <q-item-label header>
-              <!--          Essential Links-->
-            </q-item-label>
+            <template v-if="drawerMini">
+              <EssentialLink
+                v-for="link in essentialLinks"
+                :key="link.title"
+                v-bind="link"
+              />
+            </template>
+            <template v-else>
+              <template
+                v-for="section in essentialLinkSections"
+                :key="section.title"
+              >
+                <q-item-label
+                  header
+                  class="drawer-section-title"
+                >
+                  {{ section.title }}
+                </q-item-label>
 
-            <EssentialLink
-              v-for="link in essentialLinks"
-              :key="link.title"
-              v-bind="link"
-            />
+                <EssentialLink
+                  v-for="link in section.links"
+                  :key="link.title"
+                  v-bind="link"
+                />
+
+                <q-separator
+                  v-if="section !== essentialLinkSections[essentialLinkSections.length - 1]"
+                  class="drawer-section-break"
+                />
+              </template>
+            </template>
           </q-list>
 
           <q-separator class="q-my-lg" v-if="!drawerMini" />
@@ -391,6 +413,19 @@
 .drawer-version-text {
   letter-spacing: 0.01em;
 }
+
+.drawer-section-title {
+  padding: 18px 16px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--q-primary);
+}
+
+.drawer-section-break {
+  margin: 14px 16px;
+}
 </style>
 
 <script>
@@ -409,93 +444,108 @@ import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
 import {useRoute, useRouter} from 'vue-router';
 
-const linksList = [
+const linkSections = [
   {
-    title: 'Dashboard',
-    caption: 'Overview and live activity',
-    icon: 'dashboard',
-    link: '/dashboard',
-    adminOnly: true,
+    title: 'Watch and Monitor',
+    links: [
+      {
+        title: 'Dashboard',
+        caption: 'Overview and live activity',
+        icon: 'dashboard',
+        link: '/dashboard',
+        adminOnly: true,
+      },
+      {
+        title: 'TV Guide',
+        caption: 'View EPG grid and preview streams',
+        icon: 'live_tv',
+        link: '/guide',
+        streamerOnly: true,
+      },
+      {
+        title: 'DVR',
+        caption: 'Schedule and manage recordings',
+        icon: 'dvr',
+        link: '/dvr',
+        streamerOnly: true,
+        requiresDvrAccess: true,
+      },
+      {
+        title: 'Audit',
+        caption: 'View audit activity logs',
+        icon: 'history',
+        link: '/audit',
+        adminOnly: true,
+      },
+    ],
   },
   {
-    title: 'Sources',
-    caption: 'Configure Stream Sources',
-    icon: 'playlist_play',
-    link: '/playlists',
-    adminOnly: true,
-  },
-  {
-    title: 'EPGs',
-    caption: 'Configure EPG Sources',
-    icon: 'calendar_month',
-    link: '/epgs',
-    adminOnly: true,
-  },
-  {
-    title: 'Channels',
-    caption: 'Configure Channels',
-    icon: 'queue_play_next',
-    link: '/channels',
-    adminOnly: true,
-  },
-  {
-    title: 'VOD',
-    caption: 'Curate XC movies and TV series',
-    icon: 'movie',
-    link: '/vod',
-    adminOnly: true,
-    requiresVodAdmin: true,
-  },
-  {
-    title: 'TV Guide',
-    caption: 'View EPG grid and preview streams',
-    icon: 'live_tv',
-    link: '/guide',
-    streamerOnly: true,
-  },
-  {
-    title: 'DVR',
-    caption: 'Schedule and manage recordings',
-    icon: 'dvr',
-    link: '/dvr',
-    streamerOnly: true,
-    requiresDvrAccess: true,
-  },
-  {
-    title: 'Users',
-    caption: 'Manage users and roles',
-    icon: 'manage_accounts',
-    link: '/users',
-    adminOnly: true,
-  },
-  {
-    title: 'Audit',
-    caption: 'View audit activity logs',
-    icon: 'history',
-    link: '/audit',
-    adminOnly: true,
-  },
-  {
-    title: 'Plex',
-    caption: 'Plex Live TV Settings',
-    icon: 'plex-icon',
-    link: '/plex',
-    adminOnly: true,
-    requiresPlex: true,
-  },
-  {
-    title: 'TVHeadend',
-    caption: 'TVHeadend Settings',
-    icon: 'tvh-icon',
-    link: '/tvheadend',
-    adminOnly: true,
+    title: 'Channel Configuration',
+    links: [
+      {
+        title: 'Sources',
+        caption: 'Configure stream sources',
+        icon: 'playlist_play',
+        link: '/playlists',
+        adminOnly: true,
+      },
+      {
+        title: 'EPGs',
+        caption: 'Configure EPG sources',
+        icon: 'calendar_month',
+        link: '/epgs',
+        adminOnly: true,
+      },
+      {
+        title: 'Channels',
+        caption: 'Configure channels',
+        icon: 'queue_play_next',
+        link: '/channels',
+        adminOnly: true,
+      },
+      {
+        title: 'VOD',
+        caption: 'Curate XC movies and TV series',
+        icon: 'movie',
+        link: '/vod',
+        adminOnly: true,
+        requiresVodAdmin: true,
+      },
+    ],
   },
   {
     title: 'Settings',
-    caption: 'Application Settings',
-    icon: 'tune',
-    link: '/settings',
-    adminOnly: true,
+    links: [
+      {
+        title: 'Users',
+        caption: 'Manage users and roles',
+        icon: 'manage_accounts',
+        link: '/users',
+        adminOnly: true,
+      },
+      {
+        title: 'Plex',
+        caption: 'Plex Live TV settings',
+        icon: 'plex-icon',
+        link: '/plex',
+        adminOnly: true,
+        requiresPlex: true,
+      },
+      {
+        title: 'TVHeadend',
+        caption: 'TVHeadend settings',
+        icon: 'tvh-icon',
+        link: '/tvheadend',
+        adminOnly: true,
+      },
+      {
+        title: 'Application Settings',
+        caption: 'Core application settings',
+        icon: 'tune',
+        link: '/settings',
+        adminOnly: true,
+      },
+    ],
   },
 ];
 
@@ -738,7 +788,7 @@ export default defineComponent({
     const enabledPlaylistsForConnectionDetails = computed(() => (
       (enabledPlaylists.value || []).filter((playlist) => playlist?.enabled !== false)
     ));
-    const filteredLinks = computed(() => linksList.filter((link) => {
+    const isLinkVisible = (link) => {
       if (link.adminOnly && !isAdmin.value) {
         return false;
       }
@@ -756,7 +806,18 @@ export default defineComponent({
         return false;
       }
       return true;
-    }));
+    };
+    const filteredLinks = computed(() => (
+      linkSections.flatMap((section) => section.links.filter((link) => isLinkVisible(link)))
+    ));
+    const filteredLinkSections = computed(() => (
+      linkSections
+        .map((section) => ({
+          ...section,
+          links: section.links.filter((link) => isLinkVisible(link)),
+        }))
+        .filter((section) => section.links.length > 0)
+    ));
     const currentUsername = computed(() => authStore.user?.username || 'User');
     const currentStreamingKey = computed(() => authStore.user?.streaming_key || 'STREAM_KEY');
     const appVersionDisplay = computed(() => {
@@ -821,6 +882,7 @@ export default defineComponent({
       epgUrl,
       xcPlaylistUrl,
       essentialLinks: filteredLinks,
+      essentialLinkSections: filteredLinkSections,
       currentUsername,
       currentStreamingKey,
       leftDrawerOpen,
