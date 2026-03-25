@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from backend.api import blueprint
 from backend.audit_view import build_activity_label, build_device_label, derive_audit_mode
 from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
-from backend.datetime_utils import to_utc_iso
+from backend.utils import to_utc_iso
 from backend.models import Channel, CsoEventLog, Session, StreamAuditLog, User
 from backend.stream_activity import stop_stream_activity, upsert_stream_activity
 

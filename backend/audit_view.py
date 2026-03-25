@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.datetime_utils import to_utc_iso
+from backend.utils import to_utc_iso
 
 
 def derive_audit_mode(event_type: str | None, endpoint: str | None) -> str | None:

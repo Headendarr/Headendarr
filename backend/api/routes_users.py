@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from backend.api import blueprint
 from backend.api.tasks import TaskQueueBroker, sync_user_to_tvh
 from backend.auth import admin_auth_required, user_auth_required, get_user_from_token
-from backend.datetime_utils import to_utc_iso
+from backend.utils import to_utc_iso
 from backend.models import Session, User
 from backend.users import (
     create_user,

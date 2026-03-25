@@ -23,7 +23,7 @@ from backend.auth_rate_limit import (
     record_login_failure,
     record_login_success,
 )
-from backend.datetime_utils import to_utc_iso, utc_now_naive
+from backend.utils import to_utc_iso, utc_now_naive
 from backend.models import Session, UserSession, User
 from backend.oidc import (
     OidcConfigurationError,

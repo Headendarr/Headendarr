@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from backend.datetime_utils import utc_now_naive
+from backend.utils import utc_now_naive
 
 
 _password_hasher = PasswordHasher()

@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from backend import config
 from backend.auth_rate_limit import RateLimitResult, precheck_stream_key_rate_limit, record_stream_key_failure
-from backend.datetime_utils import utc_now_naive
+from backend.utils import utc_now_naive
 from backend.models import Session, StreamAuditLog, User, UserSession
 from backend.security import hash_session_token
 

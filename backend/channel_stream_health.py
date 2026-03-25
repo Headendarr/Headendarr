@@ -19,7 +19,7 @@ from backend.cso import (
     source_capacity_key,
     source_capacity_limit,
 )
-from backend.datetime_utils import utc_now_naive
+from backend.utils import utc_now_naive
 from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import Channel, ChannelSource, Playlist, Session
 from backend.stream_activity import get_stream_activity_snapshot

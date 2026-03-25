@@ -5,12 +5,11 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from backend.datetime_utils import utc_now_naive
 from backend.models import Session, User, Role
 from backend.oidc import OidcConfig, extract_claim_value, map_roles_from_claims, resolve_username_from_claims
 from backend.security import hash_password, verify_password, needs_rehash, generate_stream_key
 from backend.dvr_profiles import normalize_retention_policy
-from backend.utils import clean_key
+from backend.utils import clean_key, utc_now_naive
 
 
 DEFAULT_ROLES = ("admin", "streamer")

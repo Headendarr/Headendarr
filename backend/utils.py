@@ -1,47 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import hashlib
-from datetime import timezone
+from datetime import datetime, timezone
 
 
-def parse_entity_id(value, name):
+def parse_entity_id(value: int | str, name: str) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid {name} id: {value}")
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"Invalid {name} id: {value}") from err
 
 
-def is_truthy(value):
+def is_truthy(value: object) -> bool:
     if isinstance(value, str):
         return value.lower() in ("1", "true", "yes", "on")
     return bool(value)
 
 
-def convert_to_int(value, default=1):
+def convert_to_int(value: int | str, default: int = 1) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
 
 
-def convert_to_bool(value, default=False):
+def convert_to_bool(value: object, default: bool = False) -> bool:
     if value is None:
         return default
     return is_truthy(value)
 
 
-def clean_text(value):
+def clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
-def clean_key(value, fallback=""):
+def clean_key(value: object, fallback: object = "") -> str:
     cleaned = clean_text(value).lower()
     if cleaned:
         return cleaned
     return clean_text(fallback).lower()
 
 
-def fast_url_hash(value):
+def fast_url_hash(value: object) -> str | None:
     if value is None:
         return None
     raw = str(value).strip()
@@ -50,9 +50,27 @@ def fast_url_hash(value):
     return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-def as_naive_utc(dt_value):
+def as_naive_utc(dt_value: datetime | None) -> datetime | None:
     if dt_value is None:
         return None
     if dt_value.tzinfo is None:
         return dt_value
     return dt_value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def utc_now_naive() -> datetime:
+    return utc_now().replace(tzinfo=None)
+
+
+def to_utc_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        as_utc = value.replace(tzinfo=timezone.utc)
+    else:
+        as_utc = value.astimezone(timezone.utc)
+    return as_utc.isoformat().replace("+00:00", "Z")

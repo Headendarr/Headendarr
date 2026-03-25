@@ -25,13 +25,12 @@ from backend.auth import (
 )
 from backend import config as backend_config
 from backend.config import is_tvh_process_running_locally
-from backend.datetime_utils import to_utc_iso
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.models import Session, User
 from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIBLE_PROFILE_IDS_ORDER
 from backend.plex.runtime import build_plex_settings_for_runtime, get_runtime_plex_servers, plex_runtime_summary
 from backend.tvheadend.tvh_requests import configure_tvh
-from backend.utils import convert_to_int
+from backend.utils import convert_to_int, to_utc_iso
 
 _TVH_PROXY_CONNECT_TIMEOUT = float(os.environ.get("TVH_PROXY_CONNECT_TIMEOUT_SECONDS", "15"))
 _TVH_PROXY_STREAM_READ_TIMEOUT = float(os.environ.get("TVH_PROXY_STREAM_READ_TIMEOUT_SECONDS", "120"))
