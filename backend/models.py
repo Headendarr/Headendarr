@@ -2,22 +2,22 @@
 # -*- coding:utf-8 -*-
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import (
-    Column,
-    Integer,
-    String,
-    ForeignKey,
     Boolean,
-    Table,
-    MetaData,
+    Column,
     DateTime,
-    func,
-    Text,
     Float,
-    UniqueConstraint,
+    ForeignKey,
     Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
 )
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import relationship, sessionmaker, declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base, relationship
 
 from backend import config
 
@@ -25,7 +25,7 @@ metadata = MetaData()
 Base = declarative_base(metadata=metadata)
 
 engine = create_async_engine(config.sqlalchemy_database_async_uri, echo=config.enable_sqlalchemy_debugging)
-Session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+Session: async_sessionmaker[AsyncSession] = async_sessionmaker(engine, expire_on_commit=False)
 
 # Use of 'db' in this project is now deprecated and will be removed in a future release. Use Session instead.
 db = SQLAlchemy()
@@ -456,6 +456,7 @@ class Channel(Base):
     id = Column(Integer, primary_key=True)
 
     enabled = Column(Boolean, nullable=False, unique=False)
+    channel_type = Column(String(32), nullable=False, default="standard", server_default="standard")
     name = Column(String(500), index=True, unique=False)
     logo_url = Column(Text, index=False, unique=False)
     logo_base64 = Column(Text, index=False, unique=False)
@@ -463,6 +464,8 @@ class Channel(Base):
     tvh_uuid = Column(String(500), index=True, unique=False)
     cso_enabled = Column(Boolean, nullable=False, unique=False, default=False)
     cso_policy = Column(Text, index=False, unique=False)
+    vod_schedule_mode = Column(String(32), nullable=True)
+    vod_schedule_direction = Column(String(8), nullable=True)
 
     # Link with a guide
     guide_id = Column(Integer, ForeignKey("epgs.id"))
@@ -474,6 +477,7 @@ class Channel(Base):
 
     # Backref to all associated linked sources
     sources = relationship("ChannelSource", back_populates="channel", cascade="all, delete-orphan")
+    vod_channel_rules = relationship("VodChannelRule", back_populates="channel", cascade="all, delete-orphan")
     suggestions = relationship("ChannelSuggestion", back_populates="channel", cascade="all, delete-orphan")
     recording_rules = relationship("RecordingRule", back_populates="channel", cascade="all, delete-orphan")
     recordings = relationship("Recording", back_populates="channel", cascade="all, delete-orphan")
@@ -493,6 +497,23 @@ class ChannelTag(Base):
 
     def __repr__(self):
         return "<ChannelTag {}>".format(self.id)
+
+
+class VodChannelRule(Base):
+    __tablename__ = "vod_channel_rules"
+    id = Column(Integer, primary_key=True)
+
+    channel_id = Column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    operator = Column(String(16), nullable=False, default="include", server_default="include")
+    rule_type = Column(String(64), nullable=False)
+    value = Column(Text, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+
+    channel = relationship("Channel", back_populates="vod_channel_rules")
+
+    def __repr__(self):
+        return "<VodChannelRule {}>".format(self.id)
 
 
 class ChannelSource(Base):
