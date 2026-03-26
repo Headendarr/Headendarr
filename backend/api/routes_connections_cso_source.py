@@ -6,6 +6,8 @@ import logging
 import hashlib
 import time
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from flask import request
@@ -43,6 +45,7 @@ from backend.stream_activity import (
 from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.streaming import normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
+from backend.vod_channels import is_vod_channel_type, subscribe_vod_channel_stream
 from backend.channel_stream_health import (
     cancel_background_health_checks_for_capacity_key,
     has_background_health_check_for_capacity_key,
@@ -53,16 +56,14 @@ CONNECTION_LIMIT_REACHED_MESSAGE = "Channel unavailable due to connection limits
 logger = logging.getLogger("cso.api")
 
 
-def _get_connection_id(default_new=False):
+def _get_connection_id() -> str:
     value = (request.args.get("connection_id") or request.args.get("cid") or "").strip()
     if value:
         return value
-    if default_new:
-        return uuid.uuid4().hex
-    return None
+    return uuid.uuid4().hex
 
 
-def _response_from_cso_plan(plan, fallback_message, fallback_status=503):
+def _response_from_cso_plan(plan: Any, fallback_message: str, fallback_status: int = 503) -> Response:
     if plan.generator is None:
         return Response(fallback_message, status=int(plan.status_code or fallback_status))
     response = Response(
@@ -72,7 +73,7 @@ def _response_from_cso_plan(plan, fallback_message, fallback_status=503):
     return response
 
 
-async def _iter_cso_plan_generator(plan, connection_id, touch_identity):
+async def _iter_cso_plan_generator(plan: Any, connection_id: str, touch_identity: str) -> AsyncIterator[bytes]:
     last_touch_ts = time.time()
     cutoff_deadline = None
     if plan.cutoff_seconds is not None:
@@ -392,7 +393,7 @@ async def stream_from_source_gate(stream_id):
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     use_hls_output = str(effective_policy.get("container") or "").strip().lower() == "hls"
 
-    connection_id = _get_connection_id(default_new=True)
+    connection_id = _get_connection_id()
     if connection_id == "tvh":
         connection_id = f"tvh-{uuid.uuid4().hex}"
     capacity_key_name = source_capacity_key(source)
@@ -535,8 +536,10 @@ async def stream_channel(channel_id):
     )
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     use_hls_output = str(effective_policy.get("container") or "").strip().lower() == "hls"
+    if channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)):
+        use_hls_output = False
 
-    connection_id = _get_connection_id(default_new=True)
+    connection_id = _get_connection_id()
     if connection_id == "tvh":
         # Treat "tvh" as a logical label only. Internally, each request gets a
         # unique client id to avoid teardown collisions across reconnects.
@@ -558,6 +561,48 @@ async def stream_channel(channel_id):
         if hls_query:
             target_url = f"{target_url}?{hls_query}"
         return redirect(target_url, code=302)
+    if channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)):
+        generator, content_type, error_message, status_code = await subscribe_vod_channel_stream(
+            config,
+            channel_id_int,
+            stream_key=stream_key,
+            profile=effective_profile,
+            connection_id=connection_id,
+            request_headers=dict(request.headers),
+        )
+        if generator is None:
+            return Response(error_message or "Unable to start VOD channel stream", status=status_code or 500)
+
+        @stream_with_context
+        async def generate_vod_channel_stream():
+            try:
+                async for chunk in generator:
+                    yield chunk
+            finally:
+                await stop_stream_activity(
+                    "",
+                    connection_id=connection_id,
+                    event_type="stream_stop",
+                    endpoint_override=request.path,
+                    user=getattr(request, "_stream_user", None),
+                )
+
+        await upsert_stream_activity(
+            f"/tic-api/cso/channel/{channel_id_int}",
+            connection_id=connection_id,
+            endpoint_override=request.path,
+            start_event_type="stream_start",
+            user=getattr(request, "_stream_user", None),
+            details_override=f"{getattr(channel, 'name', '')}\n/tic-api/cso/channel/{channel_id_int}",
+            channel_id=channel_id_int,
+            channel_name=getattr(channel, "name", None),
+            channel_logo_url=getattr(channel, "logo_url", None),
+            stream_name=getattr(channel, "name", None),
+            display_url=f"/tic-api/cso/channel/{channel_id_int}",
+        )
+        response = Response(generate_vod_channel_stream(), content_type=content_type or "video/mp2t")
+        response.timeout = None
+        return response
     plan = await subscribe_channel_stream(
         config=config,
         channel=channel,
