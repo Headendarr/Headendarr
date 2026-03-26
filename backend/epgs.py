@@ -34,6 +34,7 @@ from backend.channels import build_channel_logo_output_url, _read_channel_dummy_
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes, EpgProgrammeMetadataCache
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import as_naive_utc, parse_entity_id
+from backend.vod_channels import build_xmltv_programmes, build_vod_channel_schedule, is_vod_channel_type
 
 logger = logging.getLogger("tic.epgs")
 XMLTV_UTC_FORMAT = "%Y%m%d%H%M%S +0000"
@@ -1599,6 +1600,8 @@ async def build_custom_epg(config, throttle=False):
                 "dummy_interval_minutes": (
                     (_read_channel_dummy_epg_settings(result.id, config) or {}).get("interval_minutes")
                 ),
+                "channel_type": str(getattr(result, "channel_type", "standard") or "standard"),
+                "channel_row_id": int(result.id),
             }
         )
         if result.guide_id and result.guide_channel_id:
@@ -1688,6 +1691,39 @@ async def build_custom_epg(config, throttle=False):
         guide_offset_minutes = int(channel_info.get("guide_offset_minutes") or 0)
         if channel_info.get("dummy_interval_minutes"):
             _append_dummy_programmes_to_xml(output_root, channel_info, now_ts)
+            await maybe_yield()
+            continue
+        if is_vod_channel_type(channel_info.get("channel_type")):
+            schedule = await build_vod_channel_schedule(config, int(channel_info["channel_row_id"]))
+            for programme in build_xmltv_programmes(schedule, channel_tags):
+                output_programme = ET.SubElement(output_root, "programme")
+                output_programme.set("start", xmltv_datetime_from_timestamp(int(programme["start_ts"])) or "")
+                output_programme.set("stop", xmltv_datetime_from_timestamp(int(programme["stop_ts"])) or "")
+                output_programme.set("start_timestamp", str(int(programme["start_ts"])))
+                output_programme.set("stop_timestamp", str(int(programme["stop_ts"])))
+                output_programme.set("channel", str(channel_id))
+                title_el = ET.SubElement(output_programme, "title")
+                title_el.text = programme["title"]
+                title_el.set("lang", "en")
+                if programme.get("sub_title"):
+                    sub_title_el = ET.SubElement(output_programme, "sub-title")
+                    sub_title_el.text = programme["sub_title"]
+                    sub_title_el.set("lang", "en")
+                if programme.get("desc"):
+                    desc_el = ET.SubElement(output_programme, "desc")
+                    desc_el.text = programme["desc"]
+                    desc_el.set("lang", "en")
+                if programme.get("icon_url"):
+                    icon_el = ET.SubElement(output_programme, "icon")
+                    icon_el.set("src", programme["icon_url"])
+                if programme.get("epnum_onscreen"):
+                    epnum_el = ET.SubElement(output_programme, "episode-num")
+                    epnum_el.set("system", "onscreen")
+                    epnum_el.text = programme["epnum_onscreen"]
+                for category in programme.get("categories") or []:
+                    category_el = ET.SubElement(output_programme, "category")
+                    category_el.text = category
+                    category_el.set("lang", "en")
             await maybe_yield()
             continue
         for epg_channel_programme in programmes_by_output_channel.get(channel_id, []):

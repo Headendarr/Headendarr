@@ -2674,6 +2674,65 @@ async def fetch_series_info_payload(item_id: int) -> dict[str, object] | None:
     return payload
 
 
+async def fetch_xc_series_info_payload(source_item_id: int) -> dict[str, object] | None:
+    async with Session() as session:
+        source_item = await session.get(XcVodItem, int(source_item_id))
+    if source_item is None or clean_text(source_item.item_type) != VOD_KIND_SERIES:
+        return None
+    payload = await _fetch_upstream_metadata(
+        source_item,
+        "get_series_info",
+        str(source_item.upstream_item_id),
+        "series_id",
+    )
+    return payload if isinstance(payload, dict) else None
+
+
+async def resolve_xc_item_upstream_url(
+    source_item_id: int,
+    item_type: str,
+    upstream_episode_id: str | None = None,
+    container_extension: str | None = None,
+) -> tuple[XcVodItem | None, str, XcAccount | None, str | None]:
+    async with Session() as session:
+        result = await session.execute(
+            select(XcVodItem, Playlist)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .where(XcVodItem.id == int(source_item_id))
+            .options(joinedload(XcVodItem.playlist))
+        )
+        row = result.first()
+    if not row:
+        return None, "", None, "Imported XC VOD item was not found"
+
+    source_item, playlist = row
+    host_url, account = await _select_account_for_playlist(playlist)
+    if not host_url or account is None:
+        return source_item, "", None, "No available XC account or reachable host was found"
+
+    extension = clean_text(container_extension).lstrip(".").lower()
+    if not extension:
+        extension = clean_text(source_item.container_extension).lstrip(".").lower() or "mp4"
+
+    if clean_text(item_type) == VOD_KIND_MOVIE:
+        return (
+            source_item,
+            _build_upstream_movie_url(host_url, account, str(source_item.upstream_item_id), extension),
+            account,
+            None,
+        )
+
+    episode_id = clean_text(upstream_episode_id)
+    if not episode_id:
+        return source_item, "", account, "Series episode mapping is missing an upstream episode id"
+    return (
+        source_item,
+        _build_upstream_series_url(host_url, account, episode_id, extension),
+        account,
+        None,
+    )
+
+
 async def _fetch_upstream_metadata(
     source_item: XcVodItem, action: str, upstream_item_id: str, param_name: str
 ) -> dict | list | None:

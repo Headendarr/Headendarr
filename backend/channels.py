@@ -11,6 +11,7 @@ import re
 import time
 from collections import OrderedDict
 from mimetypes import guess_type
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import aiofiles
@@ -70,8 +71,35 @@ from backend.streaming import (
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.url_resolver import get_tvh_publish_base_url
 from backend.utils import convert_to_int, fast_url_hash, parse_entity_id
+from backend.vod_channels import (
+    CHANNEL_TYPE_STANDARD,
+    build_vod_channel_schedule,
+    is_vod_channel_type,
+    read_vod_channel_settings,
+    replace_vod_channel_rules,
+    serialise_vod_channel_rules,
+    vod_channel_schedule_path,
+)
 
 logger = logging.getLogger("tic.channels")
+
+
+def _channel_type_value(value: object) -> str:
+    text = str(value or CHANNEL_TYPE_STANDARD).strip().lower()
+    return text or CHANNEL_TYPE_STANDARD
+
+
+def _build_vod_channel_payload(channel: Channel) -> dict[str, Any]:
+    settings = read_vod_channel_settings(
+        {
+            "schedule_mode": getattr(channel, "vod_schedule_mode", None),
+            "schedule_direction": getattr(channel, "vod_schedule_direction", None),
+        }
+    )
+    return {
+        "rules": serialise_vod_channel_rules(channel),
+        "settings": settings,
+    }
 
 
 def _parse_channel_number(value):
@@ -753,8 +781,8 @@ async def build_bulk_epg_match_preview(
         channel_base_name, channel_plus_one = _extract_plus_one_variant(channel_name)
         raw_candidates = []
 
-        def _append_candidate(epg_row, score, reason):
-            raw_candidates.append(
+        def _append_candidate(candidate_list, epg_row, score, reason):
+            candidate_list.append(
                 {
                     "score": score,
                     "reason": reason,
@@ -784,31 +812,31 @@ async def build_bulk_epg_match_preview(
             tvg_id = (stream_row.tvg_id or "").strip()
             if provider_channel_id:
                 for epg_row in by_channel_id.get(provider_channel_id.lower(), []):
-                    _append_candidate(epg_row, 1.0, "source_channel_id_exact")
+                    _append_candidate(raw_candidates, epg_row, 1.0, "source_channel_id_exact")
             if tvg_id:
                 for epg_row in by_channel_id.get(tvg_id.lower(), []):
-                    _append_candidate(epg_row, 0.99, "source_tvg_id_exact")
+                    _append_candidate(raw_candidates, epg_row, 0.99, "source_tvg_id_exact")
 
         # 2) Existing mapping.
         if channel.guide_id and channel.guide_channel_id:
             existing = epg_rows_by_tuple.get((int(channel.guide_id), str(channel.guide_channel_id)))
             if existing:
-                _append_candidate(existing, 0.97, "existing_mapping_valid")
+                _append_candidate(raw_candidates, existing, 0.97, "existing_mapping_valid")
 
         # 3) Exact name-key match (e.g. "NZ: HGTV" -> "HGTV").
         for name_variant in channel_name_variants:
             for epg_row in by_name_key.get(name_variant, []):
                 if bool(epg_row["plus_one"]) == bool(channel_plus_one):
-                    _append_candidate(epg_row, 0.94, "name_exact")
+                    _append_candidate(raw_candidates, epg_row, 0.94, "name_exact")
                 else:
-                    _append_candidate(epg_row, 0.9, "name_variant_plus_one_penalty")
+                    _append_candidate(raw_candidates, epg_row, 0.9, "name_variant_plus_one_penalty")
 
         # Timeshift fallback: same base, different variant.
         for epg_row in by_base_name.get(channel_base_name, []):
             if not channel_base_name:
                 continue
             if bool(epg_row["plus_one"]) != bool(channel_plus_one):
-                _append_candidate(epg_row, 0.89, "name_variant_plus_one_penalty")
+                _append_candidate(raw_candidates, epg_row, 0.89, "name_variant_plus_one_penalty")
 
         # 4) Fuzzy pass.
         if candidate_name_keys:
@@ -825,7 +853,7 @@ async def build_bulk_epg_match_preview(
                         continue
                     for epg_row in by_name_key.get(matched_name, []):
                         score = min(0.885, round(ratio, 4))
-                        _append_candidate(epg_row, score, "name_fuzzy")
+                        _append_candidate(raw_candidates, epg_row, score, "name_fuzzy")
 
         candidates = _dedupe_and_rank_candidates(raw_candidates, max_candidates_per_channel)
 
@@ -1145,14 +1173,14 @@ async def apply_bulk_cso_settings(channel_ids, cso_enabled, cso_profile=None):
         return {"updated": 0}
 
     requested_profile = str(cso_profile or "").strip().lower()
-    serialized_policy = json.dumps({"profile": requested_profile or "default"}, sort_keys=True)
+    serialised_policy = json.dumps({"profile": requested_profile or "default"}, sort_keys=True)
     async with Session() as session:
         async with session.begin():
             channels_result = await session.execute(select(Channel).where(Channel.id.in_(normalized_ids)))
             channels = channels_result.scalars().all()
             for channel in channels:
                 channel.cso_enabled = bool(cso_enabled)
-                channel.cso_policy = serialized_policy
+                channel.cso_policy = serialised_policy
 
     return {"updated": len(channels)}
 
@@ -1176,6 +1204,7 @@ async def read_config_all_channels(
                 .options(
                     joinedload(Channel.tags),
                     joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+                    selectinload(Channel.vod_channel_rules),
                 )
                 .order_by(Channel.id)
             )
@@ -1235,6 +1264,7 @@ async def read_config_all_channels(
                                 "cso_enabled": bool(getattr(result, "cso_enabled", False)),
                                 "cso_policy": {"profile": cso_profile},
                                 "cso_profile": cso_profile,
+                                "channel_type": _channel_type_value(getattr(result, "channel_type", None)),
                                 "tags": tags,
                                 "guide": {
                                     "epg_name": result.guide_name,
@@ -1242,6 +1272,7 @@ async def read_config_all_channels(
                                     "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
                                 },
                                 "sources": sources,
+                                "vod_channel": _build_vod_channel_payload(result),
                             },
                             dummy_epg_state.get(str(result.id)),
                         )
@@ -1258,6 +1289,7 @@ async def read_config_all_channels(
                     "cso_policy": {"profile": profile_from_cso_policy(getattr(result, "cso_policy", None))},
                     "cso_profile": profile_from_cso_policy(getattr(result, "cso_policy", None)),
                     "cso_capabilities": cso_runtime_capabilities(),
+                    "channel_type": _channel_type_value(getattr(result, "channel_type", None)),
                     "tags": tags,
                     "guide": {
                         "epg_id": result.guide_id,
@@ -1266,6 +1298,7 @@ async def read_config_all_channels(
                         "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
                     },
                     "sources": sources,
+                    "vod_channel": _build_vod_channel_payload(result),
                 }
                 channel_payload = _merge_channel_dummy_epg_payload(
                     channel_payload,
@@ -1286,6 +1319,7 @@ async def read_config_one_channel(channel_id):
             .options(
                 joinedload(Channel.tags),
                 joinedload(Channel.sources).subqueryload(ChannelSource.playlist),
+                selectinload(Channel.vod_channel_rules),
             )
             .where(Channel.id == channel_id)
             .order_by(Channel.id)
@@ -1324,6 +1358,7 @@ async def read_config_one_channel(channel_id):
             "cso_policy": {"profile": profile_from_cso_policy(getattr(result, "cso_policy", None))},
             "cso_profile": profile_from_cso_policy(getattr(result, "cso_policy", None)),
             "cso_capabilities": cso_runtime_capabilities(),
+            "channel_type": _channel_type_value(getattr(result, "channel_type", None)),
             "tags": tags,
             "guide": {
                 "epg_id": result.guide_id,
@@ -1332,6 +1367,7 @@ async def read_config_one_channel(channel_id):
                 "offset_minutes": convert_to_int(getattr(result, "guide_offset_minutes", 0), 0),
             },
             "sources": sources,
+            "vod_channel": _build_vod_channel_payload(result),
         }
         return_item = _merge_channel_dummy_epg_payload(return_item, dummy_settings)
     return return_item
@@ -1441,13 +1477,19 @@ async def add_new_channel(config, data, commit=True):
     instance_id = config.ensure_instance_id()
     async with Session() as session:
         cso_enabled, cso_policy = _extract_cso_payload(data)
+        channel_type = _channel_type_value(data.get("channel_type"))
+        vod_channel_payload = data.get("vod_channel") if isinstance(data.get("vod_channel"), dict) else {}
+        vod_channel_settings = read_vod_channel_settings(vod_channel_payload.get("settings"))
         channel = Channel(
             enabled=data.get("enabled"),
+            channel_type=channel_type,
             name=data.get("name"),
             logo_url=data.get("logo_url"),
             number=None,
             cso_enabled=cso_enabled,
             cso_policy=cso_policy,
+            vod_schedule_mode=vod_channel_settings["schedule_mode"],
+            vod_schedule_direction=vod_channel_settings["schedule_direction"],
         )
 
         for tag_name in data.get("tags", []):
@@ -1459,24 +1501,31 @@ async def add_new_channel(config, data, commit=True):
             channel.tags.append(channel_tag)
 
         guide_info = data.get("guide", {})
-        dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
-        if dummy_epg_settings:
+        dummy_epg_settings = None
+        if not is_vod_channel_type(channel_type):
+            dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
+            if dummy_epg_settings:
+                channel.guide_id = None
+                channel.guide_name = None
+                channel.guide_channel_id = None
+                channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+            elif guide_info.get("epg_id"):
+                query = await session.execute(select(Epg).where(Epg.id == guide_info["epg_id"]))
+                channel_guide_source = query.scalar_one()
+                channel.guide_id = channel_guide_source.id
+                channel.guide_name = channel_guide_source.name
+                channel.guide_channel_id = guide_info["channel_id"]
+                channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+        else:
             channel.guide_id = None
             channel.guide_name = None
             channel.guide_channel_id = None
-            channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
-        elif guide_info.get("epg_id"):
-            query = await session.execute(select(Epg).where(Epg.id == guide_info["epg_id"]))
-            channel_guide_source = query.scalar_one()
-            channel.guide_id = channel_guide_source.id
-            channel.guide_name = channel_guide_source.name
-            channel.guide_channel_id = guide_info["channel_id"]
-            channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+            channel.guide_offset_minutes = 0
 
         new_sources = []
         playlist_stream_cache = {}
         priority = len(data.get("sources", []))
-        for source_info in data.get("sources", []):
+        for source_info in [] if is_vod_channel_type(channel_type) else data.get("sources", []):
             is_manual = source_info.get("source_type") == "manual" or not source_info.get("playlist_id")
             if is_manual:
                 stream_url = (source_info.get("stream_url") or "").strip()
@@ -1561,6 +1610,8 @@ async def add_new_channel(config, data, commit=True):
 
         if new_sources:
             channel.sources = new_sources
+        if is_vod_channel_type(channel_type):
+            await replace_vod_channel_rules(session, channel, vod_channel_payload.get("rules") or [])
 
         session.add(channel)
         await session.flush()
@@ -1575,6 +1626,8 @@ async def add_new_channel(config, data, commit=True):
             dummy_epg_settings.get("interval_minutes") if dummy_epg_settings else None,
             config,
         )
+        if is_vod_channel_type(channel_type):
+            await build_vod_channel_schedule(config, channel.id, force=True)
         return channel
 
 
@@ -1613,11 +1666,15 @@ async def update_channel(config, channel_id, data):
             query = await session.execute(
                 select(Channel)
                 .where(Channel.id == channel_id)
-                .options(selectinload(Channel.tags), selectinload(Channel.sources))
+                .options(
+                    selectinload(Channel.tags), selectinload(Channel.sources), selectinload(Channel.vod_channel_rules)
+                )
             )
             channel = query.scalar_one()
             channel.enabled = data.get("enabled")
             channel.name = data.get("name")
+            channel_type = _channel_type_value(data.get("channel_type"))
+            channel.channel_type = channel_type
             cso_enabled, cso_policy = _extract_cso_payload(
                 data,
                 current_enabled=bool(getattr(channel, "cso_enabled", False)),
@@ -1632,6 +1689,10 @@ async def update_channel(config, channel_id, data):
             if logo_url is None:
                 logo_url = data.get("logo_url")
             channel.logo_url = logo_url
+            vod_channel_payload = data.get("vod_channel") if isinstance(data.get("vod_channel"), dict) else {}
+            vod_channel_settings = read_vod_channel_settings(vod_channel_payload.get("settings"))
+            channel.vod_schedule_mode = vod_channel_settings["schedule_mode"]
+            channel.vod_schedule_direction = vod_channel_settings["schedule_direction"]
             number_value = data["number"] if "number" in data else channel.number
             await _set_channel_number_with_shift(session, channel, number_value)
 
@@ -1651,39 +1712,46 @@ async def update_channel(config, channel_id, data):
 
             # Programme Guide
             guide_info = data.get("guide", {})
-            dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
-            if dummy_epg_settings:
-                channel.guide_id = None
-                channel.guide_name = None
-                channel.guide_channel_id = None
-                channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
-                dummy_epg_interval_to_persist = dummy_epg_settings.get("interval_minutes")
-            elif guide_info.get("epg_id"):
-                query = await session.execute(select(Epg).filter(Epg.id == guide_info["epg_id"]))
-                channel_guide_source = query.scalar_one_or_none()
-                if channel_guide_source:
-                    channel.guide_id = channel_guide_source.id
-                    channel.guide_name = guide_info.get("epg_name")
-                    channel.guide_channel_id = guide_info.get("channel_id")
-                    channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
-                    dummy_epg_interval_to_persist = None
-                else:
-                    channel.guide_id = None
-                    channel.guide_name = None
-                    channel.guide_channel_id = None
-                    channel.guide_offset_minutes = 0
-                    dummy_epg_interval_to_persist = None
-            elif "guide" in data:
+            if is_vod_channel_type(channel_type):
                 channel.guide_id = None
                 channel.guide_name = None
                 channel.guide_channel_id = None
                 channel.guide_offset_minutes = 0
                 dummy_epg_interval_to_persist = None
+            else:
+                dummy_epg_settings = _resolve_dummy_epg_settings_from_guide(guide_info)
+                if dummy_epg_settings:
+                    channel.guide_id = None
+                    channel.guide_name = None
+                    channel.guide_channel_id = None
+                    channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+                    dummy_epg_interval_to_persist = dummy_epg_settings.get("interval_minutes")
+                elif guide_info.get("epg_id"):
+                    query = await session.execute(select(Epg).filter(Epg.id == guide_info["epg_id"]))
+                    channel_guide_source = query.scalar_one_or_none()
+                    if channel_guide_source:
+                        channel.guide_id = channel_guide_source.id
+                        channel.guide_name = guide_info.get("epg_name")
+                        channel.guide_channel_id = guide_info.get("channel_id")
+                        channel.guide_offset_minutes = _parse_guide_offset_minutes(guide_info.get("offset_minutes", 0))
+                        dummy_epg_interval_to_persist = None
+                    else:
+                        channel.guide_id = None
+                        channel.guide_name = None
+                        channel.guide_channel_id = None
+                        channel.guide_offset_minutes = 0
+                        dummy_epg_interval_to_persist = None
+                elif "guide" in data:
+                    channel.guide_id = None
+                    channel.guide_name = None
+                    channel.guide_channel_id = None
+                    channel.guide_offset_minutes = 0
+                    dummy_epg_interval_to_persist = None
 
             # Skip source reconciliation when the incoming payload has no effective
             # source changes and there are no explicit source refresh requests.
             source_refresh_requested = bool(data.get("refresh_sources"))
-            incoming_sources = data.get("sources", [])
+            incoming_sources = [] if is_vod_channel_type(channel_type) else data.get("sources", [])
 
             def _source_signature_from_incoming(source):
                 is_manual = source.get("source_type") == "manual" or not source.get("playlist_id")
@@ -1714,6 +1782,16 @@ async def update_channel(config, channel_id, data):
             incoming_signature = [_source_signature_from_incoming(source) for source in incoming_sources]
             existing_signature = [_source_signature_from_existing(source) for source in (channel.sources or [])]
             should_reconcile_sources = source_refresh_requested or incoming_signature != existing_signature
+
+            if is_vod_channel_type(channel_type):
+                query = await session.execute(select(ChannelSource).filter_by(channel_id=channel.id))
+                for source in query.scalars().all():
+                    await session.delete(source)
+                await replace_vod_channel_rules(session, channel, vod_channel_payload.get("rules") or [])
+                await session.commit()
+                _set_channel_dummy_epg_settings(channel_id, None, config)
+                await build_vod_channel_schedule(config, channel_id, force=True)
+                return
 
             if not should_reconcile_sources:
                 await session.commit()
@@ -2079,6 +2157,8 @@ async def update_channel(config, channel_id, data):
             # Commit
             await session.commit()
     _set_channel_dummy_epg_settings(channel_id, dummy_epg_interval_to_persist, config)
+    if is_vod_channel_type(channel_type):
+        await build_vod_channel_schedule(config, channel_id, force=True)
 
 
 async def add_bulk_channels(config, data):
@@ -2210,6 +2290,10 @@ async def delete_channel(channel_id):
             await session.delete(channel)
             await session.commit()
             _set_channel_dummy_epg_settings(channel_id, None)
+            try:
+                vod_channel_schedule_path(app_config, channel_id).unlink(missing_ok=True)
+            except Exception:
+                pass
             return True
 
 
@@ -2519,7 +2603,7 @@ async def publish_bulk_channels_to_tvh_and_m3u(config, force=False, trigger="unk
                 logo_refresh_count += 1
             elif not cache_channel_logos:
                 # When logo caching is disabled, the UI renders the source logo URL directly.
-                # At this point we do not want to flag this as a cache-based failure from placeholder 
+                # At this point we do not want to flag this as a cache-based failure from placeholder
                 # or missing cached logo data. So just log it and carry on.
                 logo_health_state[str(result.id)] = {
                     "status": "ok",
@@ -2842,6 +2926,61 @@ async def publish_channel_muxes(config):
                     logger.error("Failed resolving CSO network for channel '%s'", channel_obj.name)
                     return
 
+                if is_vod_channel_type(getattr(channel_obj, "channel_type", None)):
+                    mux_name = f"tic-cso-vod-{channel_obj.id}-{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
+                    existing = next((m for m in existing_muxes if (m.get("iptv_muxname") or "") == mux_name), None)
+                    mux_uuid = existing.get("uuid") if existing else None
+                    run_mux_scan = False
+                    if not mux_uuid:
+                        try:
+                            mux_uuid = await tvh.network_mux_create(net_uuid)
+                            run_mux_scan = True
+                        except Exception as exc:
+                            logger.error("Failed creating VOD CSO mux for channel '%s': %s", channel_obj.name, exc)
+                            return
+
+                    cso_url = build_cso_channel_stream_url(
+                        base_url=tic_base_url,
+                        channel_id=channel_obj.id,
+                        stream_key=tvh_stream_key,
+                        username=tvh_stream_username,
+                        connection_id="tvh",
+                        profile="tvh",
+                    )
+                    iptv_url = generate_iptv_url(
+                        config,
+                        url=cso_url,
+                        service_name=f"CSO - {channel_obj.name}",
+                        use_buffer_wrapper=True,
+                        force_buffer_wrapper=True,
+                    )
+                    channel_id = f"{channel_obj.number}_{re.sub(r'[^a-zA-Z0-9]', '', channel_obj.name)}"
+                    mux_conf = {
+                        "enabled": 1,
+                        "uuid": mux_uuid,
+                        "iptv_url": iptv_url,
+                        "iptv_icon": build_channel_logo_output_url(
+                            config,
+                            channel_obj.id,
+                            tic_base_url or LOCAL_PROXY_HOST_PLACEHOLDER,
+                            channel_obj.logo_url or "",
+                        ),
+                        "iptv_sname": channel_obj.name,
+                        "iptv_muxname": mux_name,
+                        "channel_number": channel_obj.number,
+                        "iptv_epgid": channel_id,
+                        "priority": "1",
+                        "spriority": "1",
+                    }
+                    if run_mux_scan:
+                        mux_conf["scan_state"] = 1
+                    try:
+                        await tvh.idnode_save(mux_conf)
+                        managed_uuids.append(mux_uuid)
+                    except Exception as exc:
+                        logger.error("Failed saving VOD CSO mux for channel '%s': %s", channel_obj.name, exc)
+                    return
+
                 eligible_sources = []
                 for source_obj in sorted(channel_obj.sources or [], key=_channel_source_sort_key):
                     stream_url = str(getattr(source_obj, "playlist_stream_url", "") or "").strip()
@@ -2911,9 +3050,9 @@ async def publish_channel_muxes(config):
 
         # Schedule tasks
         for channel_obj in results:
-            if not channel_obj.enabled:
+            if not bool(channel_obj.enabled):
                 continue
-            if bool(getattr(channel_obj, "cso_enabled", False)):
+            if bool(channel_obj.cso_enabled) or is_vod_channel_type(channel_obj.channel_type):
                 mux_tasks.append(asyncio.create_task(process_cso_channel(channel_obj)))
                 continue
             for source_obj in channel_obj.sources:
@@ -3445,7 +3584,7 @@ async def build_stream_source_index():
                 PlaylistStreams.url.label("stream_url"),
                 PlaylistStreams.name.label("stream_name"),
                 PlaylistStreams.tvg_logo.label("stream_logo"),
-            ).where(PlaylistStreams.tvg_logo != None)
+            ).where(PlaylistStreams.tvg_logo.is_not(None))
             result = await session.execute(stmt_streams)
             stream_rows = result.mappings().all()
 

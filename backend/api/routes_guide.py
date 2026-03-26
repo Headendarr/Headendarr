@@ -2,8 +2,9 @@
 # -*- coding:utf-8 -*-
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any
 
-from quart import request, jsonify
+from quart import current_app, request, jsonify
 from sqlalchemy import select, and_, cast, Integer
 
 from backend.api import blueprint
@@ -12,13 +13,14 @@ from backend.channels import read_config_all_channels
 from backend.dummy_epg import DUMMY_EPG_SOURCE_ID, build_dummy_epg_programmes, sanitise_dummy_epg_interval
 from backend.epgs import _shift_xmltv_window
 from backend.models import Session, EpgChannels, EpgChannelProgrammes
+from backend.vod_channels import build_vod_channel_schedule, build_xmltv_programmes, is_vod_channel_type
 
 
-def _now_ts():
+def _now_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
 
-def _shift_programme_window(programme, offset_minutes):
+def _shift_programme_window(programme: dict[str, Any], offset_minutes: int) -> tuple[int, int]:
     start_value, stop_value, start_ts, stop_ts = _shift_xmltv_window(
         None,
         None,
@@ -37,25 +39,64 @@ def _shift_programme_window(programme, offset_minutes):
     return shifted_start_ts, shifted_stop_ts
 
 
+async def _build_vod_guide_programmes(
+    config: Any, channel: dict[str, Any], start_ts: int, end_ts: int
+) -> list[dict[str, Any]]:
+    schedule = await build_vod_channel_schedule(config, int(channel["id"]), force=False)
+    if not schedule:
+        return []
+
+    mapped_programmes = []
+    for index, programme in enumerate(build_xmltv_programmes(schedule, channel.get("tags") or [])):
+        programme_start = int(programme.get("start_ts") or 0)
+        programme_stop = int(programme.get("stop_ts") or 0)
+        if programme_start > end_ts or programme_stop < start_ts:
+            continue
+        mapped_programmes.append(
+            {
+                "id": f"vod:{channel['id']}:{programme_start}:{index}",
+                "epg_programme_id": None,
+                "epg_channel_id": None,
+                "channel_id": channel["id"],
+                "title": programme.get("title"),
+                "sub_title": programme.get("sub_title"),
+                "desc": programme.get("desc"),
+                "icon_url": programme.get("icon_url"),
+                "start_ts": programme_start,
+                "stop_ts": programme_stop,
+            }
+        )
+    return mapped_programmes
+
+
 @blueprint.route("/tic-api/guide/grid", methods=["GET"])
 @streamer_or_admin_required
 async def api_guide_grid():
     start_ts = int(request.args.get("start_ts", _now_ts()))
     end_ts = int(request.args.get("end_ts", start_ts + 6 * 3600))
+    config = current_app.config["APP_CONFIG"]
 
     channels = await read_config_all_channels()
-    guide_channels = [
+    vod_guide_channels = [
+        channel for channel in channels if channel.get("enabled") and is_vod_channel_type(channel.get("channel_type"))
+    ]
+    mapped_or_dummy_guide_channels = [
         channel
         for channel in channels
         if channel.get("enabled")
         and channel.get("guide", {}).get("epg_id")
         and channel.get("guide", {}).get("channel_id")
     ]
+    guide_channels = mapped_or_dummy_guide_channels + vod_guide_channels
     dummy_guide_channels = [
-        channel for channel in guide_channels if channel.get("guide", {}).get("epg_id") == DUMMY_EPG_SOURCE_ID
+        channel
+        for channel in mapped_or_dummy_guide_channels
+        if channel.get("guide", {}).get("epg_id") == DUMMY_EPG_SOURCE_ID
     ]
     mapped_guide_channels = [
-        channel for channel in guide_channels if channel.get("guide", {}).get("epg_id") != DUMMY_EPG_SOURCE_ID
+        channel
+        for channel in mapped_or_dummy_guide_channels
+        if channel.get("guide", {}).get("epg_id") != DUMMY_EPG_SOURCE_ID
     ]
 
     if not guide_channels:
@@ -161,6 +202,9 @@ async def api_guide_grid():
                     offset_minutes=int(channel.get("guide", {}).get("offset_minutes", 0) or 0),
                 )
             )
+
+        for channel in vod_guide_channels:
+            mapped_programmes.extend(await _build_vod_guide_programmes(config, channel, start_ts, end_ts))
 
         return jsonify(
             {
