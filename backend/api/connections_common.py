@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import re
+from typing import Any
 
 import sqlalchemy.exc
 from quart import current_app
@@ -10,7 +11,9 @@ from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profil
 from backend.url_resolver import get_tvh_publish_base_url
 
 
-def build_proxy_stream_url(base_url, source_url, stream_key, instance_id, username=None):
+def build_proxy_stream_url(
+    base_url: str, source_url: str, stream_key: str | None, instance_id: str, username: str | None = None
+) -> str:
     return normalize_local_proxy_url(
         source_url,
         base_url=base_url,
@@ -20,7 +23,12 @@ def build_proxy_stream_url(base_url, source_url, stream_key, instance_id, userna
     )
 
 
-async def get_tvh_settings(include_auth=True, stream_profile="pass", stream_username=None, stream_key=None):
+async def get_tvh_settings(
+    include_auth: bool = True,
+    stream_profile: str = "pass",
+    stream_username: str | None = None,
+    stream_key: str | None = None,
+) -> dict[str, Any]:
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
     tic_base_url = await get_tvh_publish_base_url(config)
@@ -53,15 +61,12 @@ async def get_tvh_settings(include_auth=True, stream_profile="pass", stream_user
     }
 
 
-async def get_channels_for_playlist(playlist_id):
+async def get_channels_for_playlist(playlist_id: int | str) -> list[dict[str, Any]]:
     from backend.channels import read_config_all_channels
 
     return_channels = []
     playlist_id_int = int(playlist_id)
-    channels_config = await read_config_all_channels(
-        filter_playlist_ids=[playlist_id_int],
-        include_manual_sources_when_filtered=True,
-    )
+    channels_config = await read_config_all_channels(include_manual_sources_when_filtered=True)
     for channel in channels_config:
         if not channel["enabled"]:
             continue
@@ -88,15 +93,15 @@ async def get_playlist_connection_count(config, playlist_id):
 
 async def resolve_channel_stream_url(
     *,
-    config,
-    channel_details,
-    base_url,
-    stream_key=None,
-    username=None,
-    requested_profile="default",
-    allow_tvh_profile=False,
-    route_scope="source",
-):
+    config: Any,
+    channel_details: dict[str, Any],
+    base_url: str,
+    stream_key: str | None = None,
+    username: str | None = None,
+    requested_profile: str = "default",
+    allow_tvh_profile: bool = False,
+    route_scope: str = "source",
+) -> tuple[str | None, str, str]:
     from backend.channels import build_cso_channel_stream_url, build_cso_source_stream_url
 
     settings = config.read_settings()
@@ -125,7 +130,9 @@ async def resolve_channel_stream_url(
         source = channel_details["sources"][0] if channel_details.get("sources") else None
         source_id = source.get("id") if source else None
         source_url = source.get("stream_url") if source else None
-        should_route_via_channel_cso = bool(route_scope == "combined" and use_combined_cso and channel_details.get("id"))
+        should_route_via_channel_cso = bool(
+            route_scope == "combined" and use_combined_cso and channel_details.get("id")
+        )
         should_route_via_source_gate = bool(source_id and source_url and not should_route_via_channel_cso)
         if should_route_via_channel_cso:
             channel_url = build_cso_channel_stream_url(

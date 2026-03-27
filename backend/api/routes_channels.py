@@ -4,6 +4,7 @@ import io
 import json
 import time
 from datetime import datetime
+from typing import Any
 from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
@@ -26,15 +27,16 @@ from backend.channels import (
     apply_bulk_epg_matches,
     apply_bulk_cso_settings,
     build_channel_logo_output_url,
+    build_cso_channel_stream_url,
 )
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
-from backend.utils import fast_url_hash, parse_entity_id, is_truthy
+from backend.utils import fast_url_hash, parse_entity_id, is_truthy, to_utc_iso
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog, Playlist
-from backend.datetime_utils import to_utc_iso
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
+from backend.vod_channels import is_vod_channel_type
 
 
 async def _fetch_tvh_mux_map(config):
@@ -700,7 +702,7 @@ async def api_get_channels_basic():
     return jsonify({"success": True, "data": basic})
 
 
-def _infer_stream_type(url):
+def _infer_stream_type(url: str) -> str:
     parsed = urlparse(url)
     if parsed.path.lower().endswith(".m3u8"):
         return "hls"
@@ -711,7 +713,9 @@ def _infer_stream_type(url):
     return "auto"
 
 
-def _build_preview_url_for_source(source, user, config, request_base_url):
+def _build_preview_url_for_source(
+    source: ChannelSource, user: Any, config: Any, request_base_url: str
+) -> tuple[str, str]:
     instance_id = config.ensure_instance_id()
 
     is_manual = not source.playlist_id
@@ -746,6 +750,17 @@ async def api_get_channel_preview(channel_id):
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
+        if is_vod_channel_type(channel.channel_type):
+            config = current_app.config["APP_CONFIG"]
+            request_base_url = get_request_base_url(request)
+            preview_url = build_cso_channel_stream_url(
+                base_url=request_base_url,
+                channel_id=channel.id,
+                stream_key=user.streaming_key,
+                username=user.username,
+                profile="default",
+            )
+            return jsonify({"success": True, "preview_url": preview_url, "stream_type": _infer_stream_type(preview_url)})
         result = await session.execute(
             select(ChannelSource).where(ChannelSource.channel_id == channel_id).order_by(ChannelSource.id.asc())
         )
