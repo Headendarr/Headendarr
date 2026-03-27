@@ -9,6 +9,7 @@ from quart import current_app
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
 from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profile_name
 from backend.url_resolver import get_tvh_publish_base_url
+from backend.vod_channels import is_vod_channel_type, vod_channel_has_playlist_items
 
 
 def build_proxy_stream_url(
@@ -70,6 +71,10 @@ async def get_channels_for_playlist(playlist_id: int | str) -> list[dict[str, An
     for channel in channels_config:
         if not channel["enabled"]:
             continue
+        if is_vod_channel_type(channel.get("channel_type")):
+            if await vod_channel_has_playlist_items(current_app.config["APP_CONFIG"], channel["id"], playlist_id_int):
+                return_channels.append(channel)
+            continue
 
         sources = channel.get("sources") or []
         playlist_sources = [source for source in sources if source.get("playlist_id") == playlist_id_int]
@@ -120,6 +125,16 @@ async def resolve_channel_stream_url(
     tvh_stream_profile = resolve_tvh_profile_name(config, cso_profile=resolved_profile)
 
     channel_url = None
+    if is_vod_channel_type(channel_details.get("channel_type")) and channel_details.get("id"):
+        channel_url = build_cso_channel_stream_url(
+            base_url=base_url,
+            channel_id=channel_details["id"],
+            stream_key=stream_key,
+            username=username,
+            profile=resolved_profile,
+        )
+        return channel_url, resolved_profile, tvh_stream_profile
+
     if use_tvh_source and channel_details.get("tvh_uuid"):
         channel_url = f"{base_url}/tic-api/tvh_stream/stream/channel/{channel_details['tvh_uuid']}"
         path_args = f"?profile={tvh_stream_profile}&weight=300"

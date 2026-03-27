@@ -710,6 +710,10 @@ def _infer_stream_type(url: str) -> str:
         return "mpegts"
     if "/tic-hls-proxy/" in parsed.path and "/stream/" in parsed.path:
         return "mpegts"
+    if "/tic-api/cso/channel/" in parsed.path:
+        return "mpegts"
+    if "/tic-api/cso/channel_stream/" in parsed.path:
+        return "mpegts"
     return "auto"
 
 
