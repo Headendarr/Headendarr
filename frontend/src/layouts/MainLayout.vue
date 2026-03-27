@@ -457,7 +457,7 @@ const linkSections = [
       },
       {
         title: 'TV Guide',
-        caption: 'View EPG grid and preview streams',
+        caption: 'View EPG grid',
         icon: 'live_tv',
         link: '/guide',
         streamerOnly: true,

@@ -26,6 +26,20 @@
             description="Enable this channel for TVH publish and guide updates."
           />
 
+          <TicSelectInput
+            v-if="showChannelTypeField"
+            v-model="channelType"
+            :options="channelTypeOptions"
+            option-label="label"
+            option-value="value"
+            :emit-value="true"
+            :map-options="true"
+            :clearable="false"
+            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+            label="Channel Type"
+            description="Standard channels use live stream sources. VOD 24/7 channels build a synthetic guide and playback schedule from curated VOD rules."
+          />
+
           <q-separator />
 
           <h5 class="q-my-none">Channel Details</h5>
@@ -64,78 +78,81 @@
               label="Groups"
             />
             <div class="tic-input-description text-caption text-grey-7">
-              Assign one or more groups to organize this channel and make it easier to filter in channel and guide
+              Assign one or more groups to organise this channel and make it easier to filter in channel and guide
               views.
             </div>
           </div>
 
-          <q-separator />
+          <template v-if="!isVodChannelType">
+            <q-separator />
 
-          <h5 class="q-my-none">Programme Guide</h5>
+            <h5 class="q-my-none">Programme Guide</h5>
 
-          <TicSelectInput
-            v-model="epgSourceId"
-            :options="epgSourceOptions"
-            option-label="label"
-            option-value="value"
-            :emit-value="true"
-            :map-options="true"
-            :clearable="false"
-            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-            label="EPG Source"
-            description="Select which EPG source this channel maps to."
-            @filter="filterEpgSource"
-          />
-
-          <TicSelectInput
-            v-model="epgChannel"
-            :options="epgChannelOptions"
-            option-label="label"
-            option-value="value"
-            :emit-value="true"
-            :map-options="true"
-            :clearable="false"
-            :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-            label="EPG Channel"
-            :description="epgChannelDescription"
-            @filter="filterEpg"
-          />
-
-          <TicTextInput
-            v-model="epgOffsetMinutes"
-            label="EPG Offset (minutes)"
-            description="Shift programme times for this channel by minutes (for example, +60 for +1 channels)."
-            type="number"
-          />
-
-          <q-separator />
-
-          <h5 class="q-my-none">Channel Streams</h5>
-
-          <TicToggleInput
-            v-model="csoEnabled"
-            label="Force use of Channel Stream Organiser for this channel"
-            description="Enable smart channel failover management for this channel and publish a single CSO playback mux to TVHeadend."
-          />
-
-          <div v-if="csoEnabled" class="sub-setting">
             <TicSelectInput
-              v-model="csoProfile"
-              :options="csoProfileOptions"
+              v-model="epgSourceId"
+              :options="epgSourceOptions"
               option-label="label"
               option-value="value"
-              option-description="description"
               :emit-value="true"
               :map-options="true"
               :clearable="false"
               :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
-              label="Preferred Stream Profile"
-              description="Used when this channel is forced through CSO. Clients can still override using the profile query parameter."
+              label="EPG Source"
+              description="Select which EPG source this channel maps to."
+              @filter="filterEpgSource"
             />
 
-          </div>
+            <TicSelectInput
+              v-model="epgChannel"
+              :options="epgChannelOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              label="EPG Channel"
+              :description="epgChannelDescription"
+              @filter="filterEpg"
+            />
 
-          <q-list bordered separator class="rounded-borders">
+            <TicTextInput
+              v-model="epgOffsetMinutes"
+              label="EPG Offset (minutes)"
+              description="Shift programme times for this channel by minutes (for example, +60 for +1 channels)."
+              type="number"
+            />
+          </template>
+
+          <template v-if="!isVodChannelType">
+            <q-separator />
+
+            <h5 class="q-my-none">Channel Streams</h5>
+
+            <TicToggleInput
+              v-model="csoEnabled"
+              label="Force use of Channel Stream Organiser for this channel"
+              description="Enable smart channel failover management for this channel and publish a single CSO playback mux to TVHeadend."
+            />
+
+            <div v-if="csoEnabled" class="sub-setting">
+              <TicSelectInput
+                v-model="csoProfile"
+                :options="csoProfileOptions"
+                option-label="label"
+                option-value="value"
+                option-description="description"
+                :emit-value="true"
+                :map-options="true"
+                :clearable="false"
+                :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                label="Preferred Stream Profile"
+                description="Used when this channel is forced through CSO. Clients can still override using the profile query parameter."
+              />
+
+            </div>
+
+            <q-list bordered separator class="rounded-borders">
             <draggable
               v-model="listOfChannelSources"
               group="channels"
@@ -235,25 +252,25 @@
                 </q-item>
               </template>
             </draggable>
-          </q-list>
+            </q-list>
 
-          <div class="row q-gutter-sm justify-end">
-            <TicButton
-              icon="add"
-              label="Add Stream"
-              color="primary"
-              @click="selectChannelSourceFromList"
-            />
-            <TicButton
-              icon="add_link"
-              label="Add Manual URL"
-              color="primary"
-              variant="outline"
-              @click="addManualChannelSource"
-            />
-          </div>
+            <div class="row q-gutter-sm justify-end">
+              <TicButton
+                icon="add"
+                label="Add Stream"
+                color="primary"
+                @click="selectChannelSourceFromList"
+              />
+              <TicButton
+                icon="add_link"
+                label="Add Manual URL"
+                color="primary"
+                variant="outline"
+                @click="addManualChannelSource"
+              />
+            </div>
 
-          <template v-if="suggestedStreams && suggestedStreams.length">
+            <template v-if="suggestedStreams && suggestedStreams.length">
             <q-separator />
 
             <h5 class="q-my-none">Suggested Streams</h5>
@@ -280,6 +297,100 @@
                 </q-item-section>
               </q-item>
             </q-list>
+            </template>
+          </template>
+
+          <template v-else>
+            <q-separator />
+
+            <h5 class="q-my-none">VOD Content Rules</h5>
+
+            <div class="text-caption text-grey-7">
+              Add one or more include or exclude rules to build the eligible VOD pool for this channel.
+            </div>
+
+            <q-list bordered separator class="rounded-borders">
+              <q-item v-for="(rule, index) in vodContentRules" :key="rule.local_key">
+                <q-item-section class="q-gutter-md">
+                  <TicSelectInput
+                    v-model="rule.operator"
+                    :options="vodRuleOperatorOptions"
+                    option-label="label"
+                    option-value="value"
+                    :emit-value="true"
+                    :map-options="true"
+                    :clearable="false"
+                    :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                    label="Rule Action"
+                  />
+                  <TicSelectInput
+                    v-model="rule.rule_type"
+                    :options="vodRuleTypeOptions"
+                    option-label="label"
+                    option-value="value"
+                    :emit-value="true"
+                    :map-options="true"
+                    :clearable="false"
+                    :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                    label="Rule Type"
+                  />
+                  <TicTextInput
+                    v-model="rule.value"
+                    label="Rule Value"
+                    description="Examples: `Stargate` or `Firefly`. All lookups are case-insensitive. Some providers prefix titles with markers such as language tags, so `Starts With` may not match unless you include that prefix or use `Contains` instead."
+                  />
+                </q-item-section>
+                <q-item-section side top>
+                  <TicButton
+                    icon="delete"
+                    label="Remove"
+                    color="negative"
+                    variant="text"
+                    @click="removeVodContentRule(index)"
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+
+            <div class="row justify-end">
+              <TicButton
+                icon="add"
+                label="Add Content Rule"
+                color="primary"
+                @click="addVodContentRule"
+              />
+            </div>
+
+            <q-separator />
+
+            <h5 class="q-my-none">Schedule Rules</h5>
+
+            <TicSelectInput
+              v-model="vodScheduleMode"
+              :options="vodScheduleModeOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              label="Ordering Mode"
+              :description="vodScheduleModeDescription"
+            />
+
+            <TicSelectInput
+              v-model="vodScheduleDirection"
+              :options="vodScheduleDirectionOptions"
+              option-label="label"
+              option-value="value"
+              :emit-value="true"
+              :map-options="true"
+              :clearable="false"
+              :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+              label="Ordering Direction"
+              description="Ascending is usually the most natural default for release and episode order."
+            />
+
           </template>
         </template>
       </q-form>
@@ -346,6 +457,10 @@ export default {
       initialStateSignature: '',
       initialSourceSignature: '',
       enabled: true,
+      channelType: 'standard',
+      vodStatus: {
+        has_vod_content: false,
+      },
       number: 0,
       name: '',
       logoUrl: '',
@@ -373,9 +488,19 @@ export default {
       testStreamUserAgent: '',
       testStreamSourceId: null,
       dummyEpgChannelOptions: [],
+      vodContentRules: [],
+      nextVodRuleKey: 1,
+      vodScheduleMode: 'series_season_episode',
+      vodScheduleDirection: 'asc',
     };
   },
   computed: {
+    showChannelTypeField() {
+      return Boolean(this.vodStatus?.has_vod_content) || this.channelType === 'vod_24_7';
+    },
+    isVodChannelType() {
+      return this.channelType === 'vod_24_7';
+    },
     isDirty() {
       if (!this.initialStateSignature) {
         return false;
@@ -429,6 +554,65 @@ export default {
       }
       return 'Select the guide channel from the selected EPG source.';
     },
+    channelTypeOptions() {
+      return [
+        {label: 'Standard', value: 'standard'},
+        {label: 'VOD 24/7', value: 'vod_24_7'},
+      ];
+    },
+    vodRuleOperatorOptions() {
+      return [
+        {label: 'Include', value: 'include'},
+        {label: 'Exclude', value: 'exclude'},
+      ];
+    },
+    vodRuleTypeOptions() {
+      return [
+        {label: 'Series Contains', value: 'series_contains'},
+        {label: 'Series Starts With', value: 'series_starts_with'},
+        {label: 'Title Contains', value: 'title_contains'},
+        {label: 'Title Starts With', value: 'title_starts_with'},
+      ];
+    },
+    vodScheduleModeOptions() {
+      return [
+        {
+          label: 'Series, Season, Episode',
+          value: 'series_season_episode',
+          description: 'Play each series in title order, then season order, then episode order.',
+        },
+        {
+          label: 'Release Date',
+          value: 'release_date',
+          description: 'Order matched items by their release date, then fall back to title or episode order.',
+        },
+        {
+          label: 'Season Air Date',
+          value: 'season_air_date',
+          description: 'Group by the series release date first, then keep seasons and episodes in order within that flow.',
+        },
+        {
+          label: 'Episode Air Date',
+          value: 'episode_air_date',
+          description: 'Mix episodes together by episode release date across the full matched pool.',
+        },
+        {
+          label: 'Deterministic Shuffle',
+          value: 'shuffle',
+          description: 'Shuffle the matched pool into a stable repeatable order for this channel.',
+        },
+      ];
+    },
+    vodScheduleModeDescription() {
+      const selectedOption = (this.vodScheduleModeOptions || []).find((option) => option.value === this.vodScheduleMode);
+      return selectedOption?.description || 'Controls how the selected VOD pool is turned into a repeatable 24/7 schedule.';
+    },
+    vodScheduleDirectionOptions() {
+      return [
+        {label: 'Ascending', value: 'asc'},
+        {label: 'Descending', value: 'desc'},
+      ];
+    },
   },
   watch: {
     epgSourceId() {
@@ -445,7 +629,7 @@ export default {
       this.closeResult = null;
       this.hasSavedInSession = false;
 
-      Promise.all([this.fetchEpgData(), this.fetchPlaylistData(), this.fetchCsoProfileOptions()]).then(() => {
+      Promise.all([this.fetchEpgData(), this.fetchPlaylistData(), this.fetchCsoProfileOptions(), this.fetchVodStatus()]).then(() => {
         if (this.channelId) {
           return this.fetchData();
         }
@@ -499,6 +683,7 @@ export default {
     },
     applyDefaultState() {
       this.enabled = true;
+      this.channelType = 'standard';
       this.number = this.newChannelNumber || 0;
       this.name = '';
       this.logoUrl = '';
@@ -514,6 +699,9 @@ export default {
       this.refreshHint = '';
       this.suggestedStreams = [];
       this.dummyEpgChannelOptions = this.buildDummyEpgChannelOptions();
+      this.vodContentRules = [];
+      this.vodScheduleMode = 'series_season_episode';
+      this.vodScheduleDirection = 'asc';
       this.updateCurrentEpgChannelOptions();
     },
     captureInitialState() {
@@ -523,6 +711,7 @@ export default {
     currentStateSignature() {
       return JSON.stringify({
         enabled: this.enabled,
+        channelType: this.channelType,
         number: this.number,
         name: this.name,
         logoUrl: this.logoUrl,
@@ -532,6 +721,13 @@ export default {
         epgOffsetMinutes: this.epgOffsetMinutes,
         csoEnabled: this.csoEnabled,
         csoProfile: this.csoProfile,
+        vodContentRules: (this.vodContentRules || []).map((rule) => ({
+          operator: rule.operator || 'include',
+          rule_type: rule.rule_type || '',
+          value: rule.value || '',
+        })),
+        vodScheduleMode: this.vodScheduleMode,
+        vodScheduleDirection: this.vodScheduleDirection,
         sources: (this.listOfChannelSources || []).map((source) => ({
           source_type: source.source_type || 'playlist',
           stream_id: source.stream_id || null,
@@ -581,6 +777,7 @@ export default {
         url: '/tic-api/channels/settings/' + this.channelId,
       }).then((response) => {
         this.enabled = response.data.data.enabled;
+        this.channelType = response.data.data.channel_type || 'standard';
         this.number = response.data.data.number;
         this.name = response.data.data.name;
         this.logoUrl = response.data.data.logo_url;
@@ -591,12 +788,12 @@ export default {
         this.epgOffsetMinutes = Number(response.data.data.guide.offset_minutes || 0);
         this.csoEnabled = !!response.data.data.cso_enabled;
         if (response.data.data.stream_profile_definitions) {
-          this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+          this.streamProfileDefinitions = this.buildStreamProfileDefinitions(
             response.data.data.stream_profile_definitions,
           );
         }
         if (response.data.data.cso_profile_options) {
-          this.csoProfileChoices = this.normalizeCsoProfileOptions(
+          this.csoProfileChoices = this.buildCsoProfileOptions(
             response.data.data.cso_profile_options,
             this.streamProfileDefinitions,
           );
@@ -607,9 +804,48 @@ export default {
           use_hls_proxy: !!source.use_hls_proxy,
           auto_update: !!source.auto_update,
         })).sort((a, b) => b.priority - a.priority);
+        const vodChannel = response.data.data.vod_channel || {};
+        this.vodContentRules = (vodChannel.rules || []).map((rule) => this.withVodRuleKey({
+          ...rule,
+          operator: rule.operator || 'include',
+          rule_type: rule.rule_type || '',
+          value: rule.value || '',
+        }));
+        this.vodScheduleMode = vodChannel.settings?.schedule_mode || 'series_season_episode';
+        this.vodScheduleDirection = vodChannel.settings?.schedule_direction || 'asc';
         this.listOfChannelSourcesToRefresh = [];
         return Promise.all([this.fetchSuggestions()]);
       });
+    },
+    fetchVodStatus() {
+      return axios.get('/tic-api/vod/status').then((response) => {
+        this.vodStatus = response.data?.data || {has_vod_content: false};
+        if (!this.vodStatus?.has_vod_content) {
+          this.channelType = 'standard';
+        }
+      }).catch(() => {
+        this.vodStatus = {has_vod_content: false};
+        this.channelType = 'standard';
+      });
+    },
+    withVodRuleKey(rule) {
+      const currentKey = rule.local_key || rule.id;
+      if (currentKey) {
+        return {...rule, local_key: String(currentKey)};
+      }
+      const key = `vod-rule-${this.nextVodRuleKey}`;
+      this.nextVodRuleKey += 1;
+      return {...rule, local_key: key};
+    },
+    addVodContentRule() {
+      this.vodContentRules.push(this.withVodRuleKey({
+        operator: 'include',
+        rule_type: 'series_contains',
+        value: '',
+      }));
+    },
+    removeVodContentRule(index) {
+      this.vodContentRules.splice(index, 1);
     },
     fetchSuggestions() {
       if (!this.channelId) {
@@ -952,17 +1188,17 @@ export default {
     fetchCsoProfileOptions() {
       return this.settingsStore.refreshSettings({minAgeMs: 3000}).then((settings) => {
         const streamProfiles = settings?.stream_profiles || {};
-        this.streamProfileDefinitions = this.normalizeStreamProfileDefinitions(
+        this.streamProfileDefinitions = this.buildStreamProfileDefinitions(
           settings?.stream_profile_definitions,
         );
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
+        this.csoProfileChoices = this.buildCsoProfileOptions(streamProfiles, this.streamProfileDefinitions);
         this.csoProfile = this.resolveValidCsoProfile(this.csoProfile);
       }).catch(() => {
-        this.csoProfileChoices = this.normalizeCsoProfileOptions(null, this.streamProfileDefinitions);
+        this.csoProfileChoices = this.buildCsoProfileOptions(null, this.streamProfileDefinitions);
         this.csoProfile = this.resolveValidCsoProfile(this.csoProfile);
       });
     },
-    normalizeStreamProfileDefinitions(definitions) {
+    buildStreamProfileDefinitions(definitions) {
       if (!Array.isArray(definitions)) {
         return [];
       }
@@ -972,7 +1208,7 @@ export default {
         description: String(profile?.description || '').trim(),
       })).filter((profile) => profile.key);
     },
-    normalizeCsoProfileOptions(rawOptions, definitions = []) {
+    buildCsoProfileOptions(rawOptions, definitions = []) {
       const definitionByKey = new Map((definitions || []).map((item) => [item.key, item]));
       const buildOption = (key) => {
         const info = definitionByKey.get(key);
@@ -984,9 +1220,9 @@ export default {
       };
 
       if (Array.isArray(rawOptions)) {
-        const normalized = rawOptions.map((item) => String(item || '').trim().toLowerCase()).filter((item) => item);
-        if (normalized.length) {
-          return normalized.map(buildOption);
+        const profileKeys = rawOptions.map((item) => String(item || '').trim().toLowerCase()).filter((item) => item);
+        if (profileKeys.length) {
+          return profileKeys.map(buildOption);
         }
       }
       if (rawOptions && typeof rawOptions === 'object' && !Array.isArray(rawOptions)) {
@@ -1076,6 +1312,7 @@ export default {
       }
       return {
         enabled: this.enabled,
+        channel_type: this.channelType,
         name: this.name,
         logo_url: this.logoUrl,
         tags: this.tags,
@@ -1091,8 +1328,20 @@ export default {
             : null,
           offset_minutes: Number.parseInt(this.epgOffsetMinutes, 10) || 0,
         },
-        sources: this.listOfChannelSources,
-        refresh_sources: refreshSources,
+        sources: this.isVodChannelType ? [] : this.listOfChannelSources,
+        refresh_sources: this.isVodChannelType ? [] : refreshSources,
+        vod_channel: {
+          rules: (this.vodContentRules || []).map((rule) => ({
+            operator: rule.operator || 'include',
+            rule_type: rule.rule_type || '',
+            value: rule.value || '',
+            enabled: true,
+          })),
+          settings: {
+            schedule_mode: this.vodScheduleMode,
+            schedule_direction: this.vodScheduleDirection,
+          },
+        },
       };
     },
     save() {
@@ -1128,6 +1377,7 @@ export default {
             ? {
               id: this.channelId,
               enabled: this.enabled,
+              channel_type: this.channelType,
               number: this.number,
               name: this.name,
               logo_url: this.logoUrl,
