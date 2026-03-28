@@ -40,6 +40,7 @@ from backend.streaming import (
     append_stream_key,
     is_local_hls_proxy_url,
 )
+from backend.vod import VodPlaybackCandidate
 from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.users import get_user_by_stream_key
 from backend.config import (
@@ -166,6 +167,7 @@ class CsoSource:
     priority: int = 0
     channel_id: int | None = None
     internal_id: int | None = None
+    cache_internal_id: int | None = None
     use_hls_proxy: bool = False
     probe_details: dict | None = None
     probe_at: object | None = None
@@ -176,9 +178,14 @@ class CsoSource:
         return self.url
 
 
-async def cso_source_from_vod_source(candidate: Any, upstream_url: str) -> CsoSource:
+async def cso_source_from_vod_source(candidate: VodPlaybackCandidate, upstream_url: str) -> CsoSource:
     """Wrap a VOD item/episode candidate in a CsoSource adapter."""
-    source_playlist_id = convert_to_int(candidate.source_item.playlist_id, 0)
+    source_item = candidate.source_item
+    episode_source = candidate.episode_source
+    group_item = candidate.group_item
+    episode_item = candidate.episode
+
+    source_playlist_id = convert_to_int(source_item.playlist_id, 0)
     async with Session() as session:
         playlist = await session.get(Playlist, source_playlist_id)
 
@@ -194,41 +201,35 @@ async def cso_source_from_vod_source(candidate: Any, upstream_url: str) -> CsoSo
 
     source_type = "vod_movie" if candidate.content_type == "movie" else "vod_episode"
 
-    source_id = convert_to_int(candidate.source_item.id, 0)
-    if candidate.episode_source:
-        source_id = convert_to_int(candidate.episode_source.id, 0)
+    source_id = convert_to_int(source_item.id, 0)
+    if episode_source:
+        source_id = convert_to_int(episode_source.id, 0)
 
     probe_details = None
     probe_at = None
     if candidate.content_type == "movie":
-        probe_details = (
-            json.loads(candidate.source_item.stream_probe_details)
-            if getattr(candidate.source_item, "stream_probe_details", None)
-            else None
-        )
-        probe_at = getattr(candidate.source_item, "stream_probe_at", None)
-    elif candidate.episode_source:
-        probe_details = (
-            json.loads(candidate.episode_source.stream_probe_details)
-            if getattr(candidate.episode_source, "stream_probe_details", None)
-            else None
-        )
-        probe_at = getattr(candidate.episode_source, "stream_probe_at", None)
+        probe_details = json.loads(source_item.stream_probe_details) if source_item.stream_probe_details else None
+        probe_at = source_item.stream_probe_at
+    elif episode_source:
+        probe_details = json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
+        probe_at = episode_source.stream_probe_at
 
     internal_id = None
-    group_item = candidate.group_item
-    episode_item = candidate.episode
-    group_item_is_curated = bool(group_item is not None and not group_item.playlist_id)
-    episode_item_is_curated = bool(episode_item is not None and not episode_item.playlist_id)
+    cache_internal_id = None
+    group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
+    episode_item_is_curated = bool(episode_item is not None and not convert_to_int(episode_item.playlist_id, 0))
     if candidate.content_type == "movie":
         if group_item_is_curated:
             internal_id = convert_to_int(group_item.id, 0) or None
-    elif episode_item_is_curated:
-        internal_id = convert_to_int(episode_item.id, 0) or None
+        cache_internal_id = internal_id or source_id or None
+    else:
+        if episode_item_is_curated:
+            internal_id = convert_to_int(episode_item.id, 0) or None
+        cache_internal_id = internal_id or source_id or None
 
     xc_account_id = None
     if xc_account is not None:
-        xc_account_id = convert_to_int(xc_account.id, 0) or None
+        xc_account_id = xc_account.id
 
     return CsoSource(
         id=source_id,
@@ -242,12 +243,13 @@ async def cso_source_from_vod_source(candidate: Any, upstream_url: str) -> CsoSo
         priority=0,
         channel_id=None,
         internal_id=internal_id,
+        cache_internal_id=cache_internal_id,
         probe_details=probe_details,
         probe_at=probe_at,
         container_extension=clean_key(
-            getattr(candidate.episode_source, "container_extension", "")
-            or getattr(candidate.source_item, "container_extension", "")
-            or getattr(candidate.group_item, "container_extension", "")
+            (episode_source.container_extension if episode_source is not None else "")
+            or source_item.container_extension
+            or group_item.container_extension
         )
         or None,
     )
@@ -824,8 +826,8 @@ def _is_from_start_request(request_headers=None):
 
 
 def _vod_cache_asset_parts(source: CsoSource):
-    source_type = clean_key(getattr(source, "source_type", ""))
-    internal_id = int(getattr(source, "internal_id", 0) or 0)
+    source_type = clean_key(source.source_type)
+    internal_id = int(source.cache_internal_id or source.internal_id or 0)
     if source_type == "vod_episode":
         return "episode", internal_id
     return "movie", internal_id

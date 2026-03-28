@@ -7,19 +7,29 @@ import logging
 import random
 import time
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import String, cast, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
-from backend.models import Channel, Session, VodChannelRule, XcVodItem
+from backend.models import (
+    Channel,
+    Session,
+    VodCategory,
+    VodCategoryEpisode,
+    VodCategoryEpisodeSource,
+    VodCategoryItem,
+    VodCategoryItemSource,
+    VodChannelRule,
+    XcVodItem,
+)
 from backend.utils import clean_text, convert_to_int, utc_now
 from backend.vod import (
     VOD_KIND_MOVIE,
     VOD_KIND_SERIES,
+    VodPlaybackCandidate,
     _load_summary,
     _summary_info,
     fetch_xc_series_info_payload,
@@ -256,7 +266,9 @@ async def vod_channel_has_playlist_items(config: Any, channel_id: int, playlist_
         return False
 
     items = await resolve_vod_channel_item_pool(config, channel)
-    source_item_ids = [int(item.get("source_item_id") or 0) for item in items if int(item.get("source_item_id") or 0) > 0]
+    source_item_ids = [
+        int(item.get("source_item_id") or 0) for item in items if int(item.get("source_item_id") or 0) > 0
+    ]
     if not source_item_ids:
         return False
 
@@ -527,12 +539,76 @@ async def resolve_vod_channel_playback_target(
         upstream_episode_id=entry.get("upstream_episode_id"),
         container_extension=entry.get("container_extension"),
     )
+    candidate = None
+    episode = None
+    async with Session() as session:
+        if clean_text(entry.get("entry_type")) == VOD_KIND_MOVIE:
+            result = await session.execute(
+                select(VodCategoryItemSource, VodCategoryItem, VodCategory)
+                .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
+                .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+                .where(VodCategoryItemSource.source_item_id == int(entry["source_item_id"]))
+                .options(joinedload(VodCategoryItemSource.source_item))
+                .order_by(VodCategoryItemSource.id.asc())
+                .limit(1)
+            )
+            row = result.first()
+            if row is not None:
+                source_link, group_item, group = row
+                candidate = VodPlaybackCandidate(
+                    group_item=group_item,
+                    source_link=source_link,
+                    source_item=source_link.source_item,
+                    group=group,
+                    content_type=VOD_KIND_MOVIE,
+                    xc_account=xc_account,
+                    host_url=None,
+                    episode_source=None,
+                    episode=None,
+                )
+        else:
+            result = await session.execute(
+                select(
+                    VodCategoryEpisode,
+                    VodCategoryEpisodeSource,
+                    VodCategoryItemSource,
+                    VodCategoryItem,
+                    VodCategory,
+                )
+                .join(VodCategoryEpisodeSource, VodCategoryEpisodeSource.episode_id == VodCategoryEpisode.id)
+                .join(
+                    VodCategoryItemSource, VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id
+                )
+                .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
+                .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+                .where(
+                    VodCategoryItemSource.source_item_id == int(entry["source_item_id"]),
+                    VodCategoryEpisodeSource.upstream_episode_id == clean_text(entry.get("upstream_episode_id")),
+                )
+                .options(joinedload(VodCategoryItemSource.source_item))
+                .order_by(VodCategoryEpisodeSource.id.asc())
+                .limit(1)
+            )
+            row = result.first()
+            if row is not None:
+                episode, episode_source, source_link, group_item, group = row
+                candidate = VodPlaybackCandidate(
+                    group_item=group_item,
+                    source_link=source_link,
+                    source_item=source_link.source_item,
+                    group=group,
+                    content_type=VOD_KIND_SERIES,
+                    xc_account=xc_account,
+                    host_url=None,
+                    episode_source=episode_source,
+                    episode=episode,
+                )
     return {
         "entry": entry,
         "next_entry": next_entry,
         "offset_seconds": offset_seconds,
-        "candidate": None,
-        "episode": None,
+        "candidate": candidate,
+        "episode": episode,
         "source_item": source_item,
         "xc_account": xc_account,
         "upstream_url": upstream_url,
@@ -592,18 +668,14 @@ async def subscribe_vod_channel_stream(
     remaining_seconds = max(1, convert_to_int(entry.get("stop_ts"), 0) - int(time.time()))
     if source_item is None or not upstream_url:
         return None, None, "Unable to resolve VOD playback source", 503
-    candidate = SimpleNamespace(
-        group_item=source_item,
-        source_item=source_item,
-        xc_account=xc_account,
-        content_type=clean_text(entry.get("entry_type")),
-        episode_source=None,
-        episode=None,
-    )
+    candidate = playback.get("candidate")
+    if candidate is None:
+        return None, None, "Unable to resolve VOD playback mapping", 503
 
     async def _warm_next_item_cache():
         if not next_entry:
             return
+        next_start_ts = int(next_entry.get("start_ts") or 0)
         wait_seconds = max(0, remaining_seconds - NEXT_ITEM_CACHE_WARM_SECONDS)
         if wait_seconds > 0:
             await asyncio.sleep(wait_seconds)
