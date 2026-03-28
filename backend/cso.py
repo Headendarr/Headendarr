@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import aiohttp
@@ -95,6 +95,7 @@ VOD_CACHE_ROOT = Path("/timeshift/vod")
 VOD_CACHE_TTL_SECONDS = 10 * 60
 VOD_CACHE_CHUNK_BYTES = 64 * 1024
 VOD_CACHE_METADATA_TIMEOUT_SECONDS = 10
+VOD_HEAD_PROBE_STATE_TTL_SECONDS = 7 * 24 * 60 * 60
 CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS = {
     "default": 10,
     "capacity_blocked": 10,
@@ -148,6 +149,97 @@ CONTAINER_TO_CONTENT_TYPE = {
     "webm": "video/webm",
     "hls": "application/vnd.apple.mpegurl",
 }
+
+
+def _vod_head_probe_state_path() -> Path:
+    home_dir = os.environ.get("HOME_DIR") or os.path.expanduser("~")
+    return Path(home_dir) / ".tvh_iptv_config" / "cache" / "vod_head_probe_state.json"
+
+
+def _vod_head_probe_cache_key(source: "CsoSource", upstream_url: str) -> str:
+    source_id = int(source.id or 0)
+    parsed = urlparse(upstream_url or "")
+    source_host = clean_text(parsed.netloc)
+    return f"{source.source_type}:{source.playlist_id}:{source_id}:{source_host}"
+
+
+class VodHeadProbeStateEntry(TypedDict):
+    expires_at: int
+    failure_reason: str
+    head_supported: bool
+    last_failure_at: int
+
+
+class VodHeadProbeStateStore:
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._state: dict[str, VodHeadProbeStateEntry] | None = None
+
+    async def _load_state(self) -> dict[str, VodHeadProbeStateEntry]:
+        if self._state is not None:
+            return self._state
+        path = _vod_head_probe_state_path()
+        payload: Any = {}
+        if path.exists():
+            try:
+                payload = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8")) or {}
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        cleaned: dict[str, VodHeadProbeStateEntry] = {}
+        now_ts = int(time.time())
+        for key, value in payload.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            expires_at = convert_to_int(value.get("expires_at"), 0)
+            if expires_at > 0 and expires_at < now_ts:
+                continue
+            cleaned[key] = {
+                "expires_at": expires_at,
+                "failure_reason": clean_text(value.get("failure_reason")) or "head_failed",
+                "head_supported": bool(value.get("head_supported")),
+                "last_failure_at": convert_to_int(value.get("last_failure_at"), 0),
+            }
+        self._state = cleaned
+        return self._state
+
+    async def _write_state(self, state: dict[str, VodHeadProbeStateEntry]):
+        path = _vod_head_probe_state_path()
+        await asyncio.to_thread(path.parent.mkdir, 0o755, True, True)
+        payload = json.dumps(state, indent=2, sort_keys=True)
+        await asyncio.to_thread(path.write_text, payload, encoding="utf-8")
+
+    async def should_skip_head(self, source: "CsoSource", upstream_url: str) -> bool:
+        async with self._lock:
+            state = await self._load_state()
+            entry = state.get(_vod_head_probe_cache_key(source, upstream_url))
+            if entry is None:
+                return False
+            return entry["head_supported"] is False
+
+    async def mark_head_failed(self, source: "CsoSource", upstream_url: str, reason: str):
+        async with self._lock:
+            state = await self._load_state()
+            now_ts = int(time.time())
+            state[_vod_head_probe_cache_key(source, upstream_url)] = {
+                "head_supported": False,
+                "last_failure_at": now_ts,
+                "failure_reason": clean_text(reason) or "head_failed",
+                "expires_at": now_ts + VOD_HEAD_PROBE_STATE_TTL_SECONDS,
+            }
+            await self._write_state(state)
+
+    async def mark_head_supported(self, source: "CsoSource", upstream_url: str):
+        async with self._lock:
+            state = await self._load_state()
+            key = _vod_head_probe_cache_key(source, upstream_url)
+            if key in state:
+                state.pop(key, None)
+                await self._write_state(state)
+
+
+vod_head_probe_state_store = VodHeadProbeStateStore()
 
 
 @dataclass
@@ -1107,26 +1199,36 @@ async def _probe_vod_cache_metadata(source: CsoSource, upstream_url: str, reques
     headers.pop("Range", None)
     timeout = aiohttp.ClientTimeout(total=VOD_CACHE_METADATA_TIMEOUT_SECONDS, connect=10, sock_connect=10, sock_read=10)
     async with aiohttp.ClientSession(timeout=timeout, auto_decompress=False) as session:
-        try:
-            response = await session.request("HEAD", upstream_url, headers=headers, allow_redirects=True)
-            try:
-                if int(response.status or 0) == 200:
-                    size_header = clean_text(response.headers.get("Content-Length"))
-                    if size_header.isdigit():
-                        return {
-                            "size": int(size_header),
-                            "headers": dict(response.headers),
-                            "status": int(response.status or 200),
-                        }
-            finally:
-                await response.release()
-        except Exception as exc:
-            logger.info(
-                "VOD cache metadata HEAD probe failed source_id=%s upstream_url=%s error=%s",
-                getattr(source, "id", None),
+        skip_head = await vod_head_probe_state_store.should_skip_head(source, upstream_url)
+        if skip_head:
+            logger.debug(
+                "Skipping VOD cache metadata HEAD probe source_id=%s upstream_url=%s due to cached unsupported state",
+                source.id,
                 upstream_url,
-                exc,
             )
+        else:
+            try:
+                response = await session.request("HEAD", upstream_url, headers=headers, allow_redirects=True)
+                try:
+                    if int(response.status or 0) == 200:
+                        size_header = clean_text(response.headers.get("Content-Length"))
+                        if size_header.isdigit():
+                            await vod_head_probe_state_store.mark_head_supported(source, upstream_url)
+                            return {
+                                "size": int(size_header),
+                                "headers": dict(response.headers),
+                                "status": int(response.status or 200),
+                            }
+                finally:
+                    await response.release()
+            except Exception as exc:
+                logger.info(
+                    "VOD cache metadata HEAD probe failed source_id=%s upstream_url=%s error=%s",
+                    source.id,
+                    upstream_url,
+                    exc,
+                )
+                await vod_head_probe_state_store.mark_head_failed(source, upstream_url, str(exc))
         response = await session.get(
             upstream_url,
             headers={**headers, "Range": "bytes=0-0"},
