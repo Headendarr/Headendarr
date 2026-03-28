@@ -78,6 +78,17 @@ When source capacity is exhausted or playback cannot start:
 - Client playback requests can receive unavailable/limit outcomes (depending on route/profile behaviour).
 - In mixed-client deployments, this makes source limit enforcement explicit and predictable.
 
+## VOD 24/7 channels through CSO
+
+VOD 24/7 channels also use CSO, but with a different runtime shape from a normal live channel.
+
+- The channel does not keep a permanent upstream live stream open while idle.
+- When tuned, CSO resolves the programme that should be airing at that moment and starts playback from the correct in-programme offset.
+- Headendarr then tries to hand playback over to local cached media as early as possible so upstream capacity is released quickly.
+- The next scheduled programme is pre-warmed 60 seconds ahead of time to reduce visible transition gaps.
+
+For the full behaviour and configuration details, see [VOD 24/7 Channels](./vod-24-7-channels.md).
+
 ## When to use CSO-centric routing
 
 Prefer CSO-centric paths when:

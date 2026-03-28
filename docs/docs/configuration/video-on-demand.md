@@ -204,6 +204,7 @@ Once this is done, your users can browse a much cleaner VOD catalogue that refle
 
 ## Related guides
 
+- For building synthetic linear channels from imported VOD content, see [VOD 24/7 Channels](/configuration/vod-24-7-channels/).
 - For Jellyfin `.strm` library import, see [Jellyfin](/configuration/connectivity/jellyfin/#video-on-demand-vod).
 - For Kodi HTTP library browsing, see [Kodi](/configuration/connectivity/kodi/#video-on-demand-vod).
 - For XC and other connectivity endpoint details, see [Connectivity Endpoints](/configuration/connectivity/endpoints/).

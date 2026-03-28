@@ -40,6 +40,7 @@ const sidebars = {
             "configuration/channels",
             "configuration/tv-guide-dvr",
             "configuration/video-on-demand",
+            "configuration/vod-24-7-channels",
             {
               type: "category",
               label: "Connectivity",

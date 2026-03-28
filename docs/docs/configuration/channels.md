@@ -33,6 +33,14 @@ This method is for creating a single, custom channel from scratch.
 
 After creating a channel using either method, you can click on it in the main list at any time to open the edit dialog and fix up any missing information or change its configuration.
 
+### VOD 24/7 Channels
+
+The same dialog can also create **VOD 24/7** channels when Headendarr has imported XC VOD content.
+
+These channels do not use normal live stream sources. Instead, they build a synthetic linear schedule from VOD matching rules and publish that schedule as a regular channel with its own guide data.
+
+For the full setup and runtime model, see [VOD 24/7 Channels](./vod-24-7-channels.md).
+
 ### Programme Guide Mapping
 
 Inside **Channel Settings**, the **Programme Guide** section controls how this channel maps to imported XMLTV data.
