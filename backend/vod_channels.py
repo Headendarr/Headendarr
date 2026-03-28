@@ -679,37 +679,47 @@ async def subscribe_vod_channel_stream(
         wait_seconds = max(0, remaining_seconds - NEXT_ITEM_CACHE_WARM_SECONDS)
         if wait_seconds > 0:
             await asyncio.sleep(wait_seconds)
-        next_playback = await resolve_vod_channel_playback_target(
-            config,
-            channel_id,
-            now_ts=int(next_entry.get("start_ts") or time.time()),
-        )
-        if not next_playback:
-            return
-        next_candidate = next_playback.get("candidate")
-        next_upstream_url = clean_text(next_playback.get("upstream_url"))
-        next_episode = next_playback.get("episode")
-        next_source_item = next_playback.get("source_item")
-        if next_source_item is None or not next_upstream_url:
-            return
-        if next_candidate is None:
-            next_candidate = SimpleNamespace(
-                source_item=next_source_item,
-                xc_account=next_playback.get("xc_account"),
-                content_type=clean_text(next_entry.get("entry_type")),
-                group_item=SimpleNamespace(
-                    id=int(next_source_item.id),
-                    container_extension=clean_text(next_entry.get("container_extension")),
-                ),
-                episode_source=None,
-                episode=None,
+        owner_key = f"vod-channel-next-{int(channel_id)}-{next_start_ts}"
+        while True:
+            now_ts = int(time.time())
+            if next_start_ts > 0 and now_ts >= next_start_ts:
+                return
+
+            next_playback = await resolve_vod_channel_playback_target(
+                config,
+                channel_id,
+                now_ts=next_start_ts or now_ts,
             )
-        await warm_vod_cache(
-            next_candidate,
-            next_upstream_url,
-            episode=next_episode,
-            owner_key=f"vod-channel-next-{int(channel_id)}-{int(next_entry.get('start_ts') or 0)}",
-        )
+            if next_playback:
+                next_candidate = next_playback.get("candidate")
+                next_upstream_url = clean_text(next_playback.get("upstream_url"))
+                next_episode = next_playback.get("episode")
+                next_source_item = next_playback.get("source_item")
+                if next_source_item is not None and next_upstream_url:
+                    if next_candidate is None:
+                        continue
+                    warmed = await warm_vod_cache(
+                        next_candidate, next_upstream_url, episode=next_episode, owner_key=owner_key
+                    )
+                    if warmed:
+                        logger.info(
+                            "VOD channel next-item cache warmed channel=%s start_ts=%s source_item_id=%s",
+                            int(channel_id),
+                            next_start_ts,
+                            int(getattr(next_source_item, "id", 0) or 0),
+                        )
+                        return
+
+            # If the initial warm attempt hits source capacity, keep retrying until the next
+            # programme starts. This lets single-slot sources warm the next item as soon as the
+            # current download releases its slot.
+            if next_start_ts > 0:
+                remaining_to_start = next_start_ts - now_ts
+                if remaining_to_start <= 1:
+                    return
+                await asyncio.sleep(min(5, max(1, remaining_to_start - 1)))
+            else:
+                await asyncio.sleep(5)
 
     warm_task = asyncio.create_task(_warm_next_item_cache(), name=f"vod-channel-next-{int(channel_id)}")
     plan = await subscribe_vod_proxy_output_stream(
