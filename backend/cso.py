@@ -313,7 +313,9 @@ async def cso_source_from_vod_source(
     if isinstance(candidate, VodCuratedPlaybackCandidate):
         if episode_source:
             source_id = convert_to_int(episode_source.id, 0)
-            probe_details = json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
+            probe_details = (
+                json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
+            )
             probe_at = episode_source.stream_probe_at
             container_extension = episode_source.container_extension or container_extension
         group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
@@ -2540,6 +2542,135 @@ class CsoFfmpegCommandBuilder:
         command += self._pipe_output_target(ffmpeg_format)
         return command
 
+    def build_local_output_command(self, input_path: Path, start_seconds=0, max_duration_seconds=None, realtime=False):
+        command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        start_value = max(0, int(start_seconds or 0))
+        duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
+        if realtime:
+            command += ["-re"]
+        if start_value > 0:
+            command += ["-ss", str(start_value)]
+        command += self._probe_flags(
+            CSO_OUTPUT_PROBE_SIZE_BYTES,
+            CSO_OUTPUT_ANALYSE_DURATION_US,
+            CSO_OUTPUT_FPS_PROBE_SIZE,
+        )
+        command += self._input_resilience_flags()
+        command += [
+            "-i",
+            str(input_path),
+            "-map",
+            "0:v:0?",
+            "-map",
+            "0:a?",
+            "-max_muxing_queue_size",
+            "4096",
+        ]
+        if duration_value is not None:
+            command += ["-t", str(duration_value)]
+        subtitle_mode = self._apply_stream_selection(command)
+        mode = self.policy.get("output_mode") or "force_remux"
+        ffmpeg_format = policy_ffmpeg_format(self.policy)
+
+        if mode == "force_transcode":
+            self._apply_transcode_options(command, subtitle_mode)
+        else:
+            command += ["-c", "copy"]
+            if ffmpeg_format in ["mp4"]:
+                command += ["-bsf:a", "aac_adtstoasc"]
+            if subtitle_mode == "drop":
+                command.append("-sn")
+
+        command += self._drop_data_streams()
+        if ffmpeg_format == "mpegts":
+            command += self._mpegts_output_flags(zero_latency=True)
+        elif ffmpeg_format == "matroska":
+            command += self._matroska_output_flags()
+        command += self._pipe_output_target(ffmpeg_format)
+        return command
+
+    def build_vod_segment_ingest_command(
+        self,
+        input_target: str,
+        start_seconds=0,
+        max_duration_seconds=None,
+        realtime=False,
+        input_is_url=False,
+        user_agent=None,
+        request_headers=None,
+    ):
+        command = self._ffmpeg_logging_command(enable_cso_ingest_command_debug_logging, quiet_level="info")
+        start_value = max(0, int(start_seconds or 0))
+        duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
+        input_seek_value = start_value
+        trim_seek_value = 0
+        if input_is_url and start_value > 0:
+            trim_seek_value = min(2, start_value)
+            input_seek_value = max(0, start_value - trim_seek_value)
+        if realtime:
+            command += ["-re"]
+        if input_is_url:
+            header_values = sanitise_headers(request_headers)
+            user_agent_value = clean_text(user_agent) or _header_value(header_values, "User-Agent")
+            command += [
+                "-progress",
+                "pipe:2",
+                "-reconnect",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_delay_max",
+                str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+            ]
+            if user_agent_value:
+                command += ["-user_agent", user_agent_value]
+            referer_value = _header_value(header_values, "Referer")
+            if referer_value:
+                command += ["-referer", referer_value]
+            extra_headers = _format_ffmpeg_headers_arg(header_values)
+            if extra_headers:
+                command += ["-headers", extra_headers]
+            command += [
+                "-reconnect_at_eof",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_on_http_error",
+                "4xx,5xx",
+                "-rw_timeout",
+                str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
+                "-timeout",
+                str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
+            ]
+        if input_seek_value > 0:
+            command += ["-ss", str(input_seek_value)]
+        command += self._probe_flags(
+            CSO_INGEST_PROBE_SIZE_BYTES,
+            CSO_INGEST_ANALYSE_DURATION_US,
+            CSO_INGEST_FPS_PROBE_SIZE,
+        )
+        command += self._input_resilience_flags()
+        command += [
+            "-i",
+            str(input_target),
+            "-map",
+            "0:v:0?",
+            "-map",
+            "0:a?",
+        ]
+        if trim_seek_value > 0:
+            command += ["-ss", str(trim_seek_value)]
+        command += ["-c", "copy"]
+        if duration_value is not None:
+            command += ["-t", str(duration_value)]
+        command += self._drop_data_streams()
+        if self.pipe_output_format == "mpegts":
+            command += self._mpegts_output_flags(zero_latency=True)
+        elif self.pipe_output_format == "matroska":
+            command += self._matroska_output_flags()
+        command += self._pipe_output_target(self.pipe_output_format)
+        return command
+
     def build_hls_output_command(self, output_dir: Path):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         command += self._build_pipe_input(
@@ -4194,6 +4325,483 @@ class CsoIngestSession:
             self.history_bytes = 0
             for q in self.subscribers.values():
                 await q.put_eof()
+
+
+class VodChannelIngestSession:
+    def __init__(self, key, config, channel_id, stream_key=None, request_headers=None):
+        self.key = str(key)
+        self.config = config
+        self.channel_id = int(channel_id)
+        self.stream_key = clean_text(stream_key)
+        self.request_headers = dict(request_headers or {})
+        self.process = None
+        self.segment_task = None
+        self.stderr_task = None
+        self.running = False
+        self.lock = asyncio.Lock()
+        self.last_activity = time.time()
+        self.subscribers = {}
+        self.history = deque()
+        self.history_bytes = 0
+        self.max_history_bytes = int(CSO_INGEST_HISTORY_MAX_BYTES)
+        self.current_source = None
+        self.current_source_url = ""
+        self.current_source_probe = {}
+        self.last_error = None
+        self.failover_in_progress = False
+        self.failover_exhausted = False
+        self.failover_start_ts = 0.0
+        self.health_failover_reason = None
+        self.health_failover_details = None
+        self.last_reader_end_reason = None
+        self.last_reader_end_saw_data = False
+        self.last_reader_end_return_code = None
+        self.last_reader_end_ts = 0.0
+        self.first_healthy_stream_seen = False
+        self.current_segment_healthy = False
+        self.session_start_ts = 0.0
+        self._recent_ffmpeg_stderr = deque(maxlen=50)
+        self._startup_event = None
+        self._startup_succeeded = False
+        self._warm_task = None
+
+    def is_hunting_for_stream(self):
+        if not self.running:
+            return True
+        if self.current_source is None:
+            return True
+        if not self.current_segment_healthy:
+            return True
+        return False
+
+    async def _broadcast(self, chunk):
+        if not chunk:
+            return
+        self.last_activity = time.time()
+        subscriber_queues = []
+        async with self.lock:
+            self.history.append(chunk)
+            self.history_bytes += len(chunk)
+            while self.history_bytes > self.max_history_bytes and self.history:
+                old = self.history.popleft()
+                self.history_bytes -= len(old)
+            subscriber_queues = list(self.subscribers.values())
+        for queue in subscriber_queues:
+            await queue.put_drop_oldest(chunk)
+
+    async def add_subscriber(self, subscriber_id, prebuffer_bytes=0):
+        async with self.lock:
+            queue = ByteBudgetQueue(max_bytes=CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES)
+            if prebuffer_bytes > 0 and self.history:
+                total = 0
+                items = []
+                for chunk in reversed(self.history):
+                    items.append(chunk)
+                    total += len(chunk)
+                    if total >= prebuffer_bytes:
+                        break
+                for chunk in reversed(items):
+                    await queue.put_drop_oldest(chunk)
+            self.subscribers[subscriber_id] = queue
+            subscriber_count = len(self.subscribers)
+        logger.info(
+            "VOD channel ingest subscriber added channel=%s ingest_key=%s subscriber=%s subscribers=%s",
+            self.channel_id,
+            self.key,
+            subscriber_id,
+            subscriber_count,
+        )
+        return queue
+
+    async def remove_subscriber(self, subscriber_id):
+        async with self.lock:
+            self.subscribers.pop(subscriber_id, None)
+            remaining = len(self.subscribers)
+        logger.info(
+            "VOD channel ingest subscriber removed channel=%s ingest_key=%s subscriber=%s subscribers=%s",
+            self.channel_id,
+            self.key,
+            subscriber_id,
+            remaining,
+        )
+        if remaining == 0:
+            await self.stop(force=True)
+        return remaining
+
+    async def start(self):
+        async with self.lock:
+            if self.running and self.segment_task is not None and not self.segment_task.done():
+                return
+            self.running = True
+            self.last_error = None
+            self.failover_exhausted = False
+            self.current_source = None
+            self.current_source_url = ""
+            self.current_source_probe = {}
+            self.history.clear()
+            self.history_bytes = 0
+            self.first_healthy_stream_seen = False
+            self.current_segment_healthy = False
+            self.session_start_ts = time.time()
+            self._recent_ffmpeg_stderr.clear()
+            self._startup_event = asyncio.Event()
+            self._startup_succeeded = False
+            self.segment_task = asyncio.create_task(
+                self._run_loop(),
+                name=f"vod-channel-ingest-{self.channel_id}",
+            )
+            startup_event = self._startup_event
+        await startup_event.wait()
+
+    async def _read_stderr(self, process, entry):
+        if process.stderr is None:
+            return
+        while self.running and process is self.process:
+            try:
+                line = await process.stderr.readline()
+            except Exception:
+                break
+            if not line:
+                break
+            rendered = line.decode(errors="ignore").strip()
+            if not rendered:
+                continue
+            self._recent_ffmpeg_stderr.append(rendered)
+            if CsoOutputSession._should_log_ffmpeg_stderr_line(rendered):
+                logger.info(
+                    "VOD channel ingest ffmpeg[%s][%s][%s]: %s",
+                    self.channel_id,
+                    self.key,
+                    int(entry.get("start_ts") or 0),
+                    rendered,
+                )
+
+    async def _warm_next_item_cache(self, next_entry, remaining_seconds):
+        if not next_entry:
+            return
+        next_start_ts = int(next_entry.get("start_ts") or 0)
+        from backend.vod_channels import NEXT_ITEM_CACHE_WARM_SECONDS, resolve_vod_channel_playback_target
+
+        wait_seconds = max(0, int(remaining_seconds or 0) - int(NEXT_ITEM_CACHE_WARM_SECONDS))
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        owner_key = f"vod-channel-next-{self.channel_id}-{next_start_ts}"
+
+        while self.running:
+            now_ts = int(time.time())
+            if next_start_ts > 0 and now_ts >= next_start_ts:
+                return
+
+            next_playback = await resolve_vod_channel_playback_target(
+                self.config,
+                self.channel_id,
+                now_ts=next_start_ts or now_ts,
+            )
+            if next_playback:
+                next_candidate = next_playback.get("candidate")
+                next_upstream_url = clean_text(next_playback.get("upstream_url"))
+                if next_candidate is not None and next_upstream_url:
+                    warmed = await warm_vod_cache(
+                        next_candidate,
+                        next_upstream_url,
+                        episode=next_playback.get("episode"),
+                        owner_key=owner_key,
+                    )
+                    if warmed:
+                        logger.info(
+                            "VOD channel next-item cache warmed channel=%s start_ts=%s source_item_id=%s",
+                            self.channel_id,
+                            next_start_ts,
+                            int((next_playback.get("entry") or {}).get("source_item_id") or 0),
+                        )
+                        return
+
+            if next_start_ts > 0:
+                remaining_to_start = next_start_ts - now_ts
+                if remaining_to_start <= 1:
+                    return
+                await asyncio.sleep(min(5, max(1, remaining_to_start - 1)))
+            else:
+                await asyncio.sleep(5)
+
+    async def _start_current_cache_download(self, candidate, upstream_url, entry):
+        owner_key = f"vod-channel-current-{self.channel_id}-{int(entry.get('start_ts') or 0)}"
+        warmed = await warm_vod_cache(candidate, upstream_url, owner_key=owner_key)
+        source = await cso_source_from_vod_source(candidate, upstream_url)
+        cache_entry = await vod_cache_manager.get_or_create(source, source.url)
+        if warmed:
+            try:
+                await asyncio.wait_for(cache_entry.ready_event.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
+            if not cache_entry.complete and not cache_entry.part_path.exists():
+                for _ in range(10):
+                    if cache_entry.part_path.exists():
+                        break
+                    await asyncio.sleep(0.2)
+        return source, cache_entry
+
+    async def _build_segment_runtime(self, playback, segment_index):
+        candidate = playback.get("candidate")
+        upstream_url = clean_text(playback.get("upstream_url"))
+        source_item = playback.get("source_item")
+        entry = playback.get("entry") or {}
+        next_entry = playback.get("next_entry")
+        offset_seconds = max(0, int(playback.get("offset_seconds") or 0))
+        remaining_seconds = max(1, int(entry.get("stop_ts") or 0) - int(time.time()))
+        if candidate is None or not upstream_url or source_item is None:
+            return None
+
+        source, cache_entry = await self._start_current_cache_download(candidate, upstream_url, entry)
+        input_target = source.url
+        input_is_url = True
+        input_label = "upstream"
+        if cache_entry.complete and cache_entry.final_path.exists():
+            input_target = str(cache_entry.final_path)
+            input_is_url = False
+            input_label = "cache"
+        elif offset_seconds <= 0 and cache_entry.part_path.exists():
+            input_target = str(cache_entry.part_path)
+            input_is_url = False
+            input_label = "cache_part"
+
+        command = CsoFfmpegCommandBuilder(pipe_output_format="mpegts").build_vod_segment_ingest_command(
+            input_target,
+            start_seconds=offset_seconds,
+            max_duration_seconds=remaining_seconds,
+            realtime=True,
+            input_is_url=input_is_url,
+            user_agent=_resolve_cso_ingest_user_agent(None, source),
+            request_headers=_resolve_cso_ingest_headers(source),
+        )
+        logger.info(
+            "Starting VOD channel ingest segment channel=%s start_ts=%s stop_ts=%s source_id=%s input=%s "
+            "offset_seconds=%s duration_seconds=%s command=%s",
+            self.channel_id,
+            int(entry.get("start_ts") or 0),
+            int(entry.get("stop_ts") or 0),
+            source.id,
+            input_label,
+            offset_seconds,
+            remaining_seconds,
+            command,
+        )
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self.process = process
+        self.current_source = source
+        self.current_source_url = str(input_target)
+        self.current_source_probe = {"container": "mpegts"}
+        warm_task = asyncio.create_task(
+            self._warm_next_item_cache(next_entry, remaining_seconds),
+            name=f"vod-channel-next-{self.channel_id}-{segment_index}",
+        )
+        stderr_task = asyncio.create_task(
+            self._read_stderr(process, entry),
+            name=f"vod-channel-stderr-{self.channel_id}-{segment_index}",
+        )
+        return {
+            "process": process,
+            "stderr_task": stderr_task,
+            "warm_task": warm_task,
+            "entry": entry,
+        }
+
+    async def _wait_for_next_playback(self, current_entry):
+        from backend.vod_channels import resolve_vod_channel_playback_target
+
+        current_key = (
+            int(current_entry.get("start_ts") or 0),
+            int(current_entry.get("stop_ts") or 0),
+            clean_text(current_entry.get("upstream_episode_id") or current_entry.get("source_item_id")),
+        )
+        boundary_ts = int(current_entry.get("stop_ts") or 0)
+        for attempt in range(8):
+            now_ts = int(time.time())
+            if boundary_ts > 0 and now_ts < boundary_ts:
+                await asyncio.sleep(min(1.0, float(boundary_ts - now_ts)))
+            playback = await resolve_vod_channel_playback_target(self.config, self.channel_id)
+            if not playback:
+                return None
+            next_entry = playback.get("entry") or {}
+            next_key = (
+                int(next_entry.get("start_ts") or 0),
+                int(next_entry.get("stop_ts") or 0),
+                clean_text(next_entry.get("upstream_episode_id") or next_entry.get("source_item_id")),
+            )
+            if next_key != current_key:
+                logger.info(
+                    "VOD channel continuing next programme channel=%s previous_stop_ts=%s next_start_ts=%s source_item_id=%s",
+                    self.channel_id,
+                    boundary_ts,
+                    int(next_entry.get("start_ts") or 0),
+                    int(next_entry.get("source_item_id") or 0),
+                )
+                return playback
+            if boundary_ts > 0 and int(time.time()) + 2 < boundary_ts:
+                logger.warning(
+                    "VOD channel segment ended early; resuming current programme channel=%s start_ts=%s stop_ts=%s "
+                    "attempt=%s",
+                    self.channel_id,
+                    int(current_entry.get("start_ts") or 0),
+                    boundary_ts,
+                    attempt + 1,
+                )
+                return playback
+            if attempt < 7:
+                await asyncio.sleep(1)
+        logger.warning(
+            "VOD channel playback did not advance at boundary channel=%s start_ts=%s stop_ts=%s",
+            self.channel_id,
+            int(current_entry.get("start_ts") or 0),
+            int(current_entry.get("stop_ts") or 0),
+        )
+        return None
+
+    async def _close_active_segment(self):
+        process = self.process
+        self.process = None
+        warm_task = self._warm_task
+        self._warm_task = None
+        stderr_task = self.stderr_task
+        self.stderr_task = None
+        if warm_task is not None and not warm_task.done():
+            warm_task.cancel()
+            try:
+                await warm_task
+            except BaseException:
+                pass
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except BaseException:
+                pass
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+                await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                    await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
+                except Exception:
+                    pass
+
+    async def _run_loop(self):
+        from backend.vod_channels import resolve_vod_channel_playback_target
+
+        startup_event = self._startup_event
+        playback = await resolve_vod_channel_playback_target(self.config, self.channel_id)
+        if not playback:
+            self.last_error = "no_scheduled_programme"
+            self.running = False
+            if startup_event is not None:
+                startup_event.set()
+            await self._finish_session()
+            return
+
+        segment_index = 0
+        try:
+            while self.running and playback:
+                runtime = await self._build_segment_runtime(playback, segment_index)
+                if runtime is None:
+                    self.last_error = "vod_channel_segment_unavailable"
+                    self.running = False
+                    if startup_event is not None:
+                        startup_event.set()
+                    break
+                if startup_event is not None and not startup_event.is_set():
+                    self._startup_succeeded = True
+                    startup_event.set()
+
+                process = runtime["process"]
+                self.stderr_task = runtime["stderr_task"]
+                self._warm_task = runtime["warm_task"]
+                current_entry = runtime["entry"]
+                saw_data = False
+                self.current_segment_healthy = False
+                try:
+                    while self.running and process.stdout is not None:
+                        chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if not self.first_healthy_stream_seen:
+                            logger.info(
+                                "VOD channel ingest first chunk channel=%s ingest_key=%s bytes=%s elapsed_ms=%s",
+                                self.channel_id,
+                                self.key,
+                                len(chunk),
+                                int(max(0.0, time.time() - float(self.session_start_ts or time.time())) * 1000),
+                            )
+                            self.first_healthy_stream_seen = True
+                        self.current_segment_healthy = True
+                        saw_data = True
+                        await self._broadcast(chunk)
+                finally:
+                    return_code = None
+                    try:
+                        return_code = process.returncode
+                        if return_code is None:
+                            return_code = await process.wait()
+                    except Exception:
+                        return_code = None
+                    self.last_reader_end_reason = "ingest_reader_ended"
+                    self.last_reader_end_saw_data = saw_data
+                    self.last_reader_end_return_code = return_code
+                    self.last_reader_end_ts = time.time()
+                    if self.stderr_task is not None and not self.stderr_task.done():
+                        self.stderr_task.cancel()
+                        try:
+                            await self.stderr_task
+                        except BaseException:
+                            pass
+                        self.stderr_task = None
+
+                if not self.running:
+                    break
+                playback = await self._wait_for_next_playback(current_entry)
+                segment_index += 1
+            if startup_event is not None and not startup_event.is_set():
+                startup_event.set()
+        finally:
+            self.running = False
+            await self._finish_session()
+
+    async def _finish_session(self):
+        await self._close_active_segment()
+        async with self.lock:
+            subscribers = list(self.subscribers.values())
+            self.subscribers = {}
+            self.current_source = None
+            self.current_source_url = ""
+            self.current_source_probe = {}
+            self.history.clear()
+            self.history_bytes = 0
+            self.failover_exhausted = bool(self.last_error)
+        for queue in subscribers:
+            await queue.put_eof()
+
+    async def stop(self, force=False):
+        async with self.lock:
+            if not self.running and self.segment_task is None and not self.subscribers:
+                return
+            if not force and self.subscribers:
+                return
+            self.running = False
+            segment_task = self.segment_task
+            self.segment_task = None
+        await self._close_active_segment()
+        if segment_task is not None and not segment_task.done():
+            segment_task.cancel()
+            try:
+                await segment_task
+            except BaseException:
+                pass
+        await self._finish_session()
 
 
 class CsoSlateSession:
@@ -6948,56 +7556,82 @@ async def subscribe_vod_proxy_output_stream(
     if not source.url:
         return build_cso_stream_plan(None, None, "No available stream source", 503)
 
-    proxy_request_headers = dict(request_headers or {})
-    proxy_request_headers.pop("Range", None)
-    proxy_session_key = f"vod-proxy-output-{source.id}-{connection_id}"
-    proxy_session = await vod_proxy_session_manager.create(
-        proxy_session_key,
-        source,
-        source.url,
-        request_headers=proxy_request_headers,
-    )
-    started = await proxy_session.start()
-    if not started:
-        reason = proxy_session.last_error or "proxy_start_failed"
-        await emit_channel_stream_event(
-            source=source,
-            session_id=proxy_session_key,
-            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
-            severity="warning",
-            details={
-                "reason": reason,
-                "profile": profile,
-                "mode": "proxy_output",
-                **_source_event_context(source, source_url=source.url),
-            },
-        )
-        await proxy_session.stop(force=True)
-        return build_cso_stream_plan(
-            None,
-            None,
-            "Source capacity limit reached" if reason == "capacity_blocked" else "Unable to start proxy stream",
-            503 if reason == "capacity_blocked" else 502,
-        )
-
     policy = generate_cso_policy_from_profile(config, profile)
-    pipe_input_format = _resolve_vod_pipe_container(source, source_probe=getattr(source, "probe_details", None))
-    command = CsoFfmpegCommandBuilder(
-        policy,
-        pipe_input_format=pipe_input_format,
-    ).build_output_command(
-        start_seconds=start_seconds,
-        max_duration_seconds=max_duration_seconds,
-    )
-    logger.info(
-        "Starting VOD proxy output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s command=%s",
-        item_id,
-        source.id,
-        profile,
-        int(start_seconds or 0),
-        int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
-        command,
-    )
+    proxy_session_key = f"vod-proxy-output-{source.id}-{connection_id}"
+    cache_entry = await vod_cache_manager.get_or_create(source, source.url)
+    local_cache_ready = bool(cache_entry.complete and cache_entry.final_path.exists())
+    using_local_cache = local_cache_ready
+    proxy_session = None
+
+    if using_local_cache:
+        command = CsoFfmpegCommandBuilder(
+            policy,
+            pipe_input_format=_resolve_vod_pipe_container(source, source_probe=getattr(source, "probe_details", None)),
+        ).build_local_output_command(
+            cache_entry.final_path,
+            start_seconds=start_seconds,
+            max_duration_seconds=max_duration_seconds,
+            realtime=True,
+        )
+        logger.info(
+            "Starting VOD local output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s path=%s command=%s",
+            item_id,
+            source.id,
+            profile,
+            int(start_seconds or 0),
+            int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
+            cache_entry.final_path,
+            command,
+        )
+    else:
+        proxy_request_headers = dict(request_headers or {})
+        proxy_request_headers.pop("Range", None)
+        proxy_session = await vod_proxy_session_manager.create(
+            proxy_session_key,
+            source,
+            source.url,
+            request_headers=proxy_request_headers,
+        )
+        started = await proxy_session.start()
+        if not started:
+            reason = proxy_session.last_error or "proxy_start_failed"
+            await emit_channel_stream_event(
+                source=source,
+                session_id=proxy_session_key,
+                event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
+                severity="warning",
+                details={
+                    "reason": reason,
+                    "profile": profile,
+                    "mode": "proxy_output",
+                    **_source_event_context(source, source_url=source.url),
+                },
+            )
+            await proxy_session.stop(force=True)
+            return build_cso_stream_plan(
+                None,
+                None,
+                "Source capacity limit reached" if reason == "capacity_blocked" else "Unable to start proxy stream",
+                503 if reason == "capacity_blocked" else 502,
+            )
+
+        pipe_input_format = _resolve_vod_pipe_container(source, source_probe=getattr(source, "probe_details", None))
+        command = CsoFfmpegCommandBuilder(
+            policy,
+            pipe_input_format=pipe_input_format,
+        ).build_output_command(
+            start_seconds=start_seconds,
+            max_duration_seconds=max_duration_seconds,
+        )
+        logger.info(
+            "Starting VOD proxy output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s command=%s",
+            item_id,
+            source.id,
+            profile,
+            int(start_seconds or 0),
+            int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
+            command,
+        )
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -7006,7 +7640,8 @@ async def subscribe_vod_proxy_output_stream(
             stderr=asyncio.subprocess.PIPE,
         )
     except Exception as exc:
-        await proxy_session.stop(force=True)
+        if proxy_session is not None:
+            await proxy_session.stop(force=True)
         await emit_channel_stream_event(
             source=source,
             session_id=proxy_session_key,
@@ -7035,6 +7670,8 @@ async def subscribe_vod_proxy_output_stream(
     )
 
     async def _write_proxy_to_ffmpeg():
+        if proxy_session is None:
+            return
         try:
             async for chunk in proxy_session.iter_bytes():
                 if not isinstance(chunk, (bytes, bytearray, memoryview)):
@@ -7085,7 +7722,8 @@ async def subscribe_vod_proxy_output_stream(
                 writer_task.cancel()
             if not stderr_task.done():
                 stderr_task.cancel()
-            await proxy_session.stop(force=True)
+            if proxy_session is not None:
+                await proxy_session.stop(force=True)
             if process.returncode is None:
                 process.kill()
                 await process.wait()
@@ -7103,6 +7741,65 @@ async def subscribe_vod_proxy_output_stream(
             )
 
     return build_cso_stream_plan(_generator(), policy_content_type(policy), None, 200)
+
+
+async def subscribe_vod_channel_output_stream(
+    config,
+    channel_id,
+    stream_key,
+    profile,
+    connection_id,
+    request_headers=None,
+):
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"cso-vod-channel-ingest-{int(channel_id)}"
+    output_session_key = f"cso-vod-channel-output-{int(channel_id)}-{profile}"
+
+    def _ingest_factory():
+        return VodChannelIngestSession(
+            ingest_key,
+            config,
+            int(channel_id),
+            stream_key=stream_key,
+            request_headers=request_headers,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_scheduled_programme"
+        if reason == "no_scheduled_programme":
+            return build_cso_stream_plan(None, None, "No scheduled VOD programme is currently available", 404)
+        return build_cso_stream_plan(None, None, "Unable to start VOD channel ingest", 503)
+
+    def _output_factory():
+        return CsoOutputSession(
+            output_session_key,
+            int(channel_id),
+            policy,
+            ingest_session,
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        return build_cso_stream_plan(None, None, "Unable to start VOD channel output", 503)
+
+    queue = await output_session.add_client(connection_id, prebuffer_bytes=0)
+    content_type = policy_content_type(policy)
+
+    async def _generator():
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+                await output_session.touch_client(connection_id)
+        finally:
+            await output_session.remove_client(connection_id)
+
+    return build_cso_stream_plan(_generator(), content_type, None, 200)
 
 
 async def subscribe_source_stream(
