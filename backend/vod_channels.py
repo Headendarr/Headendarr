@@ -36,6 +36,7 @@ CHANNEL_TYPE_STANDARD = "standard"
 CHANNEL_TYPE_VOD_24_7 = "vod_24_7"
 
 SCHEDULE_MODE_SERIES_ORDER = "series_season_episode"
+SCHEDULE_MODE_RULE_ORDER = "rule_order"
 SCHEDULE_MODE_RELEASE_DATE = "release_date"
 SCHEDULE_MODE_SEASON_AIR_DATE = "season_air_date"
 SCHEDULE_MODE_EPISODE_AIR_DATE = "episode_air_date"
@@ -124,6 +125,7 @@ def read_vod_channel_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     schedule_mode = clean_text(incoming.get("schedule_mode") or defaults["schedule_mode"]).lower()
     if schedule_mode not in {
         SCHEDULE_MODE_SERIES_ORDER,
+        SCHEDULE_MODE_RULE_ORDER,
         SCHEDULE_MODE_RELEASE_DATE,
         SCHEDULE_MODE_SEASON_AIR_DATE,
         SCHEDULE_MODE_EPISODE_AIR_DATE,
@@ -194,6 +196,8 @@ async def _query_rule_source_item_ids(session: Any, config: Any, rule: dict[str,
         stmt = select(XcVodItem.id)
         if rule_type.startswith("series_"):
             stmt = stmt.where(XcVodItem.item_type == VOD_KIND_SERIES)
+        elif rule_type.startswith("title_"):
+            stmt = stmt.where(XcVodItem.item_type == VOD_KIND_MOVIE)
         if rule_type == "series_name":
             stmt = stmt.where(cast(XcVodItem.title, String).ilike(rule_value))
         elif rule_type.endswith("contains"):
@@ -213,20 +217,20 @@ async def resolve_vod_channel_item_pool(config: Any, channel: Channel) -> list[d
     async with Session() as session:
         include_ids: set[int] = set()
         exclude_ids: set[int] = set()
+        include_rule_positions: dict[int, int] = {}
         for rule in rules:
             matched_ids = await _query_rule_source_item_ids(session, config, rule)
             if rule["operator"] == "exclude":
                 exclude_ids.update(matched_ids)
             else:
                 include_ids.update(matched_ids)
+                rule_position = convert_to_int(rule.get("position"), 0)
+                for item_id in matched_ids:
+                    include_rule_positions.setdefault(int(item_id), rule_position)
         selected_ids = sorted(item_id for item_id in include_ids if item_id not in exclude_ids)
         if not selected_ids:
             return []
-        result = await session.execute(
-            select(XcVodItem)
-            .where(XcVodItem.id.in_(selected_ids))
-            .order_by(XcVodItem.sort_title.asc(), XcVodItem.title.asc())
-        )
+        result = await session.execute(select(XcVodItem).where(XcVodItem.id.in_(selected_ids)))
         rows = result.scalars().all()
 
     items: list[dict[str, Any]] = []
@@ -244,10 +248,18 @@ async def resolve_vod_channel_item_pool(config: Any, channel: Channel) -> list[d
                 "poster_url": clean_text(row.poster_url),
                 "container_extension": clean_text(row.container_extension),
                 "duration_seconds": _parse_duration_seconds(summary, clean_text(row.item_type)),
+                "rule_position": include_rule_positions.get(int(row.id), 0),
                 "summary": summary,
             }
         )
-    return items
+    return sorted(
+        items,
+        key=lambda item: (
+            convert_to_int(item.get("rule_position"), 0),
+            clean_text(item.get("sort_title") or item.get("title")).lower(),
+            int(item.get("item_id") or 0),
+        ),
+    )
 
 
 async def vod_channel_has_playlist_items(config: Any, channel_id: int, playlist_id: int) -> bool:
@@ -326,7 +338,32 @@ def _sort_entries(entries: list[dict[str, Any]], settings: dict[str, Any], chann
         rng.shuffle(copied)
         return copied
 
-    def key(entry: dict[str, Any]):
+    if mode == SCHEDULE_MODE_RULE_ORDER:
+        grouped_entries: dict[int, list[dict[str, Any]]] = {}
+        ordered_rule_positions: list[int] = []
+        for entry in entries:
+            rule_position = convert_to_int(entry.get("rule_position"), 0)
+            if rule_position not in grouped_entries:
+                grouped_entries[rule_position] = []
+                ordered_rule_positions.append(rule_position)
+            grouped_entries[rule_position].append(entry)
+
+        ordered_entries: list[dict[str, Any]] = []
+        for rule_position in sorted(ordered_rule_positions, reverse=reverse):
+            ordered_entries.extend(
+                sorted(
+                    grouped_entries.get(rule_position, []),
+                    key=lambda entry: (
+                        clean_text(entry.get("series_title") or entry.get("sort_title") or entry.get("title")).lower(),
+                        convert_to_int(entry.get("season_number"), 0),
+                        convert_to_int(entry.get("episode_number"), 0),
+                        clean_text(entry.get("title")).lower(),
+                    ),
+                )
+            )
+        return ordered_entries
+
+    def group_sort_key(entry: dict[str, Any]):
         if mode == SCHEDULE_MODE_RELEASE_DATE:
             return (
                 _parse_release_sort_value(entry.get("release_date")),
@@ -356,7 +393,7 @@ def _sort_entries(entries: list[dict[str, Any]], settings: dict[str, Any], chann
             clean_text(entry.get("title")).lower(),
         )
 
-    return sorted(entries, key=key, reverse=reverse)
+    return sorted(entries, key=group_sort_key, reverse=reverse)
 
 
 async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool = False) -> dict[str, Any]:
@@ -405,6 +442,7 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
                     "duration_seconds": item["duration_seconds"],
                     "container_extension": item["container_extension"],
                     "poster_url": item["poster_url"],
+                    "rule_position": item["rule_position"],
                     "desc": clean_text(item["summary"].get("plot") or item["summary"].get("description")),
                 }
             )
@@ -426,6 +464,7 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
                     "duration_seconds": episode["duration_seconds"],
                     "container_extension": episode["container_extension"] or item["container_extension"],
                     "poster_url": item["poster_url"],
+                    "rule_position": item["rule_position"],
                     "desc": clean_text(episode["summary"].get("plot") or episode["summary"].get("description")),
                 }
             )

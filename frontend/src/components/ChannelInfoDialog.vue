@@ -568,14 +568,19 @@ export default {
     },
     vodRuleTypeOptions() {
       return [
-        {label: 'Series Contains', value: 'series_contains'},
-        {label: 'Series Starts With', value: 'series_starts_with'},
-        {label: 'Title Contains', value: 'title_contains'},
-        {label: 'Title Starts With', value: 'title_starts_with'},
+        {label: 'Series Title Contains', value: 'series_contains'},
+        {label: 'Series Title Starts With', value: 'series_starts_with'},
+        {label: 'Movie Title Contains', value: 'title_contains'},
+        {label: 'Movie Title Starts With', value: 'title_starts_with'},
       ];
     },
     vodScheduleModeOptions() {
       return [
+        {
+          label: 'Rule Evaluation Order',
+          value: 'rule_order',
+          description: 'Keep the generated schedule grouped by the order of the VOD content rules, then order items naturally within each matched rule.',
+        },
         {
           label: 'Series, Season, Episode',
           value: 'series_season_episode',
