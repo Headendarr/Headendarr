@@ -81,7 +81,7 @@ _vod_http_manifest_cache: dict[str, tuple[float, float, object]] = {}
 
 
 @dataclass
-class VodPlaybackCandidate:
+class VodCuratedPlaybackCandidate:
     group_item: VodCategoryItem
     source_link: VodCategoryItemSource
     source_item: XcVodItem
@@ -91,6 +91,18 @@ class VodPlaybackCandidate:
     host_url: str | None
     episode_source: VodCategoryEpisodeSource | None = None
     episode: VodCategoryEpisode | None = None
+
+
+@dataclass
+class VodSourcePlaybackCandidate:
+    source_item: XcVodItem
+    content_type: str
+    xc_account: XcAccount | None
+    host_url: str | None
+    container_extension: str | None = None
+    upstream_episode_id: str | None = None
+    internal_id: int | None = None
+    cache_internal_id: int | None = None
 
 
 def _vod_link_priority_value(link: VodCategoryXcCategory | None, fallback: int = 0) -> int:
@@ -219,7 +231,7 @@ def build_vod_activity_metadata(candidate, episode=None) -> dict[str, str]:
     }
 
 
-def build_local_cache_source(candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None):
+def build_local_cache_source(candidate: VodCuratedPlaybackCandidate, episode: VodCategoryEpisode | None = None):
     if candidate is None or getattr(candidate, "group_item", None) is None:
         return None
     internal_id = int(candidate.group_item.id)
@@ -241,7 +253,7 @@ def build_local_cache_source(candidate: VodPlaybackCandidate, episode: VodCatego
     )
 
 
-async def vod_cache_is_complete(candidate: VodPlaybackCandidate, episode: VodCategoryEpisode | None = None) -> bool:
+async def vod_cache_is_complete(candidate: VodCuratedPlaybackCandidate, episode: VodCategoryEpisode | None = None) -> bool:
     source = build_local_cache_source(candidate, episode=episode)
     if source is None:
         return False
@@ -253,7 +265,7 @@ async def vod_cache_is_complete(candidate: VodPlaybackCandidate, episode: VodCat
     return bool(entry.complete and entry.final_path.exists())
 
 
-async def vod_candidate_has_capacity(candidate: VodPlaybackCandidate, upstream_url: str) -> bool:
+async def vod_candidate_has_capacity(candidate: VodCuratedPlaybackCandidate, upstream_url: str) -> bool:
     from backend.cso import (
         cso_capacity_registry,
         cso_source_from_vod_source,
@@ -272,10 +284,10 @@ async def vod_candidate_has_capacity(candidate: VodPlaybackCandidate, upstream_u
 
 
 async def select_vod_playback_target(
-    candidates: list[VodPlaybackCandidate],
+    candidates: list[VodCuratedPlaybackCandidate],
     episode: VodCategoryEpisode | None = None,
     prefer_local_cache: bool = False,
-) -> tuple[VodPlaybackCandidate | None, str | None, str | None]:
+) -> tuple[VodCuratedPlaybackCandidate | None, str | None, str | None]:
     if not candidates:
         return None, None, "not_found"
     preferred_candidate = candidates[0]
@@ -3029,17 +3041,17 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, o
     return representative_payload
 
 
-async def resolve_movie_playback(item_id: int) -> VodPlaybackCandidate | None:
+async def resolve_movie_playback(item_id: int) -> VodCuratedPlaybackCandidate | None:
     candidates = await resolve_movie_playback_candidates(int(item_id))
     return candidates[0] if candidates else None
 
 
-async def resolve_movie_playback_candidates(item_id: int) -> list[VodPlaybackCandidate]:
+async def resolve_movie_playback_candidates(item_id: int) -> list[VodCuratedPlaybackCandidate]:
     rows = await _get_group_item_source_rows(int(item_id), VOD_KIND_MOVIE)
     return await _build_playback_candidates(rows, VOD_KIND_MOVIE)
 
 
-async def resolve_episode_playback(episode_id: int) -> tuple[VodPlaybackCandidate | None, VodCategoryEpisode | None]:
+async def resolve_episode_playback(episode_id: int) -> tuple[VodCuratedPlaybackCandidate | None, VodCategoryEpisode | None]:
     async with Session() as session:
         result = await session.execute(
             select(
@@ -3075,7 +3087,7 @@ async def resolve_episode_playback(episode_id: int) -> tuple[VodPlaybackCandidat
 
 async def resolve_episode_playback_candidates(
     episode_id: int,
-) -> tuple[list[VodPlaybackCandidate], VodCategoryEpisode | None]:
+) -> tuple[list[VodCuratedPlaybackCandidate], VodCategoryEpisode | None]:
     async with Session() as session:
         result = await session.execute(
             select(
@@ -3128,7 +3140,7 @@ def _ordered_playback_rows(rows) -> list:
     return ordered_rows
 
 
-async def _build_playback_candidates(rows, item_type: str) -> list[VodPlaybackCandidate]:
+async def _build_playback_candidates(rows, item_type: str) -> list[VodCuratedPlaybackCandidate]:
     candidates = []
     fallback = None
     for row in _ordered_playback_rows(rows):
@@ -3142,7 +3154,7 @@ async def _build_playback_candidates(rows, item_type: str) -> list[VodPlaybackCa
         if playlist is None:
             continue
         host_url, xc_account = await _select_account_for_playlist(playlist)
-        candidate = VodPlaybackCandidate(
+        candidate = VodCuratedPlaybackCandidate(
             group_item=group_item,
             source_link=source_link,
             source_item=source_item,
@@ -3162,12 +3174,12 @@ async def _build_playback_candidates(rows, item_type: str) -> list[VodPlaybackCa
     return [fallback] if fallback is not None else []
 
 
-async def _select_playback_candidate(rows, item_type: str) -> VodPlaybackCandidate | None:
+async def _select_playback_candidate(rows, item_type: str) -> VodCuratedPlaybackCandidate | None:
     candidates = await _build_playback_candidates(rows, item_type)
     return candidates[0] if candidates else None
 
 
-def resolve_vod_profile_id(candidate: VodPlaybackCandidate) -> str:
+def resolve_vod_profile_id(candidate: VodCuratedPlaybackCandidate) -> str:
     source_container = (
         clean_text(getattr(candidate.episode_source, "container_extension", ""))
         or clean_text(getattr(candidate.source_item, "container_extension", ""))
@@ -3177,7 +3189,7 @@ def resolve_vod_profile_id(candidate: VodPlaybackCandidate) -> str:
     return _resolve_group_output_profile_id(configured_profile, source_container)
 
 
-def resolve_vod_output_extension(candidate: VodPlaybackCandidate) -> str:
+def resolve_vod_output_extension(candidate: VodCuratedPlaybackCandidate) -> str:
     profile_id = resolve_vod_profile_id(candidate)
     fallback = (
         clean_text(getattr(candidate.episode_source, "container_extension", ""))
@@ -3188,7 +3200,7 @@ def resolve_vod_output_extension(candidate: VodPlaybackCandidate) -> str:
 
 
 async def build_upstream_playback_url(
-    candidate: VodPlaybackCandidate, episode_mapping: VodCategoryEpisode | None = None
+    candidate: VodCuratedPlaybackCandidate, episode_mapping: VodCategoryEpisode | None = None
 ) -> str:
     host_url = clean_text(candidate.host_url)
     account = candidate.xc_account

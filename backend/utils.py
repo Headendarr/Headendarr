@@ -17,8 +17,10 @@ def is_truthy(value: object) -> bool:
     return bool(value)
 
 
-def convert_to_int(value: int | str, default: int = 1) -> int:
+def convert_to_int(value: int | str | None, default: int = 1) -> int:
     try:
+        if value is None:
+            return default
         return int(value)
     except (TypeError, ValueError):
         return default

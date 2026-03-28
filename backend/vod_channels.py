@@ -12,16 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import String, cast, select
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from backend.models import (
     Channel,
     Session,
-    VodCategory,
-    VodCategoryEpisode,
-    VodCategoryEpisodeSource,
-    VodCategoryItem,
-    VodCategoryItemSource,
     VodChannelRule,
     XcVodItem,
 )
@@ -29,7 +24,7 @@ from backend.utils import clean_text, convert_to_int, utc_now
 from backend.vod import (
     VOD_KIND_MOVIE,
     VOD_KIND_SERIES,
-    VodPlaybackCandidate,
+    VodSourcePlaybackCandidate,
     _load_summary,
     _summary_info,
     fetch_xc_series_info_payload,
@@ -539,70 +534,22 @@ async def resolve_vod_channel_playback_target(
         upstream_episode_id=entry.get("upstream_episode_id"),
         container_extension=entry.get("container_extension"),
     )
-    candidate = None
     episode = None
-    async with Session() as session:
-        if clean_text(entry.get("entry_type")) == VOD_KIND_MOVIE:
-            result = await session.execute(
-                select(VodCategoryItemSource, VodCategoryItem, VodCategory)
-                .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
-                .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
-                .where(VodCategoryItemSource.source_item_id == int(entry["source_item_id"]))
-                .options(joinedload(VodCategoryItemSource.source_item))
-                .order_by(VodCategoryItemSource.id.asc())
-                .limit(1)
-            )
-            row = result.first()
-            if row is not None:
-                source_link, group_item, group = row
-                candidate = VodPlaybackCandidate(
-                    group_item=group_item,
-                    source_link=source_link,
-                    source_item=source_link.source_item,
-                    group=group,
-                    content_type=VOD_KIND_MOVIE,
-                    xc_account=xc_account,
-                    host_url=None,
-                    episode_source=None,
-                    episode=None,
-                )
-        else:
-            result = await session.execute(
-                select(
-                    VodCategoryEpisode,
-                    VodCategoryEpisodeSource,
-                    VodCategoryItemSource,
-                    VodCategoryItem,
-                    VodCategory,
-                )
-                .join(VodCategoryEpisodeSource, VodCategoryEpisodeSource.episode_id == VodCategoryEpisode.id)
-                .join(
-                    VodCategoryItemSource, VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id
-                )
-                .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
-                .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
-                .where(
-                    VodCategoryItemSource.source_item_id == int(entry["source_item_id"]),
-                    VodCategoryEpisodeSource.upstream_episode_id == clean_text(entry.get("upstream_episode_id")),
-                )
-                .options(joinedload(VodCategoryItemSource.source_item))
-                .order_by(VodCategoryEpisodeSource.id.asc())
-                .limit(1)
-            )
-            row = result.first()
-            if row is not None:
-                episode, episode_source, source_link, group_item, group = row
-                candidate = VodPlaybackCandidate(
-                    group_item=group_item,
-                    source_link=source_link,
-                    source_item=source_link.source_item,
-                    group=group,
-                    content_type=VOD_KIND_SERIES,
-                    xc_account=xc_account,
-                    host_url=None,
-                    episode_source=episode_source,
-                    episode=episode,
-                )
+    candidate = None
+    if source_item is not None and upstream_url:
+        cache_internal_id = int(entry["source_item_id"])
+        if clean_text(entry.get("entry_type")) == VOD_KIND_SERIES:
+            cache_internal_id = convert_to_int(entry.get("upstream_episode_id"), cache_internal_id)
+        candidate = VodSourcePlaybackCandidate(
+            source_item=source_item,
+            content_type=clean_text(entry.get("entry_type")) or VOD_KIND_MOVIE,
+            xc_account=xc_account,
+            host_url=None,
+            container_extension=clean_text(entry.get("container_extension")) or None,
+            upstream_episode_id=clean_text(entry.get("upstream_episode_id")) or None,
+            internal_id=None,
+            cache_internal_id=cache_internal_id,
+        )
     return {
         "entry": entry,
         "next_entry": next_entry,

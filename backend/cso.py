@@ -40,7 +40,7 @@ from backend.streaming import (
     append_stream_key,
     is_local_hls_proxy_url,
 )
-from backend.vod import VodPlaybackCandidate
+from backend.vod import VodCuratedPlaybackCandidate, VodSourcePlaybackCandidate
 from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.users import get_user_by_stream_key
 from backend.config import (
@@ -178,12 +178,19 @@ class CsoSource:
         return self.url
 
 
-async def cso_source_from_vod_source(candidate: VodPlaybackCandidate, upstream_url: str) -> CsoSource:
+async def cso_source_from_vod_source(
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate, upstream_url: str
+) -> CsoSource:
     """Wrap a VOD item/episode candidate in a CsoSource adapter."""
     source_item = candidate.source_item
-    episode_source = candidate.episode_source
-    group_item = candidate.group_item
-    episode_item = candidate.episode
+    if isinstance(candidate, VodCuratedPlaybackCandidate):
+        episode_source = candidate.episode_source
+        group_item = candidate.group_item
+        episode_item = candidate.episode
+    else:
+        episode_source = None
+        group_item = None
+        episode_item = None
 
     source_playlist_id = convert_to_int(source_item.playlist_id, 0)
     async with Session() as session:
@@ -201,31 +208,40 @@ async def cso_source_from_vod_source(candidate: VodPlaybackCandidate, upstream_u
 
     source_type = "vod_movie" if candidate.content_type == "movie" else "vod_episode"
 
-    source_id = convert_to_int(source_item.id, 0)
-    if episode_source:
-        source_id = convert_to_int(episode_source.id, 0)
-
     probe_details = None
     probe_at = None
+    source_id = convert_to_int(source_item.id, 0)
     if candidate.content_type == "movie":
         probe_details = json.loads(source_item.stream_probe_details) if source_item.stream_probe_details else None
         probe_at = source_item.stream_probe_at
-    elif episode_source:
-        probe_details = json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
-        probe_at = episode_source.stream_probe_at
 
     internal_id = None
     cache_internal_id = None
-    group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
-    episode_item_is_curated = bool(episode_item is not None and not convert_to_int(episode_item.playlist_id, 0))
-    if candidate.content_type == "movie":
-        if group_item_is_curated:
-            internal_id = convert_to_int(group_item.id, 0) or None
-        cache_internal_id = internal_id or source_id or None
+    container_extension = source_item.container_extension
+    if isinstance(candidate, VodCuratedPlaybackCandidate):
+        if episode_source:
+            source_id = convert_to_int(episode_source.id, 0)
+            probe_details = json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
+            probe_at = episode_source.stream_probe_at
+            container_extension = episode_source.container_extension or container_extension
+        group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
+        episode_item_is_curated = bool(episode_item is not None and not convert_to_int(episode_item.playlist_id, 0))
+        if group_item is not None:
+            container_extension = container_extension or group_item.container_extension
+        if candidate.content_type == "movie":
+            if group_item_is_curated:
+                internal_id = convert_to_int(group_item.id, 0) or None
+            cache_internal_id = internal_id or source_id or None
+        else:
+            if episode_item_is_curated:
+                internal_id = convert_to_int(episode_item.id, 0) or None
+            cache_internal_id = internal_id or source_id or None
     else:
-        if episode_item_is_curated:
-            internal_id = convert_to_int(episode_item.id, 0) or None
-        cache_internal_id = internal_id or source_id or None
+        if candidate.content_type == "series":
+            source_id = convert_to_int(candidate.cache_internal_id, 0) or source_id
+        internal_id = candidate.internal_id
+        cache_internal_id = candidate.cache_internal_id or source_id or None
+        container_extension = container_extension or candidate.container_extension
 
     xc_account_id = None
     if xc_account is not None:
@@ -246,12 +262,7 @@ async def cso_source_from_vod_source(candidate: VodPlaybackCandidate, upstream_u
         cache_internal_id=cache_internal_id,
         probe_details=probe_details,
         probe_at=probe_at,
-        container_extension=clean_key(
-            (episode_source.container_extension if episode_source is not None else "")
-            or source_item.container_extension
-            or group_item.container_extension
-        )
-        or None,
+        container_extension=clean_key(container_extension) or None,
     )
 
 
@@ -1809,7 +1820,7 @@ async def cleanup_vod_proxy_cache():
 
 
 async def warm_vod_cache(candidate, upstream_url, episode=None, owner_key=None, request_headers=None):
-    if not candidate or not candidate.group_item:
+    if not candidate:
         return False
     source = await cso_source_from_vod_source(candidate, upstream_url)
     if not source or not source.url:
@@ -6703,10 +6714,17 @@ async def subscribe_vod_proxy_stream(
     episode=None,
     source_override=None,
 ):
-    if not candidate or not candidate.group_item:
+    if not candidate:
         return CsoStreamPlan(None, None, "VOD item not found", 404)
 
-    item = candidate.group_item
+    if isinstance(candidate, VodCuratedPlaybackCandidate):
+        item = candidate.group_item
+        vod_category_id = item.category_id
+        vod_item_id = item.id
+    else:
+        item = None
+        vod_category_id = None
+        vod_item_id = None
     source = source_override or await cso_source_from_vod_source(candidate, upstream_url)
     if not source:
         return CsoStreamPlan(None, None, "Source not found", 404)
@@ -6732,8 +6750,8 @@ async def subscribe_vod_proxy_stream(
     if not started:
         reason = session.last_error or "proxy_start_failed"
         await emit_channel_stream_event(
-            vod_category_id=item.category_id,
-            vod_item_id=item.id,
+            vod_category_id=vod_category_id,
+            vod_item_id=vod_item_id,
             vod_episode_id=episode.id if episode else None,
             source=source,
             session_id=session_key,
@@ -6753,8 +6771,8 @@ async def subscribe_vod_proxy_stream(
         )
 
     await emit_channel_stream_event(
-        vod_category_id=item.category_id,
-        vod_item_id=item.id,
+        vod_category_id=vod_category_id,
+        vod_item_id=vod_item_id,
         vod_episode_id=episode.id if episode else None,
         source=source,
         session_id=session_key,
@@ -6773,8 +6791,8 @@ async def subscribe_vod_proxy_stream(
                 yield chunk
         finally:
             await emit_channel_stream_event(
-                vod_category_id=item.category_id,
-                vod_item_id=item.id,
+                vod_category_id=vod_category_id,
+                vod_item_id=vod_item_id,
                 vod_episode_id=episode.id if episode else None,
                 source=source,
                 session_id=session_key,
@@ -6808,10 +6826,15 @@ async def subscribe_vod_proxy_output_stream(
     request_headers=None,
     episode=None,
 ):
-    if not candidate or not candidate.group_item:
+    if not candidate:
         return build_cso_stream_plan(None, None, "VOD item not found", 404)
 
-    item = candidate.group_item
+    if isinstance(candidate, VodCuratedPlaybackCandidate):
+        item = candidate.group_item
+        item_id = item.id
+    else:
+        item = None
+        item_id = None
     source = await cso_source_from_vod_source(candidate, upstream_url)
     if not source:
         return build_cso_stream_plan(None, None, "Source not found", 404)
@@ -6866,8 +6889,8 @@ async def subscribe_vod_proxy_output_stream(
     )
     logger.info(
         "Starting VOD proxy output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s command=%s",
-        getattr(item, "id", None),
-        getattr(source, "id", None),
+        item_id,
+        source.id,
         profile,
         int(start_seconds or 0),
         int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
