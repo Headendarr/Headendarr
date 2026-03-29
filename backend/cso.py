@@ -83,6 +83,8 @@ CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES = 512 * 1024
 CSO_INGEST_PROBE_SIZE_BYTES = 2 * 1024 * 1024
 CSO_INGEST_ANALYSE_DURATION_US = 3_000_000
 CSO_INGEST_FPS_PROBE_SIZE = 64
+VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS = 5
+VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES = 24 * 1024 * 1024
 CSO_OUTPUT_PROBE_SIZE_BYTES = 1 * 1024 * 1024
 CSO_OUTPUT_ANALYSE_DURATION_US = 2_000_000
 CSO_OUTPUT_FPS_PROBE_SIZE = 32
@@ -4455,7 +4457,7 @@ class VodChannelIngestSession:
     async def _read_stderr(self, process, entry):
         if process.stderr is None:
             return
-        while self.running and process is self.process:
+        while self.running:
             try:
                 line = await process.stderr.readline()
             except Exception:
@@ -4474,6 +4476,69 @@ class VodChannelIngestSession:
                     int(entry.get("start_ts") or 0),
                     rendered,
                 )
+
+    @staticmethod
+    def _entry_identity(entry):
+        payload = entry or {}
+        return (
+            int(payload.get("start_ts") or 0),
+            int(payload.get("stop_ts") or 0),
+            clean_text(payload.get("upstream_episode_id") or payload.get("source_item_id")),
+        )
+
+    def _activate_runtime(self, runtime):
+        if not runtime:
+            return
+        self.process = runtime.get("process")
+        self.stderr_task = runtime.get("stderr_task")
+        self._warm_task = runtime.get("warm_task")
+        self.current_source = runtime.get("source")
+        self.current_source_url = clean_text(runtime.get("input_target"))
+        self.current_source_probe = {"container": "mpegts"}
+
+    async def _close_runtime(self, runtime):
+        if not runtime:
+            return
+        for task_name in ("prefetch_reader_task", "warm_task", "stderr_task"):
+            task = runtime.get(task_name)
+            if task is None or task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        queue = runtime.get("prefetch_queue")
+        if queue is not None:
+            try:
+                await queue.put_eof()
+            except Exception:
+                pass
+        process = runtime.get("process")
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+                await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                    await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
+                except Exception:
+                    pass
+
+    async def _buffer_prefetched_runtime(self, runtime):
+        process = runtime.get("process")
+        queue = runtime.get("prefetch_queue")
+        if process is None or queue is None or process.stdout is None:
+            return
+        try:
+            while self.running:
+                chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
+                if not chunk:
+                    break
+                await queue.put_drop_oldest(chunk)
+        finally:
+            await queue.put_eof()
 
     async def _warm_next_item_cache(self, next_entry, remaining_seconds):
         if not next_entry:
@@ -4540,7 +4605,7 @@ class VodChannelIngestSession:
                     await asyncio.sleep(0.2)
         return source, cache_entry
 
-    async def _build_segment_runtime(self, playback, segment_index):
+    async def _build_segment_runtime(self, playback, segment_index, activate_session_state=True):
         candidate = playback.get("candidate")
         upstream_url = clean_text(playback.get("upstream_url"))
         source_item = playback.get("source_item")
@@ -4590,10 +4655,6 @@ class VodChannelIngestSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self.process = process
-        self.current_source = source
-        self.current_source_url = str(input_target)
-        self.current_source_probe = {"container": "mpegts"}
         warm_task = asyncio.create_task(
             self._warm_next_item_cache(next_entry, remaining_seconds),
             name=f"vod-channel-next-{self.channel_id}-{segment_index}",
@@ -4602,12 +4663,88 @@ class VodChannelIngestSession:
             self._read_stderr(process, entry),
             name=f"vod-channel-stderr-{self.channel_id}-{segment_index}",
         )
-        return {
+        runtime = {
             "process": process,
             "stderr_task": stderr_task,
             "warm_task": warm_task,
             "entry": entry,
+            "playback": playback,
+            "source": source,
+            "input_target": input_target,
         }
+        if activate_session_state:
+            self._activate_runtime(runtime)
+        return runtime
+
+    async def _prepare_next_segment_runtime(self, playback, segment_index):
+        next_entry = (playback or {}).get("next_entry")
+        if not next_entry:
+            return None
+
+        next_identity = self._entry_identity(next_entry)
+        next_start_ts = int(next_entry.get("start_ts") or 0)
+        if next_start_ts <= 0:
+            return None
+
+        prestart_ts = max(0, next_start_ts - int(VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS))
+        while self.running:
+            remaining_seconds = prestart_ts - int(time.time())
+            if remaining_seconds <= 0:
+                break
+            await asyncio.sleep(min(1.0, float(remaining_seconds)))
+
+        if not self.running:
+            return None
+
+        from backend.vod_channels import resolve_vod_channel_playback_target
+
+        prepared_playback = await resolve_vod_channel_playback_target(
+            self.config,
+            self.channel_id,
+            now_ts=next_start_ts,
+        )
+        if not prepared_playback:
+            return None
+        if self._entry_identity((prepared_playback.get("entry") or {})) != next_identity:
+            return None
+
+        runtime = await self._build_segment_runtime(
+            prepared_playback,
+            segment_index,
+            activate_session_state=False,
+        )
+        if runtime is None:
+            return None
+
+        prefetch_queue = ByteBudgetQueue(max_bytes=VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES)
+        runtime["prefetch_queue"] = prefetch_queue
+        runtime["prefetch_reader_task"] = asyncio.create_task(
+            self._buffer_prefetched_runtime(runtime),
+            name=f"vod-channel-prefetch-{self.channel_id}-{segment_index}",
+        )
+        logger.info(
+            "Prepared next VOD channel segment channel=%s start_ts=%s source_item_id=%s prestart_seconds=%s",
+            self.channel_id,
+            next_start_ts,
+            int(next_entry.get("source_item_id") or 0),
+            int(VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS),
+        )
+        return runtime
+
+    async def _take_prepared_runtime(self, prepared_task):
+        if prepared_task is None:
+            return None
+        if not prepared_task.done():
+            prepared_task.cancel()
+            try:
+                await prepared_task
+            except BaseException:
+                pass
+            return None
+        try:
+            return prepared_task.result()
+        except BaseException:
+            return None
 
     async def _wait_for_next_playback(self, current_entry):
         from backend.vod_channels import resolve_vod_channel_playback_target
@@ -4661,34 +4798,15 @@ class VodChannelIngestSession:
         return None
 
     async def _close_active_segment(self):
-        process = self.process
+        runtime = {
+            "process": self.process,
+            "warm_task": self._warm_task,
+            "stderr_task": self.stderr_task,
+        }
         self.process = None
-        warm_task = self._warm_task
         self._warm_task = None
-        stderr_task = self.stderr_task
         self.stderr_task = None
-        if warm_task is not None and not warm_task.done():
-            warm_task.cancel()
-            try:
-                await warm_task
-            except BaseException:
-                pass
-        if stderr_task is not None and not stderr_task.done():
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except BaseException:
-                pass
-        if process is not None and process.returncode is None:
-            try:
-                process.terminate()
-                await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await _wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-                except Exception:
-                    pass
+        await self._close_runtime(runtime)
 
     async def _run_loop(self):
         from backend.vod_channels import resolve_vod_channel_playback_target
@@ -4705,8 +4823,15 @@ class VodChannelIngestSession:
 
         segment_index = 0
         try:
+            prepared_runtime = None
             while self.running and playback:
-                runtime = await self._build_segment_runtime(playback, segment_index)
+                current_playback = playback
+                runtime = prepared_runtime
+                if runtime is None:
+                    runtime = await self._build_segment_runtime(current_playback, segment_index)
+                else:
+                    self._activate_runtime(runtime)
+                prepared_runtime = None
                 if runtime is None:
                     self.last_error = "vod_channel_segment_unavailable"
                     self.running = False
@@ -4721,11 +4846,21 @@ class VodChannelIngestSession:
                 self.stderr_task = runtime["stderr_task"]
                 self._warm_task = runtime["warm_task"]
                 current_entry = runtime["entry"]
+                prepared_task = asyncio.create_task(
+                    self._prepare_next_segment_runtime(current_playback, segment_index + 1),
+                    name=f"vod-channel-prepare-{self.channel_id}-{segment_index + 1}",
+                )
                 saw_data = False
                 self.current_segment_healthy = False
                 try:
-                    while self.running and process.stdout is not None:
-                        chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
+                    prefetch_queue = runtime.get("prefetch_queue")
+                    while self.running:
+                        if prefetch_queue is not None:
+                            chunk = await prefetch_queue.get()
+                        elif process.stdout is not None:
+                            chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
+                        else:
+                            break
                         if not chunk:
                             break
                         if not self.first_healthy_stream_seen:
@@ -4761,8 +4896,18 @@ class VodChannelIngestSession:
                         self.stderr_task = None
 
                 if not self.running:
+                    await self._close_runtime(await self._take_prepared_runtime(prepared_task))
                     break
-                playback = await self._wait_for_next_playback(current_entry)
+                next_playback = await self._wait_for_next_playback(current_entry)
+                prepared_runtime = await self._take_prepared_runtime(prepared_task)
+                if prepared_runtime is not None and (
+                    next_playback is None
+                    or self._entry_identity(prepared_runtime.get("entry"))
+                    != self._entry_identity(next_playback.get("entry"))
+                ):
+                    await self._close_runtime(prepared_runtime)
+                    prepared_runtime = None
+                playback = next_playback
                 segment_index += 1
             if startup_event is not None and not startup_event.is_set():
                 startup_event.set()
