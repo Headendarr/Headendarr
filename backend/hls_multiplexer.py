@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from collections import deque
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
 
 import aiohttp
 from backend.http_headers import sanitise_headers
@@ -180,6 +180,13 @@ def _redact_ffmpeg_headers_for_log(command):
 
 def _segment_cache_key(url, headers_query_token=None):
     return (str(url or ""), str(headers_query_token or ""))
+
+
+def _prepare_upstream_request_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    path = quote(parsed.path or "", safe="/%:@+")
+    query = quote(parsed.query or "", safe="=&%:@+,")
+    return urlunparse(parsed._replace(path=path, query=query))
 
 
 class AsyncFFmpegStream(BaseStreamMultiplexer):
@@ -871,6 +878,28 @@ async def handle_segment_proxy(decoded_url, headers, cache_obj, headers_query_to
     except aiohttp.ClientError as exc:
         proxy_logger.warning("Segment fetch failed for '%s': %s", decoded_url, exc)
         return None, 502, ""
+
+
+async def open_segment_passthrough(decoded_url, headers, method="GET"):
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        connect=_DIRECT_STREAM_CONNECT_TIMEOUT,
+        sock_connect=_DIRECT_STREAM_CONNECT_TIMEOUT,
+        sock_read=_DIRECT_STREAM_READ_TIMEOUT,
+    )
+    session = aiohttp.ClientSession(timeout=timeout)
+    request_url = _prepare_upstream_request_url(decoded_url)
+    request_headers = dict(headers or {})
+    try:
+        response = await session.request(method, request_url, headers=request_headers, allow_redirects=True)
+        if response.status == 404 and method.upper() == "GET" and "Range" not in request_headers:
+            response.release()
+            request_headers["Range"] = "bytes=0-"
+            response = await session.request(method, request_url, headers=request_headers, allow_redirects=True)
+    except Exception:
+        await session.close()
+        raise
+    return session, response
 
 
 async def handle_multiplexed_stream(

@@ -7,8 +7,7 @@ from quart import Response, current_app
 from backend.api import blueprint
 from backend.api.connections_common import get_channels_for_playlist, resolve_channel_stream_url
 from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
-from backend.channels import build_channel_logo_output_url
-from backend.epgs import generate_epg_channel_id
+from backend.epgs import build_channel_logo_output_url, generate_epg_channel_id
 from backend.playlists import build_tic_playlist_with_epg_content
 from backend.url_resolver import get_request_base_url
 

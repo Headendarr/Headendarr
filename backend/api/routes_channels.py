@@ -26,14 +26,14 @@ from backend.channels import (
     read_epg_match_candidate_preview,
     apply_bulk_epg_matches,
     apply_bulk_cso_settings,
-    build_channel_logo_output_url,
     build_cso_channel_stream_url,
 )
+from backend.epgs import build_channel_logo_output_url
 from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
 from backend.utils import fast_url_hash, parse_entity_id, is_truthy, to_utc_iso
 from backend.tvheadend.tvh_requests import get_tvh
-from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, EpgChannels, CsoEventLog, Playlist
+from backend.models import Session, Channel, ChannelSource, ChannelSuggestion, PlaylistStreams, CsoEventLog, Playlist
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
 from backend.vod_channels import is_vod_channel_type
@@ -529,17 +529,17 @@ async def api_get_channel_logo_suggestions(channel_id):
 
     # 2) EPG icon for mapped guide channel.
     if channel.guide_id and channel.guide_channel_id:
+        from backend.epgs import load_preferred_epg_channel_row
+
         async with Session() as session:
-            result = await session.execute(
-                select(EpgChannels).where(
-                    EpgChannels.epg_id == channel.guide_id,
-                    EpgChannels.channel_id == channel.guide_channel_id,
-                )
+            epg_channel = await load_preferred_epg_channel_row(
+                session,
+                epg_id=int(channel.guide_id),
+                channel_id=str(channel.guide_channel_id),
             )
-            epg_channel = result.scalars().first()
-        if epg_channel and epg_channel.icon_url:
+        if epg_channel and epg_channel.get("icon_url"):
             _add(
-                epg_channel.icon_url,
+                epg_channel["icon_url"],
                 "epg",
                 f"EPG icon ({channel.guide_name or channel.guide_id}: {channel.guide_channel_id})",
             )
@@ -605,15 +605,15 @@ async def api_apply_channel_logo_suggestion(channel_id):
                     _add(stream.tvg_logo)
 
             if channel.guide_id and channel.guide_channel_id:
-                epg_result = await session.execute(
-                    select(EpgChannels).where(
-                        EpgChannels.epg_id == channel.guide_id,
-                        EpgChannels.channel_id == channel.guide_channel_id,
-                    )
+                from backend.epgs import load_preferred_epg_channel_row
+
+                epg_channel = await load_preferred_epg_channel_row(
+                    session,
+                    epg_id=int(channel.guide_id),
+                    channel_id=str(channel.guide_channel_id),
                 )
-                epg_channel = epg_result.scalars().first()
-                if epg_channel and epg_channel.icon_url:
-                    _add(epg_channel.icon_url)
+                if epg_channel and epg_channel.get("icon_url"):
+                    _add(epg_channel["icon_url"])
 
             payload = await request.get_json(silent=True) or {}
             requested_url = (payload.get("url") or "").strip()
@@ -764,7 +764,9 @@ async def api_get_channel_preview(channel_id):
                 username=user.username,
                 profile="default",
             )
-            return jsonify({"success": True, "preview_url": preview_url, "stream_type": _infer_stream_type(preview_url)})
+            return jsonify(
+                {"success": True, "preview_url": preview_url, "stream_type": _infer_stream_type(preview_url)}
+            )
         result = await session.execute(
             select(ChannelSource).where(ChannelSource.channel_id == channel_id).order_by(ChannelSource.id.asc())
         )
@@ -1067,9 +1069,7 @@ async def api_bulk_cso_apply():
 
     user = getattr(request, "_current_user", None)
     if user:
-        details = (
-            f"channels={len(channel_ids)};" f"enabled={int(cso_enabled)};" f"updated={apply_result.get('updated', 0)}"
-        )
+        details = f"channels={len(channel_ids)};enabled={int(cso_enabled)};updated={apply_result.get('updated', 0)}"
         await audit_stream_event(
             user,
             "bulk_cso_settings_applied",

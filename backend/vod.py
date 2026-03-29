@@ -78,6 +78,7 @@ _VOD_HTTP_LIBRARY_ROOT = _VOD_STRM_ROOT / ".tic-http-library"
 _VOD_HTTP_LIBRARY_INDEX_FILE = "index.json"
 _VOD_HTTP_MANIFEST_CACHE_TTL_SECONDS = 10
 _vod_http_manifest_cache: dict[str, tuple[float, float, object]] = {}
+_VOD_TITLE_MAX_LENGTH = 500
 
 
 @dataclass
@@ -103,6 +104,15 @@ class VodSourcePlaybackCandidate:
     upstream_episode_id: str | None = None
     internal_id: int | None = None
     cache_internal_id: int | None = None
+
+
+def _truncated_vod_text(value: object, limit: int = _VOD_TITLE_MAX_LENGTH) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip()
 
 
 def _vod_link_priority_value(link: VodCategoryXcCategory | None, fallback: int = 0) -> int:
@@ -253,7 +263,9 @@ def build_local_cache_source(candidate: VodCuratedPlaybackCandidate, episode: Vo
     )
 
 
-async def vod_cache_is_complete(candidate: VodCuratedPlaybackCandidate, episode: VodCategoryEpisode | None = None) -> bool:
+async def vod_cache_is_complete(
+    candidate: VodCuratedPlaybackCandidate, episode: VodCategoryEpisode | None = None
+) -> bool:
     source = build_local_cache_source(candidate, episode=episode)
     if source is None:
         return False
@@ -1582,9 +1594,9 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                         nfo_path = movie_folder / f"{display_name}.nfo"
                         export_state = export_states[_vod_export_registry_key(int(user.id), int(category.id))]
                         export_state["dirs"].update({movie_folder.as_posix()})
-                        export_state["files"][
-                            strm_path.as_posix()
-                        ] = f"{_build_vod_strm_url(base_url, user, VOD_KIND_MOVIE, item.id, extension)}\n"
+                        export_state["files"][strm_path.as_posix()] = (
+                            f"{_build_vod_strm_url(base_url, user, VOD_KIND_MOVIE, item.id, extension)}\n"
+                        )
                         if movie_nfo:
                             export_state["files"][nfo_path.as_posix()] = movie_nfo
                         total_files += 1
@@ -1654,9 +1666,9 @@ async def sync_vod_category_strm_files(config, category_id: int) -> bool:
                         file_path = series_folder / season_dir / strm_name
                         nfo_path = series_folder / season_dir / nfo_name
                         export_state["dirs"].add((series_folder / season_dir).as_posix())
-                        export_state["files"][
-                            file_path.as_posix()
-                        ] = f"{_build_vod_strm_url(base_url, user, VOD_KIND_SERIES, episode.id, extension)}\n"
+                        export_state["files"][file_path.as_posix()] = (
+                            f"{_build_vod_strm_url(base_url, user, VOD_KIND_SERIES, episode.id, extension)}\n"
+                        )
                         export_state["files"][nfo_path.as_posix()] = episode_nfo
                         total_files += 1
 
@@ -2029,13 +2041,13 @@ async def _upsert_vod_type(playlist_id: int, kind: str, categories: list[dict], 
                         playlist_id=int(playlist_id),
                         category_type=kind,
                         upstream_category_id=upstream_category_id,
-                        name=clean_text(payload.get("category_name")) or upstream_category_id,
+                        name=_truncated_vod_text(payload.get("category_name")) or upstream_category_id,
                         parent_id=clean_text(payload.get("parent_id")),
                     )
                     session.add(row)
                     await session.flush()
                 else:
-                    row.name = clean_text(payload.get("category_name")) or row.name
+                    row.name = _truncated_vod_text(payload.get("category_name")) or row.name
                     row.parent_id = clean_text(payload.get("parent_id"))
                 category_by_upstream[upstream_category_id] = row
             stale_categories = [
@@ -2060,13 +2072,14 @@ async def _upsert_vod_type(playlist_id: int, kind: str, categories: list[dict], 
                 seen_item_ids.add(upstream_item_id)
                 row = existing_items.get(upstream_item_id)
                 if row is None:
+                    title = _truncated_vod_text(payload.get("name") or payload.get("title")) or upstream_item_id
                     row = XcVodItem(
                         playlist_id=int(playlist_id),
                         category_id=None,
                         item_type=kind,
                         upstream_item_id=upstream_item_id,
-                        title=clean_text(payload.get("name") or payload.get("title")) or upstream_item_id,
-                        sort_title=clean_text(payload.get("name") or payload.get("title")) or upstream_item_id,
+                        title=title,
+                        sort_title=title,
                         release_date=clean_text(payload.get("releaseDate") or payload.get("release_date")),
                         year=_extract_year(payload),
                         rating=clean_text(payload.get("rating")),
@@ -2079,7 +2092,7 @@ async def _upsert_vod_type(playlist_id: int, kind: str, categories: list[dict], 
                     session.add(row)
                 else:
                     row.category_id = None
-                    row.title = clean_text(payload.get("name") or payload.get("title")) or row.title
+                    row.title = _truncated_vod_text(payload.get("name") or payload.get("title")) or row.title
                     row.sort_title = row.title
                     row.release_date = clean_text(payload.get("releaseDate") or payload.get("release_date"))
                     row.year = _extract_year(payload)
@@ -2227,8 +2240,8 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True) -> boo
                         dedupe_key=dedupe_key,
                     )
                     session.add(group_item)
-                group_item.title = display_title or representative.title
-                group_item.sort_title = display_title or representative.sort_title
+                group_item.title = _truncated_vod_text(display_title or representative.title)
+                group_item.sort_title = _truncated_vod_text(display_title or representative.sort_title)
                 group_item.release_date = representative.release_date
                 group_item.year = representative.year
                 group_item.rating = representative.rating
@@ -2967,7 +2980,7 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, o
                     session.add(episode_row)
                 episode_row.season_number = representative["season_number"]
                 episode_row.episode_number = representative["episode_number"]
-                episode_row.title = representative["title"]
+                episode_row.title = _truncated_vod_text(representative["title"])
                 episode_row.container_extension = representative["container_extension"]
                 episode_row.summary_json = representative["summary_json"]
                 seen_episode_dedupe_keys.add(dedupe_key)
@@ -2992,7 +3005,7 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, o
                             upstream_episode_id=source_entry["upstream_episode_id"],
                             season_number=source_entry["season_number"],
                             episode_number=source_entry["episode_number"],
-                            title=source_entry["title"],
+                            title=_truncated_vod_text(source_entry["title"]),
                             container_extension=source_entry["container_extension"],
                             summary_json=source_entry["summary_json"],
                         )
@@ -3010,18 +3023,20 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, o
     for dedupe_key, bucket in dedupe_buckets.items():
         representative = bucket["representative"]
         season_key = str(representative["season_number"] or 0)
-        merged_episodes.setdefault(season_key, []).append(
-            {
-                "id": str(episode_id_map[dedupe_key]),
-                "stream_id": str(episode_id_map[dedupe_key]),
-                "title": representative["title"],
-                "episode_num": representative["episode_number"],
-                "container_extension": _resolve_group_output_extension(
-                    group_profile_id,
-                    representative["container_extension"] or "",
-                ),
-            }
+        entry = json.loads(json.dumps(_load_summary(representative["summary_json"])))
+        if not isinstance(entry, dict):
+            entry = {}
+        local_episode_id = str(int(episode_id_map[dedupe_key]))
+        entry["id"] = local_episode_id
+        entry["stream_id"] = local_episode_id
+        entry["title"] = representative["title"]
+        entry["container_extension"] = _resolve_group_output_extension(
+            group_profile_id,
+            representative["container_extension"] or "",
         )
+        if representative["episode_number"] is not None:
+            entry["episode_num"] = int(representative["episode_number"])
+        merged_episodes.setdefault(season_key, []).append(entry)
     for season_key, entries in merged_episodes.items():
         merged_episodes[season_key] = sorted(
             entries,
@@ -3051,7 +3066,9 @@ async def resolve_movie_playback_candidates(item_id: int) -> list[VodCuratedPlay
     return await _build_playback_candidates(rows, VOD_KIND_MOVIE)
 
 
-async def resolve_episode_playback(episode_id: int) -> tuple[VodCuratedPlaybackCandidate | None, VodCategoryEpisode | None]:
+async def resolve_episode_playback(
+    episode_id: int,
+) -> tuple[VodCuratedPlaybackCandidate | None, VodCategoryEpisode | None]:
     async with Session() as session:
         result = await session.execute(
             select(

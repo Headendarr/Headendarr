@@ -38,6 +38,9 @@
                       DVR: {{ dvrModeLabel(user.dvr_access_mode) }}
                     </q-item-label>
                     <q-item-label caption>
+                      Timeshift: {{ user.timeshift_enabled ? 'Enabled' : 'Disabled' }}
+                    </q-item-label>
+                    <q-item-label caption>
                       VOD: {{ vodModeLabel(user.vod_access_mode) }}
                     </q-item-label>
                     <q-item-label caption>
@@ -169,6 +172,12 @@
               :disable="form.roles.includes('admin')"
             />
           </template>
+          <TicToggleInput
+            v-model="form.timeshift_enabled"
+            label="Enable XC Timeshift"
+            description="Allow this user to see XC catch-up capability and use the XC `/timeshift/...` endpoint."
+            :disable="form.roles.includes('admin')"
+          />
 
           <TicSelectInput
             v-model="form.vod_access_mode"
@@ -293,6 +302,12 @@
                 :disable="isAdminUser(editUser)"
               />
             </template>
+            <TicToggleInput
+              v-model="form.timeshift_enabled"
+              label="Enable XC Timeshift"
+              description="Allow this user to see XC catch-up capability and use the XC `/timeshift/...` endpoint."
+              :disable="isAdminUser(editUser)"
+            />
           </div>
 
           <q-separator class="users-edit-separator" />
@@ -424,6 +439,7 @@ export default {
         streaming_key: '',
         dvr_access_mode: 'none',
         dvr_retention_policy: 'forever',
+        timeshift_enabled: false,
         vod_access_mode: 'none',
         vod_generate_strm_files: false,
       },
@@ -570,12 +586,15 @@ export default {
       this.enforceVodSettingsConsistency();
     },
   },
-  methods: {
-    enforceVodSettingsConsistency() {
-      const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
-      if (!roles.includes('admin') && this.form.vod_access_mode === 'none') {
-        this.form.vod_generate_strm_files = false;
-      }
+    methods: {
+      enforceVodSettingsConsistency() {
+        const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
+        if (roles.includes('admin')) {
+          this.form.timeshift_enabled = true;
+        }
+        if (!roles.includes('admin') && this.form.vod_access_mode === 'none') {
+          this.form.vod_generate_strm_files = false;
+        }
     },
     async loadUsers() {
       this.loading = true;
@@ -681,6 +700,7 @@ export default {
         streaming_key: '',
         dvr_access_mode: 'none',
         dvr_retention_policy: 'forever',
+        timeshift_enabled: false,
         vod_access_mode: 'none',
         vod_generate_strm_files: false,
       };
@@ -707,6 +727,7 @@ export default {
           roles,
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
+          timeshift_enabled: isAdmin ? true : !!this.form.timeshift_enabled,
           vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
           vod_generate_strm_files: !isAdmin && this.form.vod_access_mode === 'none'
             ? false
@@ -729,6 +750,7 @@ export default {
         streaming_key: user.streaming_key || '',
         dvr_access_mode: isAdmin ? 'read_all_write_own' : (user.dvr_access_mode || 'none'),
         dvr_retention_policy: user.dvr_retention_policy || 'forever',
+        timeshift_enabled: !!user.timeshift_enabled,
         vod_access_mode: isAdmin ? 'movies_series' : (user.vod_access_mode || 'none'),
         vod_generate_strm_files: !!user.vod_generate_strm_files,
       };
@@ -753,6 +775,7 @@ export default {
           is_active: this.form.is_active,
           dvr_access_mode: isAdmin ? 'read_all_write_own' : this.form.dvr_access_mode,
           dvr_retention_policy: this.form.dvr_retention_policy,
+          timeshift_enabled: isAdmin ? true : !!this.form.timeshift_enabled,
           vod_access_mode: isAdmin ? 'movies_series' : this.form.vod_access_mode,
           vod_generate_strm_files: !isAdmin && this.form.vod_access_mode === 'none'
             ? false

@@ -311,12 +311,11 @@ async def cso_source_from_vod_source(
     cache_internal_id = None
     container_extension = source_item.container_extension
     if isinstance(candidate, VodCuratedPlaybackCandidate):
+        if episode_item is not None:
+            probe_details = json.loads(episode_item.stream_probe_details) if episode_item.stream_probe_details else None
+            probe_at = episode_item.stream_probe_at
         if episode_source:
             source_id = convert_to_int(episode_source.id, 0)
-            probe_details = (
-                json.loads(episode_source.stream_probe_details) if episode_source.stream_probe_details else None
-            )
-            probe_at = episode_source.stream_probe_at
             container_extension = episode_source.container_extension or container_extension
         group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
         episode_item_is_curated = bool(episode_item is not None and not convert_to_int(episode_item.playlist_id, 0))

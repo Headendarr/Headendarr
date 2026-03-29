@@ -22,6 +22,7 @@ from backend.users import (
     get_user_by_id,
     set_user_tvh_sync_status,
     user_has_admin_role,
+    user_timeshift_enabled,
     delete_user,
 )
 from backend.vod import queue_all_vod_category_strm_syncs
@@ -52,6 +53,7 @@ def _serialize_user(user: User):
         "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
+        "timeshift_enabled": user_timeshift_enabled(user),
         "vod_access_mode": vod_access_mode,
         "vod_generate_strm_files": bool(user.vod_generate_strm_files),
     }
@@ -88,6 +90,7 @@ async def create_user_route():
     roles = data.get("roles") or []
     dvr_access_mode = data.get("dvr_access_mode")
     dvr_retention_policy = data.get("dvr_retention_policy")
+    timeshift_enabled = data.get("timeshift_enabled")
     vod_access_mode = data.get("vod_access_mode")
     vod_generate_strm_files = data.get("vod_generate_strm_files")
     if not username or not password:
@@ -100,6 +103,7 @@ async def create_user_route():
         user.id,
         dvr_access_mode=dvr_access_mode,
         dvr_retention_policy=dvr_retention_policy,
+        timeshift_enabled=timeshift_enabled,
     )
     await update_user_vod_settings(
         user.id,
@@ -120,6 +124,7 @@ async def update_user_route(user_id):
     is_active = data.get("is_active")
     dvr_access_mode = data.get("dvr_access_mode")
     dvr_retention_policy = data.get("dvr_retention_policy")
+    timeshift_enabled = data.get("timeshift_enabled")
     vod_access_mode = data.get("vod_access_mode")
     vod_generate_strm_files = data.get("vod_generate_strm_files")
     if roles is not None:
@@ -130,6 +135,7 @@ async def update_user_route(user_id):
         user_id,
         dvr_access_mode=dvr_access_mode,
         dvr_retention_policy=dvr_retention_policy,
+        timeshift_enabled=timeshift_enabled,
     )
     await update_user_vod_settings(
         user_id,

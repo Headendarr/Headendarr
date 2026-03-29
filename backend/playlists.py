@@ -403,6 +403,7 @@ async def _import_xc_playlist_streams(settings, playlist):
         category_map = {str(c.get("category_id")): c.get("category_name") for c in categories}
 
     items = []
+    seen_items = {}
     for stream in streams:
         stream_id = stream.get("stream_id")
         if not stream_id:
@@ -420,22 +421,51 @@ async def _import_xc_playlist_streams(settings, playlist):
         container_ext = (stream.get("container_extension") or "").strip().lower().lstrip(".")
         suffix = f".{container_ext}" if container_ext in XC_ALLOWED_LIVE_EXTENSIONS else ".ts"
         template_url = _build_xc_url_template(host_url, stream_id, suffix)
-        items.append(
-            {
-                "playlist_id": playlist.id,
-                "name": stream.get("name"),
-                "url": template_url,
-                "url_hash": fast_url_hash(template_url),
-                "channel_id": stream.get("epg_channel_id") or stream.get("tvg_id"),
-                "group_title": category_map.get(str(category_id)),
-                "tvg_chno": tvg_chno,
-                "tvg_id": epg_id,
-                "tvg_logo": tvg_logo,
-                "source_type": XC_ACCOUNT_TYPE,
-                "xc_stream_id": stream_id,
-                "xc_category_id": int(category_id) if category_id is not None and str(category_id).isdigit() else None,
-            }
+        item = {
+            "playlist_id": playlist.id,
+            "name": stream.get("name"),
+            "url": template_url,
+            "url_hash": fast_url_hash(template_url),
+            "channel_id": stream.get("epg_channel_id") or stream.get("tvg_id"),
+            "group_title": category_map.get(str(category_id)),
+            "tvg_chno": tvg_chno,
+            "tvg_id": epg_id,
+            "tvg_logo": tvg_logo,
+            "source_type": XC_ACCOUNT_TYPE,
+            "xc_stream_id": stream_id,
+            "xc_category_id": int(category_id) if category_id is not None and str(category_id).isdigit() else None,
+            "xc_epg_channel_id": (stream.get("epg_channel_id") or "").strip() or None,
+            "xc_tv_archive": bool(convert_to_int(stream.get("tv_archive"), 0)),
+            "xc_tv_archive_duration": convert_to_int(stream.get("tv_archive_duration"), None),
+        }
+        item_key = (
+            str(item["name"] or "").strip(),
+            str(item["url"] or "").strip(),
+            str(item["xc_stream_id"] or "").strip(),
         )
+        existing = seen_items.get(item_key)
+        if existing is None:
+            seen_items[item_key] = item
+            continue
+        if not existing.get("xc_epg_channel_id") and item.get("xc_epg_channel_id"):
+            existing["xc_epg_channel_id"] = item["xc_epg_channel_id"]
+        if not existing.get("tvg_id") and item.get("tvg_id"):
+            existing["tvg_id"] = item["tvg_id"]
+        if not existing.get("channel_id") and item.get("channel_id"):
+            existing["channel_id"] = item["channel_id"]
+        if not existing.get("tvg_logo") and item.get("tvg_logo"):
+            existing["tvg_logo"] = item["tvg_logo"]
+        if not existing.get("group_title") and item.get("group_title"):
+            existing["group_title"] = item["group_title"]
+        if not bool(existing.get("xc_tv_archive")) and bool(item.get("xc_tv_archive")):
+            existing["xc_tv_archive"] = True
+            existing["xc_tv_archive_duration"] = item.get("xc_tv_archive_duration")
+        elif convert_to_int(item.get("xc_tv_archive_duration"), 0) > convert_to_int(
+            existing.get("xc_tv_archive_duration"), 0
+        ):
+            existing["xc_tv_archive_duration"] = item.get("xc_tv_archive_duration")
+
+    items = list(seen_items.values())
 
     async with Session() as session:
         async with session.begin():

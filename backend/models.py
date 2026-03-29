@@ -211,6 +211,9 @@ class PlaylistStreams(Base):
     source_type = Column(String(16), index=True, unique=False, default="M3U")
     xc_stream_id = Column(Integer, index=True, unique=False)
     xc_category_id = Column(Integer, index=True, unique=False)
+    xc_epg_channel_id = Column(String(500), index=True, unique=False)
+    xc_tv_archive = Column(Boolean, nullable=False, unique=False, default=False)
+    xc_tv_archive_duration = Column(Integer, nullable=True, unique=False)
 
     # Link with a playlist
     playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=True, index=True)
@@ -651,6 +654,7 @@ class User(Base):
     tvh_sync_updated_at = Column(DateTime, nullable=True)
     dvr_access_mode = Column(String(32), nullable=False, default="none")
     dvr_retention_policy = Column(String(32), nullable=False, default="forever")
+    timeshift_enabled = Column(Boolean, nullable=False, default=False)
     vod_access_mode = Column(String(32), nullable=False, default="none")
     vod_generate_strm_files = Column(Boolean, nullable=False, default=False)
 

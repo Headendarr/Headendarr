@@ -14,7 +14,7 @@ from backend.dvr_profiles import (
     normalize_retention_policy,
     read_recording_profiles_from_settings,
 )
-from backend.models import Session, Recording, RecordingRule, Channel, EpgChannels, EpgChannelProgrammes, User
+from backend.models import Session, Recording, RecordingRule, Channel, EpgChannelProgrammes, User
 from backend.tvheadend.tvh_requests import get_tvh, get_tvh_with_credentials
 from backend.auth import audit_stream_event
 from backend.utils import convert_to_int
@@ -250,6 +250,8 @@ async def apply_recurring_rules(config):
             return
 
         for rule in rules:
+            from backend.epgs import load_preferred_epg_channel_row
+
             channel = rule.channel
             if not channel or not channel.guide_id or not channel.guide_channel_id:
                 continue
@@ -257,24 +259,19 @@ async def apply_recurring_rules(config):
             now_ts = _now_ts()
             end_ts = now_ts + (rule.lookahead_days * 86400)
 
-            epg_channel_query = await session.execute(
-                select(EpgChannels.id)
-                .where(
-                    and_(
-                        EpgChannels.epg_id == channel.guide_id,
-                        EpgChannels.channel_id == channel.guide_channel_id,
-                    )
-                )
+            epg_channel = await load_preferred_epg_channel_row(
+                session,
+                epg_id=int(channel.guide_id),
+                channel_id=str(channel.guide_channel_id),
             )
-            epg_channel_id = epg_channel_query.scalar_one_or_none()
-            if not epg_channel_id:
+            if not epg_channel:
                 continue
 
             programmes_query = await session.execute(
                 select(EpgChannelProgrammes)
                 .where(
                     and_(
-                        EpgChannelProgrammes.epg_channel_id == epg_channel_id,
+                        EpgChannelProgrammes.epg_channel_id == int(epg_channel["epg_channel_row_id"]),
                         EpgChannelProgrammes.start_timestamp <= str(end_ts),
                         EpgChannelProgrammes.stop_timestamp >= str(now_ts),
                     )

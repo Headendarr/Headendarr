@@ -40,7 +40,12 @@ from backend.security import (
     hash_session_token,
     compute_session_expiry,
 )
-from backend.users import ensure_default_admin, verify_user_password_for_login, provision_or_update_oidc_user
+from backend.users import (
+    ensure_default_admin,
+    verify_user_password_for_login,
+    provision_or_update_oidc_user,
+    user_timeshift_enabled,
+)
 
 
 def _serialize_user(user: User):
@@ -69,6 +74,7 @@ def _serialize_user(user: User):
         "last_logged_in_at": to_utc_iso(last_logged_in_at),
         "dvr_access_mode": dvr_access_mode,
         "dvr_retention_policy": user.dvr_retention_policy or "forever",
+        "timeshift_enabled": user_timeshift_enabled(user),
         "vod_access_mode": vod_access_mode,
     }
 

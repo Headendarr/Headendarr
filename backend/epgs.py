@@ -19,18 +19,24 @@ import asyncio
 import sys
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 
 from bs4 import BeautifulSoup
 from quart.utils import run_sync
 from sqlalchemy.orm import joinedload
 from sqlalchemy import and_, or_, delete, insert, select, text, func, cast, BigInteger, exists, update
+from backend import config as app_config
 from backend.dummy_epg import (
+    DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+    DUMMY_EPG_SOURCE_ID,
+    DUMMY_EPG_SOURCE_NAME,
     DUMMY_EPG_XMLTV_DAYS,
+    build_dummy_epg_channel_key,
     build_dummy_epg_programmes,
+    parse_dummy_epg_channel_key,
     sanitise_dummy_epg_interval,
     xmltv_datetime_from_timestamp,
 )
-from backend.channels import build_channel_logo_output_url, _read_channel_dummy_epg_settings
 from backend.models import db, Session, Epg, Channel, EpgChannels, EpgChannelProgrammes, EpgProgrammeMetadataCache
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.utils import as_naive_utc, parse_entity_id
@@ -123,6 +129,160 @@ EPG_UPDATE_SCHEDULE_SECONDS = {
     "14d": 1209600,
     "off": None,
 }
+
+
+def _programme_stop_ts_expr():
+    return cast(func.nullif(EpgChannelProgrammes.stop_timestamp, ""), BigInteger)
+
+
+def _preferred_epg_row_sort_key(row):
+    total_programmes = int(getattr(row, "total_programmes", 0) or 0)
+    max_stop_ts = getattr(row, "max_stop_ts", None)
+    max_stop_ts = int(max_stop_ts) if max_stop_ts is not None else -1
+    row_id = int(getattr(row, "epg_channel_row_id", 0) or 0)
+    return (total_programmes, max_stop_ts, row_id)
+
+
+def pick_best_epg_channel_row(rows):
+    best_row = None
+    for row in rows or []:
+        if best_row is None or _preferred_epg_row_sort_key(row) > _preferred_epg_row_sort_key(best_row):
+            best_row = row
+    return best_row
+
+
+async def load_preferred_epg_channel_rows(
+    session,
+    *,
+    epg_ids: Sequence[int] | None = None,
+    channel_ids: Sequence[str] | None = None,
+    enabled_only: bool = False,
+):
+    stop_ts_expr = _programme_stop_ts_expr()
+
+    query = (
+        select(
+            EpgChannels.id.label("epg_channel_row_id"),
+            EpgChannels.epg_id.label("epg_id"),
+            EpgChannels.channel_id.label("channel_id"),
+            EpgChannels.name.label("name"),
+            EpgChannels.icon_url.label("icon_url"),
+            Epg.name.label("epg_name"),
+            func.count(EpgChannelProgrammes.id).label("total_programmes"),
+            func.max(stop_ts_expr).label("max_stop_ts"),
+        )
+        .join(Epg, Epg.id == EpgChannels.epg_id)
+        .outerjoin(EpgChannelProgrammes, EpgChannelProgrammes.epg_channel_id == EpgChannels.id)
+        .group_by(
+            EpgChannels.id,
+            EpgChannels.epg_id,
+            EpgChannels.channel_id,
+            EpgChannels.name,
+            EpgChannels.icon_url,
+            Epg.name,
+        )
+    )
+    if enabled_only:
+        query = query.where(Epg.enabled.is_(True))
+    if epg_ids:
+        query = query.where(EpgChannels.epg_id.in_([int(epg_id) for epg_id in epg_ids]))
+    if channel_ids:
+        query = query.where(EpgChannels.channel_id.in_([str(channel_id) for channel_id in channel_ids]))
+
+    result = await session.execute(query)
+    best_rows = {}
+    for row in result.all():
+        key = (int(row.epg_id), str(row.channel_id or ""))
+        existing = best_rows.get(key)
+        if existing is None or _preferred_epg_row_sort_key(row) > _preferred_epg_row_sort_key(existing):
+            best_rows[key] = row
+
+    return [
+        {
+            "epg_channel_row_id": int(row.epg_channel_row_id),
+            "epg_id": int(row.epg_id),
+            "channel_id": str(row.channel_id or ""),
+            "name": row.name or "",
+            "icon_url": row.icon_url or "",
+            "epg_name": row.epg_name or "",
+            "total_programmes": int(row.total_programmes or 0),
+            "max_stop_ts": int(row.max_stop_ts) if row.max_stop_ts is not None else None,
+        }
+        for row in best_rows.values()
+    ]
+
+
+async def load_preferred_epg_channel_row(
+    session,
+    *,
+    epg_id: int,
+    channel_id: str,
+    enabled_only: bool = False,
+):
+    rows = await load_preferred_epg_channel_rows(
+        session,
+        epg_ids=[int(epg_id)],
+        channel_ids=[str(channel_id)],
+        enabled_only=enabled_only,
+    )
+    return rows[0] if rows else None
+
+
+def _dummy_epg_state_path(config_override=None):
+    config_root = getattr(config_override, "config_path", None) or app_config.config_path
+    return os.path.join(config_root, "cache", "channel_dummy_epg.json")
+
+
+def _read_dummy_epg_state(config_override=None):
+    try:
+        path = _dummy_epg_state_path(config_override)
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    channels_payload = payload.get("channels", {}) if isinstance(payload, dict) else {}
+    return channels_payload if isinstance(channels_payload, dict) else {}
+
+
+def read_channel_dummy_epg_settings(channel_id, config_override=None):
+    state = _read_dummy_epg_state(config_override)
+    entry = state.get(str(channel_id))
+    if not isinstance(entry, dict):
+        return None
+    interval_minutes = sanitise_dummy_epg_interval(
+        entry.get("interval_minutes"),
+        default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
+    )
+    return {
+        "interval_minutes": interval_minutes,
+        "channel_key": build_dummy_epg_channel_key(interval_minutes),
+    }
+
+
+def _logo_cache_token(source_logo_url: str) -> str:
+    return hashlib.sha1((source_logo_url or "").encode("utf-8")).hexdigest()[:12]
+
+
+def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
+    base = (base_url or "").rstrip("/")
+    token = _logo_cache_token(source_logo_url)
+    return f"{base}/tic-api/channels/{channel_id}/logo/{token}.png"
+
+
+def cache_channel_logos_enabled(config) -> bool:
+    settings = config.read_settings() if config else {}
+    return bool((settings.get("settings") or {}).get("cache_channel_logos", True))
+
+
+def build_channel_logo_output_url(config, channel_id, base_url, source_logo_url=""):
+    source_logo = str(source_logo_url or "").strip()
+    if not source_logo:
+        return ""
+    if not cache_channel_logos_enabled(config):
+        return source_logo
+    return build_channel_logo_proxy_url(channel_id, base_url, source_logo)
 
 
 def _parsed_epg_update_schedule(value):
@@ -1598,7 +1758,7 @@ async def build_custom_epg(config, throttle=False):
                 "guide_offset_minutes": int(getattr(result, "guide_offset_minutes", 0) or 0),
                 "source_key": (result.guide_id, result.guide_channel_id),
                 "dummy_interval_minutes": (
-                    (_read_channel_dummy_epg_settings(result.id, config) or {}).get("interval_minutes")
+                    (read_channel_dummy_epg_settings(result.id, config) or {}).get("interval_minutes")
                 ),
                 "channel_type": str(getattr(result, "channel_type", "standard") or "standard"),
                 "channel_row_id": int(result.id),

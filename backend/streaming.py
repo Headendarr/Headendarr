@@ -23,7 +23,7 @@ def _is_hls_source_url(url: str) -> bool:
     return (parsed.path or "").lower().endswith(".m3u8")
 
 
-def _coerce_custom_proxy_template_for_stream_endpoint(template: str) -> str:
+def _force_custom_proxy_template_for_stream_endpoint(template: str) -> str:
     """
     Prefer custom proxy stream endpoints when the configured template is
     playlist-shaped.
@@ -35,6 +35,27 @@ def _coerce_custom_proxy_template_for_stream_endpoint(template: str) -> str:
     if "/proxy.m3u8?url=[URL]" in template:
         return template.replace("/proxy.m3u8?url=[URL]", "/stream/[B64_URL]")
     return template
+
+
+def _force_custom_proxy_template_for_segment_endpoint(template: str) -> str:
+    if "[B64_URL].m3u8" in template:
+        return template.replace("[B64_URL].m3u8", "[B64_URL].ts")
+    if "[URL].m3u8" in template:
+        return template.replace("[URL].m3u8", "[B64_URL].ts")
+    if "/proxy.m3u8?url=[URL]" in template:
+        return template.replace("/proxy.m3u8?url=[URL]", "/[B64_URL].ts")
+    if "/stream/[B64_URL]" in template:
+        return template.replace("/stream/[B64_URL]", "/[B64_URL].ts")
+    if "/stream/[URL]" in template:
+        return template.replace("/stream/[URL]", "/[B64_URL].ts")
+    return template
+
+
+def _append_query_params(url: str, items: list[tuple[str, str]]) -> str:
+    parsed = urlparse(url)
+    query_items = list(parse_qsl(parsed.query, keep_blank_values=True))
+    query_items.extend(items)
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
 
 
 def append_stream_key(url: str, stream_key: str = None, username: str = None) -> str:
@@ -95,6 +116,8 @@ def build_local_hls_proxy_url(
     ffmpeg: bool = False,
     prebuffer: str | None = None,
     headers: dict | None = None,
+    prefer_stream_endpoint: bool = True,
+    direct: bool = False,
 ) -> str:
     parsed = urlparse(source_url)
     is_hls = (parsed.path or "").lower().endswith(".m3u8")
@@ -104,8 +127,10 @@ def build_local_hls_proxy_url(
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
     elif is_hls:
         url = f"{base}/tic-hls-proxy/{instance_id}/{encoded_url}.m3u8"
-    else:
+    elif prefer_stream_endpoint:
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
+    else:
+        url = f"{base}/tic-hls-proxy/{instance_id}/{encoded_url}.ts"
 
     # Build query parameters
     query_items = []
@@ -113,6 +138,8 @@ def build_local_hls_proxy_url(
         query_items.append(("ffmpeg", "true"))
     if prebuffer:
         query_items.append(("prebuffer", prebuffer))
+    if direct:
+        query_items.append(("direct", "1"))
     encoded_headers = encode_headers_query_param(headers)
     if encoded_headers:
         query_items.append(("h", encoded_headers))
@@ -128,14 +155,22 @@ def build_custom_hls_proxy_url(
     source_url: str,
     hls_proxy_path: str | None,
     ffmpeg: bool = False,
+    prefer_stream_endpoint: bool = True,
+    direct: bool = False,
 ) -> str:
     if not hls_proxy_path:
         return source_url
     template = hls_proxy_path
     if ffmpeg or not _is_hls_source_url(source_url):
-        template = _coerce_custom_proxy_template_for_stream_endpoint(template)
+        if prefer_stream_endpoint:
+            template = _force_custom_proxy_template_for_stream_endpoint(template)
+        else:
+            template = _force_custom_proxy_template_for_segment_endpoint(template)
     encoded_url = base64.urlsafe_b64encode(source_url.encode("utf-8")).decode("utf-8")
-    return template.replace("[URL]", source_url).replace("[B64_URL]", encoded_url)
+    built_url = template.replace("[URL]", source_url).replace("[B64_URL]", encoded_url)
+    if direct:
+        built_url = _append_query_params(built_url, [("direct", "1")])
+    return built_url
 
 
 def build_configured_hls_proxy_url(
@@ -151,6 +186,8 @@ def build_configured_hls_proxy_url(
     ffmpeg: bool = False,
     prebuffer: str | None = None,
     headers: dict | None = None,
+    prefer_stream_endpoint: bool = True,
+    direct: bool = False,
 ) -> str:
     if not use_hls_proxy and not use_custom_hls_proxy:
         return source_url
@@ -161,6 +198,8 @@ def build_configured_hls_proxy_url(
             source_url,
             custom_hls_proxy_path,
             ffmpeg=ffmpeg,
+            prefer_stream_endpoint=prefer_stream_endpoint,
+            direct=direct,
         )
 
     if use_hls_proxy and base_url and instance_id:
@@ -174,6 +213,8 @@ def build_configured_hls_proxy_url(
                 ffmpeg=ffmpeg,
                 prebuffer=prebuffer,
                 headers=headers,
+                prefer_stream_endpoint=prefer_stream_endpoint,
+                direct=direct,
             )
         if not use_custom_hls_proxy or not custom_url:
             return build_local_hls_proxy_url(
@@ -185,6 +226,8 @@ def build_configured_hls_proxy_url(
                 ffmpeg=ffmpeg,
                 prebuffer=prebuffer,
                 headers=headers,
+                prefer_stream_endpoint=prefer_stream_endpoint,
+                direct=direct,
             )
 
     if use_custom_hls_proxy and custom_url:

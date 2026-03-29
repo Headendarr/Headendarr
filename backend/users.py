@@ -23,6 +23,14 @@ def user_has_admin_role(user: User | None) -> bool:
     return any((role.name == "admin") for role in user.roles)
 
 
+def user_timeshift_enabled(user: User | None) -> bool:
+    if not user:
+        return False
+    if user_has_admin_role(user):
+        return True
+    return bool(getattr(user, "timeshift_enabled", False))
+
+
 async def ensure_roles(session):
     existing = await session.execute(select(Role))
     roles = {role.name: role for role in existing.scalars().all()}
@@ -50,6 +58,7 @@ async def ensure_default_admin(config):
                 is_active=True,
                 streaming_key=stream_key,
                 streaming_key_created_at=utc_now_naive(),
+                timeshift_enabled=True,
             )
             admin_user.roles.append(roles["admin"])
             session.add(admin_user)
@@ -89,6 +98,7 @@ async def create_user(username: str, password: str, role_names=None):
                 streaming_key_created_at=utc_now_naive(),
                 dvr_access_mode="none",
                 dvr_retention_policy="forever",
+                timeshift_enabled=False,
                 vod_access_mode="none",
                 vod_generate_strm_files=False,
             )
@@ -102,6 +112,7 @@ async def create_user(username: str, password: str, role_names=None):
                 # Admin users always have full DVR visibility semantics.
                 user.dvr_access_mode = "read_all_write_own"
                 user.vod_access_mode = "movies_series"
+                user.timeshift_enabled = True
             session.add(user)
         return user, stream_key
 
@@ -124,6 +135,7 @@ async def update_user_roles(user_id: int, role_names):
             if user_has_admin_role(user):
                 user.dvr_access_mode = "read_all_write_own"
                 user.vod_access_mode = "movies_series"
+                user.timeshift_enabled = True
             session.add(user)
             return user
 
@@ -142,6 +154,7 @@ async def update_user_dvr_settings(
     user_id: int,
     dvr_access_mode: str | None = None,
     dvr_retention_policy: str | None = None,
+    timeshift_enabled: bool | None = None,
 ):
     async with Session() as session:
         async with session.begin():
@@ -152,12 +165,15 @@ async def update_user_dvr_settings(
             if user_has_admin_role(user):
                 # Keep admin DVR access fixed and non-configurable.
                 user.dvr_access_mode = "read_all_write_own"
+                user.timeshift_enabled = True
                 session.add(user)
                 return user
             if dvr_access_mode is not None:
                 user.dvr_access_mode = clean_dvr_access_mode(dvr_access_mode)
             if dvr_retention_policy is not None:
                 user.dvr_retention_policy = normalize_retention_policy(dvr_retention_policy)
+            if timeshift_enabled is not None:
+                user.timeshift_enabled = bool(timeshift_enabled)
             session.add(user)
             return user
 

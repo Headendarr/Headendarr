@@ -7,11 +7,13 @@ import time
 import uuid
 from urllib.parse import urlencode, urlparse
 
+import aiohttp
 from quart import Response, current_app, redirect, request, stream_with_context
 from backend.api import blueprint
-from backend.auth import audit_stream_event, is_tvh_backend_stream_user, skip_stream_connect_audit, stream_key_required
+from backend.auth import skip_stream_connect_audit, stream_key_required
 from backend.hls_multiplexer import (
     handle_m3u8_proxy,
+    open_segment_passthrough,
     handle_segment_proxy,
     handle_multiplexed_stream,
     b64_urlsafe_decode,
@@ -31,6 +33,7 @@ from backend.http_headers import decode_headers_query_param, merge_headers
 from backend.stream_activity import (
     cleanup_stream_activity,
     enrich_stream_activity_metadata,
+    touch_stream_activity,
     upsert_stream_activity,
 )
 from backend.url_resolver import get_request_base_url, get_request_origin
@@ -70,6 +73,11 @@ def _validate_instance_id(instance_id):
 proxy_logger = logging.getLogger("proxy")
 ffmpeg_logger = logging.getLogger("ffmpeg")
 buffer_logger = logging.getLogger("buffer")
+
+
+def _query_flag_enabled(name: str) -> bool:
+    value = str(request.args.get(name, "") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 async def cleanup_hls_proxy_state():
@@ -119,11 +127,28 @@ def _build_upstream_headers(configured_headers=None):
         src = request.headers
     except Exception:
         return merge_headers(preferred=configured_headers, fallback=headers)
-    for name in ("User-Agent", "Referer", "Origin", "Accept", "Accept-Language"):
+    for name in ("User-Agent", "Referer", "Origin", "Accept", "Accept-Language", "Range", "If-Range"):
         value = src.get(name)
         if value:
             headers[name] = value
     return merge_headers(preferred=configured_headers, fallback=headers)
+
+
+def _apply_passthrough_headers(response, upstream_headers):
+    allowed = (
+        "Accept-Ranges",
+        "Cache-Control",
+        "Content-Length",
+        "Content-Range",
+        "Content-Type",
+        "ETag",
+        "Last-Modified",
+    )
+    for name in allowed:
+        value = upstream_headers.get(name)
+        if value:
+            response.headers[name] = value
+    return response
 
 
 def _build_proxy_base_url(instance_id=None):
@@ -303,6 +328,8 @@ async def proxy_ts(instance_id, encoded_url):
     Parameters:
     - ffmpeg=true: (Optional) Fallback to FFmpeg remuxer for better compatibility.
     - prebuffer=X: (Optional) Buffer size cushion (e.g. 2M, 512K). Default: 1M.
+    - direct=1: (Optional) Stream the upstream .ts response through directly.
+      This bypasses the live multiplexer and is intended for seekable archive/timeshift streams.
     """
     invalid = _validate_instance_id(instance_id)
     if invalid:
@@ -310,9 +337,58 @@ async def proxy_ts(instance_id, encoded_url):
     # Decode the Base64 encoded URL
     decoded_url = b64_urlsafe_decode(encoded_url)
     await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    headers = _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query())
+
+    # Direct proxy routing
+    if _query_flag_enabled("direct"):
+        proxy_logger.warning(
+            "proxy_ts direct passthrough request decoded_url=%s method=%s", decoded_url, request.method
+        )
+        try:
+            session, upstream_response = await open_segment_passthrough(
+                decoded_url,
+                headers,
+                method=request.method,
+            )
+        except aiohttp.ClientError:
+            return Response("Failed to fetch.", status=502)
+        except asyncio.TimeoutError:
+            return Response("Failed to fetch.", status=504)
+
+        if upstream_response.status >= 400:
+            status = upstream_response.status
+            proxy_logger.warning(
+                "proxy_ts direct passthrough upstream status=%s decoded_url=%s final_url=%s",
+                status,
+                decoded_url,
+                getattr(upstream_response, "url", decoded_url),
+            )
+            upstream_response.release()
+            await session.close()
+            return Response("Failed to fetch.", status=status)
+
+        if request.method == "HEAD":
+            response = Response(status=upstream_response.status)
+            _apply_passthrough_headers(response, upstream_response.headers)
+            upstream_response.release()
+            await session.close()
+            return response
+
+        @stream_with_context
+        async def generate_direct():
+            try:
+                async for chunk in upstream_response.content.iter_chunked(64 * 1024):
+                    yield chunk
+            finally:
+                upstream_response.release()
+                await session.close()
+
+        response = Response(generate_direct(), status=upstream_response.status)
+        _apply_passthrough_headers(response, upstream_response.headers)
+        return response
 
     # Multiplexer routing
-    if request.args.get("ffmpeg", "false").lower() == "true" or request.args.get("prebuffer"):
+    if _query_flag_enabled("ffmpeg") or request.args.get("prebuffer"):
         target = f"{hls_proxy_prefix.rstrip('/')}/{instance_id}/stream/{encoded_url}"
         if request.query_string:
             target = f"{target}?{request.query_string.decode()}"
@@ -320,7 +396,7 @@ async def proxy_ts(instance_id, encoded_url):
 
     content, status, content_type = await handle_segment_proxy(
         decoded_url,
-        _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query()),
+        headers,
         hls_segment_cache,
         headers_query_token=request.args.get("h"),
     )
@@ -393,7 +469,7 @@ async def stream_ts(instance_id, encoded_url):
     connection_id = _get_connection_id(default_new=True)
     await upsert_stream_activity(decoded_url, connection_id=connection_id)
 
-    use_ffmpeg = request.args.get("ffmpeg", "false").lower() == "true"
+    use_ffmpeg = _query_flag_enabled("ffmpeg")
     prebuffer_bytes = parse_size(
         request.args.get("prebuffer"),
         default=hls_proxy_default_prebuffer,
@@ -409,12 +485,14 @@ async def stream_ts(instance_id, encoded_url):
         headers_query_token=request.args.get("h"),
     )
 
-    if not is_tvh_backend_stream_user(getattr(request, "_stream_user", None)):
-        await audit_stream_event(request._stream_user, "hls_stream_connect", request.path)
-
     @stream_with_context
     async def generate_stream():
+        last_touch_ts = time.time()
         async for chunk in generator:
+            now = time.time()
+            if (now - last_touch_ts) >= 5.0:
+                await touch_stream_activity(connection_id, identity=decoded_url)
+                last_touch_ts = now
             yield chunk
 
     response = Response(generate_stream(), content_type="video/mp2t")

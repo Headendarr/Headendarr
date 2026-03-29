@@ -17,7 +17,7 @@ from urllib.parse import urlparse, urlunparse
 import aiofiles
 import aiohttp
 import requests
-from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, tuple_, update
+from sqlalchemy import BigInteger, and_, cast, delete, func, or_, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend import config as app_config
@@ -28,6 +28,12 @@ from backend.dummy_epg import (
     build_dummy_epg_channel_key,
     parse_dummy_epg_channel_key,
     sanitise_dummy_epg_interval,
+)
+from backend.epgs import (
+    build_channel_logo_output_url,
+    load_preferred_epg_channel_rows,
+    pick_best_epg_channel_row,
+    read_channel_dummy_epg_settings,
 )
 from backend.ffmpeg import generate_iptv_url
 from backend.http_headers import parse_headers_json, sanitise_headers
@@ -339,21 +345,6 @@ def _write_dummy_epg_state(state, config_override=None):
     )
 
 
-def _read_channel_dummy_epg_settings(channel_id, config_override=None):
-    state = _read_dummy_epg_state(config_override)
-    entry = state.get(str(channel_id))
-    if not isinstance(entry, dict):
-        return None
-    interval_minutes = sanitise_dummy_epg_interval(
-        entry.get("interval_minutes"),
-        default=DUMMY_EPG_DEFAULT_INTERVAL_MINUTES,
-    )
-    return {
-        "interval_minutes": interval_minutes,
-        "channel_key": build_dummy_epg_channel_key(interval_minutes),
-    }
-
-
 def _set_channel_dummy_epg_settings(channel_id, interval_minutes, config_override=None):
     state = _read_dummy_epg_state(config_override)
     if interval_minutes is None:
@@ -451,30 +442,6 @@ def _build_channel_sync_signature(channels, tic_base_url):
         for row in source_rows:
             digest.update(("src:" + "|".join(row)).encode("utf-8"))
     return digest.hexdigest()
-
-
-def _logo_cache_token(source_logo_url: str) -> str:
-    return hashlib.sha1((source_logo_url or "").encode("utf-8")).hexdigest()[:12]
-
-
-def build_channel_logo_proxy_url(channel_id, base_url, source_logo_url=""):
-    base = (base_url or "").rstrip("/")
-    token = _logo_cache_token(source_logo_url)
-    return f"{base}/tic-api/channels/{channel_id}/logo/{token}.png"
-
-
-def cache_channel_logos_enabled(config) -> bool:
-    settings = config.read_settings() if config else {}
-    return bool((settings.get("settings") or {}).get("cache_channel_logos", True))
-
-
-def build_channel_logo_output_url(config, channel_id, base_url, source_logo_url=""):
-    source_logo = str(source_logo_url or "").strip()
-    if not source_logo:
-        return ""
-    if not cache_channel_logos_enabled(config):
-        return source_logo
-    return build_channel_logo_proxy_url(channel_id, base_url, source_logo)
 
 
 _EPG_NAME_QUALITY_TOKENS = {"hd", "fhd", "uhd", "sd", "4k"}
@@ -683,27 +650,7 @@ async def build_bulk_epg_match_preview(
         channels = channels_result.scalars().unique().all()
 
         # Load enabled EPG channels once and perform matching in memory.
-        epg_rows_result = await session.execute(
-            select(
-                EpgChannels.id.label("epg_channel_row_id"),
-                EpgChannels.epg_id.label("epg_id"),
-                Epg.name.label("epg_name"),
-                EpgChannels.channel_id.label("channel_id"),
-                EpgChannels.name.label("name"),
-            )
-            .join(Epg, Epg.id == EpgChannels.epg_id)
-            .where(Epg.enabled.is_(True))
-        )
-        epg_rows = [
-            {
-                "epg_channel_row_id": int(row.epg_channel_row_id),
-                "epg_id": int(row.epg_id),
-                "epg_name": row.epg_name,
-                "channel_id": row.channel_id or "",
-                "name": row.name or "",
-            }
-            for row in epg_rows_result.all()
-        ]
+        epg_rows = await load_preferred_epg_channel_rows(session, enabled_only=True)
 
         stream_match_sources = []
         for channel in channels:
@@ -1070,20 +1017,15 @@ async def apply_bulk_epg_matches(*, updates):
 
             epg_lookup = {}
             if epg_keys:
-                epg_rows = await session.execute(
-                    select(
-                        EpgChannels.epg_id.label("epg_id"),
-                        EpgChannels.channel_id.label("channel_id"),
-                        Epg.name.label("epg_name"),
-                        EpgChannels.icon_url.label("icon_url"),
-                    )
-                    .join(Epg, Epg.id == EpgChannels.epg_id)
-                    .where(tuple_(EpgChannels.epg_id, EpgChannels.channel_id).in_(epg_keys))
+                preferred_rows = await load_preferred_epg_channel_rows(
+                    session,
+                    epg_ids=[epg_id for epg_id, _ in epg_keys],
+                    channel_ids=[channel_id for _, channel_id in epg_keys],
                 )
-                for row in epg_rows.all():
-                    epg_lookup[(int(row.epg_id), str(row.channel_id))] = {
-                        "epg_name": row.epg_name,
-                        "icon_url": row.icon_url,
+                for row in preferred_rows:
+                    epg_lookup[(int(row["epg_id"]), str(row["channel_id"]))] = {
+                        "epg_name": row["epg_name"],
+                        "icon_url": row["icon_url"],
                     }
 
             for row in normalized_updates:
@@ -1312,7 +1254,7 @@ async def read_config_all_channels(
 async def read_config_one_channel(channel_id):
     return_item = {}
     channel_id = parse_entity_id(channel_id, "channel")
-    dummy_settings = _read_channel_dummy_epg_settings(channel_id)
+    dummy_settings = read_channel_dummy_epg_settings(channel_id)
     async with Session() as session:
         result_query = await session.execute(
             select(Channel)
@@ -1657,7 +1599,7 @@ async def update_channels_order(config, data):
 async def update_channel(config, channel_id, data):
     settings = config.read_settings()
     instance_id = config.ensure_instance_id()
-    dummy_epg_settings_existing = _read_channel_dummy_epg_settings(channel_id, config)
+    dummy_epg_settings_existing = read_channel_dummy_epg_settings(channel_id, config)
     dummy_epg_interval_to_persist = (
         dummy_epg_settings_existing.get("interval_minutes") if dummy_epg_settings_existing else None
     )
@@ -2212,15 +2154,17 @@ async def add_bulk_channels(config, data):
 
         # Find the best match for an EPG
         async with Session() as session:
-            epg_query = await session.execute(
-                select(EpgChannels).where(EpgChannels.channel_id == playlist_stream.tvg_id)
+            epg_rows = await load_preferred_epg_channel_rows(
+                session,
+                channel_ids=[str(playlist_stream.tvg_id or "")],
+                enabled_only=True,
             )
-            epg_match = epg_query.scalars().first()
+            epg_match = pick_best_epg_channel_row(epg_rows)
         if epg_match is not None:
             new_channel_data["guide"] = {
-                "channel_id": epg_match.channel_id,
-                "epg_id": epg_match.epg_id,
-                "epg_name": epg_match.name,
+                "channel_id": epg_match["channel_id"],
+                "epg_id": epg_match["epg_id"],
+                "epg_name": epg_match["epg_name"],
             }
         # Apply the stream to the channel
         new_channel_data["sources"].append(
@@ -3356,15 +3300,17 @@ async def add_channels_from_groups(config, groups):
 
                 # Find the best match for an EPG
                 async with Session() as session:
-                    epg_query = await session.execute(
-                        select(EpgChannels).where(EpgChannels.channel_id == stream.tvg_id)
+                    epg_rows = await load_preferred_epg_channel_rows(
+                        session,
+                        channel_ids=[str(stream.tvg_id or "")],
+                        enabled_only=True,
                     )
-                    epg_match = epg_query.scalars().first()
+                    epg_match = pick_best_epg_channel_row(epg_rows)
                 if epg_match is not None:
                     new_channel_data["guide"] = {
-                        "channel_id": epg_match.channel_id,
-                        "epg_id": epg_match.epg_id,
-                        "epg_name": epg_match.name,
+                        "channel_id": epg_match["channel_id"],
+                        "epg_id": epg_match["epg_id"],
+                        "epg_name": epg_match["epg_name"],
                     }
 
                 # Get the playlist info
