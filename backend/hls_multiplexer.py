@@ -575,7 +575,11 @@ def infer_extension(url_value):
 
 
 def generate_proxy_url(base_url, encoded_url, extension, params=None):
-    url = f"{base_url.rstrip('/')}/{encoded_url}.{extension}"
+    direct_enabled = str((params or {}).get("direct") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if direct_enabled and extension == "ts":
+        url = f"{base_url.rstrip('/')}/direct/{encoded_url}"
+    else:
+        url = f"{base_url.rstrip('/')}/{encoded_url}.{extension}"
     if params:
         url = f"{url}?{urlencode(params)}"
     return url
@@ -892,6 +896,9 @@ async def open_segment_passthrough(decoded_url, headers, method="GET"):
     request_headers = dict(headers or {})
     try:
         response = await session.request(method, request_url, headers=request_headers, allow_redirects=True)
+        if response.status >= 400 and method.upper() == "HEAD":
+            response.release()
+            response = await session.request("GET", request_url, headers=request_headers, allow_redirects=True)
         if response.status == 404 and method.upper() == "GET" and "Range" not in request_headers:
             response.release()
             request_headers["Range"] = "bytes=0-"

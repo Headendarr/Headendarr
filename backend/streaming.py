@@ -51,6 +51,24 @@ def _force_custom_proxy_template_for_segment_endpoint(template: str) -> str:
     return template
 
 
+def _force_custom_proxy_template_for_direct_endpoint(template: str) -> str:
+    if "[B64_URL].m3u8" in template:
+        return template.replace("[B64_URL].m3u8", "direct/[B64_URL]")
+    if "[URL].m3u8" in template:
+        return template.replace("[URL].m3u8", "direct/[B64_URL]")
+    if "/proxy.m3u8?url=[URL]" in template:
+        return template.replace("/proxy.m3u8?url=[URL]", "/direct/[B64_URL]")
+    if "/stream/[B64_URL]" in template:
+        return template.replace("/stream/[B64_URL]", "/direct/[B64_URL]")
+    if "/stream/[URL]" in template:
+        return template.replace("/stream/[URL]", "/direct/[B64_URL]")
+    if "[B64_URL].ts" in template:
+        return template.replace("[B64_URL].ts", "direct/[B64_URL]")
+    if "[URL].ts" in template:
+        return template.replace("[URL].ts", "direct/[B64_URL]")
+    return template
+
+
 def _append_query_params(url: str, items: list[tuple[str, str]]) -> str:
     parsed = urlparse(url)
     query_items = list(parse_qsl(parsed.query, keep_blank_values=True))
@@ -127,6 +145,8 @@ def build_local_hls_proxy_url(
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
     elif is_hls:
         url = f"{base}/tic-hls-proxy/{instance_id}/{encoded_url}.m3u8"
+    elif direct:
+        url = f"{base}/tic-hls-proxy/{instance_id}/direct/{encoded_url}"
     elif prefer_stream_endpoint:
         url = f"{base}/tic-hls-proxy/{instance_id}/stream/{encoded_url}"
     else:
@@ -162,7 +182,9 @@ def build_custom_hls_proxy_url(
         return source_url
     template = hls_proxy_path
     if ffmpeg or not _is_hls_source_url(source_url):
-        if prefer_stream_endpoint:
+        if direct:
+            template = _force_custom_proxy_template_for_direct_endpoint(template)
+        elif prefer_stream_endpoint:
             template = _force_custom_proxy_template_for_stream_endpoint(template)
         else:
             template = _force_custom_proxy_template_for_segment_endpoint(template)

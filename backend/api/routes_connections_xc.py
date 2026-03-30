@@ -2,13 +2,10 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
-import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from typing import Any, Dict, List, Tuple
 
-import aiohttp
 from quart import Response, current_app, jsonify, redirect, request
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
@@ -36,13 +33,11 @@ from backend.cso import (
 )
 from backend.playlists import (
     XC_ACCOUNT_TYPE,
-    _resolve_source_request_headers,
     build_m3u_playlist_content,
     read_config_all_playlists,
 )
-from backend.hls_multiplexer import open_segment_passthrough
-from backend.streaming import build_configured_hls_proxy_url
-from backend.stream_activity import stop_stream_activity, touch_stream_activity, upsert_stream_activity
+from backend.xc.cache import xc_cache
+from backend.stream_activity import upsert_stream_activity
 from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username, user_timeshift_enabled
 from backend.utils import convert_to_int
@@ -61,28 +56,19 @@ from backend.vod import (
     user_can_access_vod_kind,
 )
 from backend.xc_hosts import first_xc_host
+from backend.xc.timeshift import (
+    XC_TIMESHIFT_DATETIME_FORMATS,
+    build_xc_timeshift_proxy_url,
+    build_xc_timeshift_request_headers,
+    detect_xc_timeshift_datetime_format,
+    fetch_and_rewrite_xc_timeshift_manifest,
+    parse_timeshift_timestring_with_format,
+    parse_xc_stream_reference,
+    persist_xc_timeshift_datetime_format,
+    stream_xc_timeshift_response,
+    xc_timeshift_output_extension,
+)
 
-
-class _TTLCache:
-    def __init__(self):
-        self._store: Dict[str, Tuple[float, Any]] = {}
-
-    def get(self, key: str):
-        entry = self._store.get(key)
-        if not entry:
-            return None
-        expires_at, value = entry
-        if expires_at and expires_at < time.time():
-            self._store.pop(key, None)
-            return None
-        return value
-
-    def set(self, key: str, value: Any, ttl_seconds: int = 30):
-        expires_at = time.time() + ttl_seconds if ttl_seconds else None
-        self._store[key] = (expires_at, value)
-
-
-_xc_cache = _TTLCache()
 _XC_ALLOWED_PROFILES = {"default", "mpegts", "h264-aac-mpegts"}
 
 
@@ -158,11 +144,11 @@ async def _get_enabled_channels() -> List[Dict[str, Any]]:
 
 
 async def _get_channel_map() -> Dict[str, Dict[str, Any]]:
-    cached = _xc_cache.get("xc_channel_map")
+    cached = xc_cache.get("xc_channel_map")
     if cached:
         return cached
     channel_map = {str(ch["id"]): ch for ch in await _get_enabled_channels()}
-    _xc_cache.set("xc_channel_map", channel_map, ttl_seconds=30)
+    xc_cache.set("xc_channel_map", channel_map, ttl_seconds=30)
     return channel_map
 
 
@@ -179,316 +165,6 @@ def _format_xc_epg_datetime(timestamp_value: str | int | None) -> str:
     if timestamp_int is None:
         return ""
     return datetime.fromtimestamp(timestamp_int, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def parse_timeshift_timestring(value: str | None) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    formats = (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d:%H-%M:%S",
-        "%Y-%m-%d:%H-%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-    )
-    for candidate_format in formats:
-        try:
-            return datetime.strptime(text, candidate_format)
-        except ValueError:
-            continue
-    return None
-
-
-def _xc_parse_stream_reference(raw_stream: str | None, raw_ext: str | None = None) -> tuple[str, str | None]:
-    stream_text = str(raw_stream or "").strip()
-    ext_text = str(raw_ext or "").strip().lower().lstrip(".") or None
-    if not stream_text:
-        return "", ext_text
-    if "." not in stream_text:
-        return stream_text, ext_text
-    stream_id, suffix = stream_text.rsplit(".", 1)
-    suffix = str(suffix or "").strip().lower().lstrip(".") or None
-    if stream_id.isdigit() and suffix:
-        return stream_id, ext_text or suffix
-    return stream_text, ext_text
-
-
-def _xc_timeshift_output_extension(requested_ext: str | None, stream_id: str) -> str | None:
-    ext_text = str(requested_ext or "").strip().lower().lstrip(".") or "ts"
-    if ext_text not in {"ts", "m3u8"}:
-        current_app.logger.warning(
-            "XC timeshift requested unsupported extension '%s' for stream_id=%s; rejecting request",
-            ext_text,
-            stream_id,
-        )
-        return None
-    return ext_text
-
-
-def _build_xc_timeshift_proxy_url(
-    playlist,
-    upstream_url: str,
-    base_url: str,
-    instance_id: str,
-    stream_key: str,
-    username: str,
-    headers: dict[str, str],
-    force_internal_hls_proxy: bool,
-    prefer_stream_endpoint: bool = True,
-) -> str:
-    use_ffmpeg = bool(getattr(playlist, "hls_proxy_use_ffmpeg", False))
-    prebuffer = getattr(playlist, "hls_proxy_prebuffer", "1M")
-    direct = False
-    if not prefer_stream_endpoint:
-        use_ffmpeg = False
-        prebuffer = None
-        direct = True
-
-    return build_configured_hls_proxy_url(
-        upstream_url,
-        base_url=base_url,
-        instance_id=instance_id,
-        stream_key=stream_key,
-        username=username,
-        use_hls_proxy=force_internal_hls_proxy or bool(getattr(playlist, "use_hls_proxy", False)),
-        use_custom_hls_proxy=bool(getattr(playlist, "use_custom_hls_proxy", False)),
-        custom_hls_proxy_path=getattr(playlist, "hls_proxy_path", None),
-        chain_custom_hls_proxy=bool(getattr(playlist, "chain_custom_hls_proxy", False)),
-        ffmpeg=use_ffmpeg,
-        prebuffer=prebuffer,
-        headers=headers,
-        prefer_stream_endpoint=prefer_stream_endpoint,
-        direct=direct,
-    )
-
-
-def _build_xc_timeshift_source_url(
-    playlist,
-    target_url: str,
-    base_url: str,
-    instance_id: str,
-    stream_key: str,
-    username: str,
-    headers: dict[str, str],
-    connection_id: str | None = None,
-) -> str:
-    source_url = _build_xc_timeshift_proxy_url(
-        playlist,
-        target_url,
-        base_url,
-        instance_id,
-        stream_key,
-        username,
-        headers,
-        force_internal_hls_proxy=False,
-    )
-    if not (bool(getattr(playlist, "use_hls_proxy", False)) or bool(getattr(playlist, "use_custom_hls_proxy", False))):
-        return source_url
-
-    parsed = urlparse(source_url)
-    query_items = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key not in {"prebuffer", "connection_id", "cid"}
-    ]
-    if connection_id:
-        query_items.append(("connection_id", connection_id))
-    query_items.append(("prebuffer", "0"))
-    return urlunparse(parsed._replace(query=urlencode(query_items)))
-
-
-def _rewrite_hls_tag_uri(line: str, rewrite_url) -> str:
-    def _replace(match):
-        original_uri = str(match.group(1) or "")
-        return f'URI="{rewrite_url(original_uri)}"'
-
-    return re.sub(r'URI="([^"]+)"', _replace, line)
-
-
-def _copy_passthrough_response_headers(response, headers):
-    allowed = (
-        "Accept-Ranges",
-        "Cache-Control",
-        "Content-Length",
-        "Content-Range",
-        "Content-Type",
-        "ETag",
-        "Last-Modified",
-    )
-    for name in allowed:
-        value = headers.get(name)
-        if value:
-            response.headers[name] = value
-    return response
-
-
-async def _stream_xc_timeshift_response(
-    upstream_url: str,
-    headers: dict[str, str],
-    identity: str,
-    connection_id: str | None,
-    user,
-    request_client_ip: str | None,
-    request_user_agent: str | None,
-):
-    client_session = None
-    upstream_response = None
-
-    try:
-        client_session, upstream_response = await open_segment_passthrough(
-            upstream_url,
-            headers=headers,
-            method=request.method,
-        )
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        upstream_response = None
-
-    if upstream_response is None or upstream_response.status >= 400:
-        if upstream_response is not None:
-            upstream_response.release()
-        if client_session is not None:
-            await client_session.close()
-        await stop_stream_activity(
-            identity,
-            connection_id=connection_id,
-            endpoint_override=identity,
-            perform_audit=False,
-            user=user,
-            ip_address=request_client_ip,
-            user_agent=request_user_agent,
-        )
-        return jsonify({"error": "Unable to start timeshift playback"}), 502
-
-    if request.method == "HEAD":
-        response = Response(
-            b"",
-            content_type=upstream_response.headers.get("Content-Type", "video/mp2t"),
-            status=upstream_response.status,
-        )
-        _copy_passthrough_response_headers(response, upstream_response.headers)
-        upstream_response.release()
-        await client_session.close()
-        return response
-
-    async def _generator():
-        last_touch_ts = time.time()
-        try:
-            async for chunk in upstream_response.content.iter_chunked(64 * 1024):
-                now = time.time()
-                if (now - last_touch_ts) >= 5.0:
-                    await touch_stream_activity(connection_id, identity=identity)
-                    last_touch_ts = now
-                yield chunk
-        finally:
-            try:
-                upstream_response.close()
-            except Exception:
-                pass
-            await client_session.close()
-            await stop_stream_activity(
-                identity,
-                connection_id=connection_id,
-                endpoint_override=identity,
-                perform_audit=False,
-                user=user,
-                ip_address=request_client_ip,
-                user_agent=request_user_agent,
-            )
-
-    response = Response(
-        _generator(),
-        content_type=upstream_response.headers.get("Content-Type", "video/mp2t"),
-        status=upstream_response.status,
-    )
-    _copy_passthrough_response_headers(response, upstream_response.headers)
-    response.timeout = None
-    return response
-
-
-def _rewrite_timeshift_manifest(
-    playlist_text: str,
-    manifest_url: str,
-    playlist,
-    request_base_url: str,
-    instance_id: str,
-    stream_key: str,
-    username: str,
-    request_headers: dict[str, str],
-    connection_id: str,
-):
-
-    def _proxy_url_for_target(target_url: str) -> str:
-        absolute_url = urljoin(manifest_url, str(target_url or "").strip())
-        return _build_xc_timeshift_source_url(
-            playlist,
-            absolute_url,
-            request_base_url,
-            instance_id,
-            stream_key,
-            username,
-            request_headers,
-            connection_id,
-        )
-
-    lines = []
-    for raw_line in str(playlist_text or "").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("#"):
-            lines.append(_rewrite_hls_tag_uri(raw_line, _proxy_url_for_target))
-            continue
-        lines.append(_proxy_url_for_target(line))
-    return "\n".join(lines) + "\n"
-
-
-async def _fetch_and_rewrite_timeshift_manifest(
-    upstream_url: str,
-    playlist,
-    request_base_url: str,
-    instance_id: str,
-    stream_key: str,
-    username: str,
-    request_headers: dict[str, str],
-    connection_id: str,
-) -> Response:
-    current_app.logger.warning("XC timeshift upstream manifest request: %s", upstream_url)
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
-    async with aiohttp.ClientSession(headers=request_headers, timeout=timeout) as client_session:
-        try:
-            upstream_response = await client_session.get(upstream_url, allow_redirects=True)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            response = jsonify({"error": "Unable to start timeshift playback"})
-            response.status_code = 502
-            return response
-
-        if upstream_response.status >= 400:
-            body = await upstream_response.read()
-            return Response(
-                body or b"",
-                content_type=upstream_response.headers.get("Content-Type", "text/plain"),
-                status=upstream_response.status,
-            )
-
-        playlist_text = await upstream_response.text()
-        rewritten_playlist = _rewrite_timeshift_manifest(
-            playlist_text,
-            str(upstream_response.url),
-            playlist,
-            request_base_url,
-            instance_id,
-            stream_key,
-            username,
-            request_headers,
-            connection_id,
-        )
-        return Response(
-            rewritten_playlist or "",
-            content_type="application/vnd.apple.mpegurl",
-            status=upstream_response.status,
-        )
 
 
 async def _get_enabled_xc_account_maps(playlist_ids: set[int]) -> tuple[dict[int, XcAccount], dict[int, XcAccount]]:
@@ -743,7 +419,7 @@ def _build_category_map(channels: List[Dict[str, Any]]) -> Tuple[List[Dict[str, 
 
 
 async def _get_max_connections() -> str:
-    cached = _xc_cache.get("xc_max_connections")
+    cached = xc_cache.get("xc_max_connections")
     if cached:
         return cached
     playlists = await read_config_all_playlists(current_app.config["APP_CONFIG"])
@@ -754,7 +430,7 @@ async def _get_max_connections() -> str:
         except (TypeError, ValueError):
             continue
     value = str(max_connections)
-    _xc_cache.set("xc_max_connections", value, ttl_seconds=60)
+    xc_cache.set("xc_max_connections", value, ttl_seconds=60)
     return value
 
 
@@ -768,7 +444,7 @@ def _build_xc_server_info(user, include_categories=False):
             "auth": 1,
             "status": "Active",
             "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),
-            "max_connections": _xc_cache.get("xc_max_connections") or "1",
+            "max_connections": xc_cache.get("xc_max_connections") or "1",
             "allowed_output_formats": ["ts"],
         },
         "server_info": {
@@ -782,7 +458,7 @@ def _build_xc_server_info(user, include_categories=False):
         },
     }
     if include_categories:
-        info["categories"] = {"live": _xc_cache.get("xc_categories") or []}
+        info["categories"] = {"live": xc_cache.get("xc_categories") or []}
     return info
 
 
@@ -908,13 +584,13 @@ async def xc_get():
     await audit_stream_event(user, "xc_get", request.path)
 
     cache_key = f"xc_m3u:{user.id}:ts_only"
-    cached = _xc_cache.get(cache_key)
+    cached = xc_cache.get(cache_key)
     if cached:
         return Response(cached, mimetype="text/plain")
 
     channels = await _get_enabled_channels()
     categories, _ = _build_category_map(channels)
-    _xc_cache.set("xc_categories", categories, ttl_seconds=60)
+    xc_cache.set("xc_categories", categories, ttl_seconds=60)
 
     base_url = get_request_base_url(request)
     epg_url = f"{base_url}/xmltv.php?username={user.username}&password={user.streaming_key}"
@@ -937,7 +613,7 @@ async def xc_get():
         stream_url_resolver=_resolve_stream_url,
         include_xtvg=True,
     )
-    _xc_cache.set(cache_key, content, ttl_seconds=30)
+    xc_cache.set(cache_key, content, ttl_seconds=30)
     return Response(content, mimetype="text/plain")
 
 
@@ -959,19 +635,19 @@ async def xc_player_api():
 
     action = request.args.get("action")
     channels = await _get_enabled_channels()
-    categories = _xc_cache.get("xc_categories")
-    name_to_id = _xc_cache.get("xc_category_map")
+    categories = xc_cache.get("xc_categories")
+    name_to_id = xc_cache.get("xc_category_map")
     if not categories or not name_to_id:
         categories, name_to_id = _build_category_map(channels)
-        _xc_cache.set("xc_categories", categories, ttl_seconds=60)
-        _xc_cache.set("xc_category_map", name_to_id, ttl_seconds=60)
-    _xc_cache.set("xc_max_connections", await _get_max_connections(), ttl_seconds=60)
+        xc_cache.set("xc_categories", categories, ttl_seconds=60)
+        xc_cache.set("xc_category_map", name_to_id, ttl_seconds=60)
+    xc_cache.set("xc_max_connections", await _get_max_connections(), ttl_seconds=60)
 
     if action == "get_live_categories":
         return jsonify(categories)
     if action == "get_live_streams":
         cache_key = f"xc_live_streams:{int(_xc_timeshift_enabled(user))}"
-        cached_streams = _xc_cache.get(cache_key)
+        cached_streams = xc_cache.get(cache_key)
         if cached_streams:
             return jsonify(cached_streams)
         archive_sources = await _resolve_xc_archive_sources(channels) if _xc_timeshift_enabled(user) else {}
@@ -993,7 +669,7 @@ async def xc_player_api():
                     "tv_archive_duration": int(archive_source.get("tv_archive_duration") or 0) if archive_source else 0,
                 }
             )
-        _xc_cache.set(cache_key, stream_list, ttl_seconds=30)
+        xc_cache.set(cache_key, stream_list, ttl_seconds=30)
         return jsonify(stream_list)
     if action in ("get_short_epg", "get_simple_data_table"):
         stream_id = str(request.args.get("stream_id") or request.args.get("channel_id") or "").strip()
@@ -1068,7 +744,7 @@ async def xc_panel_api():
         return error
     await audit_stream_event(user, "xc_panel_api", request.path)
 
-    _xc_cache.set("xc_max_connections", await _get_max_connections(), ttl_seconds=60)
+    xc_cache.set("xc_max_connections", await _get_max_connections(), ttl_seconds=60)
     info = _build_xc_server_info(user, include_categories=True)
     return jsonify(info)
 
@@ -1134,100 +810,101 @@ async def _xc_timeshift_response(
     if not host_url:
         return jsonify({"error": "Stream unavailable"}), 404
 
-    parsed_timestamp = parse_timeshift_timestring(timestamp)
+    parsed_timestamp = parse_timeshift_timestring_with_format(timestamp)
     if parsed_timestamp is None:
         return jsonify({"error": "Invalid timeshift timestamp"}), 400
 
-    output_extension = _xc_timeshift_output_extension(
-        ext or getattr(playlist, "xc_live_stream_format", None), stream_id
-    )
+    output_extension = xc_timeshift_output_extension(ext or getattr(playlist, "xc_live_stream_format", None), stream_id)
     if output_extension is None:
         return jsonify({"error": "Unsupported output format"}), 401
-    upstream_timestamp = parsed_timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    path_url = (
-        f"{host_url}/timeshift/{account.username}/{account.password}/{upstream_duration}/{upstream_timestamp}/"
-        f"{upstream_stream_id}.{output_extension}"
-    )
-    request_headers = _resolve_source_request_headers(current_app.config["APP_CONFIG"].read_settings(), playlist)
-    for header_name in ("Range", "If-Range"):
-        header_value = request.headers.get(header_name)
-        if header_value:
-            request_headers[header_name] = header_value
+    request_headers = build_xc_timeshift_request_headers(playlist)
+
+    preferred_datetime_format = await detect_xc_timeshift_datetime_format(archive_source, request_headers)
     connection_id = _get_connection_id()
-    upstream_manifest_url = path_url
     identity = f"/xc/timeshift/{int(channel['id'])}"
     request_client_ip = get_request_client_ip()
     request_user_agent = request.headers.get("User-Agent")
-
-    await upsert_stream_activity(
-        identity,
-        connection_id=connection_id,
-        endpoint_override=identity,
-        user=user,
-        ip_address=request_client_ip,
-        user_agent=request_user_agent,
-        perform_audit=False,
-        channel_id=channel.get("id"),
-        channel_name=channel.get("name"),
-        channel_logo_url=channel.get("logo_url"),
-        stream_name=f"{channel.get('name') or ''} (timeshift)".strip(),
-        source_url=path_url,
-        display_url=request.path,
-        source_id=archive_source.get("playlist_stream_id"),
-        playlist_id=archive_source.get("playlist_id"),
-        xc_account_id=archive_source.get("xc_account_id"),
-        enrich_metadata=False,
-    )
-
-    if output_extension == "m3u8":
-        request_base_url = get_request_base_url(request)
-        instance_id = current_app.config["APP_CONFIG"].ensure_instance_id()
-        return await _fetch_and_rewrite_timeshift_manifest(
-            upstream_manifest_url,
-            playlist,
-            request_base_url,
-            instance_id,
-            user.streaming_key,
-            user.username,
-            request_headers,
-            connection_id,
-        )
-
     request_base_url = get_request_base_url(request)
     instance_id = current_app.config["APP_CONFIG"].ensure_instance_id()
-    proxy_url = _build_xc_timeshift_proxy_url(
-        playlist,
-        path_url,
-        request_base_url,
-        instance_id,
-        user.streaming_key,
-        user.username,
-        request_headers,
-        force_internal_hls_proxy=False,
-        prefer_stream_endpoint=False,
-    )
-    current_app.logger.warning("XC upstream request: %s", proxy_url)
-    if proxy_url != path_url:
-        return await _stream_xc_timeshift_response(
-            proxy_url,
-            request_headers,
-            identity,
-            connection_id,
-            user,
-            request_client_ip,
-            request_user_agent,
+    candidate_datetime_formats: list[str] = []
+    for candidate_format in (preferred_datetime_format, *XC_TIMESHIFT_DATETIME_FORMATS):
+        if candidate_format and candidate_format not in candidate_datetime_formats:
+            candidate_datetime_formats.append(candidate_format)
+
+    last_response = None
+    for candidate_format in candidate_datetime_formats:
+        candidate_timestamp = parsed_timestamp.strftime(candidate_format)
+        path_url = (
+            f"{host_url}/timeshift/{account.username}/{account.password}/{upstream_duration}/{candidate_timestamp}/"
+            f"{upstream_stream_id}.{output_extension}"
         )
 
-    current_app.logger.warning("XC upstream stream request: %s", path_url)
-    return await _stream_xc_timeshift_response(
-        path_url,
-        request_headers,
-        identity,
-        connection_id,
-        user,
-        request_client_ip,
-        request_user_agent,
-    )
+        if output_extension == "m3u8":
+            response = await fetch_and_rewrite_xc_timeshift_manifest(
+                path_url,
+                playlist,
+                request_base_url,
+                instance_id,
+                user.streaming_key,
+                user.username,
+                request_headers,
+                connection_id,
+            )
+        else:
+            proxy_url = build_xc_timeshift_proxy_url(
+                playlist,
+                path_url,
+                request_base_url,
+                instance_id,
+                user.streaming_key,
+                user.username,
+                request_headers,
+                force_internal_hls_proxy=False,
+                prefer_stream_endpoint=False,
+            )
+            current_app.logger.warning("XC upstream request: %s", proxy_url)
+            response = await stream_xc_timeshift_response(
+                proxy_url if proxy_url != path_url else path_url,
+                request_headers,
+                identity,
+                connection_id,
+                user,
+                request_client_ip,
+                request_user_agent,
+            )
+
+        if response.status_code == 404:
+            last_response = response
+            continue
+        if response.status_code >= 400:
+            return response
+
+        await upsert_stream_activity(
+            identity,
+            connection_id=connection_id,
+            endpoint_override=identity,
+            user=user,
+            ip_address=request_client_ip,
+            user_agent=request_user_agent,
+            perform_audit=False,
+            channel_id=channel.get("id"),
+            channel_name=channel.get("name"),
+            channel_logo_url=channel.get("logo_url"),
+            stream_name=f"{channel.get('name') or ''} (timeshift)".strip(),
+            source_url=path_url,
+            display_url=request.path,
+            source_id=archive_source.get("playlist_stream_id"),
+            playlist_id=archive_source.get("playlist_id"),
+            xc_account_id=archive_source.get("xc_account_id"),
+            enrich_metadata=False,
+        )
+        if candidate_format != preferred_datetime_format:
+            await persist_xc_timeshift_datetime_format(archive_source.get("playlist_id", ""), candidate_format)
+        return response
+
+    if last_response is not None:
+        return last_response
+    return jsonify({"error": "Timeshift content not found"}), 404
 
 
 @blueprint.route("/timeshift/<username>/<password>/<duration>/<timestamp>/<stream_id>", methods=["GET"])
@@ -1246,7 +923,7 @@ async def xc_timeshift_stream_query():
     password = str(request.args.get("password") or "").strip()
     duration = str(request.args.get("duration") or "").strip()
     timestamp = str(request.args.get("start") or request.args.get("timestamp") or "").strip()
-    stream_id, ext = _xc_parse_stream_reference(
+    stream_id, ext = parse_xc_stream_reference(
         request.args.get("stream") or request.args.get("stream_id"),
         request.args.get("extension") or request.args.get("ext"),
     )

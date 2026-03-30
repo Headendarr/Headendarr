@@ -135,16 +135,16 @@ def _build_upstream_headers(configured_headers=None):
 
 
 def _apply_passthrough_headers(response, upstream_headers):
-    allowed = (
-        "Accept-Ranges",
-        "Cache-Control",
-        "Content-Length",
-        "Content-Range",
-        "Content-Type",
-        "ETag",
-        "Last-Modified",
-    )
-    for name in allowed:
+    content_range = upstream_headers.get("Content-Range")
+    if content_range and int(getattr(response, "status_code", 0) or 0) == 206:
+        response.headers["Content-Range"] = content_range
+        response.headers["Accept-Ranges"] = "bytes"
+    else:
+        accept_ranges = str(upstream_headers.get("Accept-Ranges") or "").strip().lower()
+        if accept_ranges in {"bytes", "none"}:
+            response.headers["Accept-Ranges"] = accept_ranges
+
+    for name in ("Cache-Control", "Content-Length", "Content-Type", "ETag", "Last-Modified"):
         value = upstream_headers.get(name)
         if value:
             response.headers[name] = value
@@ -184,6 +184,52 @@ def _get_connection_id(default_new=False):
     if default_new:
         return uuid.uuid4().hex
     return None
+
+
+async def _direct_passthrough_response(decoded_url):
+    headers = _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query())
+    try:
+        session, upstream_response = await open_segment_passthrough(
+            decoded_url,
+            headers,
+            method=request.method,
+        )
+    except aiohttp.ClientError:
+        return Response("Failed to fetch.", status=502)
+    except asyncio.TimeoutError:
+        return Response("Failed to fetch.", status=504)
+
+    if upstream_response.status >= 400:
+        status = upstream_response.status
+        proxy_logger.warning(
+            "proxy direct passthrough upstream status=%s decoded_url=%s final_url=%s",
+            status,
+            decoded_url,
+            getattr(upstream_response, "url", decoded_url),
+        )
+        upstream_response.release()
+        await session.close()
+        return Response("Failed to fetch.", status=status)
+
+    if request.method == "HEAD":
+        response = Response(status=upstream_response.status)
+        _apply_passthrough_headers(response, upstream_response.headers)
+        upstream_response.release()
+        await session.close()
+        return response
+
+    @stream_with_context
+    async def generate_direct():
+        try:
+            async for chunk in upstream_response.content.iter_chunked(64 * 1024):
+                yield chunk
+        finally:
+            upstream_response.release()
+            await session.close()
+
+    response = Response(generate_direct(), status=upstream_response.status)
+    _apply_passthrough_headers(response, upstream_response.headers)
+    return response
 
 
 @blueprint.route(
@@ -337,55 +383,13 @@ async def proxy_ts(instance_id, encoded_url):
     # Decode the Base64 encoded URL
     decoded_url = b64_urlsafe_decode(encoded_url)
     await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
-    headers = _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query())
 
     # Direct proxy routing
     if _query_flag_enabled("direct"):
-        proxy_logger.warning(
-            "proxy_ts direct passthrough request decoded_url=%s method=%s", decoded_url, request.method
-        )
-        try:
-            session, upstream_response = await open_segment_passthrough(
-                decoded_url,
-                headers,
-                method=request.method,
-            )
-        except aiohttp.ClientError:
-            return Response("Failed to fetch.", status=502)
-        except asyncio.TimeoutError:
-            return Response("Failed to fetch.", status=504)
+        proxy_logger.warning("proxy_ts direct passthrough request decoded_url=%s method=%s", decoded_url, request.method)
+        return await _direct_passthrough_response(decoded_url)
 
-        if upstream_response.status >= 400:
-            status = upstream_response.status
-            proxy_logger.warning(
-                "proxy_ts direct passthrough upstream status=%s decoded_url=%s final_url=%s",
-                status,
-                decoded_url,
-                getattr(upstream_response, "url", decoded_url),
-            )
-            upstream_response.release()
-            await session.close()
-            return Response("Failed to fetch.", status=status)
-
-        if request.method == "HEAD":
-            response = Response(status=upstream_response.status)
-            _apply_passthrough_headers(response, upstream_response.headers)
-            upstream_response.release()
-            await session.close()
-            return response
-
-        @stream_with_context
-        async def generate_direct():
-            try:
-                async for chunk in upstream_response.content.iter_chunked(64 * 1024):
-                    yield chunk
-            finally:
-                upstream_response.release()
-                await session.close()
-
-        response = Response(generate_direct(), status=upstream_response.status)
-        _apply_passthrough_headers(response, upstream_response.headers)
-        return response
+    headers = _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query())
 
     # Multiplexer routing
     if _query_flag_enabled("ffmpeg") or request.args.get("prebuffer"):
@@ -411,6 +415,22 @@ async def proxy_ts(instance_id, encoded_url):
         return redirect(target, code=302)
 
     return Response(content, content_type="video/mp2t")
+
+
+@blueprint.route(
+    f"{hls_proxy_prefix.lstrip('/')}/<instance_id>/direct/<encoded_url>",
+    methods=["GET", "HEAD"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def proxy_direct(instance_id, encoded_url):
+    invalid = _validate_instance_id(instance_id)
+    if invalid:
+        return invalid
+    decoded_url = b64_urlsafe_decode(encoded_url)
+    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    proxy_logger.warning("proxy_direct passthrough request decoded_url=%s method=%s", decoded_url, request.method)
+    return await _direct_passthrough_response(decoded_url)
 
 
 @blueprint.route(
