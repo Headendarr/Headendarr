@@ -36,7 +36,7 @@ In the Unraid template form, enable **Show more settings...** to reveal advanced
 Advanced options include:
 
 - **Path: `/recordings`**: Set this to a location on your array (for example `/mnt/user/media/dvr`).
-- **Path: `/timeshift`**: Set this to fast temporary storage such as your cache pool or memory-backed storage (for example `/dev/shm`).
+- **Path: `/timeshift`**: Set this to fast temporary storage such as your cache pool or memory-backed storage (for example `/dev/shm`). Headendarr uses this for timeshift data and temporary VOD caching, including VOD 24/7 channel cache warm and handoff.
 - **Variables**: `TZ`, `PUID`, `PGID`.
 
 You can keep defaults for a first install, but most users should customise `/recordings` and `/timeshift`.

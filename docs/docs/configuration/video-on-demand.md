@@ -187,6 +187,8 @@ A complete cache can also help when the upstream source has reached its connecti
 
 The cache is temporary. Cached movies and episodes remain available while they are actively being used, but after 10 minutes of inactivity they are automatically cleaned up. This keeps the cache useful for short-term playback and repeat access without permanently filling your timeshift storage.
 
+The same cache system is also used by [VOD 24/7 Channels](/configuration/vod-24-7-channels/). In that mode, Headendarr uses the cache to hand linear-channel playback off from upstream to local disk as early as possible, which is a major part of how those channels avoid holding provider connections open for longer than necessary.
+
 ## Typical setup
 
 A typical VOD setup looks like this:

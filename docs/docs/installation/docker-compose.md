@@ -54,7 +54,7 @@ You **must** change the volume paths to match your system's directory structure:
 
 - `- "/path/to/your/config_dir:/config"`: This is the most important volume. It stores all of your Headendarr configuration, database, and the TVHeadend settings. **Choose a permanent location for this data.**
 - `- "/path/to/your/recordings_dir:/recordings"`: This is where any DVR recordings will be saved.
-- `- "/path/to/your/timeshift_temp_dir:/timeshift"`: This is where a temprary timeshift recording is held while a stream is being played.
+- `- "/path/to/your/timeshift_temp_dir:/timeshift"`: This is where temporary timeshift data is written while streams are being played. It is also used for temporary VOD caching, including VOD 24/7 channel cache handoff and pre-warming. Fast local storage is strongly recommended here.
 
 ### 3. Start the Container
 

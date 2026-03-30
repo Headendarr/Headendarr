@@ -85,7 +85,10 @@ VOD 24/7 channels also use CSO, but with a different runtime shape from a normal
 - The channel does not keep a permanent upstream live stream open while idle.
 - When tuned, CSO resolves the programme that should be airing at that moment and starts playback from the correct in-programme offset.
 - Headendarr then tries to hand playback over to local cached media as early as possible so upstream capacity is released quickly.
-- The next scheduled programme is pre-warmed 60 seconds ahead of time to reduce visible transition gaps.
+- The next scheduled programme is pre-downloaded 2 minutes ahead of time.
+- Around 20 seconds before the boundary, CSO also prepares the next segment and pre-buffers it to reduce visible transition gaps.
+- The ingest side transcodes VOD 24/7 playback into a stable single-video, single-audio MPEG-TS feed, and the output side remuxes that feed when the requested profile already matches.
+- VOD 24/7 channels support both the direct CSO stream route and the CSO HLS route, using the same stitched ingest path underneath.
 
 For the full behaviour and configuration details, see [VOD 24/7 Channels](./vod-24-7-channels.md).
 
