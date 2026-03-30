@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.models import (
     Channel,
+    Playlist,
     Session,
     VodChannelRule,
     XcVodItem,
@@ -230,7 +231,14 @@ async def resolve_vod_channel_item_pool(config: Any, channel: Channel) -> list[d
         selected_ids = sorted(item_id for item_id in include_ids if item_id not in exclude_ids)
         if not selected_ids:
             return []
-        result = await session.execute(select(XcVodItem).where(XcVodItem.id.in_(selected_ids)))
+        result = await session.execute(
+            select(XcVodItem)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .where(
+                XcVodItem.id.in_(selected_ids),
+                Playlist.enabled.is_(True),
+            )
+        )
         rows = result.scalars().all()
 
     items: list[dict[str, Any]] = []

@@ -2564,8 +2564,17 @@ async def _group_rows_for_user(kind: str) -> list[VodCategory]:
     async with Session() as session:
         stmt = (
             select(VodCategory)
+            .join(VodCategoryItem, VodCategoryItem.category_id == VodCategory.id)
+            .join(VodCategoryItemSource, VodCategoryItemSource.category_item_id == VodCategoryItem.id)
+            .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
             .options(selectinload(VodCategory.xc_category_links))
-            .where(VodCategory.content_type == kind, VodCategory.enabled.is_(True))
+            .where(
+                VodCategory.content_type == kind,
+                VodCategory.enabled.is_(True),
+                Playlist.enabled.is_(True),
+            )
+            .distinct()
             .order_by(VodCategory.sort_order.asc(), VodCategory.name.asc(), VodCategory.id.asc())
         )
         result = await session.execute(stmt)
@@ -2590,10 +2599,14 @@ async def build_curated_item_payloads(kind: str, category_id: int | None = None)
         stmt = (
             select(VodCategoryItem, VodCategory)
             .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .join(VodCategoryItemSource, VodCategoryItemSource.category_item_id == VodCategoryItem.id)
+            .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
             .where(
                 VodCategory.enabled.is_(True),
                 VodCategory.content_type == kind,
                 VodCategoryItem.item_type == kind,
+                Playlist.enabled.is_(True),
             )
             .order_by(
                 VodCategory.sort_order.asc(),
@@ -2608,7 +2621,12 @@ async def build_curated_item_payloads(kind: str, category_id: int | None = None)
         rows = result.all()
 
     results = []
+    seen_item_ids: set[int] = set()
     for item, group in rows:
+        item_id = int(item.id or 0)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
         summary = _load_summary(item.summary_json)
         output_extension = _resolve_group_output_extension(group.profile_id, item.container_extension)
         if kind == VOD_KIND_MOVIE:
@@ -2647,12 +2665,14 @@ async def _get_group_item_source_rows(group_item_id: int, item_type: str) -> lis
         stmt = (
             select(VodCategoryItemSource, XcVodItem, VodCategoryItem, VodCategory)
             .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
             .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
             .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
             .where(
                 VodCategoryItem.id == int(group_item_id),
                 VodCategoryItem.item_type == item_type,
                 VodCategory.enabled.is_(True),
+                Playlist.enabled.is_(True),
             )
             .options(joinedload(XcVodItem.playlist), selectinload(VodCategory.xc_category_links))
             .order_by(VodCategoryItemSource.id.asc())
@@ -2731,6 +2751,8 @@ async def resolve_xc_item_upstream_url(
         return None, "", None, "Imported XC VOD item was not found"
 
     source_item, playlist = row
+    if playlist is None or not bool(getattr(playlist, "enabled", False)):
+        return source_item, "", None, "Source playlist is disabled"
     host_url, account = await _select_account_for_playlist(playlist)
     if not host_url or account is None:
         return source_item, "", None, "No available XC account or reachable host was found"
@@ -3082,9 +3104,10 @@ async def resolve_episode_playback(
             .join(VodCategoryEpisodeSource, VodCategoryEpisodeSource.episode_id == VodCategoryEpisode.id)
             .join(VodCategoryItemSource, VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id)
             .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
             .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
             .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
-            .where(VodCategoryEpisode.id == int(episode_id))
+            .where(VodCategoryEpisode.id == int(episode_id), Playlist.enabled.is_(True), VodCategory.enabled.is_(True))
             .options(joinedload(XcVodItem.playlist))
         )
         rows = result.all()
@@ -3118,9 +3141,10 @@ async def resolve_episode_playback_candidates(
             .join(VodCategoryEpisodeSource, VodCategoryEpisodeSource.episode_id == VodCategoryEpisode.id)
             .join(VodCategoryItemSource, VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id)
             .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
             .join(VodCategoryItem, VodCategoryItem.id == VodCategoryItemSource.category_item_id)
             .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
-            .where(VodCategoryEpisode.id == int(episode_id))
+            .where(VodCategoryEpisode.id == int(episode_id), Playlist.enabled.is_(True), VodCategory.enabled.is_(True))
             .options(joinedload(XcVodItem.playlist), selectinload(VodCategory.xc_category_links))
         )
         rows = result.all()
@@ -3168,7 +3192,7 @@ async def _build_playback_candidates(rows, item_type: str) -> list[VodCuratedPla
             episode_source = None
         async with Session() as session:
             playlist = await session.get(Playlist, int(source_item.playlist_id))
-        if playlist is None:
+        if playlist is None or not bool(getattr(playlist, "enabled", False)):
             continue
         host_url, xc_account = await _select_account_for_playlist(playlist)
         candidate = VodCuratedPlaybackCandidate(
