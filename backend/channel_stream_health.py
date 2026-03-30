@@ -25,6 +25,7 @@ from backend.models import Channel, ChannelSource, Playlist, Session
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_diagnostics import StreamProbe
 from backend.tvheadend.tvh_requests import get_tvh
+from backend.vod_channels import is_vod_channel_type
 
 logger = logging.getLogger("tic.channel_stream_health")
 
@@ -540,6 +541,8 @@ async def _run_source_health_check(config, source):
     channel = getattr(source, "channel", None)
     if not channel or not bool(getattr(channel, "enabled", False)):
         return "skipped", "channel_disabled"
+    if is_vod_channel_type(getattr(channel, "channel_type", None)):
+        return "skipped", "vod_channel"
     playlist = getattr(source, "playlist", None)
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return "skipped", "playlist_disabled"
@@ -657,6 +660,7 @@ async def _run_periodic_channel_stream_health_checks_worker(app):
             .join(Channel, Channel.id == ChannelSource.channel_id)
             .where(
                 Channel.enabled.is_(True),
+                Channel.channel_type != "vod_24_7",
                 or_(
                     ChannelSource.playlist_id.is_(None),
                     ChannelSource.playlist.has(Playlist.enabled.is_(True)),

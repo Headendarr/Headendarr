@@ -263,6 +263,28 @@ def _build_channel_status(channel, mux_map, suggestion_count=0, logo_health=None
             "suggestion_count": suggestion_count,
         }
 
+    if is_vod_channel_type(channel.get("channel_type")):
+        issues = []
+        source_logo_url = channel.get("source_logo_url") or channel.get("logo_url")
+        if logo_health and logo_health.get("status") == "error" and source_logo_url:
+            issues.append("channel_logo_unavailable")
+        cso_issues = list((cso_health or {}).get("issues") or [])
+        for issue in cso_issues:
+            if issue not in issues:
+                issues.append(issue)
+        return {
+            "state": "warning" if issues else "ok",
+            "issues": issues,
+            "disabled_source_count": 0,
+            "missing_mux_count": 0,
+            "failed_mux_count": 0,
+            "missing_streams": [],
+            "failed_streams": [],
+            "logo_health": logo_health or {},
+            "cso_health": cso_health or {},
+            "suggestion_count": suggestion_count,
+        }
+
     sources = channel.get("sources") or []
     if not sources:
         return {
