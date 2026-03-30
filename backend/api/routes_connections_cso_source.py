@@ -31,6 +31,7 @@ from backend.cso import (
     subscribe_channel_stream,
     subscribe_source_hls,
     subscribe_source_stream,
+    subscribe_vod_channel_hls,
     source_capacity_key,
     source_capacity_limit,
 )
@@ -536,8 +537,6 @@ async def stream_channel(channel_id):
     )
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     use_hls_output = str(effective_policy.get("container") or "").strip().lower() == "hls"
-    if channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)):
-        use_hls_output = False
 
     connection_id = _get_connection_id()
     if connection_id == "tvh":
@@ -735,7 +734,7 @@ async def _build_hls_slate_response(
 @blueprint.route("/tic-api/cso/channel/<int:channel_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
 @stream_key_required
 @skip_stream_connect_audit
-async def stream_channel_hls_playlist(channel_id, connection_id):
+async def stream_channel_hls_playlist(channel_id: int, connection_id: str):
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
@@ -749,12 +748,17 @@ async def stream_channel_hls_playlist(channel_id, connection_id):
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
         return Response("Requested profile is not HLS output", status=400)
-    output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    is_vod_channel = bool(channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)))
+    output_session_key = (
+        f"cso-vod-channel-hls-output-{int(channel_id)}-{effective_profile}"
+        if is_vod_channel
+        else f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    )
     existing_client = await _hls_output_has_client(output_session_key, connection_id)
 
     has_active_ingest = await cso_session_manager.has_active_ingest_for_channel(int(channel_id))
     has_existing_ingest = has_active_ingest or await cso_session_manager.has_ingest_session_for_channel(int(channel_id))
-    primary_source = await _select_primary_source_for_capacity(channel)
+    primary_source = None if is_vod_channel else await _select_primary_source_for_capacity(channel)
     if primary_source is not None and not existing_client and not has_existing_ingest:
         capacity_key_name = source_capacity_key(primary_source)
         capacity_limit = int(source_capacity_limit(primary_source) or 0)
@@ -803,15 +807,26 @@ async def stream_channel_hls_playlist(channel_id, connection_id):
             details={"profile": effective_profile, "connection_id": str(client_id)},
         )
 
-    output_session, error_message, status = await subscribe_channel_hls(
-        config=config,
-        channel=channel,
-        stream_key=stream_key,
-        profile=effective_profile,
-        connection_id=connection_id,
-        request_base_url=request_base_url,
-        on_disconnect=_on_disconnect,
-    )
+    if is_vod_channel:
+        output_session, error_message, status = await subscribe_vod_channel_hls(
+            config=config,
+            channel_id=int(channel_id),
+            stream_key=stream_key,
+            profile=effective_profile,
+            connection_id=connection_id,
+            request_headers=dict(request.headers),
+            on_disconnect=_on_disconnect,
+        )
+    else:
+        output_session, error_message, status = await subscribe_channel_hls(
+            config=config,
+            channel=channel,
+            stream_key=stream_key,
+            profile=effective_profile,
+            connection_id=connection_id,
+            request_base_url=request_base_url,
+            on_disconnect=_on_disconnect,
+        )
     if not output_session:
         if int(status or 500) == 503 and "connection limit" in str(error_message or "").lower():
             return await _build_hls_slate_response(
@@ -856,7 +871,7 @@ async def stream_channel_hls_playlist(channel_id, connection_id):
 @blueprint.route("/tic-api/cso/channel/<int:channel_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
 @stream_key_required
 @skip_stream_connect_audit
-async def stream_channel_hls_segment(channel_id, connection_id, segment_name):
+async def stream_channel_hls_segment(channel_id: int, connection_id: str, segment_name: str):
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
@@ -869,11 +884,16 @@ async def stream_channel_hls_segment(channel_id, connection_id, segment_name):
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
         return Response("Requested profile is not HLS output", status=400)
-    output_session_key = f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    is_vod_channel = bool(channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)))
+    output_session_key = (
+        f"cso-vod-channel-hls-output-{int(channel_id)}-{effective_profile}"
+        if is_vod_channel
+        else f"cso-hls-output-{int(channel_id)}-{effective_profile}"
+    )
     existing_client = await _hls_output_has_client(output_session_key, connection_id)
     has_active_ingest = await cso_session_manager.has_active_ingest_for_channel(int(channel_id))
     has_existing_ingest = has_active_ingest or await cso_session_manager.has_ingest_session_for_channel(int(channel_id))
-    primary_source = await _select_primary_source_for_capacity(channel)
+    primary_source = None if is_vod_channel else await _select_primary_source_for_capacity(channel)
     if primary_source is not None and not existing_client and not has_existing_ingest:
         capacity_key_name = source_capacity_key(primary_source)
         capacity_limit = int(source_capacity_limit(primary_source) or 0)
@@ -920,15 +940,26 @@ async def stream_channel_hls_segment(channel_id, connection_id, segment_name):
             details={"profile": effective_profile, "connection_id": str(client_id)},
         )
 
-    output_session, error_message, status = await subscribe_channel_hls(
-        config=config,
-        channel=channel,
-        stream_key=stream_key,
-        profile=effective_profile,
-        connection_id=connection_id,
-        request_base_url=request_base_url,
-        on_disconnect=_on_disconnect,
-    )
+    if is_vod_channel:
+        output_session, error_message, status = await subscribe_vod_channel_hls(
+            config=config,
+            channel_id=int(channel_id),
+            stream_key=stream_key,
+            profile=effective_profile,
+            connection_id=connection_id,
+            request_headers=dict(request.headers),
+            on_disconnect=_on_disconnect,
+        )
+    else:
+        output_session, error_message, status = await subscribe_channel_hls(
+            config=config,
+            channel=channel,
+            stream_key=stream_key,
+            profile=effective_profile,
+            connection_id=connection_id,
+            request_base_url=request_base_url,
+            on_disconnect=_on_disconnect,
+        )
     if not output_session:
         if int(status or 500) == 503 and "connection limit" in str(error_message or "").lower():
             output_session, _, _ = await subscribe_slate_hls(

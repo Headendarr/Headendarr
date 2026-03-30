@@ -580,23 +580,25 @@ def detect_vaapi_device_path() -> str | None:
     return None
 
 
-def cso_runtime_capabilities():
+def cso_runtime_capabilities() -> dict[str, bool]:
     return {
         "vaapi_available": bool(detect_vaapi_device_path()),
     }
 
 
-def policy_content_type(policy):
+def policy_content_type(policy: dict[str, Any] | None) -> str:
     container = (policy or {}).get("container", "mpegts")
     return CONTAINER_TO_CONTENT_TYPE.get(container, "application/octet-stream")
 
 
-def policy_ffmpeg_format(policy):
+def policy_ffmpeg_format(policy: dict[str, Any] | None) -> str:
     container = (policy or {}).get("container", "mpegts")
     return CONTAINER_TO_FORMAT.get(container, "mpegts")
 
 
-def _resolve_cso_output_policy(policy, use_slate_as_input=False):
+def _resolve_cso_output_policy(
+    policy: dict[str, Any] | None, use_slate_as_input: bool = False
+) -> dict[str, Any]:
     resolved = dict(policy or {})
     if use_slate_as_input:
         resolved["output_mode"] = "force_remux"
@@ -607,7 +609,44 @@ def _resolve_cso_output_policy(policy, use_slate_as_input=False):
     return resolved
 
 
-def _resolve_vod_pipe_container(source: CsoSource | None, source_probe=None):
+def _generate_vod_channel_ingest_policy(config: Any, output_policy: dict[str, Any] | None = None) -> dict[str, Any]:
+    resolved = dict(output_policy or {})
+    if not resolved:
+        resolved = dict(generate_cso_policy_from_profile(config, "h264-aac-mpegts") or {})
+    resolved["output_mode"] = "force_transcode"
+    resolved["container"] = "mpegts"
+    video_codec = clean_key(resolved.get("video_codec")) or "h264"
+    audio_codec = clean_key(resolved.get("audio_codec")) or "aac"
+    resolved["video_codec"] = "h264" if video_codec == "copy" else video_codec
+    resolved["audio_codec"] = "aac" if audio_codec == "copy" else audio_codec
+    resolved["subtitle_mode"] = "drop"
+    resolved["transcode"] = True
+    return resolved
+
+
+def _resolve_vod_channel_output_policy(
+    policy: dict[str, Any] | None, ingest_policy: dict[str, Any]
+) -> dict[str, Any]:
+    resolved = dict(policy or {})
+    resolved["subtitle_mode"] = "drop"
+    container_key = clean_key(resolved.get("container")) or "mpegts"
+    if container_key not in {"mpegts", "matroska", "mp4", "hls"}:
+        return resolved
+    ingest_video_codec = clean_key(ingest_policy.get("video_codec")) or "h264"
+    ingest_audio_codec = clean_key(ingest_policy.get("audio_codec")) or "aac"
+    resolved_video_codec = clean_key(resolved.get("video_codec"))
+    if resolved_video_codec not in {"", "copy", ingest_video_codec}:
+        return resolved
+    resolved_audio_codec = clean_key(resolved.get("audio_codec"))
+    if resolved_audio_codec not in {"", "copy", ingest_audio_codec}:
+        return resolved
+    resolved["output_mode"] = "force_remux"
+    resolved["video_codec"] = "copy"
+    resolved["audio_codec"] = "copy"
+    return resolved
+
+
+def _resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> str:
     if source is None or source.source_type not in {"vod_movie", "vod_episode"}:
         return "mpegts"
 
@@ -2381,9 +2420,16 @@ class CsoFfmpegCommandBuilder:
         effective_policy = policy or self.policy
         video_codec = effective_policy.get("video_codec") or ""
         audio_codec = effective_policy.get("audio_codec") or ""
-        use_hwaccel = bool(effective_policy.get("hwaccel", False)) and bool(video_codec)
+        hwaccel_requested = bool(effective_policy.get("hwaccel", False)) and bool(video_codec)
+        use_hwaccel = hwaccel_requested
         deinterlace = bool(effective_policy.get("deinterlace", False)) and bool(video_codec)
         vaapi_device = detect_vaapi_device_path() if use_hwaccel else None
+        if hwaccel_requested and not vaapi_device:
+            logger.info(
+                "CSO hwaccel requested but no VAAPI device is available; falling back to software encode video_codec=%s container=%s",
+                video_codec,
+                effective_policy.get("container") or "",
+            )
 
         if video_codec:
             if vaapi_device:
@@ -2399,7 +2445,24 @@ class CsoFfmpegCommandBuilder:
                 sw_video_encoder = self.video_encoder_for_codec(video_codec)
                 command += ["-c:v", sw_video_encoder]
                 if sw_video_encoder == "libx264":
-                    command += ["-preset", "veryfast", "-tune", "zerolatency"]
+                    command += [
+                        "-preset",
+                        "veryfast",
+                        "-tune",
+                        "zerolatency",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-profile:v",
+                        "high",
+                        "-g",
+                        "48",
+                        "-keyint_min",
+                        "48",
+                        "-sc_threshold",
+                        "0",
+                        "-x264-params",
+                        "repeat-headers=1:aud=1",
+                    ]
         else:
             command += ["-c:v", "copy"]
 
@@ -2662,6 +2725,97 @@ class CsoFfmpegCommandBuilder:
         if trim_seek_value > 0:
             command += ["-ss", str(trim_seek_value)]
         command += ["-c", "copy"]
+        if duration_value is not None:
+            command += ["-t", str(duration_value)]
+        command += self._drop_data_streams()
+        if self.pipe_output_format == "mpegts":
+            command += self._mpegts_output_flags(zero_latency=True)
+        elif self.pipe_output_format == "matroska":
+            command += self._matroska_output_flags()
+        command += self._pipe_output_target(self.pipe_output_format)
+        return command
+
+    def build_vod_channel_ingest_command(
+        self,
+        input_target: str,
+        start_seconds: int = 0,
+        max_duration_seconds: int | None = None,
+        realtime: bool = False,
+        input_is_url: bool = False,
+        user_agent: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> list[str]:
+        effective_policy = dict(policy or self.policy or {})
+        command = self._ffmpeg_logging_command(enable_cso_ingest_command_debug_logging, quiet_level="info")
+        start_value = max(0, int(start_seconds or 0))
+        duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
+        input_seek_value = start_value
+        trim_seek_value = 0
+        if start_value > 0:
+            trim_seek_value = min(2, start_value)
+            input_seek_value = max(0, start_value - trim_seek_value)
+        if realtime:
+            command += ["-re"]
+        if input_is_url:
+            header_values = sanitise_headers(request_headers)
+            user_agent_value = clean_text(user_agent) or _header_value(header_values, "User-Agent")
+            command += [
+                "-progress",
+                "pipe:2",
+                "-reconnect",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_delay_max",
+                str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+            ]
+            if user_agent_value:
+                command += ["-user_agent", user_agent_value]
+            referer_value = _header_value(header_values, "Referer")
+            if referer_value:
+                command += ["-referer", referer_value]
+            extra_headers = _format_ffmpeg_headers_arg(header_values)
+            if extra_headers:
+                command += ["-headers", extra_headers]
+            command += [
+                "-reconnect_at_eof",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_on_http_error",
+                "4xx,5xx",
+                "-rw_timeout",
+                str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
+                "-timeout",
+                str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
+            ]
+        if input_seek_value > 0:
+            command += ["-ss", str(input_seek_value)]
+        command += self._probe_flags(
+            CSO_INGEST_PROBE_SIZE_BYTES,
+            CSO_INGEST_ANALYSE_DURATION_US,
+            CSO_INGEST_FPS_PROBE_SIZE,
+        )
+        command += self._input_resilience_flags()
+        command += [
+            "-i",
+            str(input_target),
+            "-map",
+            "0:v:0?",
+            "-map",
+            "0:a:0?",
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
+            "-max_muxing_queue_size",
+            "4096",
+        ]
+        if trim_seek_value > 0:
+            command += ["-ss", str(trim_seek_value)]
+        subtitle_mode = effective_policy.get("subtitle_mode") or "drop"
+        self._apply_transcode_options(command, subtitle_mode, policy=effective_policy)
         if duration_value is not None:
             command += ["-t", str(duration_value)]
         command += self._drop_data_streams()
@@ -4329,10 +4483,20 @@ class CsoIngestSession:
 
 
 class VodChannelIngestSession:
-    def __init__(self, key, config, channel_id, stream_key=None, request_headers=None):
+    def __init__(
+        self,
+        key: object,
+        config: Any,
+        channel_id: int,
+        stream_key: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        output_policy: dict[str, Any] | None = None,
+    ):
         self.key = str(key)
         self.config = config
         self.channel_id = int(channel_id)
+        self.output_policy = dict(output_policy or {})
+        self.ingest_policy = _generate_vod_channel_ingest_policy(config, self.output_policy)
         self.stream_key = clean_text(stream_key)
         self.request_headers = dict(request_headers or {})
         self.process = None
@@ -4494,7 +4658,11 @@ class VodChannelIngestSession:
         self._warm_task = runtime.get("warm_task")
         self.current_source = runtime.get("source")
         self.current_source_url = clean_text(runtime.get("input_target"))
-        self.current_source_probe = {"container": "mpegts"}
+        self.current_source_probe = {
+            "container": "mpegts",
+            "video_codec": clean_key(self.ingest_policy.get("video_codec")) or "h264",
+            "audio_codec": clean_key(self.ingest_policy.get("audio_codec")) or "aac",
+        }
 
     async def _close_runtime(self, runtime):
         if not runtime:
@@ -4629,7 +4797,7 @@ class VodChannelIngestSession:
             input_is_url = False
             input_label = "cache_part"
 
-        command = CsoFfmpegCommandBuilder(pipe_output_format="mpegts").build_vod_segment_ingest_command(
+        command = CsoFfmpegCommandBuilder(self.ingest_policy, pipe_output_format="mpegts").build_vod_channel_ingest_command(
             input_target,
             start_seconds=offset_seconds,
             max_duration_seconds=remaining_seconds,
@@ -4637,10 +4805,11 @@ class VodChannelIngestSession:
             input_is_url=input_is_url,
             user_agent=_resolve_cso_ingest_user_agent(None, source),
             request_headers=_resolve_cso_ingest_headers(source),
+            policy=self.ingest_policy,
         )
         logger.info(
             "Starting VOD channel ingest segment channel=%s start_ts=%s stop_ts=%s source_id=%s input=%s "
-            "offset_seconds=%s duration_seconds=%s command=%s",
+            "offset_seconds=%s duration_seconds=%s policy=(%s) command=%s",
             self.channel_id,
             int(entry.get("start_ts") or 0),
             int(entry.get("stop_ts") or 0),
@@ -4648,6 +4817,7 @@ class VodChannelIngestSession:
             input_label,
             offset_seconds,
             remaining_seconds,
+            _policy_log_label(self.ingest_policy),
             command,
         )
         process = await asyncio.create_subprocess_exec(
@@ -5226,6 +5396,34 @@ class CsoOutputSession:
             return True
         return False
 
+    async def _ensure_ingest_queue(self, prebuffer_bytes=0):
+        if self.use_slate_as_input or self.ingest_session is None:
+            return False
+        if self.ingest_queue is not None:
+            return True
+        if not self.running or not self.ingest_session.running:
+            return False
+        try:
+            self.ingest_queue = await self.ingest_session.add_subscriber(
+                self.key,
+                prebuffer_bytes=int(prebuffer_bytes or 0),
+            )
+        except Exception as exc:
+            logger.warning(
+                "CSO output failed to reattach ingest subscriber channel=%s output_key=%s error=%s",
+                self.channel_id,
+                self.key,
+                exc,
+            )
+            return False
+        logger.info(
+            "CSO output reattached ingest subscriber channel=%s output_key=%s prebuffer_bytes=%s",
+            self.channel_id,
+            self.key,
+            int(prebuffer_bytes or 0),
+        )
+        return True
+
     async def start(self):
         async with self.lock:
             if self.running:
@@ -5327,6 +5525,8 @@ class CsoOutputSession:
                     int(max(0.0, now_value - float(self.start_ts or now_value)) * 1000),
                 )
                 await self.ingest_session.start()
+                if self.ingest_session.running:
+                    await self._ensure_ingest_queue(prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES))
             except Exception as exc:
                 logger.warning(
                     "CSO output ingest recovery attempt failed channel=%s output_key=%s error=%s",
@@ -5463,6 +5663,14 @@ class CsoOutputSession:
                         chunk_mode = "slate"
                 if chunk is None:
                     if self.ingest_queue is None and self.slate_queue is None:
+                        recovered = await self._ensure_ingest_queue(
+                            prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES)
+                        )
+                        if recovered:
+                            continue
+                        if self.ingest_session is not None and self.running:
+                            await asyncio.sleep(float(CSO_OUTPUT_SLATE_POLL_INTERVAL_SECONDS))
+                            continue
                         break
                     continue
                 if chunk_mode and self._input_mode != chunk_mode:
@@ -7888,14 +8096,16 @@ async def subscribe_vod_proxy_output_stream(
 
 
 async def subscribe_vod_channel_output_stream(
-    config,
-    channel_id,
-    stream_key,
-    profile,
-    connection_id,
-    request_headers=None,
-):
-    policy = generate_cso_policy_from_profile(config, profile)
+    config: Any,
+    channel_id: int,
+    stream_key: str,
+    profile: str,
+    connection_id: str,
+    request_headers: dict[str, str] | None = None,
+) -> Any:
+    requested_policy = generate_cso_policy_from_profile(config, profile)
+    ingest_policy = _generate_vod_channel_ingest_policy(config, requested_policy)
+    policy = _resolve_vod_channel_output_policy(requested_policy, ingest_policy=ingest_policy)
     ingest_key = f"cso-vod-channel-ingest-{int(channel_id)}"
     output_session_key = f"cso-vod-channel-output-{int(channel_id)}-{profile}"
 
@@ -7906,6 +8116,7 @@ async def subscribe_vod_channel_output_stream(
             int(channel_id),
             stream_key=stream_key,
             request_headers=request_headers,
+            output_policy=policy,
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -7944,6 +8155,73 @@ async def subscribe_vod_channel_output_stream(
             await output_session.remove_client(connection_id)
 
     return build_cso_stream_plan(_generator(), content_type, None, 200)
+
+
+async def subscribe_vod_channel_hls(
+    config: Any,
+    channel_id: int,
+    stream_key: str,
+    profile: str,
+    connection_id: str,
+    request_headers: dict[str, str] | None = None,
+    on_disconnect: Any = None,
+) -> tuple[Any | None, str | None, int]:
+    requested_policy = generate_cso_policy_from_profile(config, profile)
+    ingest_policy = _generate_vod_channel_ingest_policy(config, requested_policy)
+    policy = _resolve_vod_channel_output_policy(requested_policy, ingest_policy=ingest_policy)
+    ingest_key = f"cso-vod-channel-ingest-{int(channel_id)}"
+    output_session_key = f"cso-vod-channel-hls-output-{int(channel_id)}-{profile}"
+
+    def _ingest_factory():
+        return VodChannelIngestSession(
+            ingest_key,
+            config,
+            int(channel_id),
+            stream_key=stream_key,
+            request_headers=request_headers,
+            output_policy=policy,
+        )
+
+    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    await ingest_session.start()
+    if not ingest_session.running:
+        reason = ingest_session.last_error or "no_scheduled_programme"
+        if reason == "no_scheduled_programme":
+            return None, "No scheduled VOD programme is currently available", 404
+        return None, "Unable to start VOD channel ingest", 503
+
+    def _output_factory():
+        return CsoHlsOutputSession(
+            output_session_key,
+            int(channel_id),
+            policy,
+            ingest_session,
+            cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
+        )
+
+    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    await output_session.start()
+    if not output_session.running:
+        return None, "Unable to start VOD channel HLS output", 503
+
+    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    if is_new_client:
+        await emit_channel_stream_event(
+            channel_id=int(channel_id),
+            source=getattr(ingest_session, "current_source", None),
+            session_id=output_session_key,
+            event_type="session_start",
+            severity="info",
+            details={
+                "profile": profile,
+                "connection_id": connection_id,
+                **_source_event_context(
+                    ingest_session.current_source,
+                    source_url=getattr(ingest_session, "current_source_url", None),
+                ),
+            },
+        )
+    return output_session, None, 200
 
 
 async def subscribe_source_stream(
