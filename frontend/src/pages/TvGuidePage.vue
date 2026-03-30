@@ -126,126 +126,81 @@
                 </div>
 
                 <div class="guide__body" ref="guideBody">
-                  <div
-                    v-for="channel in filteredChannels"
-                    :key="channel.id"
-                    class="guide__row"
-                    :style="{height: rowHeight(channel) + 'px'}"
-                  >
-                    <div class="guide__channel-col">
-                      <div
-                        class="guide__channel-row"
-                        :class="{
-                          'guide__channel-row--mobile-expanded': isMobileLayout && !channelRailCollapsed,
-                        }"
-                      >
-                        <TicChannelIcon
-                          :src="channel.logo_url || ''"
-                          :clickable="true"
-                          :show-overlay="true"
-                          :overlay-active="hoveredChannelId === channel.id"
-                          fallback-icon="play_arrow"
-                          overlay-icon="play_arrow"
-                          @click.stop="previewChannel(channel)"
-                          @mouseenter="hoveredChannelId = channel.id"
-                          @mouseleave="hoveredChannelId = null"
-                        />
-                        <template v-if="isMobileLayout && !channelRailCollapsed">
-                          <div class="guide__channel-number guide__channel-number--mobile text-caption text-grey-7">
+                  <template v-for="channel in filteredChannels" :key="channel.id">
+                    <div
+                      class="guide__row"
+                      :class="{'guide__row--selected': !isMobileLayout && expandedChannelId === channel.id}"
+                      :style="{height: rowHeight + 'px'}"
+                    >
+                      <div class="guide__channel-col">
+                        <div
+                          class="guide__channel-row"
+                          :class="{
+                            'guide__channel-row--mobile-expanded': isMobileLayout && !channelRailCollapsed,
+                          }"
+                        >
+                          <TicChannelIcon
+                            :src="channel.logo_url || ''"
+                            :clickable="true"
+                            :show-overlay="true"
+                            :overlay-active="hoveredChannelId === channel.id"
+                            fallback-icon="play_arrow"
+                            overlay-icon="play_arrow"
+                            @click.stop="previewChannel(channel)"
+                            @mouseenter="hoveredChannelId = channel.id"
+                            @mouseleave="hoveredChannelId = null"
+                          />
+                          <template v-if="isMobileLayout && !channelRailCollapsed">
+                            <div class="guide__channel-number guide__channel-number--mobile text-caption text-grey-7">
+                              #{{ channel.number }}
+                            </div>
+                            <div class="guide__channel-name guide__channel-name--mobile text-weight-medium">
+                              {{ channel.name }}
+                            </div>
+                          </template>
+                          <div class="guide__channel-meta" v-else-if="!isMobileLayout">
+                            <div class="guide__channel-number text-caption text-grey-7">#{{ channel.number }}</div>
+                            <div class="guide__channel-name text-weight-medium">{{ channel.name }}</div>
+                          </div>
+                          <div class="guide__channel-mini text-caption text-grey-7" v-else>
                             #{{ channel.number }}
                           </div>
-                          <div class="guide__channel-name guide__channel-name--mobile text-weight-medium">
-                            {{ channel.name }}
-                          </div>
-                        </template>
-                        <div class="guide__channel-meta" v-else-if="!isMobileLayout">
-                          <div class="guide__channel-number text-caption text-grey-7">#{{ channel.number }}</div>
-                          <div class="guide__channel-name text-weight-medium">{{ channel.name }}</div>
-                        </div>
-                        <div class="guide__channel-mini text-caption text-grey-7" v-else>
-                          #{{ channel.number }}
                         </div>
                       </div>
-                    </div>
-                    <div class="guide__timeline-col">
-                      <div class="guide__scroll" ref="scrollBody" @scroll="syncScroll">
-                        <div
-                          class="guide__timeline"
-                          :style="{width: timelineWidth + 'px', height: rowHeight(channel) + 'px'}"
-                        >
+                      <div class="guide__timeline-col">
+                        <div class="guide__scroll" ref="scrollBody" @scroll="syncScroll">
                           <div
-                            v-if="nowLineVisible"
-                            class="guide__now-line"
-                            :style="{left: nowLineLeft + 'px'}"
-                          />
-                          <div
-                            v-for="programme in programmesByChannel[channel.id]"
-                            :key="programme.id"
-                            :ref="(el) => setProgrammeRef(programme.id, el)"
-                            class="guide__program"
-                            :class="programmeClass(programme, channel)"
-                            :style="programmeStyle(programme)"
-                            @click="toggleProgramme(programme, channel)"
+                            class="guide__timeline"
+                            :style="{width: timelineWidth + 'px', height: rowHeight + 'px'}"
                           >
-                            <div class="guide__program-content" :style="programmeContentStyle(programme)">
-                              <div
-                                v-if="getRecordingForProgramme(programme, channel)"
-                                class="guide__program-badge"
-                                :class="recordingBadgeClass(getRecordingForProgramme(programme, channel))"
-                              >
-                                {{ recordingBadgeLabel(getRecordingForProgramme(programme, channel)) }}
-                              </div>
-                              <div class="guide__program-title">{{ programme.title }}</div>
-                              <div class="guide__program-time">
-                                {{ formatTime(programme.start_ts) }} - {{ formatTime(programme.stop_ts) }}
-                              </div>
-                              <div v-if="!isMobileLayout && expandedProgramId === programme.id"
-                                   class="guide__program-details">
-                                <div class="guide__program-desc">
-                                  {{ programme.desc || 'No description available.' }}
+                            <div
+                              v-if="nowLineVisible"
+                              class="guide__now-line"
+                              :style="{left: nowLineLeft + 'px'}"
+                            />
+                            <div
+                              v-for="programme in programmesByChannel[channel.id]"
+                              :key="programme.id"
+                              :ref="(el) => setProgrammeRef(programme.id, el)"
+                              class="guide__program"
+                              :class="programmeClass(programme, channel)"
+                              :style="programmeStyle(programme)"
+                              @click="toggleProgramme(programme, channel)"
+                            >
+                              <div class="guide__program-content" :style="programmeContentStyle(programme)">
+                                <div
+                                  v-if="getRecordingForProgramme(programme, channel)"
+                                  class="guide__program-badge"
+                                  :class="recordingBadgeClass(getRecordingForProgramme(programme, channel))"
+                                >
+                                  {{ recordingBadgeLabel(getRecordingForProgramme(programme, channel)) }}
                                 </div>
-                                <div class="guide__program-actions">
-                                  <TicButton
-                                    icon="play_arrow"
-                                    label="Watch now"
-                                    v-if="isLive(programme)"
-                                    dense
-                                    variant="flat"
-                                    @click.stop="previewChannel(channel)"
-                                  />
-                                  <TicButton
-                                    v-if="!getRecordingForProgramme(programme, channel)"
-                                    dense
-                                    variant="flat"
-                                    icon="fiber_manual_record"
-                                    label="Record"
-                                    color="negative"
-                                    @click.stop="recordProgramme(channel, programme)"
-                                  />
-                                  <TicButton
-                                    v-if="getRecordingForProgramme(programme, channel)"
-                                    dense
-                                    variant="flat"
-                                    icon="cancel"
-                                    label="Cancel Recording"
-                                    color="negative"
-                                    @click.stop="cancelProgrammeRecording(getRecordingForProgramme(programme, channel))"
-                                  />
-                                  <TicButton
-                                    dense
-                                    variant="flat"
-                                    icon="repeat"
-                                    label="Record series"
-                                    @click.stop="recordSeries(channel, programme)"
-                                  />
-                                  <TicButton
-                                    dense
-                                    variant="flat"
-                                    icon="link"
-                                    label="Copy stream URL"
-                                    v-if="isLive(programme)"
-                                    @click.stop="copyStreamUrl(channel)"
-                                  />
+                                <div class="guide__program-title">{{ programme.title }}</div>
+                                <div v-if="programme.sub_title" class="guide__program-subtitle">
+                                  {{ programme.sub_title }}
+                                </div>
+                                <div class="guide__program-time">
+                                  {{ formatTime(programme.start_ts) }} - {{ formatTime(programme.stop_ts) }}
                                 </div>
                               </div>
                             </div>
@@ -253,7 +208,103 @@
                         </div>
                       </div>
                     </div>
-                  </div>
+
+                    <div
+                      v-if="!isMobileLayout && expandedChannelId === channel.id && selectedProgramme && selectedChannel"
+                      class="guide__detail-row"
+                    >
+                      <div class="guide__detail-panel">
+                        <div class="guide__detail-media">
+                          <img
+                            v-if="selectedProgramme.icon_url"
+                            :src="selectedProgramme.icon_url"
+                            :alt="selectedProgramme.title"
+                            class="guide__detail-art"
+                          >
+                          <div v-else class="guide__detail-art guide__detail-art--fallback">
+                            <q-icon name="live_tv" size="42px" />
+                          </div>
+                        </div>
+
+                        <div class="guide__detail-main">
+                          <div class="guide__detail-topline">
+                            <div class="guide__detail-channel">
+                              <span class="guide__detail-channel-number">#{{ selectedChannel.number }}</span>
+                              <span class="guide__detail-channel-name">{{ selectedChannel.name }}</span>
+                            </div>
+                            <div class="guide__detail-meta">
+                              {{ formatProgrammeTimespan(selectedProgramme) }}
+                            </div>
+                            <div class="guide__detail-meta">
+                              {{ programmeProgressSummary(selectedProgramme) }}
+                            </div>
+                            <div
+                              v-if="selectedRecording"
+                              class="guide__detail-meta guide__detail-meta--recording"
+                            >
+                              {{ recordingBadgeLabel(selectedRecording) }}
+                            </div>
+                          </div>
+
+                          <div class="guide__detail-title">{{ selectedProgramme.title }}</div>
+                          <div
+                            class="guide__detail-subtitle"
+                            :class="{'guide__detail-subtitle--empty': !selectedProgramme.sub_title}"
+                          >
+                            {{ selectedProgramme.sub_title || 'No subtitle available' }}
+                          </div>
+                          <div class="guide__detail-description">
+                            {{ selectedProgramme.desc || 'No description available.' }}
+                          </div>
+
+                          <div class="guide__detail-actions guide__detail-actions--inline">
+                            <TicButton
+                              v-if="isLive(selectedProgramme)"
+                              icon="play_arrow"
+                              label="Watch now"
+                              color="primary"
+                              dense
+                              @click="previewChannel(selectedChannel)"
+                            />
+                            <TicButton
+                              v-if="!selectedRecording"
+                              icon="fiber_manual_record"
+                              label="Record"
+                              color="negative"
+                              dense
+                              @click="recordProgramme(selectedChannel, selectedProgramme)"
+                            />
+                            <TicButton
+                              v-else
+                              icon="cancel"
+                              label="Cancel recording"
+                              color="negative"
+                              variant="outline"
+                              dense
+                              @click="cancelProgrammeRecording(selectedRecording)"
+                            />
+                            <TicButton
+                              icon="repeat"
+                              label="Record series"
+                              color="secondary"
+                              variant="outline"
+                              dense
+                              @click="recordSeries(selectedChannel, selectedProgramme)"
+                            />
+                            <TicButton
+                              v-if="isLive(selectedProgramme)"
+                              icon="link"
+                              label="Copy stream URL"
+                              color="secondary"
+                              variant="outline"
+                              dense
+                              @click="copyStreamUrl(selectedChannel)"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
 
                   <div v-if="!loading && filteredChannels.length === 0" class="q-pa-lg text-grey-6">
                     No channels with EPG data found.
@@ -274,6 +325,9 @@
       max-width="96vw">
       <div v-if="mobileProgrammeDetails" class="guide-programme-popup">
         <div class="guide-programme-popup__title">{{ mobileProgrammeDetails.programme.title }}</div>
+        <div v-if="mobileProgrammeDetails.programme.sub_title" class="guide-programme-popup__subtitle">
+          {{ mobileProgrammeDetails.programme.sub_title }}
+        </div>
         <div class="guide-programme-popup__meta text-caption text-grey-7">
           {{ mobileProgrammeDetails.channel.name }} ·
           #{{ mobileProgrammeDetails.channel.number }} ·
@@ -405,7 +459,7 @@ export default defineComponent({
     const recordingProfiles = ref([]);
     const hoveredChannelId = ref(null);
     const expandedProgramId = ref(null);
-    const expandedSizes = ref({});
+    const expandedChannelId = ref(null);
     const programmeRefs = new Map();
     const guideBody = ref(null);
     const guideStickyTop = ref(0);
@@ -457,6 +511,10 @@ export default defineComponent({
       if (isMobileLayout.value) return 50;
       if (isCompactLayout.value) return 54;
       return 58;
+    });
+
+    const rowHeight = computed(() => {
+      return programmeBlockHeight.value;
     });
 
     const channelColumnWidth = computed(() => {
@@ -565,29 +623,17 @@ export default defineComponent({
 
     const programmeStyle = (programme) => {
       const left = ((programme.start_ts - startTs.value) / 60) * pxPerMinute;
-      const baseWidth = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
-      const expanded = expandedProgramId.value === programme.id;
-      const size = expanded ? expandedSizes.value[programme.id] : null;
-      const width = expanded ? Math.max(baseWidth, size?.width || 320) : baseWidth;
-      const height = expanded ? Math.max(170, size?.height || 170) : 58;
-      const style = {
+      const width = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
+      return {
         left: `${left}px`,
         width: `${width}px`,
-        height: `${Math.max(height, programmeBlockHeight.value)}px`,
+        height: `${programmeBlockHeight.value}px`,
       };
-      if (expanded) {
-        const minimumLeft = 8;
-        style.left = `${Math.max(left, minimumLeft)}px`;
-      }
-      return style;
     };
 
     const programmeContentStyle = (programme) => {
       const programmeLeft = ((programme.start_ts - startTs.value) / 60) * pxPerMinute;
-      const baseWidth = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
-      const expanded = expandedProgramId.value === programme.id;
-      const size = expanded ? expandedSizes.value[programme.id] : null;
-      const programmeWidth = expanded ? Math.max(baseWidth, size?.width || 320) : baseWidth;
+      const programmeWidth = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
       const hiddenLeft = Math.max(0, lastHeaderLeft.value - programmeLeft);
       const minVisibleWidth = isMobileLayout.value ? 56 : 72;
       const maxShift = Math.max(0, programmeWidth - minVisibleWidth);
@@ -599,6 +645,17 @@ export default defineComponent({
 
     const formatTime = (ts) => {
       return formatDisplayTime(ts);
+    };
+
+    const formatProgrammeTimespan = (programme) => {
+      if (!programme) return '';
+      return `${formatTime(programme.start_ts)} - ${formatTime(programme.stop_ts)}`;
+    };
+
+    const formatProgrammeDuration = (programme) => {
+      if (!programme) return '';
+      const minutes = Math.max(1, Math.round((programme.stop_ts - programme.start_ts) / 60));
+      return `${minutes} min`;
     };
 
     const getProgrammeEpgId = (programme) => {
@@ -1113,30 +1170,23 @@ export default defineComponent({
         return;
       }
       const wasExpanded = expandedProgramId.value === programme.id;
+      const nextExpandedId = wasExpanded ? null : programme.id;
       expandedProgramId.value = wasExpanded ? null : programme.id;
+      expandedChannelId.value = wasExpanded ? null : channel.id;
       if (!wasExpanded) {
         nextTick(() => {
           const programmeEl = programmeRefs.get(programme.id);
-          if (programmeEl) {
-            const desiredWidth = Math.max(programmeEl.scrollWidth, programmeEl.offsetWidth);
-            const desiredHeight = Math.max(programmeEl.scrollHeight, programmeEl.offsetHeight);
-            expandedSizes.value = {
-              ...expandedSizes.value,
-              [programme.id]: {
-                width: desiredWidth,
-                height: desiredHeight,
-              },
-            };
-          }
           const bodyEl = guideBody.value;
           const headerEl = scrollHeader.value;
           const bodyEls = getBodyScrollEls();
           const scrollLeft = bodyEls[0]?.scrollLeft || 0;
           const programmeLeft = ((programme.start_ts - startTs.value) / 60) * pxPerMinute;
-          const baseWidth = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
-          const programmeWidth = Math.max(baseWidth, expandedSizes.value[programme.id]?.width || 320);
+          const programmeWidth = Math.max(140, ((programme.stop_ts - programme.start_ts) / 60) * pxPerMinute);
           const programmeRight = programmeLeft + programmeWidth;
           const viewportWidth = bodyEl?.clientWidth || 0;
+          if (!programmeEl || nextExpandedId !== expandedProgramId.value) {
+            return;
+          }
           if (programmeLeft < scrollLeft + 10) {
             const targetLeft = Math.max(0, programmeLeft - 10);
             bodyEls.forEach((el) => {
@@ -1167,12 +1217,17 @@ export default defineComponent({
       return programme.start_ts <= now && programme.stop_ts >= now;
     };
 
-    const rowHeight = (channel) => {
-      const channelProgrammes = programmesByChannel.value[channel.id] || [];
-      const expanded = channelProgrammes.some((programme) => programme.id === expandedProgramId.value);
-      if (!expanded) return isMobileLayout.value ? 62 : 70;
-      const size = expandedSizes.value[expandedProgramId.value];
-      return Math.max(isMobileLayout.value ? 168 : 200, (size?.height || 170) + 30);
+    const programmeProgressSummary = (programme) => {
+      if (!programme) return '';
+      const durationLabel = formatProgrammeDuration(programme);
+      if (isLive(programme)) {
+        const remainingMinutes = Math.max(1, Math.ceil((programme.stop_ts - nowTs.value) / 60));
+        return `${remainingMinutes} min left`;
+      }
+      if (programme.start_ts > nowTs.value) {
+        return durationLabel;
+      }
+      return `Ended · ${durationLabel}`;
     };
 
     const nowLineLeft = computed(() => {
@@ -1333,6 +1388,21 @@ export default defineComponent({
       return null;
     };
 
+    const selectedProgramme = computed(() => {
+      if (!expandedProgramId.value) return null;
+      return programmes.value.find((programme) => programme.id === expandedProgramId.value) || null;
+    });
+
+    const selectedChannel = computed(() => {
+      if (!expandedChannelId.value) return null;
+      return channels.value.find((channel) => channel.id === expandedChannelId.value) || null;
+    });
+
+    const selectedRecording = computed(() => {
+      if (!selectedProgramme.value || !selectedChannel.value) return null;
+      return getRecordingForProgramme(selectedProgramme.value, selectedChannel.value);
+    });
+
     const recordingBadgeLabel = (rec) => {
       if (!rec?.status) return 'Scheduled';
       const status = String(rec.status).toLowerCase();
@@ -1360,7 +1430,7 @@ export default defineComponent({
     const programmeClass = (programme, channel) => {
       const rec = getRecordingForProgramme(programme, channel);
       return {
-        'guide__program--expanded': !isMobileLayout.value && expandedProgramId.value === programme.id,
+        'guide__program--selected': !isMobileLayout.value && expandedProgramId.value === programme.id,
         'guide__program--scheduled': rec && recordingBadgeLabel(rec) === 'Scheduled',
         'guide__program--recording': rec && recordingBadgeLabel(rec) === 'Recording',
       };
@@ -1380,6 +1450,7 @@ export default defineComponent({
       hoveredChannelId,
       guideStickyTop,
       expandedProgramId,
+      expandedChannelId,
       scrollHeader,
       scrollBody,
       guideBody,
@@ -1393,6 +1464,7 @@ export default defineComponent({
       nowLineLeft,
       nowLineVisible,
       formatTime,
+      formatProgrammeTimespan,
       fetchGuide,
       refreshCurrentGuideWindow,
       previewChannel,
@@ -1413,6 +1485,10 @@ export default defineComponent({
       toggleChannelRail,
       isLive,
       rowHeight,
+      selectedProgramme,
+      selectedChannel,
+      selectedRecording,
+      programmeProgressSummary,
       onToolbarFilterChange,
       openFilterDialog,
       clearFilterDraft,
@@ -1454,6 +1530,10 @@ export default defineComponent({
   border-bottom: 1px solid var(--guide-border);
 }
 
+.guide__row--selected {
+  border-bottom: 0;
+}
+
 .guide__header {
   position: sticky;
   top: var(--guide-sticky-top, 0px);
@@ -1471,6 +1551,8 @@ export default defineComponent({
   padding: 10px 12px;
   background: var(--guide-channel-bg);
   border-right: 1px solid var(--guide-channel-border);
+  box-sizing: border-box;
+  height: 100%;
 }
 
 .guide__header .guide__channel-col {
@@ -1562,6 +1644,7 @@ export default defineComponent({
 .guide__timeline-col {
   position: relative;
   overflow: hidden;
+  height: 100%;
 }
 
 .guide__now-line {
@@ -1577,6 +1660,13 @@ export default defineComponent({
 .guide__scroll {
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  height: 100%;
+}
+
+.guide__scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .guide__scroll--draggable {
@@ -1591,6 +1681,7 @@ export default defineComponent({
 .guide__timeline {
   position: relative;
   height: 70px;
+  min-height: 100%;
 }
 
 .guide__tick {
@@ -1618,16 +1709,20 @@ export default defineComponent({
 
 .guide__program {
   position: absolute;
-  top: 6px;
+  top: 0;
   height: var(--guide-program-height, 58px);
   background: var(--guide-program-bg);
   color: var(--guide-program-text);
-  border-radius: 6px;
-  padding: 6px 8px;
+  border-radius: 0;
+  padding: 5px 8px;
   box-sizing: border-box;
   overflow: hidden;
   cursor: pointer;
   border: 1px solid var(--guide-program-border);
+  transition: transform 0.16s ease,
+  box-shadow 0.16s ease,
+  border-color 0.16s ease,
+  background 0.16s ease;
 }
 
 .guide__program-content {
@@ -1678,42 +1773,190 @@ export default defineComponent({
   text-overflow: ellipsis;
 }
 
+.guide__program-subtitle {
+  margin-top: 2px;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  color: var(--guide-program-time);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .guide__program-time {
+  margin-top: 4px;
   font-size: 0.7rem;
   color: var(--guide-program-time);
 }
 
-.guide__program-actions {
+.guide__program--selected {
+  z-index: 5;
+  background: var(--guide-program-expanded-bg);
+  background-color: var(--guide-program-expanded-bg) !important;
+  background-image: none !important;
+  border-color: var(--guide-program-expanded-border);
+}
+
+.guide__program--selected.guide__program--scheduled,
+.guide__program--selected.guide__program--recording {
+  background: var(--guide-program-expanded-bg);
+  background-color: var(--guide-program-expanded-bg) !important;
+  background-image: none !important;
+  border-color: var(--guide-program-expanded-border);
+}
+
+.guide__body .guide__channel-col {
   display: flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.guide__detail-row {
+  padding: 0 8px 10px;
+  border-bottom: 1px solid var(--guide-border);
+  margin-top: -1px;
+  background: var(--guide-channel-bg);
+  background-color: var(--guide-channel-bg);
+}
+
+.guide__detail-panel {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--guide-program-expanded-border);
+  border-radius: 0;
+  background: var(--guide-program-expanded-bg);
+  background-color: var(--guide-program-expanded-bg);
+  box-shadow: none;
+}
+
+.guide__detail-media {
+  display: flex;
+}
+
+.guide__detail-art {
+  width: 100%;
+  height: 88px;
+  object-fit: cover;
+  border-radius: var(--tic-radius-md);
+  border: 1px solid var(--guide-program-border);
+  background: color-mix(in srgb, var(--guide-program-bg) 88%, black 12%);
+}
+
+.guide__detail-art--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--guide-program-time);
+}
+
+.guide__detail-main {
+  min-width: 0;
+}
+
+.guide__detail-topline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 0.74rem;
+  color: var(--guide-program-time);
+  align-items: center;
+}
+
+.guide__detail-channel {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--q-primary) 12%, transparent);
+  color: var(--guide-program-text);
+  font-weight: 600;
+}
+
+.guide__detail-channel-number {
+  color: var(--guide-program-time);
+}
+
+.guide__detail-meta {
+  position: relative;
+}
+
+.guide__detail-meta:not(:first-child)::before {
+  content: '•';
+  margin-right: 10px;
+  color: var(--guide-program-time);
+}
+
+.guide__detail-meta--recording {
+  color: var(--q-negative);
+  font-weight: 600;
+}
+
+.guide__detail-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.12;
+  color: var(--guide-program-text);
+}
+
+.guide__detail-subtitle {
+  margin-top: 4px;
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--guide-program-details);
+  min-height: 1.25rem;
+}
+
+.guide__detail-subtitle--empty {
+  visibility: hidden;
+}
+
+.guide__detail-description {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--guide-program-details);
+  white-space: pre-line;
+  min-height: calc(0.8rem * 1.45 * 2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.guide__detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
   flex-wrap: wrap;
 }
 
-.guide__program--expanded {
-  z-index: 5;
-  box-shadow: var(--guide-program-shadow);
-  background: var(--guide-program-expanded-bg);
-  overflow: visible;
-  padding-bottom: 16px;
+.guide__detail-actions--inline :deep(.q-btn) {
+  min-height: 34px;
+  padding-left: 14px;
+  padding-right: 14px;
 }
 
-.guide__program-details {
-  margin-top: 6px;
-  font-size: 0.75rem;
-  color: var(--guide-program-details);
-}
-
-.guide__program-desc {
-  margin-bottom: 6px;
-  max-height: none;
-  overflow: visible;
+.guide__detail-actions--inline :deep(.q-btn__content) {
+  justify-content: center;
+  column-gap: 8px;
 }
 
 .guide-programme-popup__title {
   font-weight: 600;
   font-size: 1rem;
   line-height: 1.2;
+}
+
+.guide-programme-popup__subtitle {
+  margin-top: 6px;
+  font-size: 0.86rem;
+  color: var(--guide-program-time);
 }
 
 .guide-programme-popup__meta {
@@ -1737,6 +1980,11 @@ export default defineComponent({
 @media (max-width: 1023px) {
   .guide__channel-col {
     padding: 8px 10px;
+  }
+
+  .guide__body .guide__channel-col {
+    padding-top: 0;
+    padding-bottom: 0;
   }
 
   .guide__channel-col--header {
@@ -1818,12 +2066,16 @@ export default defineComponent({
   }
 
   .guide__program {
-    top: 5px;
-    padding: 5px 6px;
+    top: 0;
+    padding: 4px 6px;
   }
 
   .guide__program-title {
     font-size: 0.76rem;
+  }
+
+  .guide__program-subtitle {
+    font-size: 0.62rem;
   }
 
   .guide__program-time {
@@ -1834,6 +2086,11 @@ export default defineComponent({
 @media (max-width: 599px) {
   .guide__channel-col {
     padding: 8px 6px;
+  }
+
+  .guide__body .guide__channel-col {
+    padding-top: 0;
+    padding-bottom: 0;
   }
 
   .guide__channel-row--mobile-expanded {
@@ -1875,13 +2132,17 @@ export default defineComponent({
   }
 
   .guide__program {
-    top: 4px;
+    top: 0;
     padding: 4px 5px;
-    border-radius: 5px;
+    border-radius: 0;
   }
 
   .guide__program-title {
     font-size: 0.68rem;
+  }
+
+  .guide__program-subtitle {
+    font-size: 0.58rem;
   }
 
   .guide__program-time {
@@ -1900,6 +2161,13 @@ export default defineComponent({
 @media (hover: none), (pointer: coarse) {
   .guide__channel-logo-overlay {
     opacity: 1;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1320px) {
+  .guide__detail-panel {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 12px;
   }
 }
 </style>

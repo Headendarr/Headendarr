@@ -586,15 +586,15 @@ export default {
       this.enforceVodSettingsConsistency();
     },
   },
-    methods: {
-      enforceVodSettingsConsistency() {
-        const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
-        if (roles.includes('admin')) {
-          this.form.timeshift_enabled = true;
-        }
-        if (!roles.includes('admin') && this.form.vod_access_mode === 'none') {
-          this.form.vod_generate_strm_files = false;
-        }
+  methods: {
+    enforceVodSettingsConsistency() {
+      const roles = Array.isArray(this.form.roles) ? this.form.roles : (this.form.roles ? [this.form.roles] : []);
+      if (roles.includes('admin')) {
+        this.form.timeshift_enabled = true;
+      }
+      if (!roles.includes('admin') && this.form.vod_access_mode === 'none') {
+        this.form.vod_generate_strm_files = false;
+      }
     },
     async loadUsers() {
       this.loading = true;
