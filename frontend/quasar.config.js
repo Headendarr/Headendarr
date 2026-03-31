@@ -118,6 +118,8 @@ module.exports = configure(function(ctx) {
         '/tic-api': createDevProxyConfig(devApiTarget),
         '/get.php': createDevProxyConfig(devApiTarget),
         '/xmltv.php': createDevProxyConfig(devApiTarget),
+        '/movie': createDevProxyConfig(devApiTarget),
+        '/series': createDevProxyConfig(devApiTarget),
         '/tic-hls-proxy': createDevProxyConfig(devApiTarget),
         '/tic-tvh': createDevProxyConfig(devApiTarget, {ws: true}),
       },

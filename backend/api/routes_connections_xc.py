@@ -37,7 +37,7 @@ from backend.playlists import (
     read_config_all_playlists,
 )
 from backend.xc.cache import xc_cache
-from backend.stream_activity import upsert_stream_activity
+from backend.stream_activity import stop_stream_activity, touch_stream_activity, upsert_stream_activity
 from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username, user_timeshift_enabled
 from backend.utils import convert_to_int

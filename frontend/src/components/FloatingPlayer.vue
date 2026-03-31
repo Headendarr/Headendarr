@@ -96,7 +96,7 @@ import {computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch}
 import {useVideoStore} from 'stores/video';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
-import { useMobile } from 'src/composables/useMobile';
+import {useMobile} from 'src/composables/useMobile';
 
 const videoStore = useVideoStore();
 const videoEl = ref(null);
@@ -110,7 +110,7 @@ const hlsInstances = new Set();
 const mpegtsInstances = new Set();
 const initToken = ref(0);
 const pipSupported = computed(() => !!document.pictureInPictureEnabled);
-const { isMobile } = useMobile();
+const {isMobile} = useMobile();
 const currentSessionId = ref(null);
 const volumeHandler = ref(null);
 const applyingPersistedVolume = ref(false);
@@ -122,6 +122,8 @@ const resizeHandler = ref(null);
 const loadTimeout = ref(null);
 const loadingStartedAt = ref(0);
 const errorAutoClearTimer = ref(null);
+const suppressTransientErrors = ref(false);
+const playbackStarted = ref(false);
 const streamDetails = ref({
   resolution: '',
   videoCodec: '',
@@ -154,12 +156,10 @@ const streamDetailsText = computed(() => {
 async function safePlay(el) {
   try {
     await el.play();
-    return true;
+    return {started: true, error: null};
   } catch (error) {
     console.warn('[FloatingPlayer] play failed', error);
-    setErrorMessage('Unable to start playback. The stream may be invalid or unsupported.');
-    isLoading.value = false;
-    return false;
+    return {started: false, error};
   }
 }
 
@@ -297,6 +297,8 @@ function cleanupPlayer() {
   console.info('[FloatingPlayer] cleanupPlayer start');
   stopPlaybackHeartbeat(true);
   clearErrorMessage();
+  suppressTransientErrors.value = true;
+  playbackStarted.value = false;
   for (const hls of Array.from(hlsInstances)) {
     try {
       hls.stopLoad();
@@ -488,6 +490,8 @@ async function initPlayer() {
   const token = ++initToken.value;
   cleanupPlayer();
   clearErrorMessage();
+  suppressTransientErrors.value = true;
+  playbackStarted.value = false;
   if (!currentSessionId.value) {
     currentSessionId.value = generateConnectionId();
   }
@@ -531,8 +535,13 @@ async function initPlayer() {
         console.warn('[FloatingPlayer] media error', mediaError);
       }
       if (mediaError?.code === 1) {
-        setErrorMessage('Stream loading was aborted.', 3000);
-      } else if (mediaError?.code === 2) {
+        // Source swaps and player re-initialisation commonly emit abort events that recover cleanly.
+        return;
+      }
+      if (suppressTransientErrors.value && !playbackStarted.value) {
+        return;
+      }
+      if (mediaError?.code === 2) {
         setErrorMessage('Network error while loading the stream.', 4000);
       } else if (mediaError?.code === 3) {
         setErrorMessage('Stream could not be decoded. The format may be unsupported.', 4000);
@@ -547,6 +556,8 @@ async function initPlayer() {
   }
   if (!videoPlayingHandler.value) {
     videoPlayingHandler.value = () => {
+      playbackStarted.value = true;
+      suppressTransientErrors.value = false;
       clearErrorMessage();
       isLoading.value = false;
       startPlaybackHeartbeat(url, videoStore.streamTitle || '', currentSessionId.value);
@@ -605,10 +616,14 @@ async function initPlayer() {
           }
           applyBitrate(initialLevel.bitrate);
         }
-        const started = await safePlay(el);
+        const {started, error} = await safePlay(el);
         applyPersistedVolume(el);
         if (!started) {
-          setErrorMessage('Playback blocked by browser. Press play to start.');
+          if (error?.name === 'NotAllowedError') {
+            setErrorMessage('Press play to start playback.', 5000);
+          } else if (error?.name !== 'AbortError') {
+            setErrorMessage('Unable to start playback. The stream may be invalid or unsupported.');
+          }
         }
         isLoading.value = !started;
         snapToAspectRatio();
@@ -640,17 +655,14 @@ async function initPlayer() {
           setErrorMessage('Stream rejected (unauthorized).');
         } else if (status === 404) {
           setErrorMessage('Stream not found.', data?.fatal ? 0 : 3500);
-        } else if (details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
+        } else if (details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR && data?.fatal) {
           setErrorMessage('Stream manifest failed to load.', data?.fatal ? 0 : 3500);
-        } else if (details === Hls.ErrorDetails.LEVEL_LOAD_ERROR) {
-          setErrorMessage('Stream level failed to load.', data?.fatal ? 0 : 3500);
-        } else if (details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
-          setErrorMessage('Stream data failed to load.', data?.fatal ? 0 : 3500);
         } else if (data?.fatal) {
           setErrorMessage('Unable to load stream. Please try again.');
         }
         if (data?.fatal || details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
           isLoading.value = false;
+          suppressTransientErrors.value = false;
         }
       });
       return;
@@ -666,9 +678,16 @@ async function initPlayer() {
       mpegtsInstances.add(player);
       player.attachMediaElement(el);
       player.load();
-      await safePlay(el);
+      const {started, error} = await safePlay(el);
       applyPersistedVolume(el);
-      isLoading.value = false;
+      if (!started) {
+        if (error?.name === 'NotAllowedError') {
+          setErrorMessage('Press play to start playback.', 5000);
+        } else if (error?.name !== 'AbortError') {
+          setErrorMessage('Unable to start playback. The stream may be invalid or unsupported.');
+        }
+      }
+      isLoading.value = !started;
       snapToAspectRatio();
       player.on?.(mpegts.Events.MEDIA_INFO, (info) => {
         if (info?.width && info?.height) {
@@ -689,6 +708,7 @@ async function initPlayer() {
       });
       player.on?.(mpegts.Events.ERROR, (err) => {
         console.warn('[FloatingPlayer] MPEGTS error', err);
+        suppressTransientErrors.value = false;
         setErrorMessage('Unable to load stream. Please try again.');
         isLoading.value = false;
       });
@@ -696,12 +716,20 @@ async function initPlayer() {
     }
 
     el.src = url;
-    await safePlay(el);
+    const {started, error} = await safePlay(el);
     applyPersistedVolume(el);
-    isLoading.value = false;
+    if (!started) {
+      if (error?.name === 'NotAllowedError') {
+        setErrorMessage('Press play to start playback.', 5000);
+      } else if (error?.name !== 'AbortError') {
+        setErrorMessage('Unable to start playback. The stream may be invalid or unsupported.');
+      }
+    }
+    isLoading.value = !started;
     snapToAspectRatio();
   } catch (error) {
     console.error('Failed to initialize player:', error);
+    suppressTransientErrors.value = false;
     setErrorMessage('Unable to start playback.');
     isLoading.value = false;
   }
@@ -1007,10 +1035,10 @@ watch(
       cleanupPlayer();
       return;
     }
-    const defaultPosition = { right: 24, bottom: 24, left: null, top: null };
-    const mobilePosition = { right: 0, bottom: 0, left: 0, top: null };
-    const defaultSize = { width: 640, height: 360 }; // Default desktop size
-    const mobileSize = { width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300) };
+    const defaultPosition = {right: 24, bottom: 24, left: null, top: null};
+    const mobilePosition = {right: 0, bottom: 0, left: 0, top: null};
+    const defaultSize = {width: 640, height: 360}; // Default desktop size
+    const mobileSize = {width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300)};
 
     if (isMobile.value) {
       videoStore.setPosition(mobilePosition);
@@ -1027,10 +1055,10 @@ watch(
 // Watch for changes in isMobile to adjust player size and position
 watch(isMobile, (newIsMobile, oldIsMobile) => {
   if (newIsMobile !== oldIsMobile && videoStore.isVisible) {
-    const defaultPosition = { right: 24, bottom: 24, left: null, top: null };
-    const mobilePosition = { right: 0, bottom: 0, left: 0, top: null };
-    const defaultSize = { width: 640, height: 360 };
-    const mobileSize = { width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300) };
+    const defaultPosition = {right: 24, bottom: 24, left: null, top: null};
+    const mobilePosition = {right: 0, bottom: 0, left: 0, top: null};
+    const defaultSize = {width: 640, height: 360};
+    const mobileSize = {width: window.innerWidth, height: Math.min(window.innerHeight * 0.5, 300)};
 
     if (newIsMobile) {
       videoStore.setPosition(mobilePosition);

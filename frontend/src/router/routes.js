@@ -151,6 +151,22 @@ const routes = [
     ],
   },
   {
+    name: 'library',
+    path: '/library',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [
+      {
+        path: '',
+        component: () => import('pages/LibraryPage.vue'),
+        meta: {
+          requiresAuth: true,
+          requiresStreamer: true,
+          requiresVodAccess: true,
+        },
+      },
+    ],
+  },
+  {
     name: 'users',
     path: '/users',
     component: () => import('layouts/MainLayout.vue'),

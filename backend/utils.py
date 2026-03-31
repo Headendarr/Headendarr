@@ -26,6 +26,13 @@ def convert_to_int(value: int | str | None, default: int = 1) -> int:
         return default
 
 
+def int_or_none(value: int | str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def convert_to_bool(value: object, default: bool = False) -> bool:
     if value is None:
         return default

@@ -10,22 +10,32 @@ from backend.api import blueprint
 from backend.auth import (
     admin_auth_required,
     authenticate_stream_request,
+    get_user_from_token,
     mark_stream_key_usage,
     rate_limited_basic_auth_response,
     unauthorized_basic_auth_response,
+    user_auth_required,
 )
 from backend.vod import (
     create_vod_group,
     delete_vod_group,
+    fetch_curated_library_item_details,
+    fetch_upstream_vod_item_details,
+    get_library_page_state,
     get_vod_page_state,
+    list_curated_library_categories,
+    list_curated_library_items,
+    list_upstream_vod_items,
     list_upstream_vod_categories,
     list_vod_groups,
     require_vod_content_type,
+    resolve_xc_item_upstream_url,
     resolve_vod_http_library_path,
     update_vod_group,
     user_can_access_vod_kind,
     user_has_vod_access,
 )
+from backend.utils import convert_to_int, int_or_none
 
 ignored_library_probe_suffixes = (
     "/.nomedia",
@@ -101,6 +111,125 @@ async def delete_vod_group_route(group_id):
     if not ok:
         return jsonify({"success": False, "message": "VOD group not found"}), 404
     return jsonify({"success": True})
+
+
+@blueprint.route("/tic-api/vod/browser/items", methods=["GET"])
+@admin_auth_required
+async def vod_browser_items():
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    playlist_id = request.args.get("playlist_id")
+    category_id = request.args.get("category_id")
+    payload = await list_upstream_vod_items(
+        content_type,
+        source_playlist_id=int_or_none(playlist_id),
+        upstream_category_id=int_or_none(category_id),
+        search_query=request.args.get("search"),
+        offset=convert_to_int(request.args.get("offset"), default=0),
+        limit=convert_to_int(request.args.get("limit"), default=50),
+    )
+    return jsonify({"success": True, "data": payload})
+
+
+@blueprint.route("/tic-api/vod/browser/details/<int:item_id>", methods=["GET"])
+@admin_auth_required
+async def vod_browser_item_details(item_id: int):
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    payload = await fetch_upstream_vod_item_details(content_type, int(item_id))
+    if payload is None:
+        return jsonify({"success": False, "message": "VOD item not found"}), 404
+    return jsonify({"success": True, "data": payload})
+
+
+@blueprint.route("/tic-api/vod/browser/items/<int:item_id>/preview", methods=["GET"])
+@admin_auth_required
+async def vod_browser_item_preview(item_id: int):
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    upstream_episode_id = request.args.get("upstream_episode_id")
+    container_extension = request.args.get("container_extension")
+    _source_item, preview_url, _account, error_message = await resolve_xc_item_upstream_url(
+        int(item_id),
+        content_type,
+        upstream_episode_id=upstream_episode_id,
+        container_extension=container_extension,
+    )
+    if error_message:
+        return jsonify({"success": False, "message": error_message}), 404
+    if not preview_url:
+        return jsonify({"success": False, "message": "Preview URL unavailable"}), 404
+    lower_preview_url = str(preview_url).lower()
+    if lower_preview_url.endswith(".m3u8"):
+        stream_type = "hls"
+    elif lower_preview_url.endswith(".ts"):
+        stream_type = "mpegts"
+    else:
+        stream_type = "auto"
+    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+
+
+@blueprint.route("/tic-api/library/categories", methods=["GET"])
+@user_auth_required
+async def curated_library_categories():
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    user = await get_user_from_token()
+    return jsonify({"success": True, "data": await list_curated_library_categories(user, content_type)})
+
+
+@blueprint.route("/tic-api/library/status", methods=["GET"])
+@user_auth_required
+async def curated_library_status():
+    user = await get_user_from_token()
+    return jsonify({"success": True, "data": await get_library_page_state(user)})
+
+
+@blueprint.route("/tic-api/library/items", methods=["GET"])
+@user_auth_required
+async def curated_library_items():
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    user = await get_user_from_token()
+    payload = await list_curated_library_items(
+        user,
+        content_type,
+        category_id=int_or_none(request.args.get("category_id")),
+        search_query=request.args.get("search"),
+        offset=convert_to_int(request.args.get("offset"), default=0),
+        limit=convert_to_int(request.args.get("limit"), default=50),
+    )
+    return jsonify({"success": True, "data": payload})
+
+
+@blueprint.route("/tic-api/library/details/<int:item_id>", methods=["GET"])
+@user_auth_required
+async def curated_library_item_details(item_id: int):
+    try:
+        content_type = require_vod_content_type(request.args.get("content_type"))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    user = await get_user_from_token()
+    payload = await fetch_curated_library_item_details(user, content_type, int(item_id))
+    if payload is None:
+        return jsonify({"success": False, "message": "VOD item not found"}), 404
+    return jsonify({"success": True, "data": payload})
 
 
 def _render_vod_http_directory(current_path: str, children: list[dict[str, object]]) -> str:

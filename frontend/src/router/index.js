@@ -7,6 +7,7 @@ import {
 } from 'vue-router';
 import {useAuthStore} from 'stores/auth';
 import {useSettingsStore} from 'stores/settings';
+import {useVodStore} from 'stores/vod';
 import routes from './routes';
 
 /*
@@ -84,9 +85,19 @@ export default route(function(/* { store, ssrContext } */) {
     return mode === 'read_write_own' || mode === 'read_all_write_own';
   };
 
+  const canUseVodLibrary = (user) => {
+    const roles = user?.roles || [];
+    if (roles.includes('admin')) {
+      return true;
+    }
+    const mode = String(user?.vod_access_mode || 'none').toLowerCase();
+    return mode === 'movies' || mode === 'series' || mode === 'movies_series';
+  };
+
   // Add navigation guard
   Router.beforeEach(async (to, from, next) => {
     const authStore = useAuthStore();
+    const vodStore = useVodStore();
     if (to.meta.requiresAuth) {
       const canUseWarmSession =
         authStore.isAuthenticated && authStore.token && authStore.user &&
@@ -128,6 +139,26 @@ export default route(function(/* { store, ssrContext } */) {
           const roles = authStore.user?.roles || [];
           next({path: getRoleHomeRoute(roles), replace: true});
           return;
+        }
+        if (to.meta.requiresVodAccess && !canUseVodLibrary(authStore.user)) {
+          const roles = authStore.user?.roles || [];
+          next({path: getRoleHomeRoute(roles), replace: true});
+          return;
+        }
+        if (to.meta.requiresVodAccess) {
+          try {
+            const username = String(authStore.user?.username || '').trim();
+            if (username) {
+              await vodStore.refreshLibraryStatus(username, {minAgeMs: 3000});
+            }
+          } catch {
+            vodStore.resetLibraryStatus();
+          }
+          if (!vodStore.libraryPageVisible) {
+            const roles = authStore.user?.roles || [];
+            next({path: getRoleHomeRoute(roles), replace: true});
+            return;
+          }
         }
         next();
       } else {

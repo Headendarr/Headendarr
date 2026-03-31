@@ -6,16 +6,37 @@
           :class="uiStore.showHelp ? 'col-12 col-md-8 help-main' : 'col-12 help-main help-main--full'"
         >
           <q-card flat>
-            <div class="dvr-tabs-bar">
-              <q-tabs
-                v-model="activeTab"
-                align="left"
-                class="dvr-tabs text-primary"
-                content-class="dvr-tabs-content"
-              >
-                <q-tab name="movie" :label="`Movies (${movieCategoryCount})`" />
-                <q-tab name="series" :label="`TV Series (${seriesCategoryCount})`" />
-              </q-tabs>
+            <div class="dvr-tabs-bar row items-center justify-between q-col-gutter-sm">
+              <div class="col">
+                <q-tabs
+                  v-model="activeTab"
+                  align="left"
+                  class="dvr-tabs text-primary"
+                  content-class="dvr-tabs-content"
+                >
+                  <q-tab name="movie" :label="`Movies (${movieCategoryCount})`" />
+                  <q-tab name="series" :label="`TV Series (${seriesCategoryCount})`" />
+                </q-tabs>
+              </div>
+              <div class="col-auto q-pr-xs">
+                <TicButton
+                  v-if="!$q.screen.lt.sm"
+                  label="Browse Upstream"
+                  icon="travel_explore"
+                  color="primary"
+                  class="section-toolbar-btn"
+                  @click="openUpstreamBrowser"
+                />
+                <TicButton
+                  v-else
+                  icon="travel_explore"
+                  color="primary"
+                  round
+                  tooltip="Browse Upstream"
+                  class="section-toolbar-icon-btn"
+                  @click="openUpstreamBrowser"
+                />
+              </div>
             </div>
 
             <q-separator />
@@ -357,6 +378,7 @@
     </div>
 
     <VodGroupInfoDialog ref="vodCategoryInfoDialogRef" @ok="onDialogSaved" />
+    <UpstreamVodBrowserDialog ref="upstreamVodBrowserDialogRef" />
   </q-page>
 </template>
 
@@ -365,18 +387,28 @@ import {defineComponent} from 'vue';
 import axios from 'axios';
 import draggable from 'vuedraggable';
 import {useUiStore} from 'stores/ui';
+import UpstreamVodBrowserDialog from 'components/UpstreamVodBrowserDialog.vue';
 import VodGroupInfoDialog from 'components/VodGroupInfoDialog.vue';
-import {TicActionButton, TicListActions, TicListItemCard, TicListToolbar, TicResponsiveHelp} from 'components/ui';
+import {
+  TicActionButton,
+  TicButton,
+  TicListActions,
+  TicListItemCard,
+  TicListToolbar,
+  TicResponsiveHelp,
+} from 'components/ui';
 
 export default defineComponent({
   name: 'VodPage',
   components: {
     draggable,
     TicActionButton,
+    TicButton,
     TicListActions,
     TicListItemCard,
     TicListToolbar,
     TicResponsiveHelp,
+    UpstreamVodBrowserDialog,
     VodGroupInfoDialog,
   },
   setup() {
@@ -617,6 +649,9 @@ export default defineComponent({
         this.editCategory(category);
       }
     },
+    openUpstreamBrowser() {
+      this.$refs.upstreamVodBrowserDialogRef?.show();
+    },
     async onDialogSaved() {
       await this.loadGroups();
     },
@@ -714,6 +749,14 @@ export default defineComponent({
   background: var(--tic-list-card-default-header-bg);
   color: var(--q-grey-2);
   border: 1px solid var(--q-separator-color);
+}
+
+.section-toolbar-btn {
+  margin-right: 4px;
+}
+
+.section-toolbar-icon-btn {
+  margin-right: 4px;
 }
 
 .channel-list-item {

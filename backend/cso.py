@@ -319,8 +319,8 @@ async def cso_source_from_vod_source(
         if episode_source:
             source_id = convert_to_int(episode_source.id, 0)
             container_extension = episode_source.container_extension or container_extension
-        group_item_is_curated = bool(group_item is not None and not convert_to_int(group_item.playlist_id, 0))
-        episode_item_is_curated = bool(episode_item is not None and not convert_to_int(episode_item.playlist_id, 0))
+        group_item_is_curated = group_item is not None
+        episode_item_is_curated = episode_item is not None
         if group_item is not None:
             container_extension = container_extension or group_item.container_extension
         if candidate.content_type == "movie":
@@ -996,7 +996,9 @@ def _vod_content_type_for_source(source: CsoSource):
     return None
 
 
-def _build_vod_local_response_headers(total_size: int, metadata_headers=None, start=0, end=None, include_length=True):
+def _build_vod_local_response_headers(
+    total_size: int, metadata_headers=None, start=0, end=None, include_length=True, force_content_range=False
+):
     headers = {}
     meta = dict(metadata_headers or {})
     for key in ("Content-Type", "Cache-Control", "Content-Disposition", "ETag", "Last-Modified"):
@@ -1008,7 +1010,7 @@ def _build_vod_local_response_headers(total_size: int, metadata_headers=None, st
         end = max(0, int(total_size or 0) - 1)
     if include_length:
         headers["Content-Length"] = str(max(0, int(end) - int(start) + 1))
-    if start > 0 or end < max(0, int(total_size or 0) - 1):
+    if force_content_range or start > 0 or end < max(0, int(total_size or 0) - 1):
         headers["Content-Range"] = f"bytes {int(start)}-{int(end)}/{int(total_size)}"
     return headers
 
@@ -1550,6 +1552,7 @@ class VodProxySession:
                             metadata_headers=self.cache_entry.metadata_headers,
                             start=start,
                             end=end,
+                            force_content_range=bool(parsed_range),
                         )
                     self.running = True
                     logger.info(

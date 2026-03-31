@@ -2315,6 +2315,19 @@ async def get_vod_page_state() -> dict[str, bool]:
         }
 
 
+async def get_library_page_state(user: User | None) -> dict[str, object]:
+    movie_categories = await list_curated_library_categories(user, VOD_KIND_MOVIE)
+    series_categories = await list_curated_library_categories(user, VOD_KIND_SERIES)
+    movie_count = len(movie_categories)
+    series_count = len(series_categories)
+    return {
+        "movie_category_count": int(movie_count),
+        "series_category_count": int(series_count),
+        "has_curated_content": bool(movie_count or series_count),
+        "show_page": bool(movie_count or series_count),
+    }
+
+
 async def list_upstream_vod_categories(
     content_type: str, source_playlist_id: int | None = None
 ) -> list[dict[str, object]]:
@@ -2395,6 +2408,385 @@ async def list_vod_groups(content_type: str) -> list[dict[str, object]]:
                 }
             )
         return groups
+
+
+def _vod_item_summary_fields(summary_json: str | None) -> dict[str, object]:
+    summary = _load_summary(summary_json)
+    info = _summary_info(summary)
+    plot = clean_text(
+        info.get("plot")
+        or summary.get("plot")
+        or info.get("description")
+        or summary.get("description")
+        or info.get("overview")
+        or summary.get("overview")
+    )
+    return {
+        "plot": plot,
+        "added": clean_text(summary.get("added") or info.get("added")),
+        "genre": _nfo_text_values(info.get("genre") or summary.get("genre") or info.get("genres") or summary.get("genres")),
+    }
+
+
+def _flatten_series_episode_payload(payload: dict[str, object]) -> list[dict[str, object]]:
+    episodes_by_season = payload.get("episodes")
+    if not isinstance(episodes_by_season, dict):
+        return []
+
+    flattened = []
+    for season_key, entries in episodes_by_season.items():
+        season_number = int(season_key) if str(season_key).isdigit() else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            episode_number = int(entry.get("episode_num") or 0) or None
+            flattened.append(
+                {
+                    "id": int(entry.get("id") or 0) if str(entry.get("id") or "").isdigit() else None,
+                    "title": clean_text(entry.get("title")),
+                    "season_number": season_number,
+                    "episode_number": episode_number,
+                    "container_extension": clean_text(entry.get("container_extension")).lstrip(".").lower() or "mp4",
+                    "plot": clean_text(
+                        entry.get("plot")
+                        or ((entry.get("info") or {}) if isinstance(entry.get("info"), dict) else {}).get("plot")
+                    ),
+                }
+            )
+    flattened.sort(
+        key=lambda row: (
+            int(row.get("season_number") or 0),
+            int(row.get("episode_number") or 0),
+            clean_text(row.get("title")).casefold(),
+        )
+    )
+    return flattened
+
+
+async def list_upstream_vod_items(
+    content_type: str,
+    source_playlist_id: int | None = None,
+    upstream_category_id: int | None = None,
+    search_query: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, object]:
+    content_type = require_vod_content_type(content_type)
+    resolved_offset = max(0, int(offset or 0))
+    resolved_limit = max(1, min(int(limit or 50), 200))
+    query_text = clean_text(search_query).casefold()
+
+    async with Session() as session:
+        stmt = (
+            select(XcVodItem, XcVodCategory, Playlist)
+            .join(XcVodCategory, XcVodCategory.id == XcVodItem.category_id, isouter=True)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .where(
+                XcVodItem.item_type == content_type,
+                Playlist.enabled.is_(True),
+            )
+        )
+        if source_playlist_id:
+            stmt = stmt.where(XcVodItem.playlist_id == int(source_playlist_id))
+        if upstream_category_id:
+            stmt = stmt.where(XcVodItem.category_id == int(upstream_category_id))
+        if query_text:
+            pattern = f"%{query_text}%"
+            stmt = stmt.where(
+                func.lower(XcVodItem.title).like(pattern)
+                | func.lower(func.coalesce(XcVodCategory.name, "")).like(pattern)
+                | func.lower(Playlist.name).like(pattern)
+                | func.lower(func.coalesce(XcVodItem.year, "")).like(pattern)
+            )
+        stmt = stmt.order_by(
+            Playlist.name.asc(),
+            XcVodCategory.name.asc(),
+            XcVodItem.sort_title.asc(),
+            XcVodItem.title.asc(),
+            XcVodItem.id.asc(),
+        )
+        result = await session.execute(stmt.offset(resolved_offset).limit(resolved_limit + 1))
+        rows = result.all()
+
+        items = []
+        for source_item, source_category, playlist in rows[:resolved_limit]:
+            summary_fields = _vod_item_summary_fields(source_item.summary_json)
+            items.append(
+                {
+                    "id": int(source_item.id),
+                    "content_type": content_type,
+                    "title": source_item.title,
+                    "year": clean_text(source_item.year),
+                    "rating": clean_text(source_item.rating),
+                    "poster_url": clean_text(source_item.poster_url),
+                    "release_date": clean_text(source_item.release_date),
+                    "container_extension": clean_text(source_item.container_extension).lstrip(".").lower() or "mp4",
+                    "playlist_id": int(playlist.id),
+                    "playlist_name": clean_text(playlist.name),
+                    "category_id": int(source_category.id) if source_category is not None else None,
+                    "category_name": clean_text(getattr(source_category, "name", "")),
+                    "upstream_item_id": clean_text(source_item.upstream_item_id),
+                    "plot": summary_fields["plot"],
+                    "genre": summary_fields["genre"],
+                    "added": summary_fields["added"],
+                }
+            )
+
+    has_more = len(rows) > resolved_limit
+    return {
+        "items": items,
+        "offset": resolved_offset,
+        "limit": resolved_limit,
+        "has_more": has_more,
+    }
+
+
+async def fetch_upstream_vod_item_details(content_type: str, item_id: int) -> dict[str, object] | None:
+    content_type = require_vod_content_type(content_type)
+    async with Session() as session:
+        result = await session.execute(
+            select(XcVodItem, XcVodCategory, Playlist)
+            .join(XcVodCategory, XcVodCategory.id == XcVodItem.category_id, isouter=True)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .where(XcVodItem.id == int(item_id), XcVodItem.item_type == content_type)
+        )
+        row = result.first()
+    if not row:
+        return None
+
+    source_item, source_category, playlist = row
+    summary_fields = _vod_item_summary_fields(source_item.summary_json)
+    metadata_payload = await _fetch_upstream_metadata(
+        source_item,
+        "get_vod_info" if content_type == VOD_KIND_MOVIE else "get_series_info",
+        str(source_item.upstream_item_id),
+        "vod_id" if content_type == VOD_KIND_MOVIE else "series_id",
+    )
+    info_payload = {}
+    if isinstance(metadata_payload, dict):
+        info_payload = _summary_info(metadata_payload)
+        if not info_payload and isinstance(metadata_payload.get("movie_data"), dict):
+            info_payload = metadata_payload.get("movie_data") or {}
+
+    detail = {
+        "id": int(source_item.id),
+        "content_type": content_type,
+        "title": clean_text(info_payload.get("name") or info_payload.get("title") or source_item.title),
+        "year": clean_text(source_item.year) or _extract_year(info_payload),
+        "rating": clean_text(info_payload.get("rating") or source_item.rating),
+        "poster_url": clean_text(
+            info_payload.get("movie_image")
+            or info_payload.get("cover")
+            or info_payload.get("cover_big")
+            or source_item.poster_url
+        ),
+        "release_date": clean_text(info_payload.get("releaseDate") or info_payload.get("release_date") or source_item.release_date),
+        "plot": clean_text(
+            info_payload.get("plot")
+            or info_payload.get("description")
+            or info_payload.get("overview")
+            or summary_fields["plot"]
+        ),
+        "genre": _nfo_text_values(info_payload.get("genre") or info_payload.get("genres") or summary_fields["genre"]),
+        "cast": _nfo_text_values(info_payload.get("cast") or info_payload.get("actors")),
+        "director": _nfo_text_values(info_payload.get("director") or info_payload.get("directors")),
+        "playlist_id": int(playlist.id),
+        "playlist_name": clean_text(playlist.name),
+        "category_id": int(source_category.id) if source_category is not None else None,
+        "category_name": clean_text(getattr(source_category, "name", "")),
+        "container_extension": clean_text(source_item.container_extension).lstrip(".").lower() or "mp4",
+        "upstream_item_id": clean_text(source_item.upstream_item_id),
+        "episodes": [],
+    }
+    if content_type == VOD_KIND_SERIES and isinstance(metadata_payload, dict):
+        detail["episodes"] = _flatten_series_episode_payload(metadata_payload)
+    return detail
+
+
+async def list_curated_library_categories(user: User | None, content_type: str) -> list[dict[str, object]]:
+    content_type = require_vod_content_type(content_type)
+    if not user_can_access_vod_kind(user, content_type):
+        return []
+
+    rows = await _group_rows_for_user(content_type)
+    category_ids = [int(row.id) for row in rows]
+    counts_by_category_id: dict[int, int] = {}
+    if category_ids:
+        async with Session() as session:
+            result = await session.execute(
+                select(VodCategoryItem.category_id, func.count(VodCategoryItem.id))
+                .where(VodCategoryItem.category_id.in_(category_ids))
+                .group_by(VodCategoryItem.category_id)
+            )
+            counts_by_category_id = {int(category_id): int(count or 0) for category_id, count in result.all()}
+
+    return [
+        {
+            "id": int(row.id),
+            "name": clean_text(row.name),
+            "item_count": int(counts_by_category_id.get(int(row.id), 0)),
+        }
+        for row in rows
+    ]
+
+
+async def list_curated_library_items(
+    user: User | None,
+    content_type: str,
+    category_id: int | None = None,
+    search_query: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, object]:
+    content_type = require_vod_content_type(content_type)
+    if not user_can_access_vod_kind(user, content_type):
+        return {"items": [], "offset": 0, "limit": 0, "has_more": False}
+
+    resolved_offset = max(0, int(offset or 0))
+    resolved_limit = max(1, min(int(limit or 50), 200))
+    query_text = clean_text(search_query).casefold()
+
+    async with Session() as session:
+        stmt = (
+            select(VodCategoryItem, VodCategory)
+            .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .join(VodCategoryItemSource, VodCategoryItemSource.category_item_id == VodCategoryItem.id)
+            .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
+            .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .where(
+                VodCategory.enabled.is_(True),
+                VodCategory.content_type == content_type,
+                VodCategoryItem.item_type == content_type,
+                Playlist.enabled.is_(True),
+            )
+            .order_by(
+                VodCategory.sort_order.asc(),
+                VodCategoryItem.sort_title.asc(),
+                VodCategoryItem.title.asc(),
+                VodCategoryItem.id.asc(),
+            )
+        )
+        if category_id:
+            stmt = stmt.where(VodCategory.id == int(category_id))
+        if query_text:
+            pattern = f"%{query_text}%"
+            stmt = stmt.where(
+                func.lower(VodCategoryItem.title).like(pattern)
+                | func.lower(VodCategory.name).like(pattern)
+                | func.lower(func.coalesce(VodCategoryItem.year, "")).like(pattern)
+            )
+        result = await session.execute(stmt)
+        rows = result.all()
+
+    deduped_items = []
+    seen_item_ids: set[int] = set()
+    for item, group in rows:
+        item_id = int(item.id or 0)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+        summary_fields = _vod_item_summary_fields(item.summary_json)
+        item_payload = {
+            "id": item_id,
+            "content_type": content_type,
+            "title": clean_text(item.title),
+            "year": clean_text(item.year),
+            "rating": clean_text(item.rating),
+            "poster_url": clean_text(item.poster_url),
+            "release_date": clean_text(item.release_date),
+            "category_id": int(group.id),
+            "category_name": clean_text(group.name),
+            "plot": summary_fields["plot"],
+            "genre": summary_fields["genre"],
+        }
+        if content_type == VOD_KIND_MOVIE:
+            item_payload["container_extension"] = _resolve_group_output_extension(group.profile_id, item.container_extension)
+        deduped_items.append(item_payload)
+
+    paged_items = deduped_items[resolved_offset : resolved_offset + resolved_limit]
+    has_more = resolved_offset + resolved_limit < len(deduped_items)
+    return {
+        "items": paged_items,
+        "offset": resolved_offset,
+        "limit": resolved_limit,
+        "has_more": has_more,
+    }
+
+
+async def fetch_curated_library_item_details(
+    user: User | None, content_type: str, item_id: int
+) -> dict[str, object] | None:
+    content_type = require_vod_content_type(content_type)
+    if not user_can_access_vod_kind(user, content_type):
+        return None
+
+    async with Session() as session:
+        result = await session.execute(
+            select(VodCategoryItem, VodCategory)
+            .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .where(
+                VodCategoryItem.id == int(item_id),
+                VodCategoryItem.item_type == content_type,
+                VodCategory.enabled.is_(True),
+            )
+        )
+        row = result.first()
+    if not row:
+        return None
+
+    item, category = row
+    summary_fields = _vod_item_summary_fields(item.summary_json)
+    detail = {
+        "id": int(item.id),
+        "content_type": content_type,
+        "title": clean_text(item.title),
+        "year": clean_text(item.year),
+        "rating": clean_text(item.rating),
+        "poster_url": clean_text(item.poster_url),
+        "release_date": clean_text(item.release_date),
+        "plot": summary_fields["plot"],
+        "genre": summary_fields["genre"],
+        "category_id": int(category.id),
+        "category_name": clean_text(category.name),
+        "episodes": [],
+    }
+
+    if content_type == VOD_KIND_MOVIE:
+        payload = await fetch_vod_info_payload(int(item.id))
+        if isinstance(payload, dict):
+            info_payload = _summary_info(payload)
+            movie_data = payload.get("movie_data") if isinstance(payload.get("movie_data"), dict) else {}
+            detail["title"] = clean_text(info_payload.get("name") or movie_data.get("name") or item.title)
+            detail["plot"] = clean_text(
+                info_payload.get("plot")
+                or movie_data.get("plot")
+                or info_payload.get("description")
+                or detail["plot"]
+            )
+            detail["poster_url"] = clean_text(
+                info_payload.get("movie_image") or movie_data.get("movie_image") or item.poster_url
+            )
+            detail["genre"] = _nfo_text_values(
+                info_payload.get("genre") or movie_data.get("genre") or info_payload.get("genres") or detail["genre"]
+            )
+        detail["container_extension"] = _resolve_group_output_extension(category.profile_id, item.container_extension)
+        return detail
+
+    payload = await fetch_series_info_payload(int(item.id))
+    if isinstance(payload, dict):
+        info_payload = _summary_info(payload)
+        detail["title"] = clean_text(info_payload.get("name") or item.title)
+        detail["plot"] = clean_text(
+            info_payload.get("plot") or info_payload.get("description") or info_payload.get("overview") or detail["plot"]
+        )
+        detail["poster_url"] = clean_text(
+            info_payload.get("cover") or info_payload.get("cover_big") or item.poster_url
+        )
+        detail["genre"] = _nfo_text_values(info_payload.get("genre") or info_payload.get("genres") or detail["genre"])
+        detail["episodes"] = _flatten_series_episode_payload(payload)
+    return detail
 
 
 async def create_vod_group(payload: dict[str, object]) -> int:

@@ -9,10 +9,13 @@
               <TicListToolbar
                 class="channels-toolbar q-mb-sm"
                 :actions="channelsToolbarActions"
+                :search="{label: 'Search channels', placeholder: 'Name, number, guide, group...'}"
+                :search-value="searchQuery"
                 :filters="channelsToolbarFilters"
                 :collapse-filters-on-mobile="true"
                 :sticky="true"
                 @action="handleChannelsToolbarAction"
+                @update:search-value="searchQuery = $event"
                 @filter-change="onChannelsToolbarFilterChange"
                 @filters="openBulkFilterDialog"
               >
@@ -478,7 +481,7 @@
                   </draggable>
                 </q-list>
                 <div v-if="filteredChannels.length === 0" class="q-pa-md text-caption text-grey-7">
-                  No channels match the selected filters.
+                  No channels match the current search or filters.
                 </div>
               </div>
             </q-card-section>
@@ -637,6 +640,7 @@ export default defineComponent({
         draggableSelector: '.q-item',
       },
       listOfChannels: [],
+      searchQuery: '',
       enableChannelHealthHighlight: true,
       selectedChannels: [],
       selectedBulkCategory: null,
@@ -671,12 +675,15 @@ export default defineComponent({
       return {
         animation: 100,
         group: 'pluginFlow',
-        disabled: this.bulkEditMode || this.hasActiveChannelFilters,
+        disabled: this.bulkEditMode || this.hasActiveChannelFilters || this.hasChannelSearchQuery,
         ghostClass: 'ghost',
         direction: 'vertical',
         delay: 260,
         delayOnTouchOnly: true,
       };
+    },
+    hasChannelSearchQuery() {
+      return Boolean(String(this.searchQuery || '').trim());
     },
     hasActiveChannelFilters() {
       return Boolean(this.selectedBulkCategory || this.selectedBulkStreamSource || this.selectedBulkGuide);
@@ -1016,6 +1023,21 @@ export default defineComponent({
       this.selectedChannels = this.listOfChannels.filter((channel) => channel.selected).map((channel) => channel.id);
     },
     isChannelVisible(channel) {
+      const search = String(this.searchQuery || '').trim().toLowerCase();
+      if (search) {
+        const values = [
+          channel?.name,
+          channel?.number,
+          channel?.guide?.epg_name,
+          this.streamSourceNames(channel),
+          this.formatGuideLabel(channel),
+          Array.isArray(channel?.tags) ? channel.tags.join(', ') : channel?.tags,
+        ];
+        const matchesSearch = values.some((value) => String(value || '').toLowerCase().includes(search));
+        if (!matchesSearch) {
+          return false;
+        }
+      }
       if (this.selectedBulkCategory) {
         const tags = Array.isArray(channel?.tags) ? channel.tags.filter(Boolean) : [];
         const hasGroups = tags.length > 0;
@@ -1504,9 +1526,13 @@ export default defineComponent({
       return Object.keys(channel.sources).map((key) => channel.sources[key]?.playlist_name).filter(Boolean).join(', ');
     },
     formatGuideLabel: function(channel) {
+      if (channel?.channel_type === 'vod_24_7') {
+        return 'Synthetic 24/7 guide';
+      }
       const epgName = channel?.guide?.epg_name || '';
       const guideChannelId = channel?.guide?.channel_id || '';
-      return `${epgName} - ${guideChannelId}`.trim();
+      const label = `${epgName} - ${guideChannelId}`.trim();
+      return label || '-';
     },
     openChannelIssuesDialog: function(channel) {
       if (!channel?.status?.issues?.length) {

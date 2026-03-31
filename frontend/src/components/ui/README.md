@@ -22,6 +22,8 @@ This folder contains the first-pass standardized UI building blocks for TIC.
   - `header-left` slot for contextual content (drag/status/title/channel)
   - `header-actions` slot for action buttons
   - default slot for row body content
+- `lists/TicVodContentCard.vue`: poster-style media card shell for curated/upstream VOD browsing with shared
+  type/year chips, poster layout, and metadata body.
 
 ## Inputs
 

@@ -442,6 +442,7 @@ import {copyToClipboard, useQuasar} from 'quasar';
 import {useAuthStore} from 'stores/auth';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
+import {useVodStore} from 'stores/vod';
 import {useRoute, useRouter} from 'vue-router';
 
 const linkSections = [
@@ -469,6 +470,14 @@ const linkSections = [
         link: '/dvr',
         streamerOnly: true,
         requiresDvrAccess: true,
+      },
+      {
+        title: 'Library',
+        caption: 'Browse curated VOD content',
+        icon: 'video_library',
+        link: '/library',
+        streamerOnly: true,
+        requiresVodAccess: true,
       },
       {
         title: 'Audit',
@@ -567,6 +576,7 @@ export default defineComponent({
     const authStore = useAuthStore();
     const settingsStore = useSettingsStore();
     const uiStore = useUiStore();
+    const vodStore = useVodStore();
     const roles = computed(() => authStore.user?.roles || []);
     const isAdmin = computed(() => roles.value.includes('admin'));
     const isStreamer = computed(() => roles.value.includes('streamer'));
@@ -577,6 +587,13 @@ export default defineComponent({
       }
       const mode = String(authStore.user?.dvr_access_mode || 'none').toLowerCase();
       return mode === 'read_write_own' || mode === 'read_all_write_own';
+    });
+    const canUseVodLibrary = computed(() => {
+      if (isAdmin.value) {
+        return true;
+      }
+      const mode = String(authStore.user?.vod_access_mode || 'none').toLowerCase();
+      return mode === 'movies' || mode === 'series' || mode === 'movies_series';
     });
     const useAdminStartupFeatures = (authStore.user?.roles || []).includes('admin');
     const leftDrawerOpen = ref(true);
@@ -602,7 +619,6 @@ export default defineComponent({
     const streamProfiles = ref({});
     const routePerSourceThroughTvh = ref(false);
     const routeCombinedThroughCso = ref(false);
-    const vodPageVisible = ref(false);
     const tvhCompatibleProfileIds = ref([]);
 
     const loadConnectionDetailsSettings = async ({force = false} = {}) => {
@@ -630,17 +646,27 @@ export default defineComponent({
       loadConnectionDetailsSettings({force: true});
     };
 
-    const loadVodStatus = async () => {
-      if (!isAdmin.value) {
-        vodPageVisible.value = false;
+    const refreshVodVisibility = async ({force = false} = {}) => {
+      const username = String(authStore.user?.username || '').trim();
+      if (isAdmin.value) {
+        try {
+          await vodStore.refreshAdminStatus({force, minAgeMs: 3000});
+        } catch {
+          vodStore.resetAdminStatus();
+        }
+      } else {
+        vodStore.resetAdminStatus();
+      }
+
+      if (canUseVodLibrary.value && username) {
+        try {
+          await vodStore.refreshLibraryStatus(username, {force, minAgeMs: 3000});
+        } catch {
+          vodStore.resetLibraryStatus();
+        }
         return;
       }
-      try {
-        const response = await axios.get('/tic-api/vod/status');
-        vodPageVisible.value = Boolean(response?.data?.data?.show_page);
-      } catch {
-        vodPageVisible.value = false;
-      }
+      vodStore.resetLibraryStatus();
     };
 
     const copyUrlToClipboard = (textToCopy) => {
@@ -728,9 +754,7 @@ export default defineComponent({
       if (isAdmin.value || canViewConnectionDetails.value) {
         loadConnectionDetailsSettings();
       }
-      if (isAdmin.value) {
-        loadVodStatus();
-      }
+      refreshVodVisibility();
       if (canViewConnectionDetails.value) {
         axios({
           method: 'get',
@@ -768,20 +792,14 @@ export default defineComponent({
         const theme = uiStore.loadThemeForUser(username);
         uiStore.loadTimeFormatForUser(username);
         $q.dark.set(theme === 'dark');
-        if (isAdmin.value) {
-          loadVodStatus();
-        } else {
-          vodPageVisible.value = false;
-        }
+        refreshVodVisibility({force: true});
       },
     );
 
     watch(
       () => route.fullPath,
       () => {
-        if (isAdmin.value) {
-          loadVodStatus();
-        }
+        refreshVodVisibility();
       },
     );
 
@@ -798,7 +816,13 @@ export default defineComponent({
       if (link.requiresDvrAccess && !canUseDvr.value) {
         return false;
       }
-      if (link.requiresVodAdmin && !vodPageVisible.value) {
+      if (link.requiresVodAccess && !canUseVodLibrary.value) {
+        return false;
+      }
+      if (link.requiresVodAccess && !vodStore.libraryPageVisible) {
+        return false;
+      }
+      if (link.requiresVodAdmin && !vodStore.adminPageVisible) {
         return false;
       }
       const currentPlexAvailability = settingsStore.plexAvailable;
@@ -811,12 +835,10 @@ export default defineComponent({
       linkSections.flatMap((section) => section.links.filter((link) => isLinkVisible(link)))
     ));
     const filteredLinkSections = computed(() => (
-      linkSections
-        .map((section) => ({
-          ...section,
-          links: section.links.filter((link) => isLinkVisible(link)),
-        }))
-        .filter((section) => section.links.length > 0)
+      linkSections.map((section) => ({
+        ...section,
+        links: section.links.filter((link) => isLinkVisible(link)),
+      })).filter((section) => section.links.length > 0)
     ));
     const currentUsername = computed(() => authStore.user?.username || 'User');
     const currentStreamingKey = computed(() => authStore.user?.streaming_key || 'STREAM_KEY');
@@ -873,7 +895,7 @@ export default defineComponent({
       streamProfiles,
       routePerSourceThroughTvh,
       routeCombinedThroughCso,
-      vodPageVisible,
+      vodPageVisible: computed(() => vodStore.adminPageVisible),
       tvhCompatibleProfileIds,
       appUrl,
       appVersionDisplay,
