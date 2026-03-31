@@ -158,7 +158,7 @@ _user_stream_key_last_used_throttle = _UserLastUsedThrottle(min_interval_seconds
 
 @dataclass
 class StreamAuthResult:
-    user: object | None
+    user: User | TvhStreamUser | None
     stream_key: str | None
     failure_key: str | None = None
     rate_limited: bool = False
@@ -682,12 +682,12 @@ def skip_stream_connect_audit(func):
 
 
 async def audit_stream_event(
-    user: User,
+    user: User | TvhStreamUser,
     event_type: str,
     endpoint: str,
-    details: str = None,
-    ip_address: str = None,
-    user_agent: str = None,
+    details: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
     severity: str = "info",
 ):
     if is_tvh_backend_stream_user(user):
