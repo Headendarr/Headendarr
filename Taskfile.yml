@@ -9,6 +9,15 @@ tasks:
     cmds:
       - mkdir -p temp/cache/.npm-frontend temp/cache/.npm-frontend-global temp/cache/.npm-docs temp/cache/.npm-docs-global temp/cache/venv-backend
 
+  dev:
+    desc: Run a dev env
+    cmds:
+      - task: frontend:stop
+      - task: frontend:start
+      - task: backend:build
+      - task: backend:start
+      - docker compose -f {{.COMPOSE_FILE}} logs -fn10 headendarr frontend
+
   all:start:
     desc: Start backend, frontend, and docs services in dev AIO stack (detached)
     deps: [init]
