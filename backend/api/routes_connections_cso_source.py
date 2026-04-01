@@ -32,10 +32,15 @@ from backend.cso import (
     subscribe_source_hls,
     subscribe_source_stream,
     subscribe_vod_channel_hls,
+    subscribe_vod_hls,
+    subscribe_vod_proxy_output_stream,
+    subscribe_vod_proxy_stream,
+    subscribe_vod_stream,
     source_capacity_key,
     source_capacity_limit,
+    should_use_vod_proxy_session,
 )
-from backend.models import ChannelSource, Session
+from backend.models import ChannelSource, Session, XcVodItem
 from backend.hls_multiplexer import parse_size
 from backend.stream_activity import (
     get_stream_activity_snapshot,
@@ -44,8 +49,25 @@ from backend.stream_activity import (
     upsert_stream_activity,
 )
 from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
+from backend.stream_profiles import parse_stream_profile_request
 from backend.streaming import normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
+from backend.utils import convert_to_int, int_or_none
+from backend.vod import (
+    VOD_KIND_MOVIE,
+    VOD_KIND_SERIES,
+    VodCuratedPlaybackCandidate,
+    VodSourcePlaybackCandidate,
+    build_vod_activity_metadata,
+    find_cached_vod_playback_candidate,
+    require_vod_content_type,
+    resolve_episode_playback_candidates,
+    resolve_movie_playback_candidates,
+    resolve_upstream_vod_profile_id,
+    resolve_vod_profile_id,
+    resolve_xc_item_upstream_url,
+    select_vod_playback_target,
+)
 from backend.vod_channels import is_vod_channel_type, subscribe_vod_channel_stream
 from backend.channel_stream_health import (
     cancel_background_health_checks_for_capacity_key,
@@ -227,7 +249,13 @@ def _append_or_replace_query_param(url, key, value):
     return urlunparse(parsed._replace(query=urlencode(query_items)))
 
 
-def _build_hls_query_string(*, stream_key=None, username=None, profile=None):
+def _build_hls_query_string(
+    stream_key: str = None,
+    username: str = None,
+    profile: str = None,
+    start_seconds: int = 0,
+    container_extension: str = None,
+):
     query_items = []
     if stream_key:
         query_items.append(("stream_key", str(stream_key)))
@@ -235,9 +263,30 @@ def _build_hls_query_string(*, stream_key=None, username=None, profile=None):
         query_items.append(("username", str(username)))
     if profile:
         query_items.append(("profile", str(profile)))
+    if container_extension:
+        query_items.append(("container_extension", str(container_extension)))
+    if start_seconds is not None and int_or_none(start_seconds) > 0:
+        query_items.append(("start", str(start_seconds)))
     if not query_items:
         return ""
     return urlencode(query_items)
+
+
+def _requested_hls_start_seconds() -> int:
+    value = int_or_none(request.args.get("start"))
+    if value is None:
+        value = int_or_none(request.args.get("start_seconds"))
+    return max(0, int(value or 0))
+
+
+def _is_restartable_vod_output_profile(profile_id: str) -> bool:
+    if not str(profile_id or "").strip():
+        return False
+    parsed_profile = parse_stream_profile_request(profile_id)
+    clean_profile = str(parsed_profile["profile_id"] or "").strip().lower()
+    if not clean_profile:
+        return False
+    return clean_profile not in {"hls", "mpegts", "matroska", "mp4", "webm"}
 
 
 def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_string: str = "") -> str:
@@ -247,12 +296,138 @@ def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_strin
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("#EXT-X-MAP:"):
+            if 'URI="' in raw_line:
+                prefix, remainder = raw_line.split('URI="', 1)
+                map_name, suffix_part = remainder.split('"', 1)
+                map_target = f"{segment_base_path.rstrip('/')}/{map_name.split('?', 1)[0]}{suffix}"
+                lines.append(f'{prefix}URI="{map_target}"{suffix_part}')
+                continue
         if line.startswith("#"):
             lines.append(raw_line)
             continue
         segment_name = line.split("?", 1)[0]
         lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}{suffix}")
     return "\n".join(lines) + "\n"
+
+
+def _segment_content_type(segment_name: str) -> str:
+    segment_path = str(segment_name or "").strip().lower()
+    if segment_path.endswith(".m4s"):
+        return "video/iso.segment"
+    if segment_path.endswith(".mp4"):
+        return "video/mp4"
+    return "video/mp2t"
+
+
+def _resolve_requested_vod_profile(config, default_profile: str) -> str:
+    requested = parse_stream_profile_request(request.args.get("profile"))
+    if not requested["profile_id"]:
+        return str(default_profile or "").strip().lower()
+    resolved_profile = resolve_cso_profile_name(config, requested_profile=requested["profile_id"], channel=None)
+    if resolved_profile != requested["profile_id"]:
+        return str(default_profile or "").strip().lower()
+    return requested["raw"] or resolved_profile
+
+
+def _upstream_vod_activity_metadata(candidate: VodSourcePlaybackCandidate, item_id: int) -> dict[str, str]:
+    source_item = getattr(candidate, "source_item", None)
+    title = str(getattr(source_item, "title", "") or "").strip() or f"Upstream VOD {int(item_id)}"
+    poster_url = str(getattr(source_item, "poster_url", "") or "").strip()
+    label = "Movie" if str(candidate.content_type or "").strip().lower() == VOD_KIND_MOVIE else "Series episode"
+    return {
+        "channel_name": title,
+        "channel_logo_url": poster_url,
+        "stream_name": title,
+        "display_url": f"Upstream VOD {label}: {title}",
+    }
+
+
+async def _resolve_curated_vod_request(config, stream_type: str, item_id: int) -> dict[str, object]:
+    resolved_type = require_vod_content_type(stream_type)
+    episode = None
+    if resolved_type == VOD_KIND_MOVIE:
+        candidates = await resolve_movie_playback_candidates(int(item_id))
+    else:
+        candidates, episode = await resolve_episode_playback_candidates(int(item_id))
+    if not candidates:
+        return {"error": "Not found", "status": 404}
+
+    default_profile = resolve_vod_profile_id(candidates[0])
+    effective_profile = _resolve_requested_vod_profile(config, default_profile)
+    cached_candidate = await find_cached_vod_playback_candidate(candidates, episode=episode)
+    if cached_candidate is not None:
+        candidate = cached_candidate
+        upstream_url = ""
+        selection_error = None
+    else:
+        candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode)
+    if candidate is None:
+        return {"error": "Not found", "status": 404}
+    use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
+    if not upstream_url and selection_error == "capacity_blocked":
+        return {"error": "Source capacity limit reached", "status": 503}
+    if not upstream_url and cached_candidate is None:
+        return {"error": "Stream unavailable", "status": 404}
+    return {
+        "candidate": candidate,
+        "episode": episode,
+        "upstream_url": upstream_url,
+        "effective_profile": effective_profile,
+        "use_proxy_session": bool(use_proxy_session),
+        "activity_metadata": build_vod_activity_metadata(candidate, episode=episode),
+    }
+
+
+async def _resolve_upstream_vod_request(
+    config,
+    source_id: int,
+    stream_type: str,
+    item_id: int,
+    upstream_episode_id: str | None = None,
+) -> dict[str, object]:
+    resolved_type = require_vod_content_type(stream_type)
+    container_extension = str(request.args.get("container_extension") or "").strip()
+    async with Session() as session:
+        source_item = await session.get(XcVodItem, int(item_id))
+    if source_item is None or int(getattr(source_item, "playlist_id", 0) or 0) != int(source_id):
+        return {"error": "Upstream VOD item was not found for the selected source", "status": 404}
+
+    resolved_episode_id = str(upstream_episode_id or "").strip() if resolved_type == VOD_KIND_SERIES else None
+    source_item, upstream_url, account, error_message = await resolve_xc_item_upstream_url(
+        int(item_id),
+        resolved_type,
+        upstream_episode_id=resolved_episode_id,
+        container_extension=container_extension,
+    )
+    if error_message or source_item is None or not upstream_url:
+        return {"error": error_message or "Stream unavailable", "status": 404}
+
+    candidate = VodSourcePlaybackCandidate(
+        source_item=source_item,
+        content_type=resolved_type,
+        xc_account=account,
+        host_url="",
+        container_extension=container_extension or getattr(source_item, "container_extension", ""),
+        upstream_episode_id=resolved_episode_id,
+        internal_id=None,
+        cache_internal_id=(
+            convert_to_int(resolved_episode_id, default=0) or int(getattr(source_item, "id", 0) or 0) or None
+        )
+        if resolved_type == VOD_KIND_SERIES
+        else int(getattr(source_item, "id", 0) or 0) or None,
+    )
+    default_profile = resolve_upstream_vod_profile_id(source_item, container_extension=container_extension)
+    effective_profile = _resolve_requested_vod_profile(config, default_profile)
+    use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
+    return {
+        "candidate": candidate,
+        "episode": None,
+        "upstream_url": upstream_url,
+        "effective_profile": effective_profile,
+        "use_proxy_session": bool(use_proxy_session),
+        "activity_metadata": _upstream_vod_activity_metadata(candidate, item_id),
+    }
 
 
 async def _hls_output_has_client(output_session_key: str, connection_id: str) -> bool:
@@ -1260,3 +1435,390 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
     if payload is None:
         return Response("HLS segment not found", status=404)
     return Response(payload, content_type="video/mp2t")
+
+
+async def _stream_cso_vod_route(resolver, identity: str):
+    config = current_app.config["APP_CONFIG"]
+    resolved = await resolver(config)
+    if resolved.get("error"):
+        return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
+
+    candidate = resolved["candidate"]
+    episode = resolved.get("episode")
+    upstream_url = str(resolved.get("upstream_url") or "")
+    effective_profile = str(resolved.get("effective_profile") or "")
+    use_proxy_session = bool(resolved.get("use_proxy_session"))
+    activity_metadata = dict(resolved.get("activity_metadata") or {})
+    start_seconds = _requested_hls_start_seconds()
+    use_restartable_output = _is_restartable_vod_output_profile(effective_profile)
+    stream_key = request._stream_key
+    stream_user = request._stream_user
+    stream_username = stream_user.username if stream_user is not None else None
+
+    vod_item_id = None
+    vod_category_id = None
+    if isinstance(candidate, VodCuratedPlaybackCandidate):
+        vod_item_id = candidate.group_item.id
+        vod_category_id = candidate.group_item.category_id
+    vod_episode_id = episode.id if episode is not None else None
+
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() == "hls":
+        connection_id = _get_connection_id()
+        query_string = _build_hls_query_string(
+            stream_key=stream_key,
+            username=stream_username,
+            profile=effective_profile,
+            start_seconds=start_seconds,
+            container_extension=request.args.get("container_extension"),
+        )
+        target_url = f"{get_request_base_url(request).rstrip('/')}{request.path}/hls/{connection_id}/index.m3u8"
+        if query_string:
+            target_url = f"{target_url}?{query_string}"
+        return redirect(target_url, code=302)
+
+    connection_id = _get_connection_id()
+    request_client_ip = get_request_client_ip()
+    request_user_agent = request.headers.get("User-Agent")
+    await upsert_stream_activity(
+        identity,
+        connection_id=connection_id,
+        endpoint_override=request.path,
+        user=stream_user,
+        ip_address=request_client_ip,
+        user_agent=request_user_agent,
+        perform_audit=False,
+        channel_name=activity_metadata.get("channel_name"),
+        channel_logo_url=activity_metadata.get("channel_logo_url"),
+        stream_name=activity_metadata.get("stream_name"),
+        source_url=upstream_url or identity,
+        display_url=activity_metadata.get("display_url") or identity,
+        vod_item_id=vod_item_id,
+        vod_category_id=vod_category_id,
+        vod_episode_id=vod_episode_id,
+        enrich_metadata=False,
+    )
+    if use_proxy_session:
+        plan = await subscribe_vod_proxy_stream(
+            candidate,
+            upstream_url,
+            connection_id,
+            request_headers=dict(request.headers),
+            episode=episode,
+        )
+    elif use_restartable_output:
+        plan = await subscribe_vod_proxy_output_stream(
+            config,
+            candidate,
+            upstream_url,
+            stream_key,
+            effective_profile,
+            connection_id,
+            start_seconds=start_seconds,
+            request_headers=dict(request.headers),
+            episode=episode,
+        )
+    else:
+        plan = await subscribe_vod_stream(
+            config,
+            candidate,
+            upstream_url,
+            stream_key,
+            effective_profile,
+            connection_id,
+            episode=episode,
+            request_base_url=get_request_base_url(request),
+        )
+
+    if plan.generator is None:
+        return Response("Unable to start playback", status=int(plan.status_code or 503))
+
+    @stream_with_context
+    async def generate_vod_stream():
+        try:
+            async for chunk in _iter_cso_plan_generator(plan, connection_id, identity):
+                yield chunk
+        finally:
+            try:
+                await plan.generator.aclose()
+            except (AttributeError, Exception):
+                pass
+            await stop_stream_activity(
+                "",
+                connection_id=connection_id,
+                event_type="stream_stop",
+                endpoint_override=request.path,
+                user=stream_user,
+            )
+
+    response = Response(generate_vod_stream(), content_type=plan.content_type or "application/octet-stream")
+    response.timeout = None
+    return response
+
+
+async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identity: str):
+    try:
+        config = current_app.config["APP_CONFIG"]
+        resolved = await resolver(config)
+        if resolved.get("error"):
+            return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
+
+        effective_profile = str(resolved.get("effective_profile") or "")
+        effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+        if str(effective_policy.get("container") or "").strip().lower() != "hls":
+            return Response("Requested profile is not HLS output", status=400)
+
+        candidate = resolved["candidate"]
+        episode = resolved.get("episode")
+        upstream_url = str(resolved.get("upstream_url") or "")
+        connection_id = request.view_args.get("connection_id")
+        start_seconds = _requested_hls_start_seconds()
+        stream_key = request._stream_key
+        stream_user = request._stream_user
+        stream_username = stream_user.username if stream_user is not None else None
+
+        vod_item_id = None
+        vod_category_id = None
+        if isinstance(candidate, VodCuratedPlaybackCandidate):
+            vod_item_id = candidate.group_item.id
+            vod_category_id = candidate.group_item.category_id
+        vod_episode_id = episode.id if episode is not None else None
+
+        output_session, error_message, status = await subscribe_vod_hls(
+            config,
+            candidate,
+            upstream_url,
+            stream_key,
+            effective_profile,
+            str(connection_id),
+            episode=episode,
+            request_base_url=get_request_base_url(request),
+            start_seconds=start_seconds,
+        )
+        if not output_session:
+            return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+
+        await output_session.touch_client(str(connection_id))
+        playlist_text = await _wait_for_hls_playlist(output_session, connection_id=str(connection_id))
+        if not playlist_text:
+            return Response("HLS playlist not ready", status=503)
+
+        query_string = _build_hls_query_string(
+            stream_key=stream_key,
+            username=stream_username,
+            profile=effective_profile,
+            start_seconds=start_seconds,
+            container_extension=request.args.get("container_extension"),
+        )
+        rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+        activity_metadata = dict(resolved.get("activity_metadata") or {})
+        try:
+            await upsert_stream_activity(
+                identity,
+                connection_id=str(connection_id),
+                endpoint_override=request.path,
+                start_event_type="stream_start",
+                user=stream_user,
+                details_override=activity_metadata.get("display_url") or identity,
+                channel_name=activity_metadata.get("channel_name"),
+                channel_logo_url=activity_metadata.get("channel_logo_url"),
+                stream_name=activity_metadata.get("stream_name"),
+                display_url=activity_metadata.get("display_url") or identity,
+                vod_item_id=vod_item_id,
+                vod_category_id=vod_category_id,
+                vod_episode_id=vod_episode_id,
+                enrich_metadata=False,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to upsert VOD HLS playlist activity identity=%s connection_id=%s path=%s",
+                identity,
+                connection_id,
+                request.path,
+            )
+        return Response(rendered_playlist, content_type="application/vnd.apple.mpegurl")
+    except Exception:
+        logger.exception(
+            "Unhandled VOD HLS playlist failure identity=%s path=%s query=%s",
+            identity,
+            request.path,
+            request.query_string.decode("utf-8", errors="ignore"),
+        )
+        raise
+
+
+async def _stream_cso_vod_hls_segment(resolver):
+    config = current_app.config["APP_CONFIG"]
+    resolved = await resolver(config)
+    if resolved.get("error"):
+        return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
+
+    effective_profile = str(resolved.get("effective_profile") or "")
+    effective_policy = generate_cso_policy_from_profile(config, effective_profile)
+    if str(effective_policy.get("container") or "").strip().lower() != "hls":
+        return Response("Requested profile is not HLS output", status=400)
+
+    candidate = resolved["candidate"]
+    episode = resolved.get("episode")
+    upstream_url = str(resolved.get("upstream_url") or "")
+    connection_id = request.view_args.get("connection_id")
+    segment_name = request.view_args.get("segment_name")
+    start_seconds = _requested_hls_start_seconds()
+    stream_key = request._stream_key
+    output_session, error_message, status = await subscribe_vod_hls(
+        config,
+        candidate,
+        upstream_url,
+        stream_key,
+        effective_profile,
+        str(connection_id),
+        episode=episode,
+        request_base_url=get_request_base_url(request),
+        start_seconds=start_seconds,
+    )
+    if not output_session:
+        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+
+    await output_session.touch_client(str(connection_id))
+    payload = await output_session.read_segment_bytes(str(segment_name))
+    if payload is None:
+        return Response("HLS segment not found", status=404)
+    return Response(payload, content_type=_segment_content_type(str(segment_name)))
+
+
+@blueprint.route("/tic-api/cso/vod/<stream_type>/<int:item_id>", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_curated_vod(stream_type: str, item_id: int):
+    return await _stream_cso_vod_route(
+        lambda config: _resolve_curated_vod_request(config, stream_type, int(item_id)),
+        f"/tic-api/cso/vod/{stream_type}/{int(item_id)}",
+    )
+
+
+@blueprint.route("/tic-api/cso/vod/<stream_type>/<int:item_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_curated_vod_hls_playlist(stream_type: str, item_id: int, connection_id: str):
+    return await _stream_cso_vod_hls_playlist(
+        lambda config: _resolve_curated_vod_request(config, stream_type, int(item_id)),
+        f"/tic-api/cso/vod/{stream_type}/{int(item_id)}/hls/{connection_id}",
+        f"/tic-api/cso/vod/{stream_type}/{int(item_id)}",
+    )
+
+
+@blueprint.route("/tic-api/cso/vod/<stream_type>/<int:item_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_curated_vod_hls_segment(stream_type: str, item_id: int, connection_id: str, segment_name: str):
+    return await _stream_cso_vod_hls_segment(
+        lambda config: _resolve_curated_vod_request(config, stream_type, int(item_id))
+    )
+
+
+@blueprint.route("/tic-api/cso/vod/upstream/<int:source_id>/movie/<int:item_id>", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_movie(source_id: int, item_id: int):
+    return await _stream_cso_vod_route(
+        lambda config: _resolve_upstream_vod_request(config, int(source_id), VOD_KIND_MOVIE, int(item_id)),
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/movie/{int(item_id)}",
+    )
+
+
+@blueprint.route(
+    "/tic-api/cso/vod/upstream/<int:source_id>/movie/<int:item_id>/hls/<connection_id>/index.m3u8",
+    methods=["GET"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_movie_hls_playlist(source_id: int, item_id: int, connection_id: str):
+    return await _stream_cso_vod_hls_playlist(
+        lambda config: _resolve_upstream_vod_request(config, int(source_id), VOD_KIND_MOVIE, int(item_id)),
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/movie/{int(item_id)}/hls/{connection_id}",
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/movie/{int(item_id)}",
+    )
+
+
+@blueprint.route(
+    "/tic-api/cso/vod/upstream/<int:source_id>/movie/<int:item_id>/hls/<connection_id>/<segment_name>",
+    methods=["GET"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_movie_hls_segment(
+    source_id: int,
+    item_id: int,
+    connection_id: str,
+    segment_name: str,
+):
+    return await _stream_cso_vod_hls_segment(
+        lambda config: _resolve_upstream_vod_request(config, int(source_id), VOD_KIND_MOVIE, int(item_id))
+    )
+
+
+@blueprint.route(
+    "/tic-api/cso/vod/upstream/<int:source_id>/series/<int:item_id>/<upstream_episode_id>", methods=["GET"]
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_series(source_id: int, item_id: int, upstream_episode_id: str):
+    return await _stream_cso_vod_route(
+        lambda config: _resolve_upstream_vod_request(
+            config,
+            int(source_id),
+            VOD_KIND_SERIES,
+            int(item_id),
+            upstream_episode_id=upstream_episode_id,
+        ),
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/series/{int(item_id)}/{upstream_episode_id}",
+    )
+
+
+@blueprint.route(
+    "/tic-api/cso/vod/upstream/<int:source_id>/series/<int:item_id>/<upstream_episode_id>/hls/<connection_id>/index.m3u8",
+    methods=["GET"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_series_hls_playlist(
+    source_id: int,
+    item_id: int,
+    upstream_episode_id: str,
+    connection_id: str,
+):
+    return await _stream_cso_vod_hls_playlist(
+        lambda config: _resolve_upstream_vod_request(
+            config,
+            int(source_id),
+            VOD_KIND_SERIES,
+            int(item_id),
+            upstream_episode_id=upstream_episode_id,
+        ),
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/series/{int(item_id)}/{upstream_episode_id}/hls/{connection_id}",
+        f"/tic-api/cso/vod/upstream/{int(source_id)}/series/{int(item_id)}/{upstream_episode_id}",
+    )
+
+
+@blueprint.route(
+    "/tic-api/cso/vod/upstream/<int:source_id>/series/<int:item_id>/<upstream_episode_id>/hls/<connection_id>/<segment_name>",
+    methods=["GET"],
+)
+@stream_key_required
+@skip_stream_connect_audit
+async def stream_upstream_vod_series_hls_segment(
+    source_id: int,
+    item_id: int,
+    upstream_episode_id: str,
+    connection_id: str,
+    segment_name: str,
+):
+    return await _stream_cso_vod_hls_segment(
+        lambda config: _resolve_upstream_vod_request(
+            config,
+            int(source_id),
+            VOD_KIND_SERIES,
+            int(item_id),
+            upstream_episode_id=upstream_episode_id,
+        )
+    )

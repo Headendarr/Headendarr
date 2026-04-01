@@ -4,8 +4,7 @@ import asyncio
 import base64
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
-
+from typing import Any, Dict, List, Tuple, cast
 from quart import Response, current_app, jsonify, redirect, request
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
@@ -38,6 +37,7 @@ from backend.playlists import (
 )
 from backend.xc.cache import xc_cache
 from backend.stream_activity import stop_stream_activity, touch_stream_activity, upsert_stream_activity
+from backend.stream_profiles import is_hls_stream_profile
 from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username, user_timeshift_enabled
 from backend.utils import convert_to_int
@@ -49,6 +49,7 @@ from backend.vod import (
     build_vod_activity_metadata,
     fetch_series_info_payload,
     fetch_vod_info_payload,
+    find_cached_vod_playback_candidate,
     resolve_episode_playback_candidates,
     resolve_movie_playback_candidates,
     resolve_vod_profile_id,
@@ -72,14 +73,23 @@ from backend.xc.timeshift import (
 _XC_ALLOWED_PROFILES = {"default", "mpegts", "h264-aac-mpegts"}
 
 
-def _xc_rate_limited_response(message: str, retry_after: int):
+def _segment_content_type(segment_name: str) -> str:
+    segment_path = str(segment_name or "").strip().lower()
+    if segment_path.endswith(".m4s"):
+        return "video/iso.segment"
+    if segment_path.endswith(".mp4"):
+        return "video/mp4"
+    return "video/mp2t"
+
+
+def _xc_rate_limited_response(message: str, retry_after: int) -> Response:
     response = jsonify({"error": message})
     response.status_code = 429
     response.headers["Retry-After"] = str(max(1, int(retry_after or 1)))
     return response
 
 
-async def _xc_auth_user(username: str | None = None, password: str | None = None):
+async def _xc_auth_user(username: str | None = None, password: str | None = None) -> tuple[Any, Any]:
     username = str(username or request.args.get("username") or "").strip()
     password = str(password or request.args.get("password") or "").strip()
     if not username or not password:
@@ -94,7 +104,8 @@ async def _xc_auth_user(username: str | None = None, password: str | None = None
         )
 
     user = await get_user_by_username(username)
-    if not user or not user.is_active:
+    user_is_active = cast(bool, user.is_active) if user is not None else False
+    if user is None or not user_is_active:
         failure_result = await record_failed_stream_auth(failure_key=failure_key, attempted_username=username)
         if not failure_result.allowed:
             return None, _xc_rate_limited_response(
@@ -102,7 +113,7 @@ async def _xc_auth_user(username: str | None = None, password: str | None = None
                 failure_result.retry_after,
             )
         return None, (jsonify({"error": "Unauthorized"}), 401)
-    if user.streaming_key != password:
+    if str(user.streaming_key) != password:
         failure_result = await record_failed_stream_auth(failure_key=failure_key, attempted_username=username)
         if not failure_result.allowed:
             return None, _xc_rate_limited_response(
@@ -466,7 +477,14 @@ def _xc_vod_allowed(user, kind: str) -> bool:
     return user_can_access_vod_kind(user, kind)
 
 
-def _xc_vod_profile(candidate, ext: str | None = None) -> str:
+def _xc_requested_vod_profile(ext: str | None = None) -> str | None:
+    """Return the XC VOD output override from the requested path extension.
+
+    Note that XC clients select output format through the path suffix, not a
+    TIC-specific `?profile=...` query override. If no extension is present, the route
+    falls back to candidate-derived profile resolution with
+    `resolve_vod_profile_id(...)`.
+    """
     requested_ext = str(ext or "").strip().lower().lstrip(".")
     if requested_ext == "m3u8":
         return "hls"
@@ -478,7 +496,7 @@ def _xc_vod_profile(candidate, ext: str | None = None) -> str:
         return "mp4"
     if requested_ext == "webm":
         return "webm"
-    return resolve_vod_profile_id(candidate)
+    return None
 
 
 def _get_connection_id():
@@ -547,27 +565,35 @@ def _wrap_stream_plan(source_plan, connection_id, identity, stop_kwargs):
 
 
 async def _render_hls_playlist(output_session, connection_id: str):
-    deadline = time.time() + 15.0
+    deadline = time.time() + 40.0
     while time.time() < deadline:
         await output_session.touch_client(connection_id)
         playlist_text = await output_session.read_playlist_text()
-        if playlist_text:
+        if playlist_text and "#EXTM3U" in str(playlist_text):
             return playlist_text
         await asyncio.sleep(0.2)
     return ""
 
 
-def _rewrite_hls_playlist(playlist_text: str, segment_base_path: str) -> str:
+def _rewrite_hls_playlist(playlist_text: str, segment_base_path: str, query_string: str = "") -> str:
+    if "#EXTM3U" not in str(playlist_text or ""):
+        return ""
     lines = []
+    suffix = f"?{query_string}" if query_string else ""
     for raw_line in str(playlist_text or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if line.startswith("#"):
+            if line.startswith("#EXT-X-MAP:") and 'URI="' in raw_line:
+                prefix, remainder = raw_line.split('URI="', 1)
+                uri_value, quote_suffix, tail = remainder.partition('"')
+                map_name = uri_value.split("?", 1)[0].strip().split("/")[-1]
+                raw_line = f'{prefix}URI="{segment_base_path.rstrip("/")}/{map_name}{suffix}"{tail}'
             lines.append(raw_line)
             continue
         segment_name = line.split("?", 1)[0]
-        lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}")
+        lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}{suffix}")
     return "\n".join(lines) + "\n"
 
 
@@ -942,13 +968,20 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str |
     candidates = await resolve_movie_playback_candidates(int(item_id))
     if not candidates:
         return jsonify({"error": "Not found"}), 404
-    profile = _xc_vod_profile(candidates[0], ext=ext)
-    use_proxy_session = CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidates[0], profile)
-    candidate, upstream_url, selection_error = await select_vod_playback_target(
-        candidates,
-        prefer_local_cache=use_proxy_session,
-    )
+    # Start by checking for any cached copies of a candidate. If any are found, we will use that one
+    cached_candidate = await find_cached_vod_playback_candidate(candidates)
+    if cached_candidate is not None:
+        candidate = cached_candidate
+        upstream_url = ""
+        selection_error = None
+    else:
+        # Find the next available candidate within the list of candidates by order of priority
+        candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
+
+    # Get/Create the connection ID
     connection_id = _get_connection_id()
+
+    # Check for any errors and return if we cannot playback a candidate
     if selection_error == "capacity_blocked" and not upstream_url:
         return jsonify({"error": "Source capacity limit reached"}), 503
     if not candidate:
@@ -960,8 +993,16 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str |
 
     config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
-    profile = _xc_vod_profile(candidate, ext=ext)
+    profile = _xc_requested_vod_profile(ext=ext)
+    if not profile:
+        profile = resolve_vod_profile_id(candidate)
+    use_proxy_session = should_use_vod_proxy_session(candidate, profile)
     if profile == "hls":
+        return redirect(
+            f"{request_base_url}/movie/{username}/{password}/{int(item_id)}/hls/{connection_id}/index.m3u8",
+            code=302,
+        )
+    if is_hls_stream_profile(profile):
         return redirect(
             f"{request_base_url}/movie/{username}/{password}/{int(item_id)}/hls/{connection_id}/index.m3u8",
             code=302,
@@ -1036,14 +1077,21 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
     candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
     if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
-    profile = _xc_vod_profile(candidates[0], ext=ext)
-    use_proxy_session = CS_VOD_USE_PROXY_SESSION and should_use_vod_proxy_session(candidates[0], profile)
-    candidate, upstream_url, selection_error = await select_vod_playback_target(
-        candidates,
-        episode=episode_map,
-        prefer_local_cache=use_proxy_session,
-    )
+
+    # Start by checking for any cached copies of a candidate. If any are found, we will use that one
+    cached_candidate = await find_cached_vod_playback_candidate(candidates, episode=episode_map)
+    if cached_candidate is not None:
+        candidate = cached_candidate
+        upstream_url = ""
+        selection_error = None
+    else:
+        # Find the next available candidate within the list of candidates by order of priority
+        candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode_map)
+
+    # Get/Create the connection ID
     connection_id = _get_connection_id()
+
+    # Check for any errors and return if we cannot playback a candidate
     if selection_error == "capacity_blocked" and not upstream_url:
         return jsonify({"error": "Source capacity limit reached"}), 503
     if not candidate:
@@ -1055,8 +1103,16 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
 
     config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
-    profile = _xc_vod_profile(candidate, ext=ext)
+    profile = _xc_requested_vod_profile(ext=ext)
+    if not profile:
+        profile = resolve_vod_profile_id(candidate)
+    use_proxy_session = should_use_vod_proxy_session(candidate, profile)
     if profile == "hls":
+        return redirect(
+            f"{request_base_url}/series/{username}/{password}/{int(episode_id)}/hls/{connection_id}/index.m3u8",
+            code=302,
+        )
+    if is_hls_stream_profile(profile):
         return redirect(
             f"{request_base_url}/series/{username}/{password}/{int(episode_id)}/hls/{connection_id}/index.m3u8",
             code=302,
@@ -1140,12 +1196,14 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
             status=503 if selection_error == "capacity_blocked" else 404,
         )
 
+    profile = "hls"
+    config = current_app.config["APP_CONFIG"]
     output_session, error_message, status = await subscribe_vod_hls(
-        current_app.config["APP_CONFIG"],
+        config,
         candidate,
         upstream_url,
         stream_key,
-        "hls",
+        profile,
         connection_id,
         request_base_url=get_request_base_url(request),
     )
@@ -1156,8 +1214,11 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
     playlist_text = _rewrite_hls_playlist(
         playlist_text,
         f"/movie/{username}/{password}/{int(item_id)}/hls/{connection_id}",
+        query_string="",
     )
-    return Response(playlist_text or "", content_type="application/vnd.apple.mpegurl")
+    if not playlist_text:
+        return Response("HLS playlist not ready", status=503)
+    return Response(playlist_text, content_type="application/vnd.apple.mpegurl")
 
 
 @blueprint.route("/movie/<username>/<password>/<int:item_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
@@ -1178,12 +1239,14 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
             status=503 if selection_error == "capacity_blocked" else 404,
         )
 
+    profile = "hls"
+    config = current_app.config["APP_CONFIG"]
     output_session, error_message, status = await subscribe_vod_hls(
-        current_app.config["APP_CONFIG"],
+        config,
         candidate,
         upstream_url,
         stream_key,
-        "hls",
+        profile,
         connection_id,
         request_base_url=get_request_base_url(request),
     )
@@ -1191,7 +1254,7 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name)
-    return Response(payload or b"", content_type="video/mp2t")
+    return Response(payload or b"", content_type=_segment_content_type(segment_name))
 
 
 @blueprint.route("/series/<username>/<password>/<int:episode_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
@@ -1212,12 +1275,14 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
             status=503 if selection_error == "capacity_blocked" else 404,
         )
 
+    profile = "hls"
+    config = current_app.config["APP_CONFIG"]
     output_session, error_message, status = await subscribe_vod_hls(
-        current_app.config["APP_CONFIG"],
+        config,
         candidate,
         upstream_url,
         stream_key,
-        "hls",
+        profile,
         connection_id,
         episode=episode_map,
         request_base_url=get_request_base_url(request),
@@ -1229,8 +1294,11 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
     playlist_text = _rewrite_hls_playlist(
         playlist_text,
         f"/series/{username}/{password}/{int(episode_id)}/hls/{connection_id}",
+        query_string="",
     )
-    return Response(playlist_text or "", content_type="application/vnd.apple.mpegurl")
+    if not playlist_text:
+        return Response("HLS playlist not ready", status=503)
+    return Response(playlist_text, content_type="application/vnd.apple.mpegurl")
 
 
 @blueprint.route("/series/<username>/<password>/<int:episode_id>/hls/<connection_id>/<segment_name>", methods=["GET"])
@@ -1251,12 +1319,14 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
             status=503 if selection_error == "capacity_blocked" else 404,
         )
 
+    profile = "hls"
+    config = current_app.config["APP_CONFIG"]
     output_session, error_message, status = await subscribe_vod_hls(
-        current_app.config["APP_CONFIG"],
+        config,
         candidate,
         upstream_url,
         stream_key,
-        "hls",
+        profile,
         connection_id,
         episode=episode_map,
         request_base_url=get_request_base_url(request),
@@ -1265,4 +1335,4 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name)
-    return Response(payload or b"", content_type="video/mp2t")
+    return Response(payload or b"", content_type=_segment_content_type(segment_name))

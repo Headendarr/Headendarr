@@ -33,11 +33,12 @@ from backend.models import (
     XcVodItem,
     XcVodMetadataCache,
 )
+from backend.source_media import load_source_media_shape, persist_source_media_shape, probe_stream_media_shape
 from backend.stream_activity import get_stream_activity_snapshot
 from backend.stream_profiles import get_stream_profile_definitions
 from backend.url_resolver import get_tvh_publish_base_url
 from backend.users import user_has_admin_role
-from backend.utils import as_naive_utc, clean_key, clean_text
+from backend.utils import as_naive_utc, clean_key, clean_text, utc_now
 from backend.xc_hosts import parse_xc_hosts
 
 logger = logging.getLogger("tic.vod")
@@ -79,6 +80,7 @@ _VOD_HTTP_LIBRARY_INDEX_FILE = "index.json"
 _VOD_HTTP_MANIFEST_CACHE_TTL_SECONDS = 10
 _vod_http_manifest_cache: dict[str, tuple[float, float, object]] = {}
 _VOD_TITLE_MAX_LENGTH = 500
+_BROWSER_VOD_MEDIA_SHAPE_TTL_SECONDS = 24 * 60 * 60
 
 
 @dataclass
@@ -298,13 +300,10 @@ async def vod_candidate_has_capacity(candidate: VodCuratedPlaybackCandidate, ups
 async def select_vod_playback_target(
     candidates: list[VodCuratedPlaybackCandidate],
     episode: VodCategoryEpisode | None = None,
-    prefer_local_cache: bool = False,
 ) -> tuple[VodCuratedPlaybackCandidate | None, str | None, str | None]:
     if not candidates:
         return None, None, "not_found"
     preferred_candidate = candidates[0]
-    if prefer_local_cache and await vod_cache_is_complete(preferred_candidate, episode=episode):
-        return preferred_candidate, "", None
 
     blocked_capacity = False
     saw_stream_url = False
@@ -321,6 +320,17 @@ async def select_vod_playback_target(
     if blocked_capacity and saw_stream_url:
         return preferred_candidate, "", "capacity_blocked"
     return preferred_candidate, "", "stream_unavailable"
+
+
+async def find_cached_vod_playback_candidate(
+    candidates: list[VodCuratedPlaybackCandidate],
+    episode: VodCategoryEpisode | None = None,
+) -> VodCuratedPlaybackCandidate | None:
+    """Return the first candidate in priority order whose local VOD cache is complete."""
+    for candidate in candidates:
+        if await vod_cache_is_complete(candidate, episode=episode):
+            return candidate
+    return None
 
 
 def _extract_year(payload: dict) -> str:
@@ -2424,7 +2434,9 @@ def _vod_item_summary_fields(summary_json: str | None) -> dict[str, object]:
     return {
         "plot": plot,
         "added": clean_text(summary.get("added") or info.get("added")),
-        "genre": _nfo_text_values(info.get("genre") or summary.get("genre") or info.get("genres") or summary.get("genres")),
+        "genre": _nfo_text_values(
+            info.get("genre") or summary.get("genre") or info.get("genres") or summary.get("genres")
+        ),
     }
 
 
@@ -2463,6 +2475,105 @@ def _flatten_series_episode_payload(payload: dict[str, object]) -> list[dict[str
         )
     )
     return flattened
+
+
+def _media_shape_timestamp_is_fresh(
+    observed_at: datetime, ttl_seconds: int = _BROWSER_VOD_MEDIA_SHAPE_TTL_SECONDS
+) -> bool:
+    if observed_at is None:
+        return False
+    now_utc = as_naive_utc(utc_now())
+    if now_utc is None:
+        return False
+
+    observed = as_naive_utc(observed_at)
+    if observed is None:
+        return False
+
+    return (now_utc - observed).total_seconds() < max(1, int(ttl_seconds or 0))
+
+
+def _source_resolution_payload(media_shape: dict[str, object] | None) -> dict[str, int | None]:
+    payload = dict(media_shape or {})
+    width = int(payload.get("width") or 0)
+    height = int(payload.get("height") or 0)
+    return {
+        "width": width or None,
+        "height": height or None,
+    }
+
+
+def _duration_seconds_payload(media_shape: dict[str, object] | None) -> float | None:
+    payload = dict(media_shape or {})
+    duration_value = float(payload.get("duration_seconds") or 0.0)
+    if duration_value <= 0:
+        return None
+    return round(duration_value, 3)
+
+
+def _media_shape_has_core_vod_details(media_shape: dict[str, object] | None) -> bool:
+    payload = dict(media_shape or {})
+    return (
+        int(payload.get("width") or 0) > 0
+        and int(payload.get("height") or 0) > 0
+        and float(payload.get("duration_seconds") or 0.0) > 0
+    )
+
+
+def _stream_type_from_media_shape(media_shape: dict[str, object] | None, container_extension: str = "") -> str:
+    extension = clean_key(container_extension)
+    if extension == "mkv":
+        return "mkv"
+    if extension in {"mp4", "ts", "webm", "hls"}:
+        return extension
+
+    container = clean_key((media_shape or {}).get("container"))
+    container_map = {
+        "mov": "mp4",
+        "mp4": "mp4",
+        "matroska": "mkv",
+        "mkv": "mkv",
+        "mpegts": "mpegts",
+        "ts": "mpegts",
+        "hls": "hls",
+        "m3u8": "hls",
+        "webm": "webm",
+    }
+    return container_map.get(container, extension or "auto")
+
+
+async def _refresh_vod_media_shape_if_needed(
+    source: XcVodItem | VodCategoryEpisode,
+    source_url: str,
+    source_type: str,
+    playlist: Playlist | None = None,
+    persist_result: bool = True,
+) -> dict[str, object]:
+    existing_shape = load_source_media_shape(source)
+    if (
+        existing_shape
+        and _media_shape_has_core_vod_details(existing_shape)
+        and source.stream_probe_at is not None
+        and _media_shape_timestamp_is_fresh(source.stream_probe_at)
+    ):
+        return existing_shape
+
+    probed_shape = await probe_stream_media_shape(
+        source_url,
+        user_agent=clean_text(getattr(playlist, "user_agent", "")),
+    )
+    if not probed_shape:
+        return existing_shape
+    if persist_result:
+        source_id = int(source.id)
+        if source_id > 0:
+            await persist_source_media_shape(
+                source_id,
+                probed_shape,
+                observed_at=as_naive_utc(utc_now()),
+                source_type=source_type,
+            )
+    return probed_shape
 
 
 async def list_upstream_vod_items(
@@ -2582,7 +2693,9 @@ async def fetch_upstream_vod_item_details(content_type: str, item_id: int) -> di
             or info_payload.get("cover_big")
             or source_item.poster_url
         ),
-        "release_date": clean_text(info_payload.get("releaseDate") or info_payload.get("release_date") or source_item.release_date),
+        "release_date": clean_text(
+            info_payload.get("releaseDate") or info_payload.get("release_date") or source_item.release_date
+        ),
         "plot": clean_text(
             info_payload.get("plot")
             or info_payload.get("description")
@@ -2702,7 +2815,9 @@ async def list_curated_library_items(
             "genre": summary_fields["genre"],
         }
         if content_type == VOD_KIND_MOVIE:
-            item_payload["container_extension"] = _resolve_group_output_extension(group.profile_id, item.container_extension)
+            item_payload["container_extension"] = _resolve_group_output_extension(
+                group.profile_id, item.container_extension
+            )
         deduped_items.append(item_payload)
 
     paged_items = deduped_items[resolved_offset : resolved_offset + resolved_limit]
@@ -2757,13 +2872,10 @@ async def fetch_curated_library_item_details(
         payload = await fetch_vod_info_payload(int(item.id))
         if isinstance(payload, dict):
             info_payload = _summary_info(payload)
-            movie_data = payload.get("movie_data") if isinstance(payload.get("movie_data"), dict) else {}
+            movie_data = payload.get("movie_data", {}) or {}
             detail["title"] = clean_text(info_payload.get("name") or movie_data.get("name") or item.title)
             detail["plot"] = clean_text(
-                info_payload.get("plot")
-                or movie_data.get("plot")
-                or info_payload.get("description")
-                or detail["plot"]
+                info_payload.get("plot") or movie_data.get("plot") or info_payload.get("description") or detail["plot"]
             )
             detail["poster_url"] = clean_text(
                 info_payload.get("movie_image") or movie_data.get("movie_image") or item.poster_url
@@ -2779,14 +2891,158 @@ async def fetch_curated_library_item_details(
         info_payload = _summary_info(payload)
         detail["title"] = clean_text(info_payload.get("name") or item.title)
         detail["plot"] = clean_text(
-            info_payload.get("plot") or info_payload.get("description") or info_payload.get("overview") or detail["plot"]
+            info_payload.get("plot")
+            or info_payload.get("description")
+            or info_payload.get("overview")
+            or detail["plot"]
         )
-        detail["poster_url"] = clean_text(
-            info_payload.get("cover") or info_payload.get("cover_big") or item.poster_url
-        )
+        detail["poster_url"] = clean_text(info_payload.get("cover") or info_payload.get("cover_big") or item.poster_url)
         detail["genre"] = _nfo_text_values(info_payload.get("genre") or info_payload.get("genres") or detail["genre"])
         detail["episodes"] = _flatten_series_episode_payload(payload)
     return detail
+
+
+async def build_curated_movie_browser_playback(user: User | None, item_id: int) -> dict[str, object] | None:
+    if not user_can_access_vod_kind(user, VOD_KIND_MOVIE):
+        return None
+    candidates = await resolve_movie_playback_candidates(int(item_id))
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
+    if candidate is None:
+        return None
+    if not upstream_url:
+        return {
+            "success": False,
+            "message": "Source capacity limit reached"
+            if selection_error == "capacity_blocked"
+            else "Stream unavailable",
+            "status_code": 503 if selection_error == "capacity_blocked" else 404,
+        }
+
+    playlist = getattr(candidate.source_item, "playlist", None)
+    if playlist is None:
+        async with Session() as session:
+            playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
+
+    media_shape = await _refresh_vod_media_shape_if_needed(
+        candidate.source_item,
+        upstream_url,
+        "vod_movie",
+        playlist=playlist,
+        persist_result=True,
+    )
+    return {
+        "success": True,
+        "item_id": int(item_id),
+        "content_type": VOD_KIND_MOVIE,
+        "stream_type": _stream_type_from_media_shape(
+            media_shape,
+            container_extension=clean_text(getattr(candidate.source_item, "container_extension", "")),
+        ),
+        "source_resolution": _source_resolution_payload(media_shape),
+        "duration_seconds": _duration_seconds_payload(media_shape),
+    }
+
+
+async def build_curated_episode_browser_playback(user: User | None, episode_id: int) -> dict[str, object] | None:
+    if not user_can_access_vod_kind(user, VOD_KIND_SERIES):
+        return None
+    candidates, episode = await resolve_episode_playback_candidates(int(episode_id))
+    if episode is None:
+        return None
+    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode)
+    if candidate is None:
+        return None
+    if not upstream_url:
+        return {
+            "success": False,
+            "message": "Source capacity limit reached"
+            if selection_error == "capacity_blocked"
+            else "Stream unavailable",
+            "status_code": 503 if selection_error == "capacity_blocked" else 404,
+        }
+
+    playlist = getattr(candidate.source_item, "playlist", None)
+    if playlist is None:
+        async with Session() as session:
+            playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
+
+    media_shape = await _refresh_vod_media_shape_if_needed(
+        episode,
+        upstream_url,
+        "vod_episode",
+        playlist=playlist,
+        persist_result=True,
+    )
+    return {
+        "success": True,
+        "episode_id": int(episode_id),
+        "content_type": VOD_KIND_SERIES,
+        "stream_type": _stream_type_from_media_shape(
+            media_shape,
+            container_extension=clean_text(getattr(episode, "container_extension", "")),
+        ),
+        "source_resolution": _source_resolution_payload(media_shape),
+        "duration_seconds": _duration_seconds_payload(media_shape),
+    }
+
+
+async def build_upstream_browser_playback(
+    item_id: int,
+    content_type: str,
+    upstream_episode_id: str | None = None,
+    container_extension: str | None = None,
+) -> dict[str, object]:
+    source_item, preview_url, account, error_message = await resolve_xc_item_upstream_url(
+        int(item_id),
+        content_type,
+        upstream_episode_id=upstream_episode_id,
+        container_extension=container_extension,
+    )
+    if source_item is None or error_message or not preview_url:
+        return {
+            "success": False,
+            "message": error_message or "Preview URL unavailable",
+            "status_code": 404,
+        }
+
+    playlist = getattr(source_item, "playlist", None)
+    if playlist is None:
+        async with Session() as session:
+            playlist = await session.get(Playlist, int(source_item.playlist_id))
+
+    source_type = "vod_movie"
+    persist_result = True
+    probe_source = source_item
+    if content_type == VOD_KIND_SERIES and clean_text(upstream_episode_id):
+        source_type = "vod_episode"
+        persist_result = False
+        probe_source = source_item
+
+    media_shape = await _refresh_vod_media_shape_if_needed(
+        probe_source,
+        preview_url,
+        source_type,
+        playlist=playlist,
+        persist_result=persist_result,
+    )
+
+    return {
+        "success": True,
+        "item_id": int(item_id),
+        "content_type": content_type,
+        "source_id": int(getattr(source_item, "playlist_id", 0) or 0) or None,
+        "source_item_id": int(getattr(source_item, "id", 0) or 0) or None,
+        "upstream_episode_id": clean_text(upstream_episode_id),
+        "container_extension": clean_text(container_extension).lstrip(".").lower() or None,
+        "xc_account_id": int(getattr(account, "id", 0) or 0) or None,
+        "stream_type": _stream_type_from_media_shape(
+            media_shape,
+            container_extension=clean_text(container_extension)
+            or clean_text(getattr(source_item, "container_extension", "")),
+        ),
+        "source_resolution": _source_resolution_payload(media_shape),
+        "duration_seconds": _duration_seconds_payload(media_shape),
+    }
 
 
 async def create_vod_group(payload: dict[str, object]) -> int:
@@ -3574,6 +3830,14 @@ def _ordered_playback_rows(rows) -> list:
 
 
 async def _build_playback_candidates(rows, item_type: str) -> list[VodCuratedPlaybackCandidate]:
+    """Build ordered curated playback candidates from the joined source rows.
+
+    Each input row represents one possible upstream source for a curated movie
+    or episode. This helper wraps those rows in `VodCuratedPlaybackCandidate`
+    objects, preferring rows that have an enabled playlist plus a usable host
+    and XC account, while still keeping one fallback candidate when none of the
+    rows are immediately playable.
+    """
     candidates = []
     fallback = None
     for row in _ordered_playback_rows(rows):
@@ -3620,6 +3884,13 @@ def resolve_vod_profile_id(candidate: VodCuratedPlaybackCandidate) -> str:
     )
     configured_profile = clean_text(getattr(candidate.group, "profile_id", "")) if candidate and candidate.group else ""
     return _resolve_group_output_profile_id(configured_profile, source_container)
+
+
+def resolve_upstream_vod_profile_id(source_item: XcVodItem, container_extension: str | None = None) -> str:
+    source_container = clean_text(container_extension).lstrip(".").lower()
+    if not source_container:
+        source_container = clean_text(getattr(source_item, "container_extension", "")).lstrip(".").lower()
+    return _fallback_profile_for_container(source_container)
 
 
 def resolve_vod_output_extension(candidate: VodCuratedPlaybackCandidate) -> str:

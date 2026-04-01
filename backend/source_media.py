@@ -56,6 +56,9 @@ def _parse_fractional_rate(value):
         return 0.0
 
 
+# TODO: Refactor this to return a typed media-shape object instead of a loose dict so
+# downstream helpers like probe_stream_media_shape(...) and VOD preview payload builders
+# stop showing errors of typing and I don't need to use cast to fix them.
 def extract_media_shape_from_ffprobe_payload(payload):
     data = payload or {}
     streams = data.get("streams") or []
@@ -78,6 +81,7 @@ def extract_media_shape_from_ffprobe_payload(payload):
 
     return {
         "container": _clean_key((format_info.get("format_name") or "").split(",", 1)[0]),
+        "duration_seconds": float(format_info.get("duration") or 0.0) if format_info.get("duration") is not None else 0.0,
         "video_codec": _clean_key(video_stream.get("codec_name")) if video_stream else "",
         "video_profile": _clean_text(video_stream.get("profile")) if video_stream else "",
         "audio_codec": _clean_key(audio_stream.get("codec_name")) if audio_stream else "",

@@ -2,7 +2,7 @@
 # -*- coding:utf-8 -*-
 import mimetypes
 import xml.etree.ElementTree as ET
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from quart import Response, jsonify, request
 
@@ -16,7 +16,14 @@ from backend.auth import (
     unauthorized_basic_auth_response,
     user_auth_required,
 )
+from backend.stream_profiles import SUPPORTED_STREAM_PROFILES, parse_stream_profile_request
+from backend.url_resolver import get_request_base_url
 from backend.vod import (
+    VOD_KIND_MOVIE,
+    VOD_KIND_SERIES,
+    build_curated_episode_browser_playback,
+    build_curated_movie_browser_playback,
+    build_upstream_browser_playback,
     create_vod_group,
     delete_vod_group,
     fetch_curated_library_item_details,
@@ -29,7 +36,6 @@ from backend.vod import (
     list_upstream_vod_categories,
     list_vod_groups,
     require_vod_content_type,
-    resolve_xc_item_upstream_url,
     resolve_vod_http_library_path,
     update_vod_group,
     user_can_access_vod_kind,
@@ -46,6 +52,38 @@ ignored_library_probe_suffixes = (
     "/index.bdm",
     "/bdmv/index.bdm",
 )
+def _resolved_preview_profile(default_profile: str = "") -> str:
+    requested = parse_stream_profile_request(request.args.get("profile"))
+    if requested["profile_id"] in SUPPORTED_STREAM_PROFILES:
+        return requested["raw"] or requested["profile_id"]
+    return str(default_profile or "").strip().lower()
+
+
+def _build_cso_vod_preview_url(
+    request_base_url: str,
+    user,
+    stream_type: str,
+    item_id: int,
+    profile: str = "",
+    source_id: int | None = None,
+    upstream_episode_id: str | None = None,
+    container_extension: str | None = None,
+) -> str:
+    base_path = f"/tic-api/cso/vod/{stream_type}/{int(item_id)}"
+    if source_id is not None:
+        base_path = f"/tic-api/cso/vod/upstream/{int(source_id)}/{stream_type}/{int(item_id)}"
+        if stream_type == VOD_KIND_SERIES:
+            resolved_episode_id = str(upstream_episode_id or "").strip()
+            if resolved_episode_id:
+                base_path = f"{base_path}/{quote(resolved_episode_id, safe='')}"
+    query_items = {
+        "stream_key": str(getattr(user, "streaming_key", "") or ""),
+    }
+    if profile:
+        query_items["profile"] = str(profile)
+    if container_extension:
+        query_items["container_extension"] = str(container_extension).strip().lstrip(".").lower()
+    return f"{request_base_url.rstrip('/')}{base_path}?{urlencode(query_items)}"
 
 
 @blueprint.route("/tic-api/vod/status", methods=["GET"])
@@ -148,34 +186,149 @@ async def vod_browser_item_details(item_id: int):
     return jsonify({"success": True, "data": payload})
 
 
-@blueprint.route("/tic-api/vod/browser/items/<int:item_id>/preview", methods=["GET"])
-@admin_auth_required
-async def vod_browser_item_preview(item_id: int):
-    try:
-        content_type = require_vod_content_type(request.args.get("content_type"))
-    except ValueError as exc:
-        return jsonify({"success": False, "message": str(exc)}), 400
-
-    upstream_episode_id = request.args.get("upstream_episode_id")
-    container_extension = request.args.get("container_extension")
-    _source_item, preview_url, _account, error_message = await resolve_xc_item_upstream_url(
+@blueprint.route("/tic-api/vod/movie/<int:item_id>/preview", methods=["GET"])
+@user_auth_required
+async def curated_movie_preview(item_id: int):
+    user = await get_user_from_token()
+    if not user or not getattr(user, "streaming_key", None):
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+    payload = await build_curated_movie_browser_playback(user, int(item_id))
+    if payload is None:
+        return jsonify({"success": False, "message": "VOD item not found"}), 404
+    if not payload.get("success"):
+        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
+            payload.get("status_code") or 404
+        )
+    profile = _resolved_preview_profile()
+    preview_url = _build_cso_vod_preview_url(
+        get_request_base_url(request),
+        user,
+        VOD_KIND_MOVIE,
         int(item_id),
-        content_type,
+        profile=profile,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "preview_url": preview_url,
+            "stream_type": payload.get("stream_type") or "auto",
+            "source_resolution": payload.get("source_resolution") or {},
+            "duration_seconds": payload.get("duration_seconds"),
+        }
+    )
+
+
+@blueprint.route("/tic-api/vod/series/<int:item_id>/preview", methods=["GET"])
+@user_auth_required
+async def curated_series_preview(item_id: int):
+    user = await get_user_from_token()
+    if not user or not getattr(user, "streaming_key", None):
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+    payload = await build_curated_episode_browser_playback(user, int(item_id))
+    if payload is None:
+        return jsonify({"success": False, "message": "Episode not found"}), 404
+    if not payload.get("success"):
+        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
+            payload.get("status_code") or 404
+        )
+    profile = _resolved_preview_profile()
+    preview_url = _build_cso_vod_preview_url(
+        get_request_base_url(request),
+        user,
+        VOD_KIND_SERIES,
+        int(item_id),
+        profile=profile,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "preview_url": preview_url,
+            "stream_type": payload.get("stream_type") or "auto",
+            "source_resolution": payload.get("source_resolution") or {},
+            "duration_seconds": payload.get("duration_seconds"),
+        }
+    )
+
+
+@blueprint.route("/tic-api/vod/upstream/movie/<int:item_id>/preview", methods=["GET"])
+@admin_auth_required
+async def upstream_movie_preview(item_id: int):
+    user = await get_user_from_token()
+    if not user or not getattr(user, "streaming_key", None):
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+    payload = await build_upstream_browser_playback(int(item_id), VOD_KIND_MOVIE)
+    if not payload.get("success"):
+        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
+            payload.get("status_code") or 404
+        )
+    profile = _resolved_preview_profile()
+    source_id = int(payload.get("source_id") or 0)
+    source_item_id = int(payload.get("source_item_id") or 0)
+    if source_id <= 0 or source_item_id <= 0:
+        return jsonify({"success": False, "message": "Playback source unavailable"}), 404
+    preview_url = _build_cso_vod_preview_url(
+        get_request_base_url(request),
+        user,
+        VOD_KIND_MOVIE,
+        source_item_id,
+        profile=profile,
+        source_id=source_id,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "preview_url": preview_url,
+            "stream_type": payload.get("stream_type") or "auto",
+            "source_resolution": payload.get("source_resolution") or {},
+            "duration_seconds": payload.get("duration_seconds"),
+        }
+    )
+
+
+@blueprint.route("/tic-api/vod/upstream/series/<int:item_id>/<upstream_episode_id>/preview", methods=["GET"])
+@admin_auth_required
+async def upstream_series_preview(item_id: int, upstream_episode_id: str):
+    user = await get_user_from_token()
+    if not user or not getattr(user, "streaming_key", None):
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+    container_extension = request.args.get("container_extension")
+    resolved_episode_id = convert_to_int(upstream_episode_id, default=0)
+    if resolved_episode_id <= 0:
+        return jsonify({"success": False, "message": "Series episode id is required"}), 400
+    payload = await build_upstream_browser_playback(
+        int(item_id),
+        VOD_KIND_SERIES,
         upstream_episode_id=upstream_episode_id,
         container_extension=container_extension,
     )
-    if error_message:
-        return jsonify({"success": False, "message": error_message}), 404
-    if not preview_url:
-        return jsonify({"success": False, "message": "Preview URL unavailable"}), 404
-    lower_preview_url = str(preview_url).lower()
-    if lower_preview_url.endswith(".m3u8"):
-        stream_type = "hls"
-    elif lower_preview_url.endswith(".ts"):
-        stream_type = "mpegts"
-    else:
-        stream_type = "auto"
-    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+    if not payload.get("success"):
+        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
+            payload.get("status_code") or 404
+        )
+    source_id = int(payload.get("source_id") or 0)
+    source_item_id = int(payload.get("source_item_id") or 0)
+    if source_id <= 0 or source_item_id <= 0:
+        return jsonify({"success": False, "message": "Playback source unavailable"}), 404
+    profile = _resolved_preview_profile()
+    preview_url = _build_cso_vod_preview_url(
+        get_request_base_url(request),
+        user,
+        VOD_KIND_SERIES,
+        source_item_id,
+        profile=profile,
+        source_id=source_id,
+        upstream_episode_id=str(resolved_episode_id),
+        container_extension=container_extension,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "preview_url": preview_url,
+            "stream_type": payload.get("stream_type") or "auto",
+            "source_resolution": payload.get("source_resolution") or {},
+            "duration_seconds": payload.get("duration_seconds"),
+        }
+    )
 
 
 @blueprint.route("/tic-api/library/categories", methods=["GET"])

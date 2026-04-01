@@ -63,7 +63,6 @@ from backend.playlists import (
 from backend.xc_hosts import first_xc_host
 from backend.cso import (
     build_cso_stream_query,
-    cso_runtime_capabilities,
 )
 from backend.stream_profiles import profile_from_cso_policy
 from backend.streaming import (
@@ -1230,7 +1229,6 @@ async def read_config_all_channels(
                     "cso_enabled": bool(getattr(result, "cso_enabled", False)),
                     "cso_policy": {"profile": profile_from_cso_policy(getattr(result, "cso_policy", None))},
                     "cso_profile": profile_from_cso_policy(getattr(result, "cso_policy", None)),
-                    "cso_capabilities": cso_runtime_capabilities(),
                     "channel_type": _channel_type_value(getattr(result, "channel_type", None)),
                     "tags": tags,
                     "guide": {
@@ -1299,7 +1297,6 @@ async def read_config_one_channel(channel_id):
             "cso_enabled": bool(getattr(result, "cso_enabled", False)),
             "cso_policy": {"profile": profile_from_cso_policy(getattr(result, "cso_policy", None))},
             "cso_profile": profile_from_cso_policy(getattr(result, "cso_policy", None)),
-            "cso_capabilities": cso_runtime_capabilities(),
             "channel_type": _channel_type_value(getattr(result, "channel_type", None)),
             "tags": tags,
             "guide": {

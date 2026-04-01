@@ -3,8 +3,38 @@
 import logging
 import os
 import json
+import re
 
 logger = logging.getLogger("stream_profiles")
+
+PROFILE_REQUEST_MODIFIER_RE = re.compile(r"^(?P<profile>[^\[]+?)(?:\[(?P<mods>.+)\])?$")
+PROFILE_QUALITY_PRESETS = {
+    "1080p": {
+        "target_width": 1920,
+        "target_video_bitrate": "2500k",
+        "target_video_maxrate": "3200k",
+        "target_video_bufsize": "5000k",
+        "audio_bitrate": "160k",
+    },
+    "720p": {
+        "target_width": 1280,
+        "target_video_bitrate": "1300k",
+        "target_video_maxrate": "1700k",
+        "target_video_bufsize": "2600k",
+        "audio_bitrate": "128k",
+    },
+    "480p": {
+        "target_width": 854,
+        "target_video_bitrate": "600k",
+        "target_video_maxrate": "800k",
+        "target_video_bufsize": "1200k",
+        "audio_bitrate": "96k",
+    },
+}
+PROFILE_HLS_SEGMENT_TYPES = {
+    "ts": "mpegts",
+    "fmp4": "fmp4",
+}
 
 # Profiles that TVHeadend can consume directly via ?profile=<id>
 TVH_COMPATIBLE_PROFILE_IDS_ORDER = [
@@ -243,15 +273,15 @@ DEFAULT_PROFILE_TEMPLATE = {
 }
 
 
-def _normalized_profile_definition(profile_data):
-    normalized = dict(DEFAULT_PROFILE_TEMPLATE)
+def _gen_profile_definition(profile_data):
+    profile_definition = dict(DEFAULT_PROFILE_TEMPLATE)
     if isinstance(profile_data, dict):
-        normalized.update(profile_data)
-    return normalized
+        profile_definition.update(profile_data)
+    return profile_definition
 
 
 SUPPORTED_STREAM_PROFILES = {
-    profile_name: _normalized_profile_definition(profile_data)
+    profile_name: _gen_profile_definition(profile_data)
     for profile_name, profile_data in SUPPORTED_STREAM_PROFILES.items()
 }
 
@@ -308,7 +338,7 @@ def _is_supported_profile_enabled(settings, requested):
 def _resolve_tvh_cso_profile_name(settings):
     configured_profile = str((settings or {}).get("settings", {}).get("tvh_cso_stream_profile") or "").strip().lower()
     profile = configured_profile or TVH_CSO_DEFAULT_PROFILE
-    profile_data = _normalized_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {})
+    profile_data = _gen_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {})
     if profile not in SUPPORTED_STREAM_PROFILES or str(profile_data.get("container") or "").strip().lower() != "mpegts":
         if configured_profile:
             logger.warning(
@@ -406,9 +436,7 @@ def resolve_tvh_profile_name(config, cso_profile=None):
         return TVH_COMPATIBLE_PROFILE_IDS_ORDER[0]
 
     mapped = (
-        str(
-            (_normalized_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {}).get("tvh_profile_name") or "")
-        )
+        str((_gen_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {}).get("tvh_profile_name") or ""))
         .strip()
         .lower()
     )
@@ -431,11 +459,13 @@ def generate_cso_policy_from_profile(config, profile):
     resolution logic. This function only expands profile defaults and app-level
     per-profile runtime toggles (hardware acceleration and deinterlace).
     """
+    parsed_profile = parse_stream_profile_request(profile)
+    resolved_profile = parsed_profile["profile_id"]
     settings = config.read_settings()
     profile_settings = _profile_settings_map(settings)
-    profile_data = _normalized_profile_definition(SUPPORTED_STREAM_PROFILES.get(profile) or {})
-    current_profile_settings = profile_settings.get(profile) or {}
-    return {
+    profile_data = _gen_profile_definition(SUPPORTED_STREAM_PROFILES.get(resolved_profile) or {})
+    current_profile_settings = profile_settings.get(resolved_profile) or {}
+    policy = {
         "output_mode": profile_data.get("output_mode", "force_remux"),
         "container": profile_data.get("container", "mpegts"),
         "video_codec": profile_data.get("video_codec", ""),
@@ -444,7 +474,100 @@ def generate_cso_policy_from_profile(config, profile):
         "transcode": bool(profile_data.get("transcode", False)),
         "deinterlace": bool(current_profile_settings.get("deinterlace", False)),
         "hwaccel": bool(current_profile_settings.get("hwaccel", False)),
+        "target_width": 0,
+        "target_video_bitrate": "",
+        "target_video_maxrate": "",
+        "target_video_bufsize": "",
+        "audio_bitrate": "",
+        "hls_segment_type": "mpegts",
     }
+    return apply_stream_profile_modifiers(policy, parsed_profile["modifiers"])
+
+
+def parse_stream_profile_request(profile):
+    raw_profile = str(profile or "").strip().lower()
+    if not raw_profile:
+        return {"raw": "", "profile_id": "", "modifiers": {}}
+
+    match = PROFILE_REQUEST_MODIFIER_RE.match(raw_profile)
+    if not match:
+        return {"raw": raw_profile, "profile_id": raw_profile, "modifiers": {}}
+
+    profile_id = str(match.group("profile") or "").strip().lower()
+    modifier_block = str(match.group("mods") or "").strip()
+    modifiers = {}
+    if modifier_block:
+        for pair in modifier_block.split(","):
+            key, separator, value = pair.partition("=")
+            if not separator:
+                continue
+            modifier_key = str(key or "").strip().lower()
+            modifier_value = str(value or "").strip().lower()
+            if not modifier_key or not modifier_value:
+                continue
+            if modifier_key == "qty":
+                if modifier_value.isdigit():
+                    modifier_value = f"{modifier_value}p"
+                if modifier_value in PROFILE_QUALITY_PRESETS:
+                    modifiers["qty"] = modifier_value
+            elif modifier_key == "seg":
+                if modifier_value in PROFILE_HLS_SEGMENT_TYPES:
+                    modifiers["seg"] = modifier_value
+
+    return {
+        "raw": format_stream_profile_request(profile_id, modifiers),
+        "profile_id": profile_id,
+        "modifiers": modifiers,
+    }
+
+
+def format_stream_profile_request(profile_id, modifiers=None):
+    resolved_profile = str(profile_id or "").strip().lower()
+    if not resolved_profile:
+        return ""
+    resolved_modifiers = dict(modifiers or {})
+    parts = []
+    if resolved_modifiers.get("qty") in PROFILE_QUALITY_PRESETS:
+        parts.append(f"qty={resolved_modifiers['qty']}")
+    if resolved_modifiers.get("seg") in PROFILE_HLS_SEGMENT_TYPES:
+        parts.append(f"seg={resolved_modifiers['seg']}")
+    if not parts:
+        return resolved_profile
+    return f"{resolved_profile}[{','.join(parts)}]"
+
+
+def default_browser_stream_profile_request() -> str:
+    return format_stream_profile_request("h264-aac-hls", {"seg": "fmp4"})
+
+
+def is_hls_stream_profile(profile: str) -> bool:
+    """Return True when the requested profile resolves to an HLS container.
+
+    Example:
+    - `is_hls_stream_profile("h264-aac-hls[qty=480p,seg=fmp4]")` returns `True`
+    - `is_hls_stream_profile("aac-hls")` returns `True`
+    - `is_hls_stream_profile("h264-aac-mp4[qty=480p]")` returns `False`
+    """
+    parsed_profile = parse_stream_profile_request(profile)
+    profile_data = _gen_profile_definition(SUPPORTED_STREAM_PROFILES.get(parsed_profile["profile_id"]) or {})
+    return str(profile_data.get("container") or "").strip().lower() == "hls"
+
+
+def apply_stream_profile_modifiers(policy, modifiers=None):
+    resolved = dict(policy or {})
+    resolved_modifiers = dict(modifiers or {})
+    video_codec = str(resolved.get("video_codec") or "").strip().lower()
+    can_scale = bool(resolved.get("transcode")) and bool(video_codec)
+    if can_scale:
+        quality_key = str(resolved_modifiers.get("qty") or "").strip().lower()
+        quality_preset = PROFILE_QUALITY_PRESETS.get(quality_key)
+        if quality_preset:
+            resolved.update(quality_preset)
+    if str(resolved.get("container") or "").strip().lower() == "hls":
+        segment_key = str(resolved_modifiers.get("seg") or "").strip().lower()
+        if segment_key in PROFILE_HLS_SEGMENT_TYPES:
+            resolved["hls_segment_type"] = PROFILE_HLS_SEGMENT_TYPES[segment_key]
+    return resolved
 
 
 def get_profile_options_payload(config):
@@ -454,7 +577,7 @@ def get_profile_options_payload(config):
     entries = []
     for profile_key, profile in SUPPORTED_STREAM_PROFILES.items():
         configured = profile_settings.get(profile_key, {})
-        profile = _normalized_profile_definition(profile)
+        profile = _gen_profile_definition(profile)
         entries.append(
             {
                 "profile": profile_key,
@@ -472,7 +595,7 @@ def get_profile_options_payload(config):
 def get_stream_profile_definitions():
     definitions = []
     for profile_key, profile in SUPPORTED_STREAM_PROFILES.items():
-        profile = _normalized_profile_definition(profile)
+        profile = _gen_profile_definition(profile)
         video_codec = str(profile.get("video_codec") or "").strip().lower()
         transcode = bool(profile.get("transcode", False))
         supports_video_filters = bool(transcode and video_codec)
