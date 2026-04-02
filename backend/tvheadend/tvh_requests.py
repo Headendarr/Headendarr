@@ -282,7 +282,8 @@ class Tvheadend:
         self.admin_username = admin_username
         self.admin_password = admin_password
         self.local_conn = local_conn
-        self.timeout = 5
+        self.default_timeout = aiohttp.ClientTimeout(total=5, connect=5, sock_connect=5, sock_read=5)
+        self.dvr_grid_timeout = aiohttp.ClientTimeout(total=30, connect=5, sock_connect=5, sock_read=30)
         self.session = aiohttp.ClientSession(auth=aiohttp.BasicAuth(admin_username,
                                                                     admin_password)) if admin_username and admin_password else aiohttp.ClientSession()
         self.default_headers = {}
@@ -293,34 +294,49 @@ class Tvheadend:
     async def __aexit__(self, exc_type, exc, tb):
         await self.session.close()
 
-    async def __get(self, url, payload=None, rformat='content'):
-        headers = self.default_headers
-        async with self.session.get(url, headers=headers, params=payload, allow_redirects=True,
-                                    timeout=self.timeout) as r:
-            if r.status == 200:
-                if rformat == 'json':
-                    return await r.json(content_type=None)
-                return await r.text()
-            raise Exception(f"GET Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()} - PAYLOAD:{payload}")
+    def _resolve_timeout(self, timeout=None):
+        return timeout or self.default_timeout
 
-    async def __post(self, url, payload=None, rformat='content'):
+    async def __get(self, url, payload=None, rformat='content', timeout=None):
         headers = self.default_headers
-        async with self.session.post(url, headers=headers, data=payload, allow_redirects=True,
-                                     timeout=self.timeout) as r:
-            if r.status == 200:
-                if rformat == 'json':
-                    return await r.json(content_type=None)
-                return await r.text()
-            raise Exception(f"POST Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()} - PAYLOAD:{payload}")
+        resolved_timeout = self._resolve_timeout(timeout)
+        try:
+            async with self.session.get(url, headers=headers, params=payload, allow_redirects=True,
+                                        timeout=resolved_timeout) as r:
+                if r.status == 200:
+                    if rformat == 'json':
+                        return await r.json(content_type=None)
+                    return await r.text()
+                raise Exception(f"GET Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()} - PAYLOAD:{payload}")
+        except asyncio.TimeoutError as exc:
+            raise Exception(f"GET timed out calling TVH API after {resolved_timeout.total}s - URL:{url}") from exc
 
-    async def __json(self, url, payload=None):
+    async def __post(self, url, payload=None, rformat='content', timeout=None):
+        headers = self.default_headers
+        resolved_timeout = self._resolve_timeout(timeout)
+        try:
+            async with self.session.post(url, headers=headers, data=payload, allow_redirects=True,
+                                         timeout=resolved_timeout) as r:
+                if r.status == 200:
+                    if rformat == 'json':
+                        return await r.json(content_type=None)
+                    return await r.text()
+                raise Exception(f"POST Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()} - PAYLOAD:{payload}")
+        except asyncio.TimeoutError as exc:
+            raise Exception(f"POST timed out calling TVH API after {resolved_timeout.total}s - URL:{url}") from exc
+
+    async def __json(self, url, payload=None, timeout=None):
         headers = self.default_headers
         headers['Content-Type'] = 'application/json'
-        async with self.session.post(url, headers=headers, json=payload, allow_redirects=True,
-                                     timeout=self.timeout) as r:
-            if r.status == 200:
-                return await r.json(content_type=None)
-            raise Exception(f"JSON Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()}")
+        resolved_timeout = self._resolve_timeout(timeout)
+        try:
+            async with self.session.post(url, headers=headers, json=payload, allow_redirects=True,
+                                         timeout=resolved_timeout) as r:
+                if r.status == 200:
+                    return await r.json(content_type=None)
+                raise Exception(f"JSON Failed to TVH API - CODE:{r.status} - CONTENT:{await r.text()}")
+        except asyncio.TimeoutError as exc:
+            raise Exception(f"JSON timed out calling TVH API after {resolved_timeout.total}s - URL:{url}") from exc
 
     async def idnode_load(self, data):
         url = f"{self.api_url}/{api_idnode_load}"
@@ -337,7 +353,11 @@ class Tvheadend:
 
     async def list_dvr_entries(self):
         url = f"{self.api_url}/{api_dvr_entry_grid}"
-        response = await self.__post(url, payload={"limit": 2000, "sort": "start", "dir": "ASC"})
+        response = await self.__post(
+            url,
+            payload={"limit": 2000, "sort": "start", "dir": "ASC"},
+            timeout=self.dvr_grid_timeout,
+        )
         try:
             json_list = json.loads(response)
         except json.JSONDecodeError:
