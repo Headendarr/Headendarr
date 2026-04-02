@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 from backend.api import blueprint
 from backend.audit_view import build_activity_label, build_device_label, derive_audit_mode
 from backend.auth import admin_auth_required, audit_stream_event, get_request_user, streamer_or_admin_required
+from backend.cso import disconnect_vod_proxy_output
 from backend.utils import to_utc_iso
 from backend.models import Channel, CsoEventLog, Session, StreamAuditLog, User
 from backend.stream_activity import stop_stream_activity, upsert_stream_activity
@@ -501,10 +502,13 @@ async def api_audit_playback_stop():
     connection_id = (data.get("connection_id") or data.get("cid") or "").strip() or None
     if not url:
         return jsonify({"success": False, "message": "Missing playback url"}), 400
+    disconnected = False
+    if connection_id:
+        disconnected = await disconnect_vod_proxy_output(connection_id)
     stopped = await stop_stream_activity(
         url,
         connection_id=connection_id,
         event_type="stream_stop",
         endpoint_override="/tic-web/player",
     )
-    return jsonify({"success": True, "stopped": bool(stopped)})
+    return jsonify({"success": True, "stopped": bool(stopped), "disconnected": bool(disconnected)})

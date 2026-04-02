@@ -54,7 +54,11 @@ from backend.stream_activity import (
     touch_stream_activity,
     upsert_stream_activity,
 )
-from backend.stream_profiles import content_type_for_media_path, generate_cso_policy_from_profile, resolve_cso_profile_name
+from backend.stream_profiles import (
+    content_type_for_media_path,
+    generate_cso_policy_from_profile,
+    resolve_cso_profile_name,
+)
 from backend.stream_profiles import parse_stream_profile_request
 from backend.streaming import normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
@@ -1551,7 +1555,12 @@ async def _stream_cso_vod_route(resolver, identity: str):
                 user=stream_user,
             )
 
-    response = Response(generate_vod_stream(), content_type=plan.content_type or "application/octet-stream")
+    response = Response(
+        generate_vod_stream(),
+        status=int(plan.status_code or 200),
+        headers=dict(plan.headers or {}),
+        content_type=plan.content_type or "application/octet-stream",
+    )
     response.timeout = None
     return response
 

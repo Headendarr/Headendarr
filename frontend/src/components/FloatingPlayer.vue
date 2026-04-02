@@ -290,7 +290,9 @@ const currentSessionId = ref(null);
 const volumeHandler = ref(null);
 const applyingPersistedVolume = ref(false);
 const videoErrorHandler = ref(null);
+const videoPlayHandler = ref(null);
 const videoPlayingHandler = ref(null);
+const videoCanPlayHandler = ref(null);
 const videoPauseHandler = ref(null);
 const videoWaitingHandler = ref(null);
 const metadataHandler = ref(null);
@@ -965,8 +967,15 @@ function cleanupPlayer() {
     }
     if (videoPlayingHandler.value) {
       el.removeEventListener('playing', videoPlayingHandler.value);
-      el.removeEventListener('canplay', videoPlayingHandler.value);
       videoPlayingHandler.value = null;
+    }
+    if (videoPlayHandler.value) {
+      el.removeEventListener('play', videoPlayHandler.value);
+      videoPlayHandler.value = null;
+    }
+    if (videoCanPlayHandler.value) {
+      el.removeEventListener('canplay', videoCanPlayHandler.value);
+      videoCanPlayHandler.value = null;
     }
     if (videoPauseHandler.value) {
       el.removeEventListener('pause', videoPauseHandler.value);
@@ -1227,6 +1236,7 @@ async function initPlayer() {
   if (!videoPauseHandler.value) {
     videoPauseHandler.value = () => {
       isPlaying.value = false;
+      isLoading.value = false;
     };
     el.addEventListener('pause', videoPauseHandler.value);
   }
@@ -1265,6 +1275,13 @@ async function initPlayer() {
     };
     el.addEventListener('error', videoErrorHandler.value);
   }
+  if (!videoPlayHandler.value) {
+    videoPlayHandler.value = () => {
+      isPlaying.value = true;
+      isLoading.value = false;
+    };
+    el.addEventListener('play', videoPlayHandler.value);
+  }
   if (!videoPlayingHandler.value) {
     videoPlayingHandler.value = () => {
       playbackStarted.value = true;
@@ -1282,7 +1299,16 @@ async function initPlayer() {
       }
     };
     el.addEventListener('playing', videoPlayingHandler.value);
-    el.addEventListener('canplay', videoPlayingHandler.value);
+  }
+  if (!videoCanPlayHandler.value) {
+    videoCanPlayHandler.value = () => {
+      syncCurrentTime(el);
+      syncDuration(el);
+      if (!el.paused && !el.ended) {
+        isLoading.value = false;
+      }
+    };
+    el.addEventListener('canplay', videoCanPlayHandler.value);
   }
   if (!videoWaitingHandler.value) {
     videoWaitingHandler.value = () => {
