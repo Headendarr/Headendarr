@@ -44,7 +44,7 @@
                         <span class="text-grey-8">{{ playlist.url }}</span>
                       </q-item-label>
                       <q-item-label caption lines="1">
-                        Connections: {{ playlist.connections }} • Type: {{ formatPlaylistType(playlist.type) }}
+                        Connections: {{ playlist.connections }} • Type: {{ formatPlaylistType(playlist.account_type) }}
                       </q-item-label>
                       <q-item-label v-if="playlistHasIssue(playlist)" caption class="text-warning">
                         Last update failed{{ playlistErrorTime(playlist) ? ` (${playlistErrorTime(playlist)})` : '' }}:
@@ -198,7 +198,7 @@ export default defineComponent({
         const values = [
           playlist?.name,
           playlist?.url,
-          playlist?.type,
+          playlist?.account_type,
           playlist?.user_agent,
           playlist?.health?.error,
         ];
