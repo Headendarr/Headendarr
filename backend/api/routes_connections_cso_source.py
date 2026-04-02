@@ -1511,12 +1511,10 @@ async def _stream_cso_vod_route(resolver, identity: str):
             config,
             candidate,
             upstream_url,
-            stream_key,
             effective_profile,
             connection_id,
             start_seconds=start_seconds,
             request_headers=dict(request.headers),
-            episode=episode,
         )
     else:
         plan = await subscribe_vod_stream(

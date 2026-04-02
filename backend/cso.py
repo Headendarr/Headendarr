@@ -8220,17 +8220,15 @@ async def subscribe_vod_proxy_stream(
 
 
 async def subscribe_vod_proxy_output_stream(
-    config,
-    candidate,
-    upstream_url,
-    stream_key,
-    profile,
-    connection_id,
-    start_seconds=0,
-    max_duration_seconds=None,
-    request_headers=None,
-    episode=None,
-):
+    config: Any,
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate,
+    upstream_url: str,
+    profile: str,
+    connection_id: str,
+    start_seconds: int = 0,
+    max_duration_seconds: int | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> Any:
     if not candidate:
         return build_cso_stream_plan(None, None, "VOD item not found", 404)
 
@@ -8248,15 +8246,15 @@ async def subscribe_vod_proxy_output_stream(
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
         return build_cso_stream_plan(None, None, "Source playlist is disabled", 404)
 
-    if not source.url:
-        return build_cso_stream_plan(None, None, "No available stream source", 503)
-
     policy = generate_cso_policy_from_profile(config, profile)
     proxy_session_key = f"vod-proxy-output-{source.id}-{connection_id}"
-    cache_entry = await vod_cache_manager.get_or_create(source, source.url)
+    cache_entry = await vod_cache_manager.get_or_create(source, upstream_url or source.url)
     local_cache_ready = bool(cache_entry.complete and cache_entry.final_path.exists())
     using_local_cache = local_cache_ready
     proxy_session = None
+
+    if not using_local_cache and not source.url:
+        return build_cso_stream_plan(None, None, "No available stream source", 503)
 
     if using_local_cache:
         command = CsoFfmpegCommandBuilder(
