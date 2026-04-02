@@ -7,6 +7,33 @@ import re
 
 logger = logging.getLogger("stream_profiles")
 
+
+def content_type_for_media_path(path_or_name: str | None) -> str:
+    text = str(path_or_name or "").strip().lower()
+    if not text:
+        return "video/mp2t"
+
+    path = text.split("?", 1)[0]
+
+    if path in {"hls", "m3u8"} or path.endswith(".m3u8"):
+        return "application/vnd.apple.mpegurl"
+    if path.endswith(".m4s"):
+        return "video/iso.segment"
+    if path in {"mp4", "m4v"} or path.endswith(".mp4") or path.endswith(".m4v"):
+        return "video/mp4"
+    if path in {"mpegts", "ts"} or path.endswith(".ts"):
+        return "video/mp2t"
+    if path in {"matroska", "mkv"} or path.endswith(".mkv"):
+        return "video/x-matroska"
+    if path in {"webm"} or path.endswith(".webm"):
+        return "video/webm"
+    if path in {"mpd"} or path.endswith(".mpd"):
+        return "application/dash+xml"
+    if path in {"mov"} or path.endswith(".mov"):
+        return "video/quicktime"
+    return "video/mp2t"
+
+
 PROFILE_REQUEST_MODIFIER_RE = re.compile(r"^(?P<profile>[^\[]+?)(?:\[(?P<mods>.+)\])?$")
 PROFILE_QUALITY_PRESETS = {
     "1080p": {
@@ -199,17 +226,6 @@ SUPPORTED_STREAM_PROFILES = {
         "transcode": True,
         "tvh_profile_name": "webtv-h264-aac-mp4",
     },
-    "vp8-vorbis-webm": {
-        "label": "vp8-vorbis-webm",
-        "description": "Transcode to VP8/Vorbis in WebM.",
-        "output_mode": "force_transcode",
-        "container": "webm",
-        "video_codec": "vp8",
-        "audio_codec": "vorbis",
-        "subtitle_mode": "drop",
-        "transcode": True,
-        "tvh_profile_name": "webtv-vp8-vorbis-webm",
-    },
     "h265-aac-mp4": {
         "label": "h265-aac-mp4",
         "description": "Transcode to H.265/AAC in MP4.",
@@ -250,6 +266,51 @@ SUPPORTED_STREAM_PROFILES = {
         "container": "matroska",
         "video_codec": "h265",
         "audio_codec": "ac3",
+        "subtitle_mode": "copy",
+        "transcode": True,
+        "tvh_profile_name": "pass",
+    },
+    "vp8-vorbis-webm": {
+        "label": "vp8-vorbis-webm",
+        "description": "Transcode to VP8/Vorbis in WebM.",
+        "output_mode": "force_transcode",
+        "container": "webm",
+        "video_codec": "vp8",
+        "audio_codec": "vorbis",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "webtv-vp8-vorbis-webm",
+    },
+    "av1-aac-hls": {
+        "label": "av1-aac-hls",
+        "description": "Transcode to AV1/AAC in HLS.",
+        "output_mode": "force_transcode",
+        "container": "hls",
+        "video_codec": "av1",
+        "audio_codec": "aac",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "pass",
+        "hls_segment_type": "fmp4",
+    },
+    "av1-aac-mp4": {
+        "label": "av1-aac-mp4",
+        "description": "Transcode to AV1/AAC in MP4.",
+        "output_mode": "force_transcode",
+        "container": "mp4",
+        "video_codec": "av1",
+        "audio_codec": "aac",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "pass",
+    },
+    "av1-aac-matroska": {
+        "label": "av1-aac-matroska",
+        "description": "Transcode to AV1/AAC in Matroska.",
+        "output_mode": "force_transcode",
+        "container": "matroska",
+        "video_codec": "av1",
+        "audio_codec": "aac",
         "subtitle_mode": "copy",
         "transcode": True,
         "tvh_profile_name": "pass",
@@ -375,26 +436,28 @@ def resolve_cso_profile_name(config, requested_profile=None, channel=None):
     3. Fallback to `default`.
     """
     settings = config.read_settings()
-    requested = str(requested_profile or "").strip().lower()
+    requested = parse_stream_profile_request(requested_profile)
+    requested_profile_id = requested["profile_id"]
 
-    if requested == TVH_PROFILE:
+    if requested_profile_id == TVH_PROFILE:
         return _resolve_tvh_cso_profile_name(settings)
-    if requested == DEFAULT_PROFILE:
-        return requested
-    if requested and _is_supported_profile_enabled(settings, requested):
-        return requested
-    if requested and requested not in SUPPORTED_STREAM_PROFILES:
-        logger.warning("Unsupported stream profile %s; falling back to channel/default.", requested)
+    if requested_profile_id == DEFAULT_PROFILE:
+        return requested_profile_id
+    if requested_profile_id and _is_supported_profile_enabled(settings, requested_profile_id):
+        return requested["raw"]
+    if requested_profile_id and requested_profile_id not in SUPPORTED_STREAM_PROFILES:
+        logger.warning("Unsupported stream profile %s; falling back to channel/default.", requested_profile_id)
 
-    channel_profile = str(_channel_profile_override(channel) or "").strip().lower()
-    if channel_profile == TVH_PROFILE:
+    channel_profile = parse_stream_profile_request(_channel_profile_override(channel))
+    channel_profile_id = channel_profile["profile_id"]
+    if channel_profile_id == TVH_PROFILE:
         return _resolve_tvh_cso_profile_name(settings)
-    if channel_profile == DEFAULT_PROFILE:
-        return channel_profile
-    if channel_profile and _is_supported_profile_enabled(settings, channel_profile):
-        return channel_profile
-    if channel_profile and channel_profile not in SUPPORTED_STREAM_PROFILES:
-        logger.warning("Unsupported channel CSO profile %s; falling back to default.", channel_profile)
+    if channel_profile_id == DEFAULT_PROFILE:
+        return channel_profile_id
+    if channel_profile_id and _is_supported_profile_enabled(settings, channel_profile_id):
+        return channel_profile["raw"]
+    if channel_profile_id and channel_profile_id not in SUPPORTED_STREAM_PROFILES:
+        logger.warning("Unsupported channel CSO profile %s; falling back to default.", channel_profile_id)
     return DEFAULT_PROFILE
 
 
@@ -479,7 +542,7 @@ def generate_cso_policy_from_profile(config, profile):
         "target_video_maxrate": "",
         "target_video_bufsize": "",
         "audio_bitrate": "",
-        "hls_segment_type": "mpegts",
+        "hls_segment_type": profile_data.get("hls_segment_type", "mpegts"),
     }
     return apply_stream_profile_modifiers(policy, parsed_profile["modifiers"])
 

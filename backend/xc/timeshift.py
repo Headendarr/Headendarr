@@ -14,6 +14,7 @@ from quart import Response, current_app, jsonify, request
 from backend.hls_multiplexer import open_segment_passthrough
 from backend.playlists import _resolve_source_request_headers
 from backend.stream_activity import stop_stream_activity, touch_stream_activity
+from backend.stream_profiles import content_type_for_media_path
 from backend.streaming import build_configured_hls_proxy_url
 
 XC_TIMESHIFT_DATETIME_FORMATS = (
@@ -380,7 +381,7 @@ async def stream_xc_timeshift_response(
     if request.method == "HEAD":
         response = Response(
             b"",
-            content_type=upstream_response.headers.get("Content-Type", "video/mp2t"),
+            content_type=upstream_response.headers.get("Content-Type") or content_type_for_media_path(upstream_url),
             status=upstream_response.status,
         )
         copy_xc_passthrough_response_headers(response, upstream_response.headers)
@@ -417,7 +418,7 @@ async def stream_xc_timeshift_response(
 
     response = Response(
         _generator(),
-        content_type=upstream_response.headers.get("Content-Type", "video/mp2t"),
+        content_type=upstream_response.headers.get("Content-Type") or content_type_for_media_path(upstream_url),
         status=upstream_response.status,
     )
     copy_xc_passthrough_response_headers(response, upstream_response.headers)

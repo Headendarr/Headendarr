@@ -36,6 +36,7 @@ from backend.stream_activity import (
     touch_stream_activity,
     upsert_stream_activity,
 )
+from backend.stream_profiles import content_type_for_media_path
 from backend.url_resolver import get_request_base_url, get_request_origin
 
 # Global cache instance (short default TTL for HLS segments)
@@ -414,7 +415,7 @@ async def proxy_ts(instance_id, encoded_url):
             target = f"{target}?{request.query_string.decode()}"
         return redirect(target, code=302)
 
-    return Response(content, content_type="video/mp2t")
+    return Response(content, content_type=content_type or content_type_for_media_path(decoded_url))
 
 
 @blueprint.route(
@@ -515,6 +516,6 @@ async def stream_ts(instance_id, encoded_url):
                 last_touch_ts = now
             yield chunk
 
-    response = Response(generate_stream(), content_type="video/mp2t")
+    response = Response(generate_stream(), content_type=content_type_for_media_path(decoded_url))
     response.timeout = None  # Disable timeout for streaming response
     return response

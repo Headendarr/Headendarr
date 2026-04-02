@@ -43,7 +43,11 @@ from backend.streaming import (
     is_local_hls_proxy_url,
 )
 from backend.vod import VodCuratedPlaybackCandidate, VodSourcePlaybackCandidate
-from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
+from backend.stream_profiles import (
+    content_type_for_media_path,
+    generate_cso_policy_from_profile,
+    resolve_cso_profile_name,
+)
 from backend.users import get_user_by_stream_key
 from backend.config import (
     enable_cso_ingest_command_debug_logging,
@@ -143,17 +147,6 @@ CONTAINER_TO_FORMAT = {
     "webm": "webm",
     "hls": "hls",
 }
-
-CONTAINER_TO_CONTENT_TYPE = {
-    "mpegts": "video/mp2t",
-    "ts": "video/mp2t",
-    "matroska": "video/x-matroska",
-    "mkv": "video/x-matroska",
-    "mp4": "video/mp4",
-    "webm": "video/webm",
-    "hls": "application/vnd.apple.mpegurl",
-}
-
 
 def _current_quart_app_object() -> Quart:
     from quart import current_app
@@ -620,7 +613,7 @@ def _log_hwaccel_failure(policy: dict[str, Any] | None, context: str, reason: st
 
 def policy_content_type(policy: dict[str, Any] | None) -> str:
     container = (policy or {}).get("container", "mpegts")
-    return CONTAINER_TO_CONTENT_TYPE.get(container, "application/octet-stream")
+    return content_type_for_media_path(str(container or ""))
 
 
 def policy_ffmpeg_format(policy: dict[str, Any] | None) -> str:
@@ -1039,9 +1032,9 @@ def _vod_cache_paths(source: CsoSource):
 
 
 def _vod_content_type_for_source(source: CsoSource):
-    extension = clean_key(getattr(source, "container_extension", ""))
+    extension = clean_key(source.container_extension)
     if extension:
-        return CONTAINER_TO_CONTENT_TYPE.get(extension)
+        return content_type_for_media_path(extension)
     return None
 
 
@@ -2308,19 +2301,26 @@ class CsoFfmpegCommandBuilder:
         return {
             "h264": "libx264",
             "h265": "libx265",
+            "av1": "libsvtav1",
             "vp8": "libvpx",
         }.get(codec, "libx264")
 
     @staticmethod
     def vaapi_encoder_for_codec(video_codec: str) -> str:
         codec = video_codec or ""
-        return "hevc_vaapi" if codec == "h265" else "h264_vaapi"
+        return {
+            "h264": "h264_vaapi",
+            "h265": "hevc_vaapi",
+            "av1": "av1_vaapi",
+        }.get(codec, "h264_vaapi")
 
     @staticmethod
     def vaapi_default_qp(video_codec: str, target_width: int = 0) -> int:
         codec = clean_key(video_codec)
         if codec == "h265":
             return 25 if int(target_width or 0) > 0 else 23
+        if codec == "av1":
+            return 28 if int(target_width or 0) > 0 else 26
         return 23 if int(target_width or 0) > 0 else 21
 
     @staticmethod
@@ -2499,7 +2499,7 @@ class CsoFfmpegCommandBuilder:
         hwaccel_requested = bool(effective_policy["hwaccel"]) and bool(video_codec)
         deinterlace = bool(effective_policy["deinterlace"]) and bool(video_codec)
         vaapi_device = detect_vaapi_device_path() if hwaccel_requested else None
-        use_hw_encode = bool(vaapi_device) and clean_key(video_codec) in {"h264", "h265"}
+        use_hw_encode = bool(vaapi_device) and clean_key(video_codec) in {"h264", "h265", "av1"}
         if hwaccel_requested and not vaapi_device:
             logger.info(
                 "CSO hwaccel requested but no VAAPI device is available; falling back to software encode video_codec=%s container=%s",
@@ -2568,7 +2568,22 @@ class CsoFfmpegCommandBuilder:
                         "-crf",
                         "21",
                     ]
-            if not use_hw_encode:
+                elif sw_video_encoder == "libsvtav1":
+                    command += [
+                        "-preset",
+                        "8",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-g",
+                        "48",
+                        "-keyint_min",
+                        "48",
+                        "-svtav1-params",
+                        "scd=0:enable-overlays=0",
+                        "-crf",
+                        "34",
+                    ]
+            if not use_hw_encode and sw_video_encoder != "libsvtav1":
                 if target_video_bitrate:
                     command += ["-b:v", target_video_bitrate]
                 if target_video_maxrate:
@@ -6380,14 +6395,36 @@ class CsoHlsOutputSession:
                 task.cancel()
         await _terminate_ffmpeg_process(process)
 
+    def _startup_progress_marker(self) -> float:
+        marker = float(self.last_activity or 0.0)
+        try:
+            if self.output_dir.exists():
+                for child in self.output_dir.iterdir():
+                    try:
+                        marker = max(marker, float(child.stat().st_mtime))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return marker
+
     async def _wait_for_startup_ready(self, process, timeout_seconds: float = 8.0) -> tuple[bool, str]:
-        deadline = time.time() + max(1.0, float(timeout_seconds))
-        while time.time() < deadline:
+        startup_idle_timeout = max(1.0, float(timeout_seconds))
+        hard_deadline = time.time() + max(30.0, startup_idle_timeout * 6.0)
+        idle_deadline = time.time() + startup_idle_timeout
+        last_progress_marker = self._startup_progress_marker()
+        while time.time() < hard_deadline:
             if process.returncode is not None:
                 return False, self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
             playlist_text = await self.read_playlist_text()
             if playlist_text:
                 return True, ""
+            progress_marker = self._startup_progress_marker()
+            if progress_marker > last_progress_marker:
+                last_progress_marker = progress_marker
+                idle_deadline = time.time() + startup_idle_timeout
+            elif time.time() >= idle_deadline:
+                break
             await asyncio.sleep(0.1)
         if process.returncode is not None:
             return False, self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
@@ -6641,11 +6678,13 @@ class CsoHlsOutputSession:
                 if not rendered:
                     continue
                 self._recent_ffmpeg_stderr.append(rendered)
+                self.last_activity = time.time()
                 if enable_cso_output_command_debug_logging:
                     logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
         rendered = text_buffer.strip()
         if rendered and token == self.process_token:
             self._recent_ffmpeg_stderr.append(rendered)
+            self.last_activity = time.time()
             if enable_cso_output_command_debug_logging:
                 logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
 

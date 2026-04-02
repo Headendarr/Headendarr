@@ -67,10 +67,10 @@ services:
         soft: 65536
         hard: 65536
 
-    ## # DEVICES:
-    ## devices:
-    ##   - /dev/dri #optional
-    ##   - /dev/dvb #optional
+    # DEVICES:
+    devices:
+      - /dev/dri #optional
+      # - /dev/dvb #optional
 
   # -- FRONTEND DEV SERVER --
   frontend:

@@ -54,7 +54,7 @@ from backend.stream_activity import (
     touch_stream_activity,
     upsert_stream_activity,
 )
-from backend.stream_profiles import generate_cso_policy_from_profile, resolve_cso_profile_name
+from backend.stream_profiles import content_type_for_media_path, generate_cso_policy_from_profile, resolve_cso_profile_name
 from backend.stream_profiles import parse_stream_profile_request
 from backend.streaming import normalize_local_proxy_url
 from backend.url_resolver import get_request_base_url
@@ -315,15 +315,6 @@ def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_strin
         segment_name = line.split("?", 1)[0]
         lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}{suffix}")
     return "\n".join(lines) + "\n"
-
-
-def _segment_content_type(segment_name: str) -> str:
-    segment_path = str(segment_name or "").strip().lower()
-    if segment_path.endswith(".m4s"):
-        return "video/iso.segment"
-    if segment_path.endswith(".mp4"):
-        return "video/mp4"
-    return "video/mp2t"
 
 
 def _resolve_requested_vod_profile(config, default_profile: str) -> str:
@@ -1102,7 +1093,7 @@ async def stream_channel_hls_segment(channel_id: int, connection_id: str, segmen
                 await output_session.touch_client(connection_id)
                 payload = await output_session.read_segment_bytes(segment_name)
                 return (
-                    Response(payload, content_type="video/mp2t")
+                    Response(payload, content_type=content_type_for_media_path(segment_name))
                     if payload is not None
                     else Response("HLS segment not found", status=404)
                 )
@@ -1162,7 +1153,7 @@ async def stream_channel_hls_segment(channel_id: int, connection_id: str, segmen
             await output_session.touch_client(connection_id)
             payload = await output_session.read_segment_bytes(segment_name)
             return (
-                Response(payload, content_type="video/mp2t")
+                Response(payload, content_type=content_type_for_media_path(segment_name))
                 if payload is not None
                 else Response("HLS segment not found", status=404)
             )
@@ -1173,7 +1164,7 @@ async def stream_channel_hls_segment(channel_id: int, connection_id: str, segmen
     payload = await output_session.read_segment_bytes(segment_name)
     if payload is None:
         return Response("HLS segment not found", status=404)
-    return Response(payload, content_type="video/mp2t")
+    return Response(payload, content_type=content_type_for_media_path(segment_name))
 
 
 @blueprint.route("/tic-api/cso/channel_stream/<int:stream_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
@@ -1384,7 +1375,7 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
             await output_session.touch_client(connection_id)
             payload = await output_session.read_segment_bytes(segment_name)
             return (
-                Response(payload, content_type="video/mp2t")
+                Response(payload, content_type=content_type_for_media_path(segment_name))
                 if payload is not None
                 else Response("HLS segment not found", status=404)
             )
@@ -1434,7 +1425,7 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
             await output_session.touch_client(connection_id)
             payload = await output_session.read_segment_bytes(segment_name)
             return (
-                Response(payload, content_type="video/mp2t")
+                Response(payload, content_type=content_type_for_media_path(segment_name))
                 if payload is not None
                 else Response("HLS segment not found", status=404)
             )
@@ -1445,7 +1436,7 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
     payload = await output_session.read_segment_bytes(segment_name)
     if payload is None:
         return Response("HLS segment not found", status=404)
-    return Response(payload, content_type="video/mp2t")
+    return Response(payload, content_type=content_type_for_media_path(segment_name))
 
 
 async def _stream_cso_vod_route(resolver, identity: str):
@@ -1692,7 +1683,7 @@ async def _stream_cso_vod_hls_segment(resolver):
     payload = await output_session.read_segment_bytes(str(segment_name))
     if payload is None:
         return Response("HLS segment not found", status=404)
-    return Response(payload, content_type=_segment_content_type(str(segment_name)))
+    return Response(payload, content_type=content_type_for_media_path(str(segment_name)))
 
 
 @blueprint.route("/tic-api/cso/vod/<stream_type>/<int:item_id>", methods=["GET"])

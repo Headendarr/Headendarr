@@ -37,7 +37,7 @@ from backend.playlists import (
 )
 from backend.xc.cache import xc_cache
 from backend.stream_activity import stop_stream_activity, touch_stream_activity, upsert_stream_activity
-from backend.stream_profiles import is_hls_stream_profile
+from backend.stream_profiles import content_type_for_media_path, is_hls_stream_profile
 from backend.url_resolver import get_request_base_url, get_request_host_info
 from backend.users import get_user_by_username, user_timeshift_enabled
 from backend.utils import convert_to_int
@@ -71,15 +71,6 @@ from backend.xc.timeshift import (
 )
 
 _XC_ALLOWED_PROFILES = {"default", "mpegts", "h264-aac-mpegts"}
-
-
-def _segment_content_type(segment_name: str) -> str:
-    segment_path = str(segment_name or "").strip().lower()
-    if segment_path.endswith(".m4s"):
-        return "video/iso.segment"
-    if segment_path.endswith(".mp4"):
-        return "video/mp4"
-    return "video/mp2t"
 
 
 def _xc_rate_limited_response(message: str, retry_after: int) -> Response:
@@ -1254,7 +1245,7 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name)
-    return Response(payload or b"", content_type=_segment_content_type(segment_name))
+    return Response(payload or b"", content_type=content_type_for_media_path(segment_name))
 
 
 @blueprint.route("/series/<username>/<password>/<int:episode_id>/hls/<connection_id>/index.m3u8", methods=["GET"])
@@ -1335,4 +1326,4 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name)
-    return Response(payload or b"", content_type=_segment_content_type(segment_name))
+    return Response(payload or b"", content_type=content_type_for_media_path(segment_name))
