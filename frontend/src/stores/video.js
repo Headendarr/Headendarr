@@ -43,15 +43,38 @@ export const useVideoStore = defineStore('video', {
     streamUrl: null,
     streamTitle: null,
     streamType: 'auto',
+    seekMode: 'native',
+    playbackProfiles: [],
+    selectedPlaybackProfile: null,
+    sourceResolution: null,
+    durationSeconds: null,
     size: LOADED_STATE.size || DEFAULT_SIZE,
     position: LOADED_STATE.position || DEFAULT_POSITION,
     volume: typeof LOADED_STATE.volume === 'number' ? LOADED_STATE.volume : 1,
   }),
   actions: {
-    showPlayer({url, title = null, type = 'auto'}) {
+    showPlayer({
+                 url,
+                 title = null,
+                 type = 'auto',
+                 seekMode = 'native',
+                 playbackProfiles = [],
+                 selectedPlaybackProfile = null,
+                 sourceResolution = null,
+                 durationSeconds = null,
+               }) {
       this.streamUrl = url;
       this.streamTitle = title;
       this.streamType = type;
+      this.seekMode = seekMode || 'native';
+      this.playbackProfiles = Array.isArray(playbackProfiles) ?
+        playbackProfiles :
+        [];
+      this.selectedPlaybackProfile = selectedPlaybackProfile ||
+        this.playbackProfiles[0]?.id || null;
+      this.sourceResolution = sourceResolution || null;
+      this.durationSeconds = typeof durationSeconds === 'number' &&
+      Number.isFinite(durationSeconds) ? durationSeconds : null;
       this.isVisible = true;
     },
     hidePlayer() {
@@ -59,6 +82,23 @@ export const useVideoStore = defineStore('video', {
       this.streamUrl = null;
       this.streamTitle = null;
       this.streamType = 'auto';
+      this.seekMode = 'native';
+      this.playbackProfiles = [];
+      this.selectedPlaybackProfile = null;
+      this.sourceResolution = null;
+      this.durationSeconds = null;
+    },
+    setPlaybackProfile(profileId, url, type = null, seekMode = null) {
+      this.selectedPlaybackProfile = profileId || null;
+      if (url) {
+        this.streamUrl = url;
+      }
+      if (type) {
+        this.streamType = type;
+      }
+      if (seekMode) {
+        this.seekMode = seekMode;
+      }
     },
     setSize(size) {
       this.size = size;
@@ -69,9 +109,11 @@ export const useVideoStore = defineStore('video', {
       persistState(this);
     },
     setVolume(volume) {
-      const parsed = Number(volume);
-      const normalized = Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 1;
-      this.volume = normalized;
+      const volume_number = Number(volume);
+      const parsed = Number.isFinite(volume_number) ?
+        Math.min(1, Math.max(0, volume_number)) :
+        1;
+      this.volume = parsed;
       persistState(this);
     },
   },

@@ -141,12 +141,17 @@
 <script>
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
-import {useAuthStore} from 'stores/auth';
 import {useVideoStore} from 'stores/video';
 import {TicButton, TicDialogPopup, TicListToolbar, TicSelectInput, TicVodContentCard} from 'components/ui';
 import VodContentDetails from 'components/VodContentDetails.vue';
 
 const BROWSER_PAGE_SIZE = 40;
+const ORIGINAL_BROWSER_VOD_PROFILE = 'original';
+const VOD_BROWSER_QUALITY_PRESETS = [
+  {key: '1080p', width: 1920, bitrate: '2500k'},
+  {key: '720p', width: 1280, bitrate: '1300k'},
+  {key: '480p', width: 854, bitrate: '600k'},
+];
 
 export default {
   name: 'VodContentBrowser',
@@ -170,7 +175,6 @@ export default {
   },
   setup() {
     return {
-      authStore: useAuthStore(),
       videoStore: useVideoStore(),
     };
   },
@@ -426,6 +430,20 @@ export default {
     },
   },
   methods: {
+    formatPlaybackBitrateLabel(bitrate) {
+      const value = String(bitrate || '').trim().toLowerCase();
+      if (!value.endsWith('k')) {
+        return value;
+      }
+      const numeric = Number(value.slice(0, -1));
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        return value;
+      }
+      if (numeric >= 1000) {
+        return `${(numeric / 1000).toFixed(1)} Mbps`;
+      }
+      return `${Math.round(numeric)} Kbps`;
+    },
     buildCategoryOptions(sourceId) {
       if (this.mode === 'upstream') {
         const options = [{label: 'All categories', value: null}];
@@ -607,116 +625,180 @@ export default {
       }
       return parts.join(' • ') || 'Episode';
     },
-    buildMovieUrl(item) {
-      const username = this.authStore.user?.username;
-      const streamKey = this.authStore.user?.streaming_key;
-      if (!username || !streamKey || !item?.id) {
+    startBrowserPlayback(payload, title) {
+      const previewUrl = payload?.preview_url || payload?.url;
+      if (!previewUrl) {
+        throw new Error('Playback URL unavailable');
+      }
+      const sourceResolution = payload?.source_resolution || null;
+      const durationSeconds = Number(payload?.duration_seconds || 0) || null;
+      const streamType = this.resolvePlayerStreamType(payload?.stream_type);
+      const playbackProfiles = this.buildVodPlaybackProfiles(sourceResolution, streamType);
+      const initialProfile = playbackProfiles[0] || null;
+      const playbackUrl = this.appendPlaybackProfile(previewUrl, initialProfile?.profile || '');
+      this.videoStore.showPlayer({
+        url: playbackUrl,
+        title: title || 'VOD Playback',
+        type: initialProfile?.streamType || streamType,
+        seekMode: initialProfile?.seekMode || 'native',
+        playbackProfiles,
+        selectedPlaybackProfile: initialProfile?.id || ORIGINAL_BROWSER_VOD_PROFILE,
+        sourceResolution,
+        durationSeconds,
+      });
+    },
+    resolvePlayerStreamType(streamType) {
+      const value = String(streamType || '').toLowerCase();
+      if (value === 'hls' || value === 'mpegts') {
+        return value;
+      }
+      return 'native';
+    },
+    appendPlaybackProfile(url, profileId) {
+      if (!url) {
         return '';
       }
-      const extension = String(item.container_extension || 'mp4').replace(/^\./, '');
-      return `/movie/${encodeURIComponent(username)}/${encodeURIComponent(streamKey)}/${Number(item.id)}.${extension}`;
-    },
-    buildEpisodeUrl(episode) {
-      const username = this.authStore.user?.username;
-      const streamKey = this.authStore.user?.streaming_key;
-      if (!username || !streamKey || !episode?.id) {
-        return '';
+      try {
+        const parsed = new URL(url, window.location.origin);
+        if (profileId) {
+          parsed.searchParams.set('profile', profileId);
+        } else {
+          parsed.searchParams.delete('profile');
+        }
+        return parsed.toString();
+      } catch (error) {
+        console.warn('Failed to append playback profile', error);
+        return url;
       }
-      const extension = String(episode.container_extension || 'mp4').replace(/^\./, '');
-      return `/series/${encodeURIComponent(username)}/${encodeURIComponent(streamKey)}/${Number(
-        episode.id)}.${extension}`;
     },
-    async resolveUpstreamPreview(item, episode = null) {
-      const response = await axios.get(`/tic-api/vod/browser/items/${Number(item.id)}/preview`, {
-        params: {
-          content_type: this.activeTab,
-          upstream_episode_id: episode?.id || undefined,
-          container_extension: episode?.container_extension || item?.container_extension || undefined,
+    buildVodPlaybackProfiles(sourceResolution, originalStreamType = 'native') {
+      const sourceWidth = Number(sourceResolution?.width || 0);
+      const profiles = [
+        {
+          id: ORIGINAL_BROWSER_VOD_PROFILE,
+          label: 'Original',
+          description: '',
+          profile: '',
+          streamType: originalStreamType,
+          seekMode: 'native',
+          target_width: null,
+          video_bitrate: '',
+          default: true,
         },
+      ];
+      for (const preset of VOD_BROWSER_QUALITY_PRESETS) {
+        if (sourceWidth > 0 && preset.width > sourceWidth) {
+          continue;
+        }
+        profiles.push({
+          id: `h264-aac-mp4[qty=${preset.key}]`,
+          label: `Convert ${preset.key} (${this.formatPlaybackBitrateLabel(preset.bitrate)})`,
+          description: '',
+          profile: `h264-aac-mp4[qty=${preset.key}]`,
+          streamType: 'native',
+          seekMode: 'time_restart',
+          target_width: preset.width,
+          video_bitrate: preset.bitrate,
+          default: false,
+        });
+      }
+      return profiles;
+    },
+    async resolveCuratedMoviePreview(item, options = {}) {
+      const response = await axios.get(`/tic-api/vod/movie/${Number(item.id)}/preview`, {
+        params: options,
       });
       if (response?.data?.success && response.data.preview_url) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
     },
-    watchMovie(item) {
-      const url = this.buildMovieUrl(item);
-      if (!url) {
-        this.$q.notify({color: 'warning', message: 'Unable to build movie playback URL'});
-        return;
-      }
-      this.videoStore.showPlayer({
-        url,
-        title: item.title || 'Movie',
-        type: 'auto',
+    async resolveCuratedEpisodePreview(episode, options = {}) {
+      const response = await axios.get(`/tic-api/vod/series/${Number(episode.id)}/preview`, {
+        params: options,
       });
+      if (response?.data?.success && response.data.preview_url) {
+        return response.data;
+      }
+      throw new Error(response?.data?.message || 'Failed to load preview');
+    },
+    async resolveUpstreamMoviePreview(item, options = {}) {
+      const response = await axios.get(`/tic-api/vod/upstream/movie/${Number(item.id)}/preview`, {
+        params: options,
+      });
+      if (response?.data?.success && response.data.preview_url) {
+        return response.data;
+      }
+      throw new Error(response?.data?.message || 'Failed to load preview');
+    },
+    async resolveUpstreamEpisodePreview(item, episode, options = {}) {
+      const containerExtension = episode?.container_extension || item?.container_extension || undefined;
+      const response = await axios.get(
+        `/tic-api/vod/upstream/series/${Number(item.id)}/${Number(episode?.id || 0)}/preview`,
+        {
+          params: {
+            container_extension: containerExtension,
+            ...options,
+          },
+        },
+      );
+      if (response?.data?.success && response.data.preview_url) {
+        return response.data;
+      }
+      throw new Error(response?.data?.message || 'Failed to load preview');
+    },
+    async watchMovie(item) {
+      try {
+        const playback = this.mode === 'upstream'
+          ? await this.resolveUpstreamMoviePreview(item)
+          : await this.resolveCuratedMoviePreview(item);
+        this.startBrowserPlayback(playback, item.title || 'Movie');
+      } catch (error) {
+        this.$q.notify({color: 'negative', message: error?.message || 'Failed to start playback'});
+      }
     },
     async previewUpstreamMovie(item) {
       try {
-        const preview = await this.resolveUpstreamPreview(item);
-        this.videoStore.showPlayer({
-          url: preview.preview_url,
-          title: item.title || 'Movie',
-          type: preview.stream_type || 'auto',
-        });
+        const playback = await this.resolveUpstreamMoviePreview(item);
+        this.startBrowserPlayback(playback, item.title || 'Movie');
       } catch (error) {
         this.$q.notify({color: 'negative', message: error?.message || 'Failed to load preview'});
       }
     },
     async copyMovieUrl(item) {
-      const url = this.buildMovieUrl(item);
-      if (!url) {
-        this.$q.notify({color: 'warning', message: 'Unable to build movie playback URL'});
-        return;
-      }
-      await copyToClipboard(`${window.location.origin}${url}`);
-      this.$q.notify({color: 'positive', message: 'Stream URL copied'});
-    },
-    async copyUpstreamMovieUrl(item) {
       try {
-        const preview = await this.resolveUpstreamPreview(item);
+        const preview = this.mode === 'upstream'
+          ? await this.resolveUpstreamMoviePreview(item)
+          : await this.resolveCuratedMoviePreview(item);
         await copyToClipboard(preview.preview_url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
         this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});
       }
     },
-    watchEpisode(episode) {
-      const url = this.buildEpisodeUrl(episode);
-      if (!url) {
-        this.$q.notify({color: 'warning', message: 'Unable to build episode playback URL'});
-        return;
+    async watchEpisode(episode) {
+      try {
+        const playback = this.mode === 'upstream'
+          ? await this.resolveUpstreamEpisodePreview(this.detailItem, episode)
+          : await this.resolveCuratedEpisodePreview(episode);
+        this.startBrowserPlayback(playback, this.episodeLabel(episode));
+      } catch (error) {
+        this.$q.notify({color: 'negative', message: error?.message || 'Failed to start playback'});
       }
-      this.videoStore.showPlayer({
-        url,
-        title: this.episodeLabel(episode),
-        type: 'auto',
-      });
     },
     async previewUpstreamEpisode(episode) {
       try {
-        const preview = await this.resolveUpstreamPreview(this.detailItem, episode);
-        this.videoStore.showPlayer({
-          url: preview.preview_url,
-          title: this.episodeLabel(episode),
-          type: preview.stream_type || 'auto',
-        });
+        const playback = await this.resolveUpstreamEpisodePreview(this.detailItem, episode);
+        this.startBrowserPlayback(playback, this.episodeLabel(episode));
       } catch (error) {
         this.$q.notify({color: 'negative', message: error?.message || 'Failed to load preview'});
       }
     },
     async copyEpisodeUrl(episode) {
-      const url = this.buildEpisodeUrl(episode);
-      if (!url) {
-        this.$q.notify({color: 'warning', message: 'Unable to build episode playback URL'});
-        return;
-      }
-      await copyToClipboard(`${window.location.origin}${url}`);
-      this.$q.notify({color: 'positive', message: 'Stream URL copied'});
-    },
-    async copyUpstreamEpisodeUrl(episode) {
       try {
-        const preview = await this.resolveUpstreamPreview(this.detailItem, episode);
+        const preview = this.mode === 'upstream'
+          ? await this.resolveUpstreamEpisodePreview(this.detailItem, episode)
+          : await this.resolveCuratedEpisodePreview(episode);
         await copyToClipboard(preview.preview_url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
@@ -740,7 +822,7 @@ export default {
         return;
       }
       if (action.id === 'copy-upstream-movie-url') {
-        this.copyUpstreamMovieUrl(this.detailItem);
+        this.copyMovieUrl(this.detailItem);
       }
     },
     episodeActions(episode) {
@@ -793,7 +875,7 @@ export default {
         return;
       }
       if (action.id === 'copy-upstream-episode-url') {
-        this.copyUpstreamEpisodeUrl(episode);
+        this.copyEpisodeUrl(episode);
       }
     },
   },

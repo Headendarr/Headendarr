@@ -1,10 +1,11 @@
 <template>
   <q-btn-dropdown
-    v-bind="$attrs"
+    v-bind="forwardedAttrs"
     :outline="isOutline"
     :flat="isFlat"
     :color="color"
-    content-class="tic-dropdown-menu"
+    :content-class="mergedContentClass"
+    :content-style="mergedContentStyle"
     :icon="icon || undefined"
     :icon-right="iconRight || undefined"
     :label="label"
@@ -16,7 +17,9 @@
 </template>
 
 <script setup>
-import {computed} from 'vue';
+import {computed, useAttrs} from 'vue';
+
+const attrs = useAttrs();
 
 const props = defineProps({
   label: {
@@ -48,10 +51,28 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  contentClass: {
+    type: [String, Array, Object],
+    default: '',
+  },
+  contentStyle: {
+    type: [String, Array, Object],
+    default: '',
+  },
 });
 
 const isOutline = computed(() => props.variant === 'outline');
 const isFlat = computed(() => props.variant === 'flat');
+const mergedContentClass = computed(() => ['tic-dropdown-menu', attrs['content-class'], attrs.contentClass, props.contentClass]);
+const mergedContentStyle = computed(() => [attrs['content-style'], attrs.contentStyle, props.contentStyle]);
+const forwardedAttrs = computed(() => {
+  const nextAttrs = {...attrs};
+  delete nextAttrs['content-class'];
+  delete nextAttrs.contentClass;
+  delete nextAttrs['content-style'];
+  delete nextAttrs.contentStyle;
+  return nextAttrs;
+});
 </script>
 
 <style scoped>
