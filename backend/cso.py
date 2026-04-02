@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -148,6 +149,7 @@ CONTAINER_TO_FORMAT = {
     "hls": "hls",
 }
 
+
 def _current_quart_app_object() -> Quart:
     from quart import current_app
 
@@ -244,6 +246,66 @@ class VodHeadProbeStateStore:
 
 
 vod_head_probe_state_store = VodHeadProbeStateStore()
+
+
+class HwaccelFailureStateEntry(TypedDict):
+    failure_reason: str
+    updated_at: str
+
+
+class HwaccelFailureStateStore:
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._state: dict[str, HwaccelFailureStateEntry] | None = None
+        home_dir = os.environ.get("HOME_DIR") or os.path.expanduser("~")
+        self._path = Path(home_dir) / ".tvh_iptv_config" / "cache" / "hwaccel_failure_state.json"
+
+    async def _load_state(self) -> dict[str, HwaccelFailureStateEntry]:
+        if self._state is not None:
+            return self._state
+        payload: Any = {}
+        if self._path.exists():
+            try:
+                payload = json.loads(await asyncio.to_thread(self._path.read_text, encoding="utf-8")) or {}
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        cleaned: dict[str, HwaccelFailureStateEntry] = {}
+        for key, value in payload.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            cleaned[key] = {
+                "failure_reason": clean_text(value.get("failure_reason")) or "hwaccel_failed",
+                "updated_at": clean_text(value.get("updated_at")) or "",
+            }
+        self._state = cleaned
+        return self._state
+
+    async def _write_state(self, state: dict[str, HwaccelFailureStateEntry]):
+        await asyncio.to_thread(self._path.parent.mkdir, 0o755, True, True)
+        payload = json.dumps(state, indent=2, sort_keys=True)
+        await asyncio.to_thread(self._path.write_text, payload, encoding="utf-8")
+
+    async def has_failure(self, cache_key: str) -> bool:
+        async with self._lock:
+            state = await self._load_state()
+            return clean_text(cache_key) in state
+
+    async def mark_failed(self, cache_key: str, failure_reason: str):
+        key = clean_text(cache_key)
+        if not key:
+            return
+        async with self._lock:
+            state = await self._load_state()
+            state[key] = {
+                "failure_reason": clean_text(failure_reason) or "hwaccel_failed",
+                "updated_at": utc_now_naive().isoformat(),
+            }
+            await self._write_state(state)
+
+
+hwaccel_failure_state_store = HwaccelFailureStateStore()
 
 
 @dataclass
@@ -582,6 +644,144 @@ def detect_vaapi_device_path() -> str | None:
     return None
 
 
+def detect_vaapi_device_fingerprint(device_path: str | None = None) -> str:
+    resolved_device_path = clean_text(device_path) or clean_text(detect_vaapi_device_path())
+    if not resolved_device_path:
+        return ""
+    device = Path(resolved_device_path)
+    if not device.exists():
+        return ""
+    try:
+        resolved = device.resolve(strict=True)
+    except Exception:
+        resolved = device
+    render_name = resolved.name
+    sys_device_path = Path("/sys/class/drm") / render_name / "device"
+    fingerprint_parts = {
+        "device_path": str(resolved),
+        "render_name": render_name,
+    }
+    if sys_device_path.exists():
+        for field_name in (
+            "vendor",
+            "device",
+            "subsystem_vendor",
+            "subsystem_device",
+            "revision",
+            "modalias",
+        ):
+            field_path = sys_device_path / field_name
+            if field_path.exists():
+                try:
+                    fingerprint_parts[field_name] = field_path.read_text(encoding="utf-8").strip()
+                except Exception:
+                    continue
+        driver_path = sys_device_path / "driver"
+        if driver_path.exists():
+            try:
+                fingerprint_parts["driver"] = driver_path.resolve(strict=True).name
+            except Exception:
+                fingerprint_parts["driver"] = driver_path.name
+        uevent_path = sys_device_path / "uevent"
+        if uevent_path.exists():
+            try:
+                fingerprint_parts["uevent"] = uevent_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+    payload = json.dumps(fingerprint_parts, sort_keys=True)
+    return hashlib.md5(payload.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _policy_uses_hw_video_pipeline(policy: dict[str, Any] | None) -> bool:
+    data = dict(policy or {})
+    return bool(data.get("hwaccel")) and bool(clean_key(data.get("video_codec")))
+
+
+def _build_hwaccel_failure_source_identity(source_identity: str | None) -> str:
+    text = clean_text(source_identity)
+    if not text:
+        return ""
+    return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _build_hwaccel_failure_cache_key(policy: dict[str, Any] | None, source_identity: str | None) -> str:
+    if not _policy_uses_hw_video_pipeline(policy):
+        return ""
+    gpu_fingerprint = detect_vaapi_device_fingerprint()
+    if not gpu_fingerprint:
+        return ""
+    hashed_source_identity = _build_hwaccel_failure_source_identity(source_identity)
+    if not hashed_source_identity:
+        return ""
+    data = dict(policy or {})
+    return (
+        f"hwaccel-failure:{gpu_fingerprint}:source={hashed_source_identity}:"
+        f"deint={1 if bool(data.get('deinterlace')) else 0}:scale={1 if int(data.get('target_width') or 0) > 0 else 0}"
+    )
+
+
+def _is_cacheable_hwaccel_failure(failure_reason: str) -> bool:
+    text = clean_text(failure_reason).lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "vaapi",
+            "hwaccel",
+            "hwupload",
+            "deinterlace_vaapi",
+            "scale_vaapi",
+            "failed setup for format vaapi",
+            "device setup failed",
+            "function not implemented",
+            "unsupported",
+            "impossible to convert between the formats",
+            "invalid output format vaapi",
+            "no support for codec",
+            "cannot allocate memory",
+        )
+    )
+
+
+async def _prepare_hw_decode_policy(
+    policy: dict[str, Any] | None,
+    source_identity: str | None,
+) -> tuple[dict[str, Any], str]:
+    resolved_policy = dict(policy or {})
+    cache_key = _build_hwaccel_failure_cache_key(resolved_policy, source_identity)
+    resolved_policy["hardware_decode"] = True
+    if cache_key and await hwaccel_failure_state_store.has_failure(cache_key):
+        resolved_policy["hardware_decode"] = False
+    return resolved_policy, cache_key
+
+
+def _event_source_probe(source: Any) -> dict[str, Any]:
+    probe_details = getattr(source, "probe_details", None)
+    return dict(probe_details or {})
+
+
+async def _start_ffmpeg_with_hw_decode_fallback(
+    base_policy: dict[str, Any] | None,
+    source_identity: str | None,
+    attempt_start: Any,
+) -> tuple[bool, dict[str, Any], Any, str]:
+    start_policy, hwaccel_failure_key = await _prepare_hw_decode_policy(base_policy, source_identity)
+    attempted_hw_decode = bool(start_policy.get("hardware_decode", True))
+    while True:
+        success, result, failure_reason = await attempt_start(start_policy)
+        if success:
+            return True, dict(start_policy), result, ""
+        if attempted_hw_decode and bool(start_policy.get("hardware_decode", True)):
+            if hwaccel_failure_key and _is_cacheable_hwaccel_failure(failure_reason):
+                await hwaccel_failure_state_store.mark_failed(hwaccel_failure_key, failure_reason)
+            start_policy = dict(base_policy or {})
+            start_policy["hardware_decode"] = False
+            attempted_hw_decode = False
+            continue
+        return False, dict(start_policy), None, failure_reason or "output_start_failed"
+
+
 async def _terminate_ffmpeg_process(process: Any):
     if process is None:
         return
@@ -596,6 +796,46 @@ async def _terminate_ffmpeg_process(process: Any):
                 await _wait_process_exit_with_timeout(process, timeout_seconds=2.0)
         except Exception:
             pass
+
+
+async def _wait_for_process_output_start(
+    process: Any,
+    stream: Any,
+    timeout_seconds: float = 8.0,
+) -> tuple[bool, str, bytes]:
+    first_chunk = b""
+    read_task = asyncio.create_task(stream.read(MPEGTS_CHUNK_BYTES))
+    wait_task = asyncio.create_task(process.wait())
+    try:
+        done, pending = await asyncio.wait(
+            {read_task, wait_task},
+            timeout=max(1.0, float(timeout_seconds)),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if read_task in done and not read_task.cancelled():
+            try:
+                first_chunk = read_task.result() or b""
+            except Exception:
+                first_chunk = b""
+            if first_chunk:
+                wait_task.cancel()
+                return True, "", first_chunk
+        if wait_task in done and not wait_task.cancelled():
+            try:
+                return_code = wait_task.result()
+            except Exception:
+                return_code = process.returncode
+            return False, f"ffmpeg_exit:{return_code}", b""
+    finally:
+        if not read_task.done():
+            read_task.cancel()
+        if not wait_task.done():
+            wait_task.cancel()
+    if process.returncode is not None:
+        return False, f"ffmpeg_exit:{process.returncode}", b""
+    return False, "startup_timeout_no_output", b""
 
 
 def _log_hwaccel_failure(policy: dict[str, Any] | None, context: str, reason: str):
@@ -2290,10 +2530,11 @@ def _format_ffmpeg_headers_arg(headers):
 class CsoFfmpegCommandBuilder:
     """Structured FFmpeg command builder for ingest, output, HLS output, and slate sessions."""
 
-    def __init__(self, policy=None, pipe_input_format="mpegts", pipe_output_format="mpegts"):
+    def __init__(self, policy=None, pipe_input_format="mpegts", pipe_output_format="mpegts", source_probe=None):
         self.policy = dict(policy or {})
         self.pipe_input_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_input_format), "mpegts")
         self.pipe_output_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_output_format), "mpegts")
+        self.source_probe = dict(source_probe or {})
 
     @staticmethod
     def video_encoder_for_codec(video_codec: str) -> str:
@@ -2340,6 +2581,27 @@ class CsoFfmpegCommandBuilder:
     @staticmethod
     def _software_scale_filter(target_width: int) -> str:
         return f"scale=w='min({int(target_width)},iw)':h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2"
+
+    def _vaapi_scale_filter(self, target_width: int) -> str:
+        return f"scale_vaapi=w={int(target_width)}:h=-2"
+
+    def _input_hwaccel_args(self, policy=None) -> list[str]:
+        effective_policy = dict(policy or self.policy or {})
+        if not _policy_uses_hw_video_pipeline(effective_policy):
+            return []
+        if not bool(effective_policy.get("hardware_decode", True)):
+            return []
+        vaapi_device = detect_vaapi_device_path()
+        if not vaapi_device:
+            return []
+        return [
+            "-hwaccel",
+            "vaapi",
+            "-hwaccel_output_format",
+            "vaapi",
+            "-hwaccel_device",
+            vaapi_device,
+        ]
 
     @staticmethod
     def _build_slate_media_hint(media_hint):
@@ -2497,6 +2759,7 @@ class CsoFfmpegCommandBuilder:
         target_video_bufsize = effective_policy["target_video_bufsize"]
         target_audio_bitrate = effective_policy["audio_bitrate"]
         hwaccel_requested = bool(effective_policy["hwaccel"]) and bool(video_codec)
+        hardware_decode = bool(effective_policy.get("hardware_decode", True))
         deinterlace = bool(effective_policy["deinterlace"]) and bool(video_codec)
         vaapi_device = detect_vaapi_device_path() if hwaccel_requested else None
         use_hw_encode = bool(vaapi_device) and clean_key(video_codec) in {"h264", "h265", "av1"}
@@ -2517,13 +2780,21 @@ class CsoFfmpegCommandBuilder:
             filters = []
             if use_hw_encode:
                 encoder = self.vaapi_encoder_for_codec(video_codec)
-                if deinterlace:
-                    filters.append(self._software_deinterlace_filter())
-                if target_width > 0:
-                    filters.append(self._software_scale_filter(target_width))
-                if deinterlace or target_width > 0:
-                    filters.append("setsar=1")
-                filters += ["format=nv12", "hwupload"]
+                if hardware_decode:
+                    if deinterlace:
+                        filters.append("deinterlace_vaapi=rate=field:auto=1")
+                    if target_width > 0:
+                        scale_filter = self._vaapi_scale_filter(target_width)
+                        if scale_filter:
+                            filters.append(scale_filter)
+                else:
+                    if deinterlace:
+                        filters.append(self._software_deinterlace_filter())
+                    if target_width > 0:
+                        filters.append(self._software_scale_filter(target_width))
+                    if deinterlace or target_width > 0:
+                        filters.append("setsar=1")
+                    filters += ["format=nv12", "hwupload"]
                 command += ["-vaapi_device", vaapi_device]
                 if filters:
                     command += ["-vf", ",".join(filters)]
@@ -2612,6 +2883,7 @@ class CsoFfmpegCommandBuilder:
         fps_probe_size,
         low_latency,
         pipe_format=None,
+        input_hwaccel_args=None,
     ):
         pipe_format = CONTAINER_TO_FORMAT.get(clean_key(pipe_format), self.pipe_input_format)
         command = []
@@ -2623,6 +2895,7 @@ class CsoFfmpegCommandBuilder:
                 "low_delay",
             ]
         command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
+        command += list(input_hwaccel_args or [])
         command += [
             "-f",
             pipe_format,
@@ -2711,6 +2984,7 @@ class CsoFfmpegCommandBuilder:
             CSO_OUTPUT_FPS_PROBE_SIZE,
             low_latency=True,
             pipe_format=self.pipe_input_format,
+            input_hwaccel_args=self._input_hwaccel_args(),
         )
         start_value = max(0, int(start_seconds or 0))
         duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
@@ -2754,6 +3028,7 @@ class CsoFfmpegCommandBuilder:
             command += ["-re"]
         if start_value > 0:
             command += ["-ss", str(start_value)]
+        command += self._input_hwaccel_args()
         command += self._probe_flags(
             CSO_OUTPUT_PROBE_SIZE_BYTES,
             CSO_OUTPUT_ANALYSE_DURATION_US,
@@ -2848,6 +3123,7 @@ class CsoFfmpegCommandBuilder:
             ]
         if input_seek_value > 0:
             command += ["-ss", str(input_seek_value)]
+        command += self._input_hwaccel_args(policy=effective_policy)
         command += self._probe_flags(
             CSO_INGEST_PROBE_SIZE_BYTES,
             CSO_INGEST_ANALYSE_DURATION_US,
@@ -3019,6 +3295,7 @@ class CsoFfmpegCommandBuilder:
                 ]
             if input_seek_value > 0:
                 command += ["-ss", str(input_seek_value)]
+            command += self._input_hwaccel_args(policy=self.policy)
             command += self._probe_flags(
                 CSO_INGEST_PROBE_SIZE_BYTES,
                 CSO_INGEST_ANALYSE_DURATION_US,
@@ -3296,6 +3573,7 @@ def _policy_log_label(policy):
         f"audio_codec={data.get('audio_codec', '') or 'copy'}, "
         f"subtitle_mode={data.get('subtitle_mode', 'copy')}, "
         f"hwaccel={bool(data.get('hwaccel', False))}, "
+        f"hardware_decode={bool(data.get('hardware_decode', True))}, "
         f"deinterlace={bool(data.get('deinterlace', False))}"
     )
 
@@ -5024,43 +5302,81 @@ class VodChannelIngestSession:
             input_is_url = False
             input_label = "cache_part"
 
-        command = CsoFfmpegCommandBuilder(
-            self.ingest_policy, pipe_output_format="mpegts"
-        ).build_vod_channel_ingest_command(
-            input_target,
-            start_seconds=offset_seconds,
-            max_duration_seconds=remaining_seconds,
-            realtime=True,
-            input_is_url=input_is_url,
-            user_agent=_resolve_cso_ingest_user_agent(None, source),
-            request_headers=_resolve_cso_ingest_headers(source),
-            policy=self.ingest_policy,
+        source_probe = dict(source.probe_details or {})
+        source_identity = input_target or source.url
+        base_policy = dict(self.ingest_policy)
+        startup_chunk = b""
+
+        async def _attempt_start(effective_policy):
+            command = CsoFfmpegCommandBuilder(
+                effective_policy,
+                pipe_output_format="mpegts",
+                source_probe=source_probe,
+            ).build_vod_channel_ingest_command(
+                input_target,
+                start_seconds=offset_seconds,
+                max_duration_seconds=remaining_seconds,
+                realtime=True,
+                input_is_url=input_is_url,
+                user_agent=_resolve_cso_ingest_user_agent(None, source),
+                request_headers=_resolve_cso_ingest_headers(source),
+                policy=effective_policy,
+            )
+            logger.info(
+                "Starting VOD channel ingest segment channel=%s start_ts=%s stop_ts=%s source_id=%s input=%s "
+                "offset_seconds=%s duration_seconds=%s policy=(%s) command=%s",
+                self.channel_id,
+                int(entry.get("start_ts") or 0),
+                int(entry.get("stop_ts") or 0),
+                source.id,
+                input_label,
+                offset_seconds,
+                remaining_seconds,
+                _policy_log_label(effective_policy),
+                command,
+            )
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stderr_task = asyncio.create_task(
+                self._read_stderr(process, entry),
+                name=f"vod-channel-stderr-{self.channel_id}-{segment_index}",
+            )
+            started, startup_failure_reason, startup_chunk = await _wait_for_process_output_start(
+                process,
+                process.stdout,
+                timeout_seconds=8.0,
+            )
+            if started:
+                return True, (process, stderr_task, startup_chunk), ""
+            logger.warning(
+                "VOD channel ingest start failed channel=%s source_id=%s reason=%s",
+                self.channel_id,
+                source.id,
+                startup_failure_reason or "unknown",
+            )
+            await self._close_runtime(
+                {
+                    "process": process,
+                    "stderr_task": stderr_task,
+                }
+            )
+            return False, None, startup_failure_reason
+
+        started, start_policy, result, _failure_reason = await _start_ffmpeg_with_hw_decode_fallback(
+            base_policy,
+            source_identity,
+            _attempt_start,
         )
-        logger.info(
-            "Starting VOD channel ingest segment channel=%s start_ts=%s stop_ts=%s source_id=%s input=%s "
-            "offset_seconds=%s duration_seconds=%s policy=(%s) command=%s",
-            self.channel_id,
-            int(entry.get("start_ts") or 0),
-            int(entry.get("stop_ts") or 0),
-            source.id,
-            input_label,
-            offset_seconds,
-            remaining_seconds,
-            _policy_log_label(self.ingest_policy),
-            command,
-        )
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if not started:
+            return None
+        self.ingest_policy = dict(start_policy)
+        process, stderr_task, startup_chunk = result
         warm_task = asyncio.create_task(
             self._warm_next_item_cache(next_entry, remaining_seconds),
             name=f"vod-channel-next-{self.channel_id}-{segment_index}",
-        )
-        stderr_task = asyncio.create_task(
-            self._read_stderr(process, entry),
-            name=f"vod-channel-stderr-{self.channel_id}-{segment_index}",
         )
         runtime = {
             "process": process,
@@ -5071,6 +5387,8 @@ class VodChannelIngestSession:
             "source": source,
             "input_target": input_target,
         }
+        if startup_chunk:
+            runtime["startup_chunk"] = startup_chunk
         if activate_session_state:
             self._activate_runtime(runtime)
         return runtime
@@ -5253,6 +5571,20 @@ class VodChannelIngestSession:
                 self.current_segment_healthy = False
                 try:
                     prefetch_queue = runtime.get("prefetch_queue")
+                    startup_chunk = runtime.pop("startup_chunk", b"")
+                    if startup_chunk:
+                        saw_data = True
+                        self.current_segment_healthy = True
+                        if not self.first_healthy_stream_seen:
+                            logger.info(
+                                "VOD channel ingest first chunk channel=%s ingest_key=%s bytes=%s elapsed_ms=%s",
+                                self.channel_id,
+                                self.key,
+                                len(startup_chunk),
+                                int(max(0.0, time.time() - float(self.session_start_ts or time.time())) * 1000),
+                            )
+                            self.first_healthy_stream_seen = True
+                        await self._broadcast(startup_chunk)
                     while self.running:
                         if prefetch_queue is not None:
                             chunk = await prefetch_queue.get()
@@ -5737,46 +6069,61 @@ class CsoOutputSession:
                     self.ingest_session.current_source,
                     source_probe=self.ingest_session.current_source_probe,
                 )
-                command = CsoFfmpegCommandBuilder(
-                    self.output_policy,
-                    pipe_input_format=pipe_input_format,
-                ).build_output_command()
-                self._recent_ffmpeg_stderr.clear()
-                logger.info(
-                    "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
-                    self.channel_id,
-                    self.key,
-                    _policy_log_label(self.output_policy),
-                    command,
+                source_probe = dict(self.ingest_session.current_source_probe or {})
+                source_identity = self.ingest_session.current_source_url or clean_text(
+                    getattr(self.ingest_session.current_source, "url", "")
                 )
-                self.process = await asyncio.create_subprocess_exec(
-                    *command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                read_task = asyncio.create_task(self._read_loop())
-                write_task = asyncio.create_task(self._write_loop())
-                stderr_task = asyncio.create_task(self._stderr_loop())
-                started, failure_reason = await self._wait_for_startup_ready(self.process)
-                if started:
-                    self.read_task = read_task
-                    self.write_task = write_task
-                    self.stderr_task = stderr_task
-                    self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
-                else:
+
+                async def _attempt_start(effective_policy):
+                    command = CsoFfmpegCommandBuilder(
+                        effective_policy,
+                        pipe_input_format=pipe_input_format,
+                        source_probe=source_probe,
+                    ).build_output_command()
+                    self._recent_ffmpeg_stderr.clear()
+                    logger.info(
+                        "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
+                        self.channel_id,
+                        self.key,
+                        _policy_log_label(effective_policy),
+                        command,
+                    )
+                    process = await asyncio.create_subprocess_exec(
+                        *command,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    self.process = process
+                    read_task = asyncio.create_task(self._read_loop())
+                    write_task = asyncio.create_task(self._write_loop())
+                    stderr_task = asyncio.create_task(self._stderr_loop())
+                    started, failure_reason = await self._wait_for_startup_ready(process)
+                    if started:
+                        return True, (process, read_task, write_task, stderr_task), ""
                     logger.warning(
                         "CSO output start failed channel=%s output_key=%s reason=%s",
                         self.channel_id,
                         self.key,
                         failure_reason or "unknown",
                     )
-                    _log_hwaccel_failure(self.output_policy, f"output:{self.key}", failure_reason)
-                    await self._cleanup_failed_start_attempt(self.process, read_task, write_task, stderr_task)
+                    await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
                     self.process = None
+                    return False, None, failure_reason
+
+                started, start_policy, result, failure_reason = await _start_ffmpeg_with_hw_decode_fallback(
+                    self.output_policy,
+                    source_identity,
+                    _attempt_start,
+                )
+                if not started:
+                    _log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
                     self.running = False
                     self.last_error = failure_reason or "output_start_failed"
                     return
+                self.output_policy = dict(start_policy)
+                self.process, self.read_task, self.write_task, self.stderr_task = result
+                self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
             except Exception as exc:
                 self.running = False
                 self.last_error = f"output_start_failed:{exc}"
@@ -6545,65 +6892,88 @@ class CsoHlsOutputSession:
                     source_probe=self.ingest_session.current_source_probe,
                 )
                 source = self.ingest_session.current_source
-            self.runtime_policy = _effective_vod_hls_runtime_policy(self.policy, source)
-            builder = CsoFfmpegCommandBuilder(
-                self.runtime_policy,
-                pipe_input_format=pipe_input_format,
+            source_probe = (
+                _event_source_probe(source)
+                if use_direct_input
+                else dict(self.ingest_session.current_source_probe or {})
             )
+            source_identity = (
+                self.input_target
+                if use_direct_input
+                else (self.ingest_session.current_source_url or clean_text(getattr(source, "url", "")))
+            )
+            base_runtime_policy = _effective_vod_hls_runtime_policy(self.policy, source)
             self.running = True
             self.last_error = None
             self.last_activity = time.time()
             await self._prepare_output_dir()
-            command = builder.build_hls_output_command(
-                self.output_dir,
-                input_target=self.input_target if use_direct_input else "",
-                input_is_url=self.input_is_url,
-                start_seconds=self.start_seconds,
-                user_agent=self.input_user_agent,
-                request_headers=self.input_request_headers,
-            )
-            self._recent_ffmpeg_stderr.clear()
-            logger.info(
-                "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
-                self.channel_id,
-                self.key,
-                _policy_log_label(self.runtime_policy),
-                command,
-            )
-            self.process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.DEVNULL if use_direct_input else asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            self.process_token += 1
-            token = self.process_token
-            write_task = None
-            if not use_direct_input:
-                write_task = asyncio.create_task(self._write_loop(token, self.process))
-            stderr_task = asyncio.create_task(self._stderr_loop(token, self.process))
-            wait_task = asyncio.create_task(self._wait_loop(token, self.process))
-            startup_timeout_seconds = 8.0
-            if use_direct_input:
-                startup_timeout_seconds = 20.0 if self.start_seconds > 0 else 12.0
-            started, failure_reason = await self._wait_for_startup_ready(
-                self.process,
-                timeout_seconds=startup_timeout_seconds,
+
+            async def _attempt_start(effective_policy):
+                self.runtime_policy = dict(effective_policy)
+                builder = CsoFfmpegCommandBuilder(
+                    self.runtime_policy,
+                    pipe_input_format=pipe_input_format,
+                    source_probe=source_probe,
+                )
+                command = builder.build_hls_output_command(
+                    self.output_dir,
+                    input_target=self.input_target if use_direct_input else "",
+                    input_is_url=self.input_is_url,
+                    start_seconds=self.start_seconds,
+                    user_agent=self.input_user_agent,
+                    request_headers=self.input_request_headers,
+                )
+                self._recent_ffmpeg_stderr.clear()
+                logger.info(
+                    "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
+                    self.channel_id,
+                    self.key,
+                    _policy_log_label(self.runtime_policy),
+                    command,
+                )
+                self.process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdin=asyncio.subprocess.DEVNULL if use_direct_input else asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                self.process_token += 1
+                token = self.process_token
+                write_task = None
+                if not use_direct_input:
+                    write_task = asyncio.create_task(self._write_loop(token, self.process))
+                stderr_task = asyncio.create_task(self._stderr_loop(token, self.process))
+                wait_task = asyncio.create_task(self._wait_loop(token, self.process))
+                startup_timeout_seconds = 8.0
+                if use_direct_input:
+                    startup_timeout_seconds = 20.0 if self.start_seconds > 0 else 12.0
+                started, failure_reason = await self._wait_for_startup_ready(
+                    self.process,
+                    timeout_seconds=startup_timeout_seconds,
+                )
+                if started:
+                    return True, (self.process, write_task, stderr_task, wait_task), ""
+                logger.warning(
+                    "CSO HLS output start failed channel=%s output_key=%s reason=%s",
+                    self.channel_id,
+                    self.key,
+                    failure_reason or "unknown",
+                )
+                await self._cleanup_failed_start_attempt(self.process, write_task, stderr_task, wait_task)
+                self.process = None
+                return False, None, failure_reason
+
+            started, start_policy, result, failure_reason = await _start_ffmpeg_with_hw_decode_fallback(
+                base_runtime_policy,
+                source_identity,
+                _attempt_start,
             )
             if started:
-                self.write_task = write_task
-                self.stderr_task = stderr_task
-                self.wait_task = wait_task
+                self.runtime_policy = dict(start_policy)
+                self.process, self.write_task, self.stderr_task, self.wait_task = result
                 return
-            logger.warning(
-                "CSO HLS output start failed channel=%s output_key=%s reason=%s",
-                self.channel_id,
-                self.key,
-                failure_reason or "unknown",
-            )
+            self.runtime_policy = dict(start_policy)
             _log_hwaccel_failure(self.runtime_policy, f"hls:{self.key}", failure_reason)
-            await self._cleanup_failed_start_attempt(self.process, write_task, stderr_task, wait_task)
-            self.process = None
             self.running = False
             self.last_error = failure_reason or "output_start_failed"
 
@@ -8286,6 +8656,7 @@ async def subscribe_vod_proxy_output_stream(
         return build_cso_stream_plan(None, None, "Source playlist is disabled", 404)
 
     policy = generate_cso_policy_from_profile(config, profile)
+    source_probe = _event_source_probe(source)
     proxy_session_key = f"vod-proxy-output-{source.id}-{connection_id}"
     cache_entry = await vod_cache_manager.get_or_create(source, upstream_url or source.url)
     local_cache_ready = bool(cache_entry.complete and cache_entry.final_path.exists())
@@ -8295,27 +8666,7 @@ async def subscribe_vod_proxy_output_stream(
     if not using_local_cache and not source.url:
         return build_cso_stream_plan(None, None, "No available stream source", 503)
 
-    if using_local_cache:
-        command = CsoFfmpegCommandBuilder(
-            policy,
-            pipe_input_format=_resolve_vod_pipe_container(source, source_probe=getattr(source, "probe_details", None)),
-        ).build_local_output_command(
-            cache_entry.final_path,
-            start_seconds=start_seconds,
-            max_duration_seconds=max_duration_seconds,
-            realtime=True,
-        )
-        logger.info(
-            "Starting VOD local output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s path=%s command=%s",
-            item_id,
-            source.id,
-            profile,
-            int(start_seconds or 0),
-            int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
-            cache_entry.final_path,
-            command,
-        )
-    else:
+    if not using_local_cache:
         proxy_request_headers = dict(request_headers or {})
         proxy_request_headers.pop("Range", None)
         proxy_session = await vod_proxy_session_manager.create(
@@ -8346,37 +8697,151 @@ async def subscribe_vod_proxy_output_stream(
                 "Source capacity limit reached" if reason == "capacity_blocked" else "Unable to start proxy stream",
                 503 if reason == "capacity_blocked" else 502,
             )
+    source_identity = str(cache_entry.final_path) if using_local_cache else (upstream_url or source.url)
 
-        pipe_input_format = _pipe_container_from_content_type(
-            proxy_session.content_type
-        ) or _resolve_vod_pipe_container(
-            source,
-            source_probe=getattr(source, "probe_details", None),
+    base_policy = dict(policy)
+    process = None
+    writer_task = None
+    stderr_task = None
+    recent_stderr: deque[str] = deque(maxlen=30)
+    first_output_chunk = b""
+
+    async def _attempt_start(effective_policy):
+        if using_local_cache:
+            command = CsoFfmpegCommandBuilder(
+                effective_policy,
+                pipe_input_format=_resolve_vod_pipe_container(source, source_probe=source_probe),
+                source_probe=source_probe,
+            ).build_local_output_command(
+                cache_entry.final_path,
+                start_seconds=start_seconds,
+                max_duration_seconds=max_duration_seconds,
+                realtime=True,
+            )
+            logger.info(
+                "Starting VOD local output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s path=%s command=%s",
+                item_id,
+                source.id,
+                profile,
+                int(start_seconds or 0),
+                int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
+                cache_entry.final_path,
+                command,
+            )
+        else:
+            pipe_input_format = _pipe_container_from_content_type(
+                proxy_session.content_type
+            ) or _resolve_vod_pipe_container(
+                source,
+                source_probe=source_probe,
+            )
+            command = CsoFfmpegCommandBuilder(
+                effective_policy,
+                pipe_input_format=pipe_input_format,
+                source_probe=source_probe,
+            ).build_output_command(
+                start_seconds=start_seconds,
+                max_duration_seconds=max_duration_seconds,
+            )
+            logger.info(
+                "Starting VOD proxy output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s command=%s",
+                item_id,
+                source.id,
+                profile,
+                int(start_seconds or 0),
+                int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
+                command,
+            )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as exc:
+            if proxy_session is not None:
+                await proxy_session.stop(force=True)
+            await emit_channel_stream_event(
+                source=source,
+                session_id=proxy_session_key,
+                event_type="playback_unavailable",
+                severity="warning",
+                details={
+                    "reason": f"output_start_failed:{exc}",
+                    "profile": profile,
+                    "mode": "proxy_output",
+                    **_source_event_context(source, source_url=source.url),
+                },
+            )
+            return build_cso_stream_plan(None, None, "Unable to start CSO output stream", 503)
+
+        async def _write_proxy_to_ffmpeg():
+            if proxy_session is None:
+                return
+            try:
+                async for chunk in proxy_session.iter_bytes():
+                    if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                        continue
+                    if process.stdin is None or process.returncode is not None:
+                        break
+                    process.stdin.write(chunk)
+                    await process.stdin.drain()
+            except Exception as exc:
+                logger.warning(
+                    "VOD proxy output writer interrupted item=%s source_id=%s error=%s",
+                    item.id if item is not None else None,
+                    source.id,
+                    exc,
+                )
+            finally:
+                if process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except Exception:
+                        pass
+
+        async def _log_stderr():
+            if process.stderr is None:
+                return
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode(errors="ignore").rstrip()
+                if text:
+                    recent_stderr.append(text)
+                if CsoOutputSession._should_log_ffmpeg_stderr_line(text):
+                    logger.info("[vod-proxy-output-ffmpeg] %s", text)
+
+        recent_stderr.clear()
+        writer_task = asyncio.create_task(_write_proxy_to_ffmpeg(), name=f"vod-proxy-output-writer-{connection_id}")
+        stderr_task = asyncio.create_task(_log_stderr(), name=f"vod-proxy-output-stderr-{connection_id}")
+        started, startup_failure_reason, first_output_chunk = await _wait_for_process_output_start(
+            process,
+            process.stdout,
+            timeout_seconds=8.0,
         )
-        command = CsoFfmpegCommandBuilder(
-            policy,
-            pipe_input_format=pipe_input_format,
-        ).build_output_command(
-            start_seconds=start_seconds,
-            max_duration_seconds=max_duration_seconds,
-        )
-        logger.info(
-            "Starting VOD proxy output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s command=%s",
-            item_id,
-            source.id,
-            profile,
-            int(start_seconds or 0),
-            int(max_duration_seconds or 0) if max_duration_seconds is not None else None,
-            command,
-        )
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except Exception as exc:
+        if started:
+            return True, (process, writer_task, stderr_task, first_output_chunk), ""
+        await _terminate_ffmpeg_process(process)
+        for task in (writer_task, stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+        process = None
+        failure_summary = " | ".join(list(recent_stderr)[-3:]) or startup_failure_reason
+        return False, None, failure_summary
+
+    started, start_policy, result, failure_summary = await _start_ffmpeg_with_hw_decode_fallback(
+        base_policy,
+        source_identity,
+        _attempt_start,
+    )
+    if not started:
         if proxy_session is not None:
             await proxy_session.stop(force=True)
         await emit_channel_stream_event(
@@ -8385,13 +8850,15 @@ async def subscribe_vod_proxy_output_stream(
             event_type="playback_unavailable",
             severity="warning",
             details={
-                "reason": f"output_start_failed:{exc}",
+                "reason": failure_summary or "output_start_failed",
                 "profile": profile,
                 "mode": "proxy_output",
                 **_source_event_context(source, source_url=source.url),
             },
         )
         return build_cso_stream_plan(None, None, "Unable to start CSO output stream", 503)
+    policy = dict(start_policy)
+    process, writer_task, stderr_task, first_output_chunk = result
 
     await emit_channel_stream_event(
         source=source,
@@ -8406,47 +8873,10 @@ async def subscribe_vod_proxy_output_stream(
         },
     )
 
-    async def _write_proxy_to_ffmpeg():
-        if proxy_session is None:
-            return
-        try:
-            async for chunk in proxy_session.iter_bytes():
-                if not isinstance(chunk, (bytes, bytearray, memoryview)):
-                    continue
-                if process.stdin is None or process.returncode is not None:
-                    break
-                process.stdin.write(chunk)
-                await process.stdin.drain()
-        except Exception as exc:
-            logger.warning(
-                "VOD proxy output writer interrupted item=%s source_id=%s error=%s",
-                item.id if item is not None else None,
-                source.id,
-                exc,
-            )
-        finally:
-            if process.stdin is not None:
-                try:
-                    process.stdin.close()
-                except Exception:
-                    pass
-
-    async def _log_stderr():
-        if process.stderr is None:
-            return
-        while True:
-            line = await process.stderr.readline()
-            if not line:
-                break
-            text = line.decode(errors="ignore").rstrip()
-            if CsoOutputSession._should_log_ffmpeg_stderr_line(text):
-                logger.info("[vod-proxy-output-ffmpeg] %s", text)
-
-    writer_task = asyncio.create_task(_write_proxy_to_ffmpeg(), name=f"vod-proxy-output-writer-{connection_id}")
-    stderr_task = asyncio.create_task(_log_stderr(), name=f"vod-proxy-output-stderr-{connection_id}")
-
     async def _generator():
         try:
+            if first_output_chunk:
+                yield first_output_chunk
             while True:
                 if process.stdout is None:
                     break

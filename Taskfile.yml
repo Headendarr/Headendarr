@@ -65,6 +65,11 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true headendarr
 
+  backend:shell:
+    desc: Start backend (tic) service in dev AIO stack (detached)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} exec headendarr bash
+
   frontend:start:
     desc: Start frontend dev server service in dev AIO stack (detached)
     deps: [init]
