@@ -3,7 +3,7 @@
 from quart import jsonify, request, current_app
 from backend.api import blueprint
 from backend.stream_diagnostics import start_probe, get_probe_status, delete_probe
-from backend.auth import admin_auth_required
+from backend.auth import admin_auth_required, get_request_user
 from backend.http_headers import parse_headers_json, sanitise_headers
 from backend.models import ChannelSource, Session
 from backend.streaming import append_stream_key, is_tic_stream_url
@@ -25,7 +25,7 @@ async def test_stream():
     if not stream_url:
         return jsonify({"success": False, "message": "Missing stream_url"}), 400
 
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     stream_key = getattr(user, "streaming_key", None)
     app_config = current_app.config.get("APP_CONFIG")
     instance_id = app_config.ensure_instance_id() if app_config else None

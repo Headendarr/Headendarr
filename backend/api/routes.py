@@ -18,6 +18,7 @@ from backend.auth import (
     admin_auth_required,
     get_user_from_token,
     get_authenticated_session_expires_at,
+    get_request_stream_user,
     _get_bearer_token,
     stream_key_required,
     user_auth_required,
@@ -257,7 +258,7 @@ async def tvh_stream_proxy(subpath: str):
     # Internal stream-only proxy for external clients (stream key auth).
     if not (subpath.startswith("stream/") or subpath.startswith("dvrfile/")):
         return jsonify({"success": False, "message": "Not found"}), 404
-    stream_user = getattr(request, "_stream_user", None)
+    stream_user = get_request_stream_user()
     stream_username = getattr(stream_user, "username", None)
     stream_password = getattr(stream_user, "streaming_key", None)
     if not stream_username or not stream_password:

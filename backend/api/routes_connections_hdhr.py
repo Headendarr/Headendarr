@@ -10,7 +10,14 @@ from backend.api.connections_common import (
     get_playlist_connection_count,
     resolve_channel_stream_url,
 )
-from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user, skip_stream_connect_audit
+from backend.auth import (
+    audit_stream_event,
+    get_request_stream_key,
+    get_request_stream_user,
+    is_tvh_backend_stream_user,
+    skip_stream_connect_audit,
+    stream_key_required,
+)
 from backend.channels import read_config_all_channels
 from backend.epgs import generate_epg_channel_id
 from backend.playlists import read_config_all_playlists
@@ -79,7 +86,7 @@ async def _get_lineup_list(playlist_id, stream_username=None, stream_key=None, r
             stream_key=stream_key,
             username=stream_username,
             requested_profile=requested_profile,
-            allow_tvh_profile=is_tvh_backend_stream_user(getattr(request, "_stream_user", None)),
+            allow_tvh_profile=is_tvh_backend_stream_user(get_request_stream_user()),
         )
         if channel_url:
             lineup_list.append(
@@ -124,7 +131,7 @@ async def _get_combined_lineup_list(stream_username=None, stream_key=None, reque
             stream_key=stream_key,
             username=stream_username,
             requested_profile=requested_profile,
-            allow_tvh_profile=is_tvh_backend_stream_user(getattr(request, "_stream_user", None)),
+            allow_tvh_profile=is_tvh_backend_stream_user(get_request_stream_user()),
             route_scope="combined",
         )
         if channel_url:
@@ -166,12 +173,13 @@ async def _get_combined_discover_data(stream_username=None, stream_key=None, pro
 @skip_stream_connect_audit
 @stream_key_required
 async def discover_json(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_discover", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_discover", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id=playlist_id,
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         profile=selected_profile,
     )
     return jsonify(discover_data)
@@ -182,11 +190,12 @@ async def discover_json(playlist_id, stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_json(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_lineup", request.path, severity="debug")
     lineup_list = await _get_lineup_list(
         playlist_id,
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         requested_profile=_requested_profile(profile),
     )
     return jsonify(lineup_list)
@@ -197,7 +206,7 @@ async def lineup_json(playlist_id, stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_status_json(playlist_id=None, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_status", request.path, severity="debug")
+    await audit_stream_event(get_request_stream_user(), "hdhr_lineup_status", request.path, severity="debug")
     return jsonify(
         {
             "ScanInProgress": 0,
@@ -213,7 +222,7 @@ async def lineup_status_json(playlist_id=None, stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_post(playlist_id=None, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_post", request.path, severity="debug")
+    await audit_stream_event(get_request_stream_user(), "hdhr_lineup_post", request.path, severity="debug")
     return ""
 
 
@@ -222,12 +231,13 @@ async def lineup_post(playlist_id=None, stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def device_xml(playlist_id, stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_device_xml", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_device_xml", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_discover_data(
         playlist_id,
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         profile=selected_profile,
     )
     xml_content = await render_template_string(device_xml_template, data=discover_data)
@@ -239,11 +249,12 @@ async def device_xml(playlist_id, stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def discover_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_discover_combined", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_discover_combined", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_combined_discover_data(
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         profile=selected_profile,
     )
     return jsonify(discover_data)
@@ -254,10 +265,11 @@ async def discover_json_combined(stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_combined", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_lineup_combined", request.path, severity="debug")
     lineup_list = await _get_combined_lineup_list(
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         requested_profile=_requested_profile(profile),
     )
     return jsonify(lineup_list)
@@ -268,7 +280,7 @@ async def lineup_json_combined(stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_status_json_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_status_combined", request.path, severity="debug")
+    await audit_stream_event(get_request_stream_user(), "hdhr_lineup_status_combined", request.path, severity="debug")
     return jsonify(
         {
             "ScanInProgress": 0,
@@ -284,7 +296,7 @@ async def lineup_status_json_combined(stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_post_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_lineup_post_combined", request.path, severity="debug")
+    await audit_stream_event(get_request_stream_user(), "hdhr_lineup_post_combined", request.path, severity="debug")
     return ""
 
 
@@ -293,11 +305,12 @@ async def lineup_post_combined(stream_key=None, profile=None):
 @skip_stream_connect_audit
 @stream_key_required
 async def device_xml_combined(stream_key=None, profile=None):
-    await audit_stream_event(request._stream_user, "hdhr_device_xml_combined", request.path, severity="debug")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "hdhr_device_xml_combined", request.path, severity="debug")
     selected_profile = _requested_profile(profile)
     discover_data = await _get_combined_discover_data(
-        stream_username=request._stream_user.username if request._stream_user else None,
-        stream_key=request._stream_key,
+        stream_username=stream_user.username if stream_user else None,
+        stream_key=get_request_stream_key(),
         profile=selected_profile,
     )
     xml_content = await render_template_string(device_xml_template, data=discover_data)

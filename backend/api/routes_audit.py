@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 
 from backend.api import blueprint
 from backend.audit_view import build_activity_label, build_device_label, derive_audit_mode
-from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
+from backend.auth import admin_auth_required, audit_stream_event, get_request_user, streamer_or_admin_required
 from backend.utils import to_utc_iso
 from backend.models import Channel, CsoEventLog, Session, StreamAuditLog, User
 from backend.stream_activity import stop_stream_activity, upsert_stream_activity
@@ -458,7 +458,7 @@ async def api_audit_filter_options():
 @blueprint.route("/tic-api/audit/playback-start", methods=["POST"])
 @streamer_or_admin_required
 async def api_audit_playback_start():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     data = await request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
     title = (data.get("title") or "").strip()

@@ -4,7 +4,7 @@ import os
 from urllib.parse import urlparse
 
 from backend.api.tasks import TaskQueueBroker, refresh_linked_channels_for_playlist
-from backend.auth import admin_auth_required, streamer_or_admin_required
+from backend.auth import admin_auth_required, get_request_user, streamer_or_admin_required
 from backend.plex.reconcile import reconcile_plex_servers
 from backend.playlists import (
     read_config_all_playlists,
@@ -48,7 +48,7 @@ def _serialize_playlist_for_connection_details(playlist: dict) -> dict:
 async def api_get_playlists_list():
     config = current_app.config["APP_CONFIG"]
     all_playlist_configs = await read_config_all_playlists(config)
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     role_names = {role.name for role in (getattr(user, "roles", None) or [])}
     if "admin" not in role_names:
         all_playlist_configs = [
@@ -232,7 +232,7 @@ async def api_update_playlist(playlist_id):
 @admin_auth_required
 async def api_get_filtered_playlist_streams():
     json_data = await request.get_json()
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     stream_key = user.streaming_key if user else None
     config = current_app.config["APP_CONFIG"]
     instance_id = config.ensure_instance_id()
@@ -274,7 +274,7 @@ def _infer_stream_type(url):
 @blueprint.route("/tic-api/playlists/streams/<int:playlist_stream_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_playlist_stream_preview(playlist_stream_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     stream_key = user.streaming_key if user else None
     async with Session() as session:
         result = await session.execute(

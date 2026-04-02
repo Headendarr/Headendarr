@@ -6,7 +6,13 @@ from quart import Response, current_app
 
 from backend.api import blueprint
 from backend.api.connections_common import get_channels_for_playlist, resolve_channel_stream_url
-from backend.auth import stream_key_required, audit_stream_event, is_tvh_backend_stream_user
+from backend.auth import (
+    audit_stream_event,
+    get_request_stream_key,
+    get_request_stream_user,
+    is_tvh_backend_stream_user,
+    stream_key_required,
+)
 from backend.epgs import build_channel_logo_output_url, generate_epg_channel_id
 from backend.playlists import build_tic_playlist_with_epg_content
 from backend.url_resolver import get_request_base_url
@@ -53,7 +59,7 @@ async def _playlist_m3u_lines(playlist_id, *, stream_key=None, username=None, re
             stream_key=stream_key,
             username=username,
             requested_profile=requested_profile,
-            allow_tvh_profile=is_tvh_backend_stream_user(getattr(request, "_stream_user", None)),
+            allow_tvh_profile=is_tvh_backend_stream_user(get_request_stream_user()),
         )
         if stream_url:
             lines.append(stream_url)
@@ -64,9 +70,10 @@ async def _playlist_m3u_lines(playlist_id, *, stream_key=None, username=None, re
 @blueprint.route("/tic-api/playlist/combined.m3u", methods=["GET"])
 @stream_key_required
 async def combined_playlist_m3u():
-    await audit_stream_event(request._stream_user, "playlist_m3u_combined", request.path)
-    stream_key = request.args.get("stream_key") or request.args.get("password") or request._stream_key
-    username = request._stream_user.username if stream_key and request._stream_user else request.args.get("username")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "playlist_m3u_combined", request.path)
+    stream_key = request.args.get("stream_key") or request.args.get("password") or get_request_stream_key()
+    username = stream_user.username if stream_key and stream_user else request.args.get("username")
     profile = _requested_profile()
 
     content = await build_tic_playlist_with_epg_content(
@@ -76,7 +83,7 @@ async def combined_playlist_m3u():
         username=username,
         include_xtvg=True,
         requested_profile=profile,
-        allow_tvh_profile=is_tvh_backend_stream_user(getattr(request, "_stream_user", None)),
+        allow_tvh_profile=is_tvh_backend_stream_user(stream_user),
     )
     response = Response(content, mimetype="text/plain")
     response.headers["Content-Disposition"] = 'attachment; filename="combined.m3u"'
@@ -88,9 +95,10 @@ async def combined_playlist_m3u():
 @blueprint.route("/tic-api/tvh_playlist/<playlist_id>/channels.m3u", methods=["GET"])
 @stream_key_required
 async def source_playlist_m3u(playlist_id):
-    await audit_stream_event(request._stream_user, "playlist_m3u", request.path)
-    stream_key = request.args.get("stream_key") or request.args.get("password") or request._stream_key
-    username = request._stream_user.username if stream_key and request._stream_user else request.args.get("username")
+    stream_user = get_request_stream_user()
+    await audit_stream_event(stream_user, "playlist_m3u", request.path)
+    stream_key = request.args.get("stream_key") or request.args.get("password") or get_request_stream_key()
+    username = stream_user.username if stream_key and stream_user else request.args.get("username")
     profile = _requested_profile()
 
     lines = await _playlist_m3u_lines(

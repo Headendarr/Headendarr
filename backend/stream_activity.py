@@ -12,7 +12,13 @@ from urllib.parse import urlparse
 
 from quart import current_app, request
 
-from backend.auth import audit_stream_event, get_request_client_ip, is_tvh_backend_stream_user
+from backend.auth import (
+    audit_stream_event,
+    get_request_client_ip,
+    get_request_stream_user,
+    get_request_user,
+    is_tvh_backend_stream_user,
+)
 
 logger = logging.getLogger("stream_activity")
 
@@ -80,7 +86,7 @@ class StreamActivityTracker:
     @staticmethod
     def _request_user():
         try:
-            return getattr(request, "_stream_user", None) or getattr(request, "_current_user", None)
+            return get_request_stream_user() or get_request_user()
         except Exception:
             return None
 

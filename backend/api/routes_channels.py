@@ -9,7 +9,7 @@ from backend.api import blueprint
 from quart import request, jsonify, current_app, send_file
 from urllib.parse import unquote, urlparse
 
-from backend.auth import admin_auth_required, streamer_or_admin_required, audit_stream_event
+from backend.auth import admin_auth_required, audit_stream_event, get_request_user, streamer_or_admin_required
 from backend.channels import (
     read_config_all_channels,
     add_new_channel,
@@ -767,7 +767,7 @@ def _build_preview_url_for_source(
 @blueprint.route("/tic-api/channels/<int:channel_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_preview(channel_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if not user or not user.streaming_key:
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
@@ -811,7 +811,7 @@ async def api_get_channel_preview(channel_id):
 @blueprint.route("/tic-api/channels/<int:channel_id>/sources/<int:source_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_source_preview(channel_id, source_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if not user or not user.streaming_key:
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
 
@@ -998,7 +998,7 @@ async def api_bulk_epg_match_preview():
         summary.get("without_candidates", 0),
     )
 
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user:
         details = (
             f"channels={summary.get('channels_considered', 0)};"
@@ -1054,7 +1054,7 @@ async def api_bulk_epg_match_apply():
         summary.get("failed", 0),
     )
 
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user:
         details = (
             f"updated={summary.get('updated', 0)};"
@@ -1089,7 +1089,7 @@ async def api_bulk_cso_apply():
     config = current_app.config["APP_CONFIG"]
     await queue_background_channel_update_tasks(config)
 
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user:
         details = f"channels={len(channel_ids)};enabled={int(cso_enabled)};updated={apply_result.get('updated', 0)}"
         await audit_stream_event(

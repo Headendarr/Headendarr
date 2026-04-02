@@ -8,10 +8,12 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache, wraps
+from typing import Any, cast
 
 from quart import (
     Response,
     current_app,
+    g,
     has_app_context,
     has_request_context,
     has_websocket_context,
@@ -288,10 +290,47 @@ def _get_bearer_token():
     return None
 
 
-def get_authenticated_session_expires_at():
+def get_request_user() -> User | None:
     if not has_request_context():
         return None
-    return getattr(request, "_current_user_session_expires_at", None)
+    return cast(User | None, getattr(g, "current_user", None))
+
+
+def get_request_user_token_hash() -> str | None:
+    if not has_request_context():
+        return None
+    return cast(str | None, getattr(g, "current_user_token_hash", None))
+
+
+def get_request_user_session_expires_at():
+    if not has_request_context():
+        return None
+    return getattr(g, "current_user_session_expires_at", None)
+
+
+def set_request_user(user: User | None):
+    if not has_request_context():
+        return
+    request_globals = cast(Any, g)
+    request_globals.current_user = user
+
+
+def set_request_user_token_hash(token_hash: str | None):
+    if not has_request_context():
+        return
+    request_globals = cast(Any, g)
+    request_globals.current_user_token_hash = token_hash
+
+
+def set_request_user_session_expires_at(session_expires_at):
+    if not has_request_context():
+        return
+    request_globals = cast(Any, g)
+    request_globals.current_user_session_expires_at = session_expires_at
+
+
+def get_authenticated_session_expires_at():
+    return get_request_user_session_expires_at()
 
 
 def _get_basic_auth_credentials():
@@ -318,20 +357,21 @@ async def get_user_from_token():
 
     # Reuse user in-request when available to avoid duplicate DB lookups.
     if has_request_context():
-        cached_hash = getattr(request, "_current_user_token_hash", None)
-        if cached_hash == token_hash and hasattr(request, "_current_user"):
-            if not hasattr(request, "_current_user_session_expires_at"):
-                request._current_user_session_expires_at = None
-            return request._current_user
+        cached_hash = get_request_user_token_hash()
+        cached_user = get_request_user()
+        if cached_hash == token_hash and hasattr(cast(Any, g), "current_user"):
+            if not hasattr(cast(Any, g), "current_user_session_expires_at"):
+                set_request_user_session_expires_at(None)
+            return cached_user
 
     cached_entry, has_cache = await _token_auth_cache.get(token_hash, now)
     if has_cache:
         cached_user = cached_entry.user
         session_expires_at = cached_entry.session_expires_at
         if has_request_context():
-            request._current_user_token_hash = token_hash
-            request._current_user = cached_user
-            request._current_user_session_expires_at = session_expires_at
+            set_request_user_token_hash(token_hash)
+            set_request_user(cached_user)
+            set_request_user_session_expires_at(session_expires_at)
         if cached_user and await _session_last_used_throttle.should_touch(token_hash):
             async with Session() as session:
                 async with session.begin():
@@ -357,9 +397,9 @@ async def get_user_from_token():
         if not user or not user.is_active:
             await _token_auth_cache.set(token_hash, None, session_expires_at)
             if has_request_context():
-                request._current_user_token_hash = token_hash
-                request._current_user = None
-                request._current_user_session_expires_at = session_expires_at
+                set_request_user_token_hash(token_hash)
+                set_request_user(None)
+                set_request_user_session_expires_at(session_expires_at)
             return None
         if await _session_last_used_throttle.should_touch(token_hash):
             await session.execute(
@@ -368,9 +408,9 @@ async def get_user_from_token():
             await session.commit()
         await _token_auth_cache.set(token_hash, user, session_expires_at)
         if has_request_context():
-            request._current_user_token_hash = token_hash
-            request._current_user = user
-            request._current_user_session_expires_at = session_expires_at
+            set_request_user_token_hash(token_hash)
+            set_request_user(user)
+            set_request_user_session_expires_at(session_expires_at)
         return user
 
 
@@ -420,7 +460,7 @@ def streamer_or_admin_required(func):
             return unauthorized_response()
         if not (user_has_role(user, "admin") or user_has_role(user, "streamer")):
             return forbidden_response()
-        request._current_user = user
+        set_request_user(user)
         return await func(*args, **kwargs)
 
     return decorated_function
@@ -634,17 +674,19 @@ def stream_key_required(func):
         user = auth_result.user
         if not user or not user.is_active:
             return unauthorized_response()
-        request._stream_user = user
-        request._stream_key = auth_result.stream_key
+        request_globals = cast(Any, g)
+        request_globals.stream_user = user
+        request_globals.stream_key = auth_result.stream_key
         await mark_stream_key_usage(user)
         ip_address = get_request_client_ip()
         user_agent = request.headers.get("User-Agent")
         should_audit = not getattr(func, "_skip_stream_connect_audit", False) and not is_tvh_backend_stream_user(user)
+        request_path = request.path
         if should_audit:
             await audit_stream_event(
                 user,
                 "stream_connect",
-                request.path,
+                request_path,
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
@@ -652,12 +694,12 @@ def stream_key_required(func):
         if should_audit:
             response = await make_response(response)
             try:
-                response.call_on_close(
+                cast(Any, response).call_on_close(
                     lambda: asyncio.create_task(
                         audit_stream_event(
                             user,
                             "stream_disconnect",
-                            request.path,
+                            request_path,
                             ip_address=ip_address,
                             user_agent=user_agent,
                         )
@@ -667,13 +709,25 @@ def stream_key_required(func):
                 await audit_stream_event(
                     user,
                     "stream_disconnect",
-                    request.path,
+                    request_path,
                     ip_address=ip_address,
                     user_agent=user_agent,
                 )
         return response
 
     return decorated_function
+
+
+def get_request_stream_user() -> User | TvhStreamUser | None:
+    if not has_request_context():
+        return None
+    return cast(User | TvhStreamUser | None, getattr(g, "stream_user", None))
+
+
+def get_request_stream_key() -> str | None:
+    if not has_request_context():
+        return None
+    return cast(str | None, getattr(g, "stream_key", None))
 
 
 def skip_stream_connect_audit(func):

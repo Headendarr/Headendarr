@@ -16,7 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from backend.api import blueprint
-from backend.auth import get_request_client_ip, skip_stream_connect_audit, stream_key_required
+from backend.auth import (
+    get_request_client_ip,
+    get_request_stream_key,
+    get_request_stream_user,
+    skip_stream_connect_audit,
+    stream_key_required,
+)
 from backend.cso import (
     cso_capacity_registry,
     cso_session_manager,
@@ -535,8 +541,9 @@ async def stream_from_source_gate(stream_id):
     config = current_app.config["APP_CONFIG"]
     instance_id = config.ensure_instance_id()
     request_base_url = get_request_base_url(request)
-    stream_key = request._stream_key
-    username = request._stream_user.username if request._stream_user else request.args.get("username")
+    stream_user = get_request_stream_user()
+    stream_key = get_request_stream_key()
+    username = stream_user.username if stream_user else request.args.get("username")
     requested_profile = str(request.args.get("profile") or "").strip().lower()
     client_ip = get_request_client_ip()
     user_agent = request.headers.get("User-Agent")
@@ -620,7 +627,7 @@ async def stream_from_source_gate(stream_id):
         connection_id=connection_id,
         endpoint_override=request.path,
         start_event_type="stream_start",
-        user=getattr(request, "_stream_user", None),
+        user=stream_user,
         details_override=details_override,
         channel_id=getattr(channel, "id", None),
         channel_name=getattr(channel, "name", None),
@@ -650,7 +657,7 @@ async def stream_from_source_gate(stream_id):
                 connection_id=connection_id,
                 event_type="stream_stop",
                 endpoint_override=request.path,
-                user=getattr(request, "_stream_user", None),
+                user=stream_user,
             )
 
     response = Response(generate_source_stream(), content_type=plan.content_type or "application/octet-stream")
@@ -723,11 +730,12 @@ async def stream_channel(channel_id):
             connection_id,
             channel_id_int,
         )
-    stream_key = getattr(request, "_stream_key", None)
+    stream_user = get_request_stream_user()
+    stream_key = get_request_stream_key()
     if use_hls_output:
         hls_query = _build_hls_query_string(
             stream_key=stream_key,
-            username=getattr(getattr(request, "_stream_user", None), "username", None),
+            username=stream_user.username if stream_user else None,
             profile=effective_profile,
         )
         target_path = f"/tic-api/cso/channel/{channel_id_int}/hls/{connection_id}/index.m3u8"
@@ -758,7 +766,7 @@ async def stream_channel(channel_id):
                     connection_id=connection_id,
                     event_type="stream_stop",
                     endpoint_override=request.path,
-                    user=getattr(request, "_stream_user", None),
+                    user=stream_user,
                 )
 
         await upsert_stream_activity(
@@ -766,7 +774,7 @@ async def stream_channel(channel_id):
             connection_id=connection_id,
             endpoint_override=request.path,
             start_event_type="stream_start",
-            user=getattr(request, "_stream_user", None),
+            user=stream_user,
             details_override=f"{getattr(channel, 'name', '')}\n/tic-api/cso/channel/{channel_id_int}",
             channel_id=channel_id_int,
             channel_name=getattr(channel, "name", None),
@@ -801,7 +809,7 @@ async def stream_channel(channel_id):
         connection_id=connection_id,
         endpoint_override=request.path,
         start_event_type="stream_start",
-        user=getattr(request, "_stream_user", None),
+        user=stream_user,
         details_override=details_override,
         channel_id=channel_id_int,
         channel_name=channel_name,
@@ -828,7 +836,7 @@ async def stream_channel(channel_id):
                 connection_id=connection_id,
                 event_type="stream_stop",
                 endpoint_override=request.path,
-                user=getattr(request, "_stream_user", None),
+                user=stream_user,
             )
 
     response = Response(generate_stream(), content_type=plan.content_type or "application/octet-stream")
@@ -896,9 +904,10 @@ async def _build_hls_slate_response(
     playlist_text = await _wait_for_hls_playlist(output_session, connection_id=connection_id)
     if not playlist_text:
         return Response("HLS playlist not ready", status=503)
+    stream_user = get_request_stream_user()
     query_string = _build_hls_query_string(
-        stream_key=getattr(request, "_stream_key", None),
-        username=getattr(getattr(request, "_stream_user", None), "username", None),
+        stream_key=get_request_stream_key(),
+        username=stream_user.username if stream_user else None,
         profile=effective_profile,
     )
     segment_base_path = request_path.rsplit("/", 1)[0]
@@ -913,7 +922,8 @@ async def stream_channel_hls_playlist(channel_id: int, connection_id: str):
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
-    stream_key = request._stream_key
+    stream_user = get_request_stream_user()
+    stream_key = get_request_stream_key()
 
     channel = await resolve_channel_for_stream(int(channel_id))
     if not channel or not bool(getattr(channel, "enabled", False)):
@@ -1022,7 +1032,7 @@ async def stream_channel_hls_playlist(channel_id: int, connection_id: str):
 
     query_string = _build_hls_query_string(
         stream_key=stream_key,
-        username=getattr(getattr(request, "_stream_user", None), "username", None),
+        username=stream_user.username if stream_user else None,
         profile=effective_profile,
     )
     segment_base_path = request.path.rsplit("/", 1)[0]
@@ -1032,7 +1042,7 @@ async def stream_channel_hls_playlist(channel_id: int, connection_id: str):
         connection_id=str(connection_id),
         endpoint_override=request.path,
         start_event_type="stream_start",
-        user=getattr(request, "_stream_user", None),
+        user=stream_user,
         details_override=f"{getattr(channel, 'name', '')}\n/tic-api/cso/channel/{int(channel_id)}".strip(),
         channel_id=int(channel_id),
         channel_name=getattr(channel, "name", None) if channel else None,
@@ -1050,7 +1060,7 @@ async def stream_channel_hls_segment(channel_id: int, connection_id: str, segmen
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
-    stream_key = request._stream_key
+    stream_key = get_request_stream_key()
 
     channel = await resolve_channel_for_stream(int(channel_id))
     if not channel or not bool(getattr(channel, "enabled", False)):
@@ -1173,7 +1183,8 @@ async def stream_source_hls_playlist(stream_id, connection_id):
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
-    stream_key = request._stream_key
+    stream_user = get_request_stream_user()
+    stream_key = get_request_stream_key()
 
     async with Session() as session:
         result = await session.execute(
@@ -1283,7 +1294,7 @@ async def stream_source_hls_playlist(stream_id, connection_id):
 
     query_string = _build_hls_query_string(
         stream_key=stream_key,
-        username=getattr(getattr(request, "_stream_user", None), "username", None),
+        username=stream_user.username if stream_user else None,
         profile=effective_profile,
     )
     segment_base_path = request.path.rsplit("/", 1)[0]
@@ -1296,7 +1307,7 @@ async def stream_source_hls_playlist(stream_id, connection_id):
         connection_id=str(connection_id),
         endpoint_override=request.path,
         start_event_type="stream_start",
-        user=getattr(request, "_stream_user", None),
+        user=stream_user,
         details_override=details_override,
         channel_id=getattr(channel, "id", None),
         channel_name=getattr(channel, "name", None),
@@ -1317,7 +1328,7 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
     config = current_app.config["APP_CONFIG"]
     requested_profile = str(request.args.get("profile") or "hls").strip().lower()
     request_base_url = get_request_base_url(request)
-    stream_key = request._stream_key
+    stream_key = get_request_stream_key()
 
     async with Session() as session:
         result = await session.execute(
@@ -1451,8 +1462,8 @@ async def _stream_cso_vod_route(resolver, identity: str):
     activity_metadata = dict(resolved.get("activity_metadata") or {})
     start_seconds = _requested_hls_start_seconds()
     use_restartable_output = _is_restartable_vod_output_profile(effective_profile)
-    stream_key = request._stream_key
-    stream_user = request._stream_user
+    stream_key = get_request_stream_key()
+    stream_user = get_request_stream_user()
     stream_username = stream_user.username if stream_user is not None else None
 
     vod_item_id = None
@@ -1571,8 +1582,8 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
         upstream_url = str(resolved.get("upstream_url") or "")
         connection_id = request.view_args.get("connection_id")
         start_seconds = _requested_hls_start_seconds()
-        stream_key = request._stream_key
-        stream_user = request._stream_user
+        stream_key = get_request_stream_key()
+        stream_user = get_request_stream_user()
         stream_username = stream_user.username if stream_user is not None else None
 
         vod_item_id = None
@@ -1662,7 +1673,7 @@ async def _stream_cso_vod_hls_segment(resolver):
     connection_id = request.view_args.get("connection_id")
     segment_name = request.view_args.get("segment_name")
     start_seconds = _requested_hls_start_seconds()
-    stream_key = request._stream_key
+    stream_key = get_request_stream_key()
     output_session, error_message, status = await subscribe_vod_hls(
         config,
         candidate,

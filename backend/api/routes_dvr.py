@@ -7,7 +7,7 @@ from sqlalchemy import select
 from quart import request, jsonify, current_app
 
 from backend.api import blueprint
-from backend.auth import streamer_or_admin_required
+from backend.auth import get_request_user, streamer_or_admin_required
 from backend.api.tasks import TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules
 from backend.dvr_profiles import get_profile_key_or_default, read_recording_profiles_from_settings
 from backend.dvr import (
@@ -61,10 +61,10 @@ async def _get_rule(rule_id: int):
         return result.scalar_one_or_none()
 
 
-@blueprint.route('/tic-api/recordings', methods=['GET'])
+@blueprint.route("/tic-api/recordings", methods=["GET"])
 @streamer_or_admin_required
 async def api_list_recordings():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     records = await list_recordings()
@@ -73,7 +73,7 @@ async def api_list_recordings():
     return jsonify({"success": True, "data": records})
 
 
-@blueprint.route('/tic-api/recording-profiles', methods=['GET'])
+@blueprint.route("/tic-api/recording-profiles", methods=["GET"])
 @streamer_or_admin_required
 async def api_list_recording_profiles():
     settings = current_app.config["APP_CONFIG"].read_settings()
@@ -82,7 +82,7 @@ async def api_list_recording_profiles():
 
 
 async def _get_tvh_proxy_base():
-    config = current_app.config['APP_CONFIG']
+    config = current_app.config["APP_CONFIG"]
     tvh_settings = await config.tvh_connection_settings()
     username = tvh_settings.get("tvh_username")
     password = tvh_settings.get("tvh_password")
@@ -120,14 +120,14 @@ async def _fetch_tvh_dvr_entry(base_url, username, password, tvh_uuid):
     return None
 
 
-@blueprint.route('/tic-api/recordings/poll', methods=['GET'])
+@blueprint.route("/tic-api/recordings/poll", methods=["GET"])
 @streamer_or_admin_required
 async def api_poll_recordings():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
-    wait = request.args.get('wait', '0')
-    timeout = request.args.get('timeout', '0')
+    wait = request.args.get("wait", "0")
+    timeout = request.args.get("timeout", "0")
     try:
         wait = int(wait)
     except ValueError:
@@ -155,10 +155,10 @@ async def api_poll_recordings():
     return jsonify({"success": True, "data": data}), 200
 
 
-@blueprint.route('/tic-api/recordings/<int:recording_id>/stream', methods=['GET', 'HEAD'])
+@blueprint.route("/tic-api/recordings/<int:recording_id>/stream", methods=["GET", "HEAD"])
 @streamer_or_admin_required
 async def api_stream_recording(recording_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
 
@@ -207,10 +207,10 @@ async def api_stream_recording(recording_id):
     return current_app.response_class(stream_body(), status=resp.status, headers=response_headers)
 
 
-@blueprint.route('/tic-api/recordings/<int:recording_id>/hls.m3u8', methods=['GET', 'HEAD'])
+@blueprint.route("/tic-api/recordings/<int:recording_id>/hls.m3u8", methods=["GET", "HEAD"])
 @streamer_or_admin_required
 async def api_stream_recording_hls(recording_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
 
@@ -333,10 +333,10 @@ async def api_stream_recording_hls(recording_id):
     return current_app.response_class(playlist, status=200, headers=headers)
 
 
-@blueprint.route('/tic-api/recordings', methods=['POST'])
+@blueprint.route("/tic-api/recordings", methods=["POST"])
 @streamer_or_admin_required
 async def api_create_recording():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     payload = await request.get_json()
@@ -365,19 +365,22 @@ async def api_create_recording():
     )
 
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
 
     return jsonify({"success": True, "recording_id": recording_id})
 
 
-@blueprint.route('/tic-api/recordings/<int:recording_id>/cancel', methods=['POST'])
+@blueprint.route("/tic-api/recordings/<int:recording_id>/cancel", methods=["POST"])
 @streamer_or_admin_required
 async def api_cancel_recording(recording_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     recording = await _get_recording(recording_id)
@@ -392,18 +395,21 @@ async def api_cancel_recording(recording_id):
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/recordings/<int:recording_id>/stop', methods=['POST'])
+@blueprint.route("/tic-api/recordings/<int:recording_id>/stop", methods=["POST"])
 @streamer_or_admin_required
 async def api_stop_recording(recording_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     recording = await _get_recording(recording_id)
@@ -415,18 +421,21 @@ async def api_stop_recording(recording_id):
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/recordings/<int:recording_id>', methods=['DELETE'])
+@blueprint.route("/tic-api/recordings/<int:recording_id>", methods=["DELETE"])
 @streamer_or_admin_required
 async def api_delete_recording(recording_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     recording = await _get_recording(recording_id)
@@ -438,18 +447,21 @@ async def api_delete_recording(recording_id):
     if not ok:
         return jsonify({"success": False, "message": "Recording not found"}), 404
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/recording-rules', methods=['GET'])
+@blueprint.route("/tic-api/recording-rules", methods=["GET"])
 @streamer_or_admin_required
 async def api_list_recording_rules():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     rules = await list_rules()
@@ -458,10 +470,10 @@ async def api_list_recording_rules():
     return jsonify({"success": True, "data": rules})
 
 
-@blueprint.route('/tic-api/recording-rules', methods=['POST'])
+@blueprint.route("/tic-api/recording-rules", methods=["POST"])
 @streamer_or_admin_required
 async def api_create_recording_rule():
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     payload = await request.get_json()
@@ -481,23 +493,29 @@ async def api_create_recording_rule():
         recording_profile_key=profile_key,
     )
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Applying DVR recording rules',
-        'function': apply_dvr_rules,
-        'args': [current_app],
-    }, priority=19)
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Applying DVR recording rules",
+            "function": apply_dvr_rules,
+            "args": [current_app],
+        },
+        priority=19,
+    )
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
     return jsonify({"success": True, "rule_id": rule_id})
 
 
-@blueprint.route('/tic-api/recording-rules/<int:rule_id>', methods=['DELETE'])
+@blueprint.route("/tic-api/recording-rules/<int:rule_id>", methods=["DELETE"])
 @streamer_or_admin_required
 async def api_delete_recording_rule(rule_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     rule = await _get_rule(rule_id)
@@ -511,10 +529,10 @@ async def api_delete_recording_rule(rule_id):
     return jsonify({"success": True})
 
 
-@blueprint.route('/tic-api/recording-rules/<int:rule_id>', methods=['PUT'])
+@blueprint.route("/tic-api/recording-rules/<int:rule_id>", methods=["PUT"])
 @streamer_or_admin_required
 async def api_update_recording_rule(rule_id):
-    user = getattr(request, "_current_user", None)
+    user = get_request_user()
     if user and not _can_use_dvr(user):
         return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
     rule = await _get_rule(rule_id)
@@ -543,14 +561,20 @@ async def api_update_recording_rule(rule_id):
     if not ok:
         return jsonify({"success": False, "message": "Rule not found"}), 404
     task_broker = await TaskQueueBroker.get_instance()
-    await task_broker.add_task({
-        'name': f'Applying DVR recording rules',
-        'function': apply_dvr_rules,
-        'args': [current_app],
-    }, priority=19)
-    await task_broker.add_task({
-        'name': f'Reconcile DVR recordings',
-        'function': reconcile_dvr_recordings,
-        'args': [current_app],
-    }, priority=20)
+    await task_broker.add_task(
+        {
+            "name": f"Applying DVR recording rules",
+            "function": apply_dvr_rules,
+            "args": [current_app],
+        },
+        priority=19,
+    )
+    await task_broker.add_task(
+        {
+            "name": f"Reconcile DVR recordings",
+            "function": reconcile_dvr_recordings,
+            "args": [current_app],
+        },
+        priority=20,
+    )
     return jsonify({"success": True})
