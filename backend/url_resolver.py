@@ -65,6 +65,12 @@ def _request_peer_ip(request) -> str | None:
         return None
 
 
+def _trust_forwarded_headers_enabled() -> bool:
+    if "TIC_TRUST_PROXY_HEADERS" in os.environ:
+        return str(os.environ.get("TIC_TRUST_PROXY_HEADERS", "")).strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.environ.get("TIC_TRUST_X_FORWARDED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _is_trusted_proxy_ip(addr: str | None) -> bool:
     if not addr:
         return False
@@ -118,7 +124,7 @@ def _request_external_parts(request) -> tuple[str, str, str]:
     host = _normalize_host(getattr(request, "host", ""))
     prefix = _normalize_forwarded_prefix(getattr(request, "root_path", ""))
 
-    trust_forwarded = str(os.environ.get("TIC_TRUST_X_FORWARDED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+    trust_forwarded = _trust_forwarded_headers_enabled()
     if trust_forwarded and _is_trusted_proxy_ip(_request_peer_ip(request)):
         headers = request.headers
         forwarded_host = (headers.get("X-Forwarded-Host") or "").split(",", 1)[0].strip()
@@ -140,6 +146,89 @@ def _request_external_parts(request) -> tuple[str, str, str]:
     if not host:
         host = "localhost"
     return scheme, host, prefix
+
+
+def _request_base_url_diagnostics(request) -> dict[str, str | bool]:
+    headers = getattr(request, "headers", {})
+    remote_addr = _request_peer_ip(request) or ""
+    trusted_proxy = _is_trusted_proxy_ip(remote_addr)
+    trust_forwarded = _trust_forwarded_headers_enabled()
+    resolved_base_url = get_request_base_url(request)
+    return {
+        "remote_addr": remote_addr,
+        "request_scheme": str(getattr(request, "scheme", "") or ""),
+        "request_host": str(getattr(request, "host", "") or ""),
+        "request_root_path": str(getattr(request, "root_path", "") or ""),
+        "x_forwarded_host": (headers.get("X-Forwarded-Host") or "").split(",", 1)[0].strip(),
+        "x_forwarded_proto": (headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip(),
+        "x_forwarded_port": (headers.get("X-Forwarded-Port") or "").split(",", 1)[0].strip(),
+        "x_forwarded_prefix": (headers.get("X-Forwarded-Prefix") or "").split(",", 1)[0].strip(),
+        "trusted_proxy_headers_enabled": trust_forwarded,
+        "trusted_proxy_cidrs": ",".join(_env_csv("TIC_TRUSTED_PROXY_CIDRS")),
+        "proxy_ip_trusted": trusted_proxy,
+        "resolved_base_url": resolved_base_url,
+    }
+
+
+def log_request_base_url_diagnostics(request, route_name: str) -> None:
+    diag = _request_base_url_diagnostics(request)
+    forwarded_proto = str(diag["x_forwarded_proto"] or "")
+    forwarded_host = str(diag["x_forwarded_host"] or "")
+    forwarded_port = str(diag["x_forwarded_port"] or "")
+    forwarded_prefix = str(diag["x_forwarded_prefix"] or "")
+    has_forwarded_signal = bool(forwarded_proto or forwarded_host or forwarded_port or forwarded_prefix)
+    if not has_forwarded_signal:
+        return
+    if not diag["trusted_proxy_headers_enabled"]:
+        logger.warning(
+            "Ignoring X-Forwarded-Proto route=%s remote_addr=%s reason=proxy_header_trust_disabled "
+            "x_forwarded_proto=%s x_forwarded_host=%s x_forwarded_port=%s x_forwarded_prefix=%s "
+            "request_scheme=%s request_host=%s trusted_proxy_cidrs=%s resolved_base_url=%s env_var=TIC_TRUST_PROXY_HEADERS",
+            route_name,
+            diag["remote_addr"],
+            forwarded_proto,
+            forwarded_host,
+            forwarded_port,
+            forwarded_prefix,
+            diag["request_scheme"],
+            diag["request_host"],
+            diag["trusted_proxy_cidrs"],
+            diag["resolved_base_url"],
+        )
+        return
+    if not diag["proxy_ip_trusted"]:
+        logger.warning(
+            "Ignoring X-Forwarded-Proto route=%s remote_addr=%s reason=proxy_ip_not_trusted "
+            "x_forwarded_proto=%s x_forwarded_host=%s x_forwarded_port=%s x_forwarded_prefix=%s "
+            "request_scheme=%s request_host=%s trusted_proxy_cidrs=%s resolved_base_url=%s",
+            route_name,
+            diag["remote_addr"],
+            forwarded_proto,
+            forwarded_host,
+            forwarded_port,
+            forwarded_prefix,
+            diag["request_scheme"],
+            diag["request_host"],
+            diag["trusted_proxy_cidrs"],
+            diag["resolved_base_url"],
+        )
+        return
+    if forwarded_proto.lower() == "https" and not str(diag["resolved_base_url"]).startswith("https://"):
+        logger.warning(
+            "Forwarded HTTPS did not resolve to an HTTPS base URL route=%s remote_addr=%s "
+            "x_forwarded_proto=%s x_forwarded_host=%s x_forwarded_port=%s x_forwarded_prefix=%s "
+            "request_scheme=%s request_host=%s trusted_proxy_cidrs=%s resolved_base_url=%s",
+            route_name,
+            diag["remote_addr"],
+            forwarded_proto,
+            forwarded_host,
+            forwarded_port,
+            forwarded_prefix,
+            diag["request_scheme"],
+            diag["request_host"],
+            diag["trusted_proxy_cidrs"],
+            diag["resolved_base_url"],
+        )
 
 
 def get_request_base_url(request) -> str:
