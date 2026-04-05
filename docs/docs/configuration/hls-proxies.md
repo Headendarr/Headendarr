@@ -28,11 +28,11 @@ Headendarr comes with a high-performance HLS proxy built directly into the appli
 
 - **Authentication**: Secure your proxy endpoints using the same **Streaming Keys** used for client connectivity.
 - **Connection Sharing**: Maximise your connection limits. Headendarr can share a single upstream connection among multiple local clients, serving them from a unified local cache.
-- **Segment Caching**: Automatically cache HLS segments (`.ts` files) to reduce latency and provide smoother playback, especially over unstable connections.
+- **Segment Caching**: Automatically cache HLS media segments to reduce latency and provide smoother playback, especially over unstable connections. This includes traditional MPEG-TS HLS segments and modern fMP4-style segment layouts.
 - **Intelligent Pre-caching**: Headendarr doesn't just cache what the client asks for; it proactively "looks ahead" in the playlist. While serving the current segment, the proxy automatically pre-downloads the next few segments it predicts the client will need. By the time your client requests the next chunk, it's already sitting in Headendarr's local cache, resulting in near-instant delivery and significantly smoother playback.
-
-* **Stream Remuxing**: Utilises **FFmpeg** to remux streams into a stable MPEG-TS format on-the-fly. This is particularly useful for sources that provide raw HLS that some clients struggle to decode natively.
-* **Audit Logging**: Every connection through the proxy is logged, allowing you to monitor bandwidth usage and stream health in real-time.
+- **Stream Remuxing**: Utilises **FFmpeg** to remux or transcode HLS-backed playback into the requested output shape when needed. Depending on the selected CSO/profile path, that can mean MPEG-TS output, standard HLS, or HLS with fMP4 segments.
+- **Modern HLS profile support**: Headendarr's broader playback stack supports HLS profiles that use fragmented MP4 segments, which is important for newer codec/container combinations such as AV1 over HLS.
+- **Audit Logging**: Every connection through the proxy is logged, allowing you to monitor bandwidth usage and stream health in real-time.
 
 ---
 

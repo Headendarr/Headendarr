@@ -101,20 +101,51 @@ Configurable profiles (Application Settings -> Connections):
 
 - `mpegts`
 - `matroska`
+- `mp4`
+- `webm`
 - `h264-aac-mpegts`
 - `h264-aac-matroska`
 - `h264-aac-mp4`
-- `vp8-vorbis-webm`
+- `aac-mpegts`
+- `aac-matroska`
+- `aac-mp4`
 - `hls`
 - `aac-hls`
 - `h264-aac-hls`
+- `av1-aac-hls`
+- `av1-aac-mp4`
+- `av1-aac-matroska`
 - `h265-aac-mp4`
 - `h265-aac-matroska`
 - `h265-ac3-mp4`
 - `h265-ac3-matroska`
+- `vp8-vorbis-webm`
 
 If a requested profile is unsupported/disabled, Headendarr falls back to `default`.
 If a requested profile is disabled in **Stream Profiles**, Headendarr falls back to `default`.
+
+### Profile Modifiers
+
+Some profiles also accept modifiers inside square brackets:
+
+- `qty=<preset>` applies the built-in quality ladder for transcoding profiles:
+  - `480p`
+  - `720p`
+  - `1080p`
+- `seg=<type>` applies to HLS profiles and selects the segment format:
+  - `seg=ts` for MPEG-TS segments (default)
+  - `seg=fmp4` for fragmented MP4 segments
+
+Examples:
+
+- `h264-aac-hls[qty=720p,seg=fmp4]`
+- `h264-aac-mp4[qty=480p]`
+- `av1-aac-hls`
+
+Notes:
+
+- Headendarr's default browser-oriented HLS profile request is `h264-aac-hls[seg=fmp4]`.
+- `av1-aac-hls` uses HLS with fMP4 segments so AV1 playback can work through HLS clients that support that combination.
 
 ## Route Playlists & HDHomeRun Through TVHeadend (Per-Source Only)
 

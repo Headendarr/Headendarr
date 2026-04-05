@@ -189,6 +189,36 @@ The cache is temporary. Cached movies and episodes remain available while they a
 
 The same cache system is also used by [VOD 24/7 Channels](/configuration/vod-24-7-channels/). In that mode, Headendarr uses the cache to hand linear-channel playback off from upstream to local disk as early as possible, which is a major part of how those channels avoid holding provider connections open for longer than necessary.
 
+## Browser playback behaviour and profiles
+
+The Headendarr web UI uses CSO-backed preview URLs for browser playback.
+
+To keep playback responsive, the initial preview API does **not** wait for a full `ffprobe` run before returning the playback URL. Headendarr starts the background media probe separately, lets the browser player open the preview stream immediately, and then fills in richer metadata once the probe result is ready.
+
+That means the flow is:
+
+1. The browser requests a preview URL.
+2. Headendarr returns a playable CSO VOD URL immediately.
+3. The floating player opens that stream straight away.
+4. The frontend then asks Headendarr for preview metadata in the background.
+5. When probe data is ready, the player updates duration, source resolution, and any additional conversion profiles.
+
+This avoids the older behaviour where preview startup could feel slow because `ffprobe` was being done inline before playback began.
+
+### Browser playback profiles
+
+The browser player always offers an **Original** profile first.
+
+- The original stream may be played as a native file, MPEG-TS, or HLS depending on the resolved source and profile.
+- When Headendarr knows the source resolution, the player also offers built-in conversion profiles:
+  - `h264-aac-mp4[qty=1080p]`
+  - `h264-aac-mp4[qty=720p]`
+  - `h264-aac-mp4[qty=480p]`
+- Those conversion options are only shown when they make sense for the source width.
+- Converted browser VOD profiles use restart-based seeking because they are profile-scoped playback jobs, not simple native file seeks.
+
+The browser player can also continue to use HLS-backed playback where appropriate, including fMP4-segment HLS outputs used by newer CSO browser profiles.
+
 ## Typical setup
 
 A typical VOD setup looks like this:

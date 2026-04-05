@@ -15,6 +15,7 @@ CSO is responsible for:
 - Enforcing source connection limits before and during playback.
 - Running a shared ingest pipeline and fan-out output sessions for active clients.
 - Applying profile-based output behaviour (for example remux/transcode targets).
+- Serving both live channel playback and CSO-managed VOD playback paths.
 - Returning explicit unavailable/limit responses when capacity is exhausted.
 
 ## Core CSO paths
@@ -64,11 +65,23 @@ See [Application Settings](./application-settings.md) and [TVHeadend Integration
 
 CSO honours `profile` arguments where supported and falls back to defaults when profiles are missing/unsupported.
 
-- Typical remux/copy profiles: `default`, `mpegts`, `matroska`, `hls`
-- Audio/video transform profiles: `aac-mpegts`, `h264-aac-mpegts`, etc.
+- Remux/copy profiles include `default`, `mpegts`, `matroska`, `mp4`, `webm`, and `hls`.
+- Audio-only transform profiles include `aac-mpegts`, `aac-matroska`, `aac-mp4`, and `aac-hls`.
+- Video/audio transform profiles include H.264, H.265, VP8, and AV1 variants such as `h264-aac-mpegts`, `h264-aac-hls`, `h265-aac-mp4`, `vp8-vorbis-webm`, and `av1-aac-hls`.
+- HLS profiles can emit MPEG-TS segments or fragmented MP4 segments depending on the requested profile modifiers.
+- Browser-oriented playback commonly uses HLS with `seg=fmp4`, and AV1-over-HLS is exposed through `av1-aac-hls`.
 - TVHeadend-only profile semantics: `tvh`
 
 Profile details and endpoint-level behaviour are documented in [Connectivity Endpoints](./connectivity/endpoints.md).
+
+## CSO VOD playback
+
+CSO also backs the browser-oriented VOD preview/playback routes.
+
+- Curated VOD previews resolve to `/tic-api/cso/vod/<movie|series>/<item_id>`.
+- Upstream/admin previews resolve to `/tic-api/cso/vod/upstream/<source_id>/<movie|series>/<item_id>`.
+- The initial preview response is designed to start playback quickly without blocking on a full media probe.
+- Source duration, resolution, and richer playback profile options are then filled in asynchronously once probe results are ready.
 
 ## Failure and capacity behaviour
 
