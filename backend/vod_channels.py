@@ -45,10 +45,11 @@ SCHEDULE_MODE_SHUFFLE = "shuffle"
 
 DEFAULT_SCHEDULE_MODE = SCHEDULE_MODE_SERIES_ORDER
 DEFAULT_SCHEDULE_DIRECTION = "asc"
-DEFAULT_SCHEDULE_DAYS_BEHIND = 1
 MIN_EPG_WINDOW_HOURS = 72
 MAX_EPG_WINDOW_HOURS = 168
 NEXT_ITEM_CACHE_WARM_SECONDS = 2 * 60
+FIXED_SCHEDULE_ANCHOR_UTC = datetime(2026, 1, 1, tzinfo=timezone.utc)
+SCHEDULE_GENERATION_VERSION = 2
 
 
 def is_vod_channel_type(value: object) -> bool:
@@ -147,10 +148,37 @@ def _content_fingerprint(
 ) -> str:
     digest = hashlib.sha256()
     digest.update(str(int(channel_id)).encode("utf-8"))
+    digest.update(str(SCHEDULE_GENERATION_VERSION).encode("utf-8"))
+    digest.update(str(int(FIXED_SCHEDULE_ANCHOR_UTC.timestamp())).encode("utf-8"))
     digest.update(json.dumps(settings, sort_keys=True).encode("utf-8"))
     digest.update(json.dumps(rules, sort_keys=True).encode("utf-8"))
     digest.update(json.dumps(items, sort_keys=True).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _resolve_schedule_cycle_start(
+    ordered_entries: list[dict[str, Any]], cycle_duration_seconds: int, window_start: datetime
+) -> tuple[int, int]:
+    if not ordered_entries or cycle_duration_seconds <= 0:
+        return 0, int(window_start.timestamp())
+
+    anchor_ts = int(FIXED_SCHEDULE_ANCHOR_UTC.timestamp())
+    window_start_ts = int(window_start.timestamp())
+    if window_start_ts <= anchor_ts:
+        return 0, anchor_ts
+
+    offset_within_cycle = (window_start_ts - anchor_ts) % cycle_duration_seconds
+    cumulative_seconds = 0
+    for index, entry in enumerate(ordered_entries):
+        duration_seconds = max(0, convert_to_int(entry.get("duration_seconds"), 0))
+        if duration_seconds <= 0:
+            continue
+        next_cumulative_seconds = cumulative_seconds + duration_seconds
+        if offset_within_cycle < next_cumulative_seconds:
+            entry_start_ts = window_start_ts - max(0, offset_within_cycle - cumulative_seconds)
+            return index, entry_start_ts
+        cumulative_seconds = next_cumulative_seconds
+    return 0, window_start_ts
 
 
 def _parse_duration_seconds(summary: dict[str, Any], item_type: str, fallback_minutes: int = 30) -> int:
@@ -480,9 +508,7 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
     ordered_entries = [entry for entry in ordered_entries if convert_to_int(entry.get("duration_seconds"), 0) >= 60]
 
     now = utc_now()
-    window_start = (now - timedelta(days=DEFAULT_SCHEDULE_DAYS_BEHIND)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    window_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     cycle_duration_seconds = sum(max(0, convert_to_int(entry.get("duration_seconds"), 0)) for entry in ordered_entries)
     target_window_hours = MIN_EPG_WINDOW_HOURS
     if cycle_duration_seconds > 0:
@@ -491,13 +517,17 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
     window_end = now + timedelta(hours=target_window_hours)
     schedule_entries: list[dict[str, Any]] = []
     if ordered_entries:
-        cursor = window_start
+        start_index, cursor_ts = _resolve_schedule_cycle_start(ordered_entries, cycle_duration_seconds, window_start)
+        cursor = datetime.fromtimestamp(cursor_ts, tz=timezone.utc)
+        current_index = start_index
         max_loops = max(1, int((window_end - window_start).total_seconds() // 60))
         loop_count = 0
         while cursor < window_end and loop_count < max_loops:
-            for entry in ordered_entries:
+            for _ in range(len(ordered_entries)):
+                entry = ordered_entries[current_index]
                 duration_seconds = convert_to_int(entry.get("duration_seconds"), 0)
                 if duration_seconds <= 0:
+                    current_index = (current_index + 1) % len(ordered_entries)
                     continue
                 start_ts = int(cursor.timestamp())
                 stop_ts = start_ts + duration_seconds
@@ -509,6 +539,7 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
                     }
                 )
                 cursor = datetime.fromtimestamp(stop_ts, tz=timezone.utc)
+                current_index = (current_index + 1) % len(ordered_entries)
                 if cursor >= window_end:
                     break
             loop_count += 1
@@ -517,6 +548,8 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
         "channel_id": int(channel.id),
         "channel_name": clean_text(channel.name),
         "fingerprint": fingerprint,
+        "schedule_generation_version": SCHEDULE_GENERATION_VERSION,
+        "anchor_ts": int(FIXED_SCHEDULE_ANCHOR_UTC.timestamp()),
         "generated_at": int(time.time()),
         "settings": settings,
         "eligible_items": eligible_items,

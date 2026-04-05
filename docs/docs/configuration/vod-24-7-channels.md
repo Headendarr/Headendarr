@@ -165,13 +165,17 @@ This means:
 
 ### Guide window details
 
-The schedule is generated:
+The schedule is anchored from a fixed historical UTC point:
 
-- from **midnight UTC of the previous day**
+- **2026-01-01 00:00:00 UTC**
+
+Headendarr then treats the ordered VOD pool as a repeating loop from that anchor and generates a finite guide window from the current position in that loop:
+
+- from roughly **midnight UTC of the previous day**
 - forward for at least **72 hours**
 - up to **168 hours** when the cycle is especially long
 
-That gives Headendarr enough history and enough future guide data for normal guide browsing without trying to expand the schedule forever.
+This keeps the channel's wall-clock schedule much more stable across schedule rebuilds while still avoiding an infinitely expanded guide file.
 
 ### Guide-update gotchas
 
