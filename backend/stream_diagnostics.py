@@ -115,6 +115,7 @@ class StreamProbe:
 
     @staticmethod
     def _header_value(headers, name):
+         # TODO: Remove this and update all uses of this funciotn in this file with the hls_multiplexer.py version. Updte the hls_multiplexer to be named "get_header_value"
         target = str(name or "").strip().lower()
         if not target:
             return None

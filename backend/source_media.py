@@ -20,6 +20,7 @@ def _clean_key(value):
 
 
 def _header_value(headers, name):
+    # TODO: Remove this and update all uses of this funciotn in this file with the hls_multiplexer.py version. Updte the hls_multiplexer to be named "get_header_value"
     target = _clean_key(name)
     if not target:
         return ""

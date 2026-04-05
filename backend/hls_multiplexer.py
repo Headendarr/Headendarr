@@ -145,7 +145,7 @@ class BaseStreamMultiplexer:
         raise NotImplementedError()
 
 
-def _header_value(headers, name):
+def get_header_value(headers, name):
     target = str(name or "").strip().lower()
     if not target:
         return None
@@ -244,10 +244,10 @@ class AsyncFFmpegStream(BaseStreamMultiplexer):
                 "-analyzeduration",
                 "2000000",
             ]
-            user_agent_value = _header_value(self.headers, "User-Agent")
+            user_agent_value = get_header_value(self.headers, "User-Agent")
             if user_agent_value:
                 command += ["-user_agent", user_agent_value]
-            referer_value = _header_value(self.headers, "Referer")
+            referer_value = get_header_value(self.headers, "Referer")
             if referer_value:
                 command += ["-referer", referer_value]
             extra_headers = _format_ffmpeg_headers_arg(self.headers)

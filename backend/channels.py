@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from mimetypes import guess_type
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, urlencode
 
 import aiofiles
 import aiohttp
@@ -61,9 +61,6 @@ from backend.playlists import (
     _get_enabled_xc_accounts_async,
 )
 from backend.xc_hosts import first_xc_host
-from backend.cso import (
-    build_cso_stream_query,
-)
 from backend.stream_profiles import profile_from_cso_policy
 from backend.streaming import (
     LOCAL_PROXY_HOST_PLACEHOLDER,
@@ -194,6 +191,21 @@ def _extract_cso_payload(data, current_enabled=False, current_policy=None):
         requested_profile = profile_from_cso_policy(current_policy)
     cso_policy = json.dumps({"profile": requested_profile or "default"}, sort_keys=True)
     return cso_enabled, cso_policy
+
+
+def build_cso_stream_query(profile=None, connection_id=None, stream_key=None, username=None):
+    query = []
+    if profile:
+        query.append(("profile", profile))
+    if connection_id:
+        query.append(("connection_id", connection_id))
+    if stream_key:
+        query.append(("stream_key", stream_key))
+    if username:
+        query.append(("username", username))
+    if not query:
+        return ""
+    return urlencode(query)
 
 
 def build_cso_channel_stream_url(
