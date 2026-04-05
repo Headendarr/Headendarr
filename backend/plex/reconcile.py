@@ -12,13 +12,14 @@ import aiohttp
 from sqlalchemy import select
 
 from backend.playlists import read_config_all_playlists
+from backend.config import get_runtime_plex_servers
 from backend.models import Session, User
 from backend.plex.client import PlexClient, ensure_list, get_media_container
 from backend.plex.runtime import (
     PlexRuntimeServer,
-    get_runtime_plex_servers,
     build_plex_settings_for_runtime,
     clean_headendarr_base_url,
+    parse_plex_servers_json,
 )
 
 logger = logging.getLogger("tic.plex.reconcile")
@@ -898,7 +899,7 @@ def _read_text_file(path: str) -> str:
 
 async def reconcile_plex_servers(config, server_ids: list[str] | None = None) -> dict:
     settings = config.read_settings()
-    runtime_servers = get_runtime_plex_servers()
+    runtime_servers = parse_plex_servers_json(get_runtime_plex_servers())
     plex_settings = build_plex_settings_for_runtime(runtime_servers, settings.get("settings", {}).get("plex"))
     app_dvr_settings = settings.get("settings", {}).get("dvr", {})
 

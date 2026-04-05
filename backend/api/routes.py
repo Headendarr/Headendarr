@@ -25,11 +25,17 @@ from backend.auth import (
     audit_stream_event,
 )
 from backend import config as backend_config
-from backend.config import is_tvh_process_running_locally
+from backend.config import (
+    get_runtime_plex_servers,
+    get_tmdb_api_key,
+    is_tvh_process_running_locally,
+    tmdb_api_key_env_configured,
+    tmdb_api_key_setting_configured,
+)
 from backend.dvr_profiles import normalize_recording_profiles, normalize_retention_policy
 from backend.models import Session, User
 from backend.stream_profiles import get_stream_profile_definitions, TVH_COMPATIBLE_PROFILE_IDS_ORDER
-from backend.plex.runtime import build_plex_settings_for_runtime, get_runtime_plex_servers, plex_runtime_summary
+from backend.plex.runtime import build_plex_settings_for_runtime, parse_plex_servers_json, plex_runtime_summary
 from backend.tvheadend.tvh_requests import configure_tvh
 from backend.utils import convert_to_int, to_utc_iso
 
@@ -464,6 +470,14 @@ async def api_save_config():
         if await is_tvh_process_running_locally():
             # In AIO mode, app_url is intentionally ignored for runtime URL generation and TVH callbacks.
             settings_payload["app_url"] = None
+        epg_payload = settings_payload.get("epgs")
+        if isinstance(epg_payload, dict):
+            # TODO: Drop tmdb_api_key persistence once the deprecated frontend field is removed.
+            settings_payload["epgs"] = {
+                "enable_tmdb_metadata": bool(epg_payload.get("enable_tmdb_metadata")),
+                "tmdb_api_key": str(epg_payload.get("tmdb_api_key") or "").strip(),
+                "enable_google_image_search_metadata": bool(epg_payload.get("enable_google_image_search_metadata")),
+            }
         dvr_payload = settings_payload.get("dvr")
         if isinstance(dvr_payload, dict):
             settings_payload["dvr"] = {
@@ -473,7 +487,7 @@ async def api_save_config():
                 "recording_profiles": normalize_recording_profiles(dvr_payload.get("recording_profiles")),
             }
         if "plex" in settings_payload:
-            runtime_servers = get_runtime_plex_servers()
+            runtime_servers = parse_plex_servers_json(get_runtime_plex_servers())
             settings_payload["plex"] = build_plex_settings_for_runtime(
                 runtime_servers=runtime_servers,
                 plex_settings=settings_payload.get("plex"),
@@ -547,7 +561,13 @@ async def api_get_config_tvheadend():
     config = current_app.config["APP_CONFIG"]
     settings = config.read_settings()
     return_data = dict(settings.get("settings", {}) or {})
-    runtime_servers = get_runtime_plex_servers()
+    epg_settings = dict(return_data.get("epgs") or {})
+    epg_settings["tmdb_api_key_env_configured"] = tmdb_api_key_env_configured()
+    # TODO: Remove this legacy-setting flag after the deprecated TMDB settings field is deleted from the frontend.
+    epg_settings["tmdb_api_key_setting_configured"] = tmdb_api_key_setting_configured(settings)
+    epg_settings["tmdb_api_key_effective_configured"] = bool(get_tmdb_api_key(settings))
+    return_data["epgs"] = epg_settings
+    runtime_servers = parse_plex_servers_json(get_runtime_plex_servers())
     return_data["plex"] = build_plex_settings_for_runtime(runtime_servers, return_data.get("plex"))
     return_data["plex_runtime"] = plex_runtime_summary()
     return_data["plex_available"] = bool(runtime_servers)

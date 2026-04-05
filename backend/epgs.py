@@ -2085,7 +2085,7 @@ class TmdbRunState:
 
 def tmdb_metadata_enabled(settings):
     epg_settings = settings["settings"].get("epgs", {})
-    return bool(epg_settings.get("enable_tmdb_metadata") and (epg_settings.get("tmdb_api_key") or "").strip())
+    return bool(epg_settings.get("enable_tmdb_metadata") and app_config.get_tmdb_api_key(settings))
 
 
 def _tmdb_auth_is_bearer_token(auth_value):
@@ -2862,9 +2862,15 @@ async def update_channel_epg_with_online_data(config):
     settings = config.read_settings()
     if not epg_online_metadata_enabled(settings):
         epg_settings = settings["settings"].get("epgs", {})
-        if epg_settings.get("enable_tmdb_metadata") and not (epg_settings.get("tmdb_api_key") or "").strip():
-            logger.error("TMDB metadata enrichment is enabled but no TMDB API key is configured; skipping this scan")
+        if epg_settings.get("enable_tmdb_metadata") and not app_config.get_tmdb_api_key(settings):
+            logger.error(
+                "TMDB metadata enrichment is enabled but no TMDB API key is configured in TMDB_API_KEY or application settings; skipping this scan"
+            )
         return
+    if app_config.tmdb_api_key_setting_configured(settings) and not app_config.tmdb_api_key_env_configured():
+        logger.warning(
+            "TMDB metadata enrichment is using the deprecated EPG settings API key. Migrate it to the TMDB_API_KEY container environment variable; the in-app TMDB key setting will be removed soon."
+        )
 
     start_time = time.perf_counter()
     phase_seconds = {}
@@ -2956,7 +2962,7 @@ async def update_channel_epg_with_online_data(config):
         new_cache_entries = []
         new_programme_updates = []
         async with aiohttp.ClientSession() as http_session:
-            run_state = TmdbRunState(http_session, settings["settings"].get("epgs", {}).get("tmdb_api_key", ""))
+            run_state = TmdbRunState(http_session, app_config.get_tmdb_api_key(settings))
             t0 = time.perf_counter()
             resolved_entries = await _resolve_online_metadata_hashes(settings, unresolved_by_hash, run_state)
             for lookup_hash, cache_entry in resolved_entries:

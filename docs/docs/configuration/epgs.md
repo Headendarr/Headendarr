@@ -48,7 +48,9 @@ The **EPGs** page also includes optional guide-enrichment settings that run afte
 
 - **Fetch missing data from TMDB**:
   - Fills in missing programme metadata such as artwork, descriptions, and episode details when possible.
-  - Requires your TMDB API key.
+  - Requires `TMDB_API_KEY` to be configured in the Headendarr container environment.
+  - Get your TMDB credential from `https://www.themoviedb.org/settings/api`.
+  - Headendarr supports either the **API Read Access Token** or the **API Key** in `TMDB_API_KEY`.
   - Results are cached between refreshes so Headendarr does not have to look up the same programme repeatedly.
 - **Attempt to fetch missing programme images from Google Image Search**:
   - Only intended as a fallback for missing artwork.
@@ -56,6 +58,12 @@ The **EPGs** page also includes optional guide-enrichment settings that run afte
 
 :::warning Refresh duration
 TMDB enrichment and Google image fallback can make EPG refreshes noticeably slower on large guides.
+:::
+
+:::caution TMDB API key configuration
+Configure `TMDB_API_KEY` in your container environment and restart Headendarr before enabling TMDB enrichment.
+
+Set it to either your TMDB **API Read Access Token** or your TMDB **API Key** from `https://www.themoviedb.org/settings/api`.
 :::
 
 ## Reviewing Imported Guide Coverage

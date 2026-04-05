@@ -182,6 +182,28 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def tmdb_api_key_env_configured() -> bool:
+    return bool(_env_str("TMDB_API_KEY", "").strip())
+
+
+def tmdb_api_key_setting_configured(settings) -> bool:
+    epg_settings = settings["settings"].get("epgs", {})
+    # TODO: Remove legacy app-config TMDB key support after the frontend field is deleted.
+    return bool(str(epg_settings.get("tmdb_api_key") or "").strip())
+
+
+def get_tmdb_api_key(settings) -> str:
+    env_value = _env_str("TMDB_API_KEY", "").strip()
+    if env_value:
+        return env_value
+    epg_settings = settings["settings"].get("epgs", {})
+    return str(epg_settings.get("tmdb_api_key") or "").strip()
+
+
+def get_runtime_plex_servers():
+    return os.environ.get("PLEX_SERVERS_JSON", "")
+
+
 class Config:
     runtime_key: int = 0
 

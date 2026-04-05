@@ -2,7 +2,6 @@
 # -*- coding:utf-8 -*-
 import hashlib
 import json
-import os
 import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -87,7 +86,7 @@ def _build_runtime_server(entry: dict, index: int) -> PlexRuntimeServer | None:
     )
 
 
-def _parse_plex_servers_json(raw_value: str) -> list[PlexRuntimeServer]:
+def parse_plex_servers_json(raw_value: str) -> list[PlexRuntimeServer]:
     text = str(raw_value or "").strip()
     if not text:
         return []
@@ -108,12 +107,10 @@ def _parse_plex_servers_json(raw_value: str) -> list[PlexRuntimeServer]:
     return servers
 
 
-def get_runtime_plex_servers() -> list[PlexRuntimeServer]:
-    return _parse_plex_servers_json(os.environ.get("PLEX_SERVERS_JSON", ""))
-
-
 def plex_runtime_summary() -> dict:
-    servers = get_runtime_plex_servers()
+    from backend.config import get_runtime_plex_servers
+
+    servers = parse_plex_servers_json(get_runtime_plex_servers())
     return {
         "server_count": len(servers),
         "available_server_ids": [server.server_id for server in servers],

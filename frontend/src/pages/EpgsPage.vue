@@ -100,16 +100,31 @@
                 <div
                   v-if="enableTmdbMetadata"
                   class="sub-setting">
-                  <q-skeleton
-                    v-if="tmdbApiKey === null"
-                    type="QInput" />
-                  <TicTextInput
-                    v-else
-                    v-model="tmdbApiKey"
-                    @blur="triggerImmediateAutoSave"
-                    label="Your TMDB account API key"
-                    description="Can be found at 'https://www.themoviedb.org/settings/api'."
-                  />
+                  <AdmonitionBanner
+                    v-if="!tmdbApiKeyEnvConfigured"
+                    type="warning"
+                    class="q-mb-md"
+                  >
+                    Configure <code>TMDB_API_KEY</code> in the container environment for TMDB enrichment to work.
+                  </AdmonitionBanner>
+
+                  <template v-if="showDeprecatedTmdbApiKeyInput">
+                    <q-skeleton
+                      v-if="tmdbApiKey === null"
+                      type="QInput" />
+                    <template v-else>
+                      <TicTextInput
+                        v-model="tmdbApiKey"
+                        @blur="triggerImmediateAutoSave"
+                        label="Your TMDB account API key"
+                        description="Deprecated. Can be found at 'https://www.themoviedb.org/settings/api'."
+                      />
+                      <AdmonitionBanner type="caution" class="q-mt-md">
+                        Move this TMDB API key to the <code>TMDB_API_KEY</code> container environment
+                        variable. This application setting will be removed very soon.
+                      </AdmonitionBanner>
+                    </template>
+                  </template>
                 </div>
 
                 <q-separator />
@@ -250,6 +265,8 @@ export default defineComponent({
       searchQuery: '',
       enableTmdbMetadata: null,
       tmdbApiKey: null,
+      tmdbApiKeyEnvConfigured: false,
+      tmdbApiKeySettingConfigured: false,
       enableGoogleImageSearchMetadata: null,
       epgStatusPollTimer: null,
       epgStatusPollInFlight: false,
@@ -276,6 +293,9 @@ export default defineComponent({
         ];
         return values.some((value) => String(value || '').toLowerCase().includes(query));
       });
+    },
+    showDeprecatedTmdbApiKeyInput() {
+      return Boolean(this.tmdbApiKeySettingConfigured);
     },
   },
   watch: {
@@ -366,6 +386,8 @@ export default defineComponent({
         const epgSettings = settings?.epgs || {};
         this.enableTmdbMetadata = epgSettings.enable_tmdb_metadata;
         this.tmdbApiKey = epgSettings.tmdb_api_key;
+        this.tmdbApiKeyEnvConfigured = Boolean(epgSettings.tmdb_api_key_env_configured);
+        this.tmdbApiKeySettingConfigured = Boolean(epgSettings.tmdb_api_key_setting_configured);
         this.enableGoogleImageSearchMetadata = epgSettings.enable_google_image_search_metadata;
         this.lastSavedSettingsSignature = JSON.stringify(this.buildMetadataPostData().settings);
       }).catch(() => {
@@ -385,7 +407,8 @@ export default defineComponent({
         settings: {
           epgs: {
             enable_tmdb_metadata: this.enableTmdbMetadata,
-            tmdb_api_key: this.tmdbApiKey,
+            // TODO: Remove tmdb_api_key from saved settings once the deprecated UI field is deleted.
+            tmdb_api_key: this.tmdbApiKey ?? '',
             enable_google_image_search_metadata: this.enableGoogleImageSearchMetadata,
           },
         },
