@@ -149,6 +149,7 @@ import {
   ORIGINAL_BROWSER_VOD_PROFILE,
   resolveVodPlayerStreamType,
 } from 'src/utils/vodPlaybackProfiles';
+import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 
 const BROWSER_PAGE_SIZE = 40;
 
@@ -611,18 +612,21 @@ export default {
       return parts.join(' • ') || 'Episode';
     },
     startBrowserPlayback(payload, title) {
-      const previewUrl = payload?.preview_url || payload?.url;
+      const candidates = normalisePreviewCandidates(payload);
+      const primaryCandidate = candidates[0];
+      const previewUrl = primaryCandidate?.url || '';
       if (!previewUrl) {
         throw new Error('Playback URL unavailable');
       }
-      const sourceResolution = payload?.source_resolution || null;
-      const durationSeconds = Number(payload?.duration_seconds || 0) || null;
-      const streamType = resolveVodPlayerStreamType(payload?.stream_type);
+      const sourceResolution = primaryCandidate?.sourceResolution || payload?.source_resolution || null;
+      const durationSeconds = Number(primaryCandidate?.durationSeconds || payload?.duration_seconds || 0) || null;
+      const streamType = resolveVodPlayerStreamType(primaryCandidate?.streamType || payload?.stream_type);
       const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType);
       const initialProfile = playbackProfiles[0] || null;
       const playbackUrl = this.appendPlaybackProfile(previewUrl, initialProfile?.profile || '');
       this.videoStore.showPlayer({
         url: playbackUrl,
+        candidates,
         title: title || 'VOD Playback',
         type: initialProfile?.streamType || streamType,
         seekMode: initialProfile?.seekMode || 'native',
@@ -654,7 +658,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/movie/${Number(item.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && response.data.preview_url) {
+      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -663,7 +667,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/series/${Number(episode.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && response.data.preview_url) {
+      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -672,7 +676,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/upstream/movie/${Number(item.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && response.data.preview_url) {
+      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -688,7 +692,7 @@ export default {
           },
         },
       );
-      if (response?.data?.success && response.data.preview_url) {
+      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -716,7 +720,11 @@ export default {
         const preview = this.mode === 'upstream'
           ? await this.resolveUpstreamMoviePreview(item)
           : await this.resolveCuratedMoviePreview(item);
-        await copyToClipboard(preview.preview_url);
+        const primaryCandidate = primaryPreviewCandidate(preview);
+        if (!primaryCandidate?.url) {
+          throw new Error('Playback URL unavailable');
+        }
+        await copyToClipboard(primaryCandidate.url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
         this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});
@@ -745,7 +753,11 @@ export default {
         const preview = this.mode === 'upstream'
           ? await this.resolveUpstreamEpisodePreview(this.detailItem, episode)
           : await this.resolveCuratedEpisodePreview(episode);
-        await copyToClipboard(preview.preview_url);
+        const primaryCandidate = primaryPreviewCandidate(preview);
+        if (!primaryCandidate?.url) {
+          throw new Error('Playback URL unavailable');
+        }
+        await copyToClipboard(primaryCandidate.url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
         this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});

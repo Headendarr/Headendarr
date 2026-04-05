@@ -271,6 +271,20 @@ def _infer_stream_type(url):
     return "auto"
 
 
+def _build_preview_response(
+    preview_url: str, stream_type: str, source_id: int | None = None, priority: int = 0
+) -> dict[str, object]:
+    candidates = [
+        {
+            "url": preview_url,
+            "stream_type": stream_type,
+            "source_id": source_id,
+            "priority": priority,
+        }
+    ]
+    return {"success": True, "candidates": candidates}
+
+
 @blueprint.route("/tic-api/playlists/streams/<int:playlist_stream_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_playlist_stream_preview(playlist_stream_id):
@@ -296,7 +310,13 @@ async def api_get_playlist_stream_preview(playlist_stream_id):
         stream_key=stream_key,
     )
     stream_type = _infer_stream_type(preview_url)
-    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+    return jsonify(
+        _build_preview_response(
+            preview_url,
+            stream_type,
+            source_id=int(playlist_stream.id),
+        )
+    )
 
 
 @blueprint.route("/tic-api/playlists/groups", methods=["POST"])

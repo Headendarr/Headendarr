@@ -124,6 +124,7 @@ import {ref} from 'vue';
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
+import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {TicDialogPopup} from 'components/ui';
 
 export default {
@@ -202,10 +203,17 @@ export default {
         try {
           const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
           if (response.data.success) {
+            const candidates = normalisePreviewCandidates(response.data);
+            const primaryCandidate = candidates[0];
+            if (!primaryCandidate) {
+              this.$q.notify({color: 'negative', message: 'No preview sources available'});
+              return;
+            }
             this.videoStore.showPlayer({
-              url: response.data.preview_url,
+              url: primaryCandidate.url,
+              candidates,
               title: stream?.stream_name || 'Stream',
-              type: response.data.stream_type || 'auto',
+              type: primaryCandidate.streamType || 'auto',
             });
             return;
           }
@@ -233,7 +241,12 @@ export default {
         try {
           const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
           if (response.data.success) {
-            await copyToClipboard(response.data.preview_url);
+            const primaryCandidate = primaryPreviewCandidate(response.data);
+            if (!primaryCandidate?.url) {
+              this.$q.notify({color: 'negative', message: 'No preview sources available'});
+              return;
+            }
+            await copyToClipboard(primaryCandidate.url);
             this.$q.notify({color: 'positive', message: 'Stream URL copied'});
             return;
           }

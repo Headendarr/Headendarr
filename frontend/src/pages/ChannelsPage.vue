@@ -573,6 +573,7 @@
 <script>
 import {defineComponent} from 'vue';
 import axios from 'axios';
+import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import draggable from 'vuedraggable';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
@@ -1162,10 +1163,17 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
+          const candidates = normalisePreviewCandidates(response.data);
+          const primaryCandidate = candidates[0];
+          if (!primaryCandidate) {
+            this.$q.notify({color: 'negative', message: 'No preview sources available'});
+            return;
+          }
           this.videoStore.showPlayer({
-            url: response.data.preview_url,
+            url: primaryCandidate.url,
+            candidates,
             title: channel.name,
-            type: response.data.stream_type || 'auto',
+            type: primaryCandidate.streamType || 'auto',
           });
           return;
         }
@@ -1179,7 +1187,12 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
-          await copyToClipboard(response.data.preview_url);
+          const primaryCandidate = primaryPreviewCandidate(response.data);
+          if (!primaryCandidate?.url) {
+            this.$q.notify({color: 'negative', message: 'No preview sources available'});
+            return;
+          }
+          await copyToClipboard(primaryCandidate.url);
           this.$q.notify({color: 'positive', message: 'Stream URL copied'});
           return;
         }

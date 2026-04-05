@@ -63,6 +63,32 @@ _UPSTREAM_CSO_VOD_PREVIEW_RE = re.compile(
 )
 
 
+def _build_preview_candidate(
+    url: str,
+    stream_type: str,
+    source_id: int | None = None,
+    priority: int | None = 0,
+    source_resolution=None,
+    duration_seconds=None,
+) -> dict[str, object]:
+    resolved_priority = 0 if priority is None else int(priority)
+    candidate = {
+        "url": url,
+        "stream_type": stream_type,
+        "source_id": source_id,
+        "priority": resolved_priority,
+    }
+    if source_resolution:
+        candidate["source_resolution"] = source_resolution
+    if duration_seconds is not None:
+        candidate["duration_seconds"] = duration_seconds
+    return candidate
+
+
+def _build_preview_response(candidates: list[dict[str, object]]) -> dict[str, object]:
+    return {"success": True, "candidates": candidates}
+
+
 def _resolved_preview_profile(default_profile: str = "") -> str:
     requested = parse_stream_profile_request(request.args.get("profile"))
     if requested["profile_id"] in SUPPORTED_STREAM_PROFILES:
@@ -247,13 +273,16 @@ async def curated_movie_preview(item_id: int):
         profile=profile,
     )
     return jsonify(
-        {
-            "success": True,
-            "preview_url": preview_url,
-            "stream_type": payload.get("stream_type") or "auto",
-            "source_resolution": payload.get("source_resolution") or {},
-            "duration_seconds": payload.get("duration_seconds"),
-        }
+        _build_preview_response(
+            [
+                _build_preview_candidate(
+                    url=preview_url,
+                    stream_type=payload.get("stream_type") or "auto",
+                    source_resolution=payload.get("source_resolution") or {},
+                    duration_seconds=payload.get("duration_seconds"),
+                )
+            ]
+        )
     )
 
 
@@ -279,13 +308,16 @@ async def curated_series_preview(item_id: int):
         profile=profile,
     )
     return jsonify(
-        {
-            "success": True,
-            "preview_url": preview_url,
-            "stream_type": payload.get("stream_type") or "auto",
-            "source_resolution": payload.get("source_resolution") or {},
-            "duration_seconds": payload.get("duration_seconds"),
-        }
+        _build_preview_response(
+            [
+                _build_preview_candidate(
+                    url=preview_url,
+                    stream_type=payload.get("stream_type") or "auto",
+                    source_resolution=payload.get("source_resolution") or {},
+                    duration_seconds=payload.get("duration_seconds"),
+                )
+            ]
+        )
     )
 
 
@@ -316,13 +348,17 @@ async def upstream_movie_preview(item_id: int):
         source_id=source_id,
     )
     return jsonify(
-        {
-            "success": True,
-            "preview_url": preview_url,
-            "stream_type": payload.get("stream_type") or "auto",
-            "source_resolution": payload.get("source_resolution") or {},
-            "duration_seconds": payload.get("duration_seconds"),
-        }
+        _build_preview_response(
+            [
+                _build_preview_candidate(
+                    url=preview_url,
+                    stream_type=payload.get("stream_type") or "auto",
+                    source_id=source_id,
+                    source_resolution=payload.get("source_resolution") or {},
+                    duration_seconds=payload.get("duration_seconds"),
+                )
+            ]
+        )
     )
 
 
@@ -364,13 +400,17 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
         container_extension=container_extension,
     )
     return jsonify(
-        {
-            "success": True,
-            "preview_url": preview_url,
-            "stream_type": payload.get("stream_type") or "auto",
-            "source_resolution": payload.get("source_resolution") or {},
-            "duration_seconds": payload.get("duration_seconds"),
-        }
+        _build_preview_response(
+            [
+                _build_preview_candidate(
+                    url=preview_url,
+                    stream_type=payload.get("stream_type") or "auto",
+                    source_id=source_id,
+                    source_resolution=payload.get("source_resolution") or {},
+                    duration_seconds=payload.get("duration_seconds"),
+                )
+            ]
+        )
     )
 
 

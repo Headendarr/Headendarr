@@ -764,6 +764,56 @@ def _build_preview_url_for_source(
     return preview_url, stream_type
 
 
+def _build_preview_candidate(
+    url: str,
+    stream_type: str,
+    source_id: int | None = None,
+    priority: int | None = None,
+):
+    return {
+        "url": url,
+        "stream_type": stream_type,
+        "source_id": source_id,
+        "priority": priority,
+    }
+
+
+def _build_preview_response(candidates: list[dict[str, Any]]) -> dict[str, object]:
+    return {"success": True, "candidates": candidates}
+
+
+def _source_is_preview_eligible(source: ChannelSource) -> bool:
+    if not source or not (source.playlist_stream_url or "").strip():
+        return False
+    if source.playlist_id and (not source.playlist or not bool(source.playlist.enabled)):
+        return False
+    return True
+
+
+def _build_preview_candidates_for_sources(
+    sources: list[ChannelSource], user: Any, config: Any, request_base_url: str
+) -> list[dict[str, Any]]:
+    candidates = []
+    for source in sources or []:
+        if not _source_is_preview_eligible(source):
+            continue
+        preview_url, stream_type = _build_preview_url_for_source(
+            source=source,
+            user=user,
+            config=config,
+            request_base_url=request_base_url,
+        )
+        candidates.append(
+            _build_preview_candidate(
+                url=preview_url,
+                stream_type=stream_type,
+                source_id=int(source.id),
+                priority=int(source.priority or 0),
+            )
+        )
+    return candidates
+
+
 @blueprint.route("/tic-api/channels/<int:channel_id>/preview", methods=["GET"])
 @streamer_or_admin_required
 async def api_get_channel_preview(channel_id):
@@ -776,6 +826,8 @@ async def api_get_channel_preview(channel_id):
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
+        if not bool(channel.enabled):
+            return jsonify({"success": False, "message": "Channel is disabled"}), 404
         if is_vod_channel_type(channel.channel_type):
             config = current_app.config["APP_CONFIG"]
             request_base_url = get_request_base_url(request)
@@ -787,25 +839,34 @@ async def api_get_channel_preview(channel_id):
                 profile="default",
             )
             return jsonify(
-                {"success": True, "preview_url": preview_url, "stream_type": _infer_stream_type(preview_url)}
+                _build_preview_response(
+                    [
+                        _build_preview_candidate(
+                            url=preview_url,
+                            stream_type=_infer_stream_type(preview_url),
+                        )
+                    ]
+                )
             )
         result = await session.execute(
-            select(ChannelSource).where(ChannelSource.channel_id == channel_id).order_by(ChannelSource.id.asc())
+            select(ChannelSource)
+            .options(joinedload(ChannelSource.playlist))
+            .where(ChannelSource.channel_id == channel_id)
+            .order_by(ChannelSource.priority.asc(), ChannelSource.id.asc())
         )
-        source = result.scalars().first()
-
-    if not source or not source.playlist_stream_url:
-        return jsonify({"success": False, "message": "Channel has no source URL"}), 404
+        sources = result.scalars().all()
 
     config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
-    preview_url, stream_type = _build_preview_url_for_source(
-        source=source,
+    candidates = _build_preview_candidates_for_sources(
+        sources=sources,
         user=user,
         config=config,
         request_base_url=request_base_url,
     )
-    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+    if not candidates:
+        return jsonify({"success": False, "message": "Channel has no enabled preview sources"}), 404
+    return jsonify(_build_preview_response(candidates))
 
 
 @blueprint.route("/tic-api/channels/<int:channel_id>/sources/<int:source_id>/preview", methods=["GET"])
@@ -820,27 +881,33 @@ async def api_get_channel_source_preview(channel_id, source_id):
         channel = channel_result.scalars().first()
         if not channel:
             return jsonify({"success": False, "message": "Channel not found"}), 404
+        if not bool(channel.enabled):
+            return jsonify({"success": False, "message": "Channel is disabled"}), 404
 
         result = await session.execute(
-            select(ChannelSource).where(
+            select(ChannelSource)
+            .options(joinedload(ChannelSource.playlist))
+            .where(
                 ChannelSource.id == source_id,
                 ChannelSource.channel_id == channel_id,
             )
         )
         source = result.scalars().first()
 
-    if not source or not source.playlist_stream_url:
+    if not _source_is_preview_eligible(source):
         return jsonify({"success": False, "message": "Channel source not found"}), 404
 
     config = current_app.config["APP_CONFIG"]
     request_base_url = get_request_base_url(request)
-    preview_url, stream_type = _build_preview_url_for_source(
-        source=source,
+    candidates = _build_preview_candidates_for_sources(
+        sources=[source],
         user=user,
         config=config,
         request_base_url=request_base_url,
     )
-    return jsonify({"success": True, "preview_url": preview_url, "stream_type": stream_type})
+    if not candidates:
+        return jsonify({"success": False, "message": "Channel source not found"}), 404
+    return jsonify(_build_preview_response(candidates))
 
 
 @blueprint.route("/tic-api/channel-stream-events", methods=["GET"])

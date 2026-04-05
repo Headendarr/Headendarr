@@ -343,6 +343,7 @@ const textTracksRef = ref(null);
 const textTrackChangeHandler = ref(null);
 const textTrackAddHandler = ref(null);
 const textTrackRemoveHandler = ref(null);
+const candidateFailoverInProgress = ref(false);
 
 const pipSupported = computed(() => typeof document !== 'undefined' && !!document.pictureInPictureEnabled);
 const hasPlaybackProfiles = computed(
@@ -666,6 +667,26 @@ function setErrorMessage(message, autoClearMs = 0) {
       errorAutoClearTimer.value = null;
     }, autoClearMs);
   }
+}
+
+function nextPreviewCandidateIndex() {
+  const nextIndex = Number(videoStore.activeCandidateIndex || 0) + 1;
+  if (!Array.isArray(videoStore.streamCandidates) || nextIndex >= videoStore.streamCandidates.length) {
+    return -1;
+  }
+  return nextIndex;
+}
+
+function failoverToNextPreviewCandidate() {
+  const nextIndex = nextPreviewCandidateIndex();
+  if (nextIndex < 0 || candidateFailoverInProgress.value) {
+    return false;
+  }
+  candidateFailoverInProgress.value = true;
+  setErrorMessage('Trying the next preview source...', 2500);
+  currentSessionId.value = generateConnectionId();
+  videoStore.setActiveCandidate(nextIndex);
+  return true;
 }
 
 function getVideoElement() {
@@ -1094,6 +1115,7 @@ function cleanupPlayer() {
   }
   resetStreamDetails();
   resetPlaybackUiState();
+  candidateFailoverInProgress.value = false;
   desktopControlsActive.value = false;
   mobileControlsVisible.value = false;
   currentSessionId.value = null;
@@ -1333,12 +1355,24 @@ async function initPlayer() {
         return;
       }
       if (mediaError?.code === 2) {
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('Network error while loading the stream.', 4000);
       } else if (mediaError?.code === 3) {
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('Stream could not be decoded. The format may be unsupported.', 4000);
       } else if (mediaError?.code === 4) {
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('Stream is not supported or is invalid.');
       } else {
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('Unable to load stream. Please try again.', 4000);
       }
       isLoading.value = false;
@@ -1354,6 +1388,7 @@ async function initPlayer() {
   }
   if (!videoPlayingHandler.value) {
     videoPlayingHandler.value = () => {
+      candidateFailoverInProgress.value = false;
       playbackStarted.value = true;
       suppressTransientErrors.value = false;
       resetHlsRecoveryState();
@@ -1392,6 +1427,9 @@ async function initPlayer() {
   if (!loadTimeout.value) {
     loadTimeout.value = setTimeout(() => {
       if (!errorMessage.value && isLoading.value) {
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('No data received from the stream.', 4000);
         isLoading.value = false;
       }
@@ -1501,12 +1539,24 @@ async function initPlayer() {
           }
         }
         if (status === 401 || status === 403) {
+          if (failoverToNextPreviewCandidate()) {
+            return;
+          }
           setErrorMessage('Stream rejected (unauthorized).');
         } else if (status === 404) {
+          if (failoverToNextPreviewCandidate()) {
+            return;
+          }
           setErrorMessage('Stream not found.', data?.fatal ? 0 : 3500);
         } else if (details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR && data?.fatal) {
+          if (failoverToNextPreviewCandidate()) {
+            return;
+          }
           setErrorMessage('Stream manifest failed to load.', data?.fatal ? 0 : 3500);
         } else if (data?.fatal) {
+          if (failoverToNextPreviewCandidate()) {
+            return;
+          }
           setErrorMessage('Unable to load stream. Please try again.');
         }
         if (data?.fatal || details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
@@ -1560,6 +1610,9 @@ async function initPlayer() {
       player.on?.(mpegts.Events.ERROR, (err) => {
         console.warn('[FloatingPlayer] MPEGTS error', err);
         suppressTransientErrors.value = false;
+        if (failoverToNextPreviewCandidate()) {
+          return;
+        }
         setErrorMessage('Unable to load stream. Please try again.');
         isLoading.value = false;
       });
@@ -1583,6 +1636,9 @@ async function initPlayer() {
   } catch (error) {
     console.error('Failed to initialize player:', error);
     suppressTransientErrors.value = false;
+    if (failoverToNextPreviewCandidate()) {
+      return;
+    }
     setErrorMessage('Unable to start playback.');
     isLoading.value = false;
   }

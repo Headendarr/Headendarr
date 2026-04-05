@@ -153,105 +153,105 @@
             </div>
 
             <q-list bordered separator class="rounded-borders">
-            <draggable
-              v-model="listOfChannelSources"
-              group="channels"
-              item-key="local_key"
-              handle=".handle"
-              :component-data="{tag: 'ul', name: 'flip-list', type: 'transition'}"
-              v-bind="dragOptions"
-            >
-              <template #item="{element, index}">
-                <q-item
-                  :key="`source-${element.local_key || index}`"
-                  class="q-px-none rounded-borders channel-source-row"
-                  :class="{'channel-source-row--disabled': isChannelSourceDisabled(element)}"
-                >
-                  <q-item-section avatar class="handle q-px-sm q-mx-sm">
-                    <q-avatar rounded>
-                      <q-icon name="format_line_spacing" style="max-width: 30px; cursor: grab">
-                        <q-tooltip class="bg-white text-primary">Drag to set stream priority</q-tooltip>
-                      </q-icon>
-                    </q-avatar>
-                  </q-item-section>
+              <draggable
+                v-model="listOfChannelSources"
+                group="channels"
+                item-key="local_key"
+                handle=".handle"
+                :component-data="{tag: 'ul', name: 'flip-list', type: 'transition'}"
+                v-bind="dragOptions"
+              >
+                <template #item="{element, index}">
+                  <q-item
+                    :key="`source-${element.local_key || index}`"
+                    class="q-px-none rounded-borders channel-source-row"
+                    :class="{'channel-source-row--disabled': isChannelSourceDisabled(element)}"
+                  >
+                    <q-item-section avatar class="handle q-px-sm q-mx-sm">
+                      <q-avatar rounded>
+                        <q-icon name="format_line_spacing" style="max-width: 30px; cursor: grab">
+                          <q-tooltip class="bg-white text-primary">Drag to set stream priority</q-tooltip>
+                        </q-icon>
+                      </q-avatar>
+                    </q-item-section>
 
-                  <q-separator inset vertical class="gt-xs" />
+                    <q-separator inset vertical class="gt-xs" />
 
-                  <q-item-section side class="q-px-sm q-mx-sm" style="max-width: 60px">
-                    <q-item-label lines="1" class="text-left">
-                      <span class="text-weight-medium">{{ index + 1 }}</span>
-                    </q-item-label>
-                  </q-item-section>
+                    <q-item-section side class="q-px-sm q-mx-sm" style="max-width: 60px">
+                      <q-item-label lines="1" class="text-left">
+                        <span class="text-weight-medium">{{ index + 1 }}</span>
+                      </q-item-label>
+                    </q-item-section>
 
-                  <q-separator inset vertical class="gt-xs" />
+                    <q-separator inset vertical class="gt-xs" />
 
-                  <q-item-section top class="q-mx-md">
-                    <q-item-label lines="1" class="text-left">
-                      <span class="text-weight-medium">{{ element.stream_name }}</span>
-                    </q-item-label>
-                    <q-item-label caption class="row items-center justify-between no-wrap q-gutter-sm">
-                      <span class="ellipsis">{{ element.playlist_name }}</span>
-                      <q-btn
-                        dense
-                        flat
-                        no-caps
-                        color="primary"
-                        class="source-settings-toggle"
-                        :label="isSourceConfigOpen(element) ? 'Hide settings' : 'Stream Settings'"
-                        :icon-right="isSourceConfigOpen(element) ? 'expand_less' : 'expand_more'"
-                        @click="toggleSourceConfig(element)"
+                    <q-item-section top class="q-mx-md">
+                      <q-item-label lines="1" class="text-left">
+                        <span class="text-weight-medium">{{ element.stream_name }}</span>
+                      </q-item-label>
+                      <q-item-label caption class="row items-center justify-between no-wrap q-gutter-sm">
+                        <span class="ellipsis">{{ element.playlist_name }}</span>
+                        <q-btn
+                          dense
+                          flat
+                          no-caps
+                          color="primary"
+                          class="source-settings-toggle"
+                          :label="isSourceConfigOpen(element) ? 'Hide settings' : 'Stream Settings'"
+                          :icon-right="isSourceConfigOpen(element) ? 'expand_less' : 'expand_more'"
+                          @click="toggleSourceConfig(element)"
+                        />
+                      </q-item-label>
+                      <q-item-label
+                        v-if="isChannelSourceDisabled(element)"
+                        caption
+                        class="text-left channel-source-disabled-label"
+                      >
+                        Source disabled
+                      </q-item-label>
+
+                      <div
+                        v-if="isSourceConfigOpen(element)"
+                        class="sub-setting source-config-panel q-mt-md"
+                      >
+                        <template v-if="element.source_type === 'manual' || !element.playlist_id">
+                          <TicTextInput
+                            v-model="element.stream_url"
+                            label="Stream URL"
+                            description="Manual stream URL for this source. You can also provide an external HLS proxy URL here."
+                          />
+                          <TicToggleInput
+                            v-model="element.use_hls_proxy"
+                            label="Use HLS Proxy"
+                            description="Route this stream through Headendarr's internal HLS proxy."
+                          />
+                        </template>
+                        <template v-else>
+                          <TicToggleInput
+                            v-model="element.auto_update"
+                            label="Auto-update from source updates"
+                            description="Refresh this stream URL automatically whenever its source is updated."
+                          />
+                        </template>
+                      </div>
+
+                      <div
+                        v-if='refreshHint && element.source_type !== "manual" && element.playlist_id'
+                        class="text-italic text-caption text-primary q-mt-xs"
+                      >
+                        {{ refreshHint }}
+                      </div>
+                    </q-item-section>
+
+                    <q-item-section side class="q-mr-md channel-source-actions">
+                      <TicListActions
+                        :actions="getSourceActions(element, index)"
+                        @action="onSourceAction"
                       />
-                    </q-item-label>
-                    <q-item-label
-                      v-if="isChannelSourceDisabled(element)"
-                      caption
-                      class="text-left channel-source-disabled-label"
-                    >
-                      Source disabled
-                    </q-item-label>
-
-                    <div
-                      v-if="isSourceConfigOpen(element)"
-                      class="sub-setting source-config-panel q-mt-md"
-                    >
-                      <template v-if="element.source_type === 'manual' || !element.playlist_id">
-                        <TicTextInput
-                          v-model="element.stream_url"
-                          label="Stream URL"
-                          description="Manual stream URL for this source. You can also provide an external HLS proxy URL here."
-                        />
-                        <TicToggleInput
-                          v-model="element.use_hls_proxy"
-                          label="Use HLS Proxy"
-                          description="Route this stream through Headendarr's internal HLS proxy."
-                        />
-                      </template>
-                      <template v-else>
-                        <TicToggleInput
-                          v-model="element.auto_update"
-                          label="Auto-update from source updates"
-                          description="Refresh this stream URL automatically whenever its source is updated."
-                        />
-                      </template>
-                    </div>
-
-                    <div
-                      v-if='refreshHint && element.source_type !== "manual" && element.playlist_id'
-                      class="text-italic text-caption text-primary q-mt-xs"
-                    >
-                      {{ refreshHint }}
-                    </div>
-                  </q-item-section>
-
-                  <q-item-section side class="q-mr-md channel-source-actions">
-                    <TicListActions
-                      :actions="getSourceActions(element, index)"
-                      @action="onSourceAction"
-                    />
-                  </q-item-section>
-                </q-item>
-              </template>
-            </draggable>
+                    </q-item-section>
+                  </q-item>
+                </template>
+              </draggable>
             </q-list>
 
             <div class="row q-gutter-sm justify-end">
@@ -271,32 +271,32 @@
             </div>
 
             <template v-if="suggestedStreams && suggestedStreams.length">
-            <q-separator />
+              <q-separator />
 
-            <h5 class="q-my-none">Suggested Streams</h5>
+              <h5 class="q-my-none">Suggested Streams</h5>
 
-            <q-list bordered separator class="rounded-borders">
-              <q-item v-for="suggestion in suggestedStreams" :key="suggestion.id">
-                <q-item-section>
-                  <q-item-label lines="1">
-                    <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
-                  </q-item-label>
-                  <q-item-label caption lines="1">
-                    <span class="text-weight-medium text-primary">Group:</span>
-                    {{ suggestion.group_title || 'Unknown group' }}
-                    <span class="q-mx-xs">•</span>
-                    <span class="text-weight-medium text-primary">Source:</span>
-                    {{ suggestion.playlist_name }}
-                  </q-item-label>
-                </q-item-section>
-                <q-item-section side>
-                  <TicListActions
-                    :actions="getSuggestedActions(suggestion)"
-                    @action="onSuggestedAction"
-                  />
-                </q-item-section>
-              </q-item>
-            </q-list>
+              <q-list bordered separator class="rounded-borders">
+                <q-item v-for="suggestion in suggestedStreams" :key="suggestion.id">
+                  <q-item-section>
+                    <q-item-label lines="1">
+                      <span class="text-weight-medium">{{ suggestion.stream_name }}</span>
+                    </q-item-label>
+                    <q-item-label caption lines="1">
+                      <span class="text-weight-medium text-primary">Group:</span>
+                      {{ suggestion.group_title || 'Unknown group' }}
+                      <span class="q-mx-xs">•</span>
+                      <span class="text-weight-medium text-primary">Source:</span>
+                      {{ suggestion.playlist_name }}
+                    </q-item-label>
+                  </q-item-section>
+                  <q-item-section side>
+                    <TicListActions
+                      :actions="getSuggestedActions(suggestion)"
+                      @action="onSuggestedAction"
+                    />
+                  </q-item-section>
+                </q-item>
+              </q-list>
             </template>
           </template>
 
@@ -406,6 +406,7 @@
 
 <script>
 import axios from 'axios';
+import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {copyToClipboard} from 'quasar';
 import draggable from 'vuedraggable';
 import {useSettingsStore} from 'stores/settings';
@@ -609,8 +610,10 @@ export default {
       ];
     },
     vodScheduleModeDescription() {
-      const selectedOption = (this.vodScheduleModeOptions || []).find((option) => option.value === this.vodScheduleMode);
-      return selectedOption?.description || 'Controls how the selected VOD pool is turned into a repeatable 24/7 schedule.';
+      const selectedOption = (this.vodScheduleModeOptions || []).find(
+        (option) => option.value === this.vodScheduleMode);
+      return selectedOption?.description ||
+        'Controls how the selected VOD pool is turned into a repeatable 24/7 schedule.';
     },
     vodScheduleDirectionOptions() {
       return [
@@ -634,16 +637,19 @@ export default {
       this.closeResult = null;
       this.hasSavedInSession = false;
 
-      Promise.all([this.fetchEpgData(), this.fetchPlaylistData(), this.fetchCsoProfileOptions(), this.fetchVodStatus()]).then(() => {
-        if (this.channelId) {
-          return this.fetchData();
-        }
-        this.applyDefaultState();
-        return Promise.resolve();
-      }).finally(() => {
-        this.captureInitialState();
-        this.loading = false;
-      });
+      Promise.all(
+        [this.fetchEpgData(), this.fetchPlaylistData(), this.fetchCsoProfileOptions(), this.fetchVodStatus()]).
+        then(() => {
+          if (this.channelId) {
+            return this.fetchData();
+          }
+          this.applyDefaultState();
+          return Promise.resolve();
+        }).
+        finally(() => {
+          this.captureInitialState();
+          this.loading = false;
+        });
     },
     hide() {
       this.isOpen = false;
@@ -939,8 +945,9 @@ export default {
       let resolvedTestUrl = null;
       try {
         const preview = await this.resolvePreviewUrl(stream, {useChannelSource: true});
-        if (preview?.preview_url) {
-          resolvedTestUrl = this.cleanStreamUrl(preview.preview_url);
+        const primaryCandidate = primaryPreviewCandidate(preview);
+        if (primaryCandidate?.url) {
+          resolvedTestUrl = this.cleanStreamUrl(primaryCandidate.url);
         }
       } catch (error) {
         console.warn('Failed to resolve diagnostics preview URL, falling back to stored stream URL:', error);
@@ -1094,11 +1101,14 @@ export default {
       if (options.usePlaylistStream || options.useChannelSource) {
         try {
           const preview = await this.resolvePreviewUrl(stream, options);
-          if (preview?.preview_url) {
+          const candidates = normalisePreviewCandidates(preview);
+          const primaryCandidate = candidates[0];
+          if (primaryCandidate?.url) {
             this.videoStore.showPlayer({
-              url: preview.preview_url,
+              url: primaryCandidate.url,
+              candidates,
               title: stream?.stream_name || this.name || 'Stream',
-              type: preview.stream_type || 'auto',
+              type: primaryCandidate.streamType || 'auto',
             });
             return;
           }
@@ -1123,8 +1133,9 @@ export default {
       if (options.usePlaylistStream || options.useChannelSource) {
         try {
           const preview = await this.resolvePreviewUrl(stream, options);
-          if (preview?.preview_url) {
-            await copyToClipboard(preview.preview_url);
+          const primaryCandidate = primaryPreviewCandidate(preview);
+          if (primaryCandidate?.url) {
+            await copyToClipboard(primaryCandidate.url);
             this.$q.notify({color: 'positive', message: 'Stream URL copied'});
             return;
           }

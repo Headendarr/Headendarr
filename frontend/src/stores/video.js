@@ -43,6 +43,8 @@ export const useVideoStore = defineStore('video', {
     streamUrl: null,
     streamTitle: null,
     streamType: 'auto',
+    streamCandidates: [],
+    activeCandidateIndex: 0,
     seekMode: 'native',
     playbackProfiles: [],
     selectedPlaybackProfile: null,
@@ -56,6 +58,7 @@ export const useVideoStore = defineStore('video', {
   actions: {
     showPlayer({
                  url,
+                 candidates = [],
                  title = null,
                  type = 'auto',
                  seekMode = 'native',
@@ -65,9 +68,15 @@ export const useVideoStore = defineStore('video', {
                  sourceResolution = null,
                  durationSeconds = null,
                }) {
-      this.streamUrl = url;
+      const nextCandidates = Array.isArray(candidates) ?
+        candidates.filter((candidate) => candidate?.url) :
+        [];
+      const primaryCandidate = nextCandidates[0] || null;
+      this.streamCandidates = nextCandidates;
+      this.activeCandidateIndex = 0;
+      this.streamUrl = primaryCandidate?.url || url;
       this.streamTitle = title;
-      this.streamType = type;
+      this.streamType = primaryCandidate?.streamType || type;
       this.seekMode = seekMode || 'native';
       this.playbackProfiles = Array.isArray(playbackProfiles) ?
         playbackProfiles :
@@ -85,6 +94,8 @@ export const useVideoStore = defineStore('video', {
       this.streamUrl = null;
       this.streamTitle = null;
       this.streamType = 'auto';
+      this.streamCandidates = [];
+      this.activeCandidateIndex = 0;
       this.seekMode = 'native';
       this.playbackProfiles = [];
       this.selectedPlaybackProfile = null;
@@ -103,6 +114,20 @@ export const useVideoStore = defineStore('video', {
       if (seekMode) {
         this.seekMode = seekMode;
       }
+    },
+    setActiveCandidate(index) {
+      const nextIndex = Number(index);
+      if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >=
+        this.streamCandidates.length) {
+        return;
+      }
+      const candidate = this.streamCandidates[nextIndex];
+      if (!candidate?.url) {
+        return;
+      }
+      this.activeCandidateIndex = nextIndex;
+      this.streamUrl = candidate.url;
+      this.streamType = candidate.streamType || this.streamType || 'auto';
     },
     setVodMetadata({
                      sourceResolution = null,

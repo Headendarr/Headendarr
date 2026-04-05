@@ -420,6 +420,7 @@
 <script>
 import {defineComponent, ref, computed, onMounted, onBeforeUnmount, nextTick, watch} from 'vue';
 import axios from 'axios';
+import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {useVideoStore} from 'stores/video';
 import {useUiStore} from 'stores/ui';
 import {useQuasar} from 'quasar';
@@ -899,10 +900,17 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
+          const candidates = normalisePreviewCandidates(response.data);
+          const primaryCandidate = candidates[0];
+          if (!primaryCandidate) {
+            $q.notify({color: 'negative', message: 'No preview sources available'});
+            return;
+          }
           videoStore.showPlayer({
-            url: response.data.preview_url,
+            url: primaryCandidate.url,
+            candidates,
             title: channel.name,
-            type: response.data.stream_type || 'auto',
+            type: primaryCandidate.streamType || 'auto',
           });
           return;
         }
@@ -917,7 +925,12 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
-          await navigator.clipboard.writeText(response.data.preview_url);
+          const primaryCandidate = primaryPreviewCandidate(response.data);
+          if (!primaryCandidate?.url) {
+            $q.notify({color: 'negative', message: 'No preview sources available'});
+            return;
+          }
+          await navigator.clipboard.writeText(primaryCandidate.url);
           $q.notify({color: 'positive', message: 'Stream URL copied'});
           return;
         }

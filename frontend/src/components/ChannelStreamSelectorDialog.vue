@@ -217,6 +217,7 @@
 <script>
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
+import {primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {useVideoStore} from 'stores/video';
 import {
   TicActionButton,
@@ -865,8 +866,9 @@ export default {
       if (stream?.id) {
         try {
           const response = await axios.get(`/tic-api/playlists/streams/${stream.id}/preview`);
-          if (response.data.success && response.data.preview_url) {
-            copyUrl = response.data.preview_url;
+          const primaryCandidate = primaryPreviewCandidate(response.data);
+          if (response.data.success && primaryCandidate?.url) {
+            copyUrl = primaryCandidate.url;
           }
         } catch (error) {
           console.error('Copy stream URL resolve error:', error);
