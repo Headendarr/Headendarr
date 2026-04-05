@@ -306,19 +306,29 @@ class VodChannelIngestSession:
 
     async def _start_current_cache_download(self, candidate, upstream_url, entry, wait_for_ready=True):
         owner_key = f"vod-channel-current-{self.channel_id}-{int(entry.get('start_ts') or 0)}"
-        warmed = await warm_vod_cache(candidate, upstream_url, owner_key=owner_key)
         source = await cso_source_from_vod_source(candidate, upstream_url)
+        if source is None:
+            return None, None
         cache_entry = await vod_cache_manager.get_or_create(source, source.url)
-        if warmed and wait_for_ready:
+        warm_task = asyncio.create_task(
+            warm_vod_cache(candidate, upstream_url, owner_key=owner_key),
+            name=f"vod-channel-current-cache-{self.channel_id}-{int(entry.get('start_ts') or 0)}",
+        )
+        if wait_for_ready:
             try:
-                await asyncio.wait_for(cache_entry.ready_event.wait(), timeout=10.0)
+                await asyncio.wait_for(cache_entry.ready_event.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 pass
             if not cache_entry.complete and not cache_entry.part_path.exists():
-                for _ in range(10):
+                for _ in range(5):
                     if cache_entry.part_path.exists():
                         break
                     await asyncio.sleep(0.2)
+        if warm_task.done():
+            try:
+                await warm_task
+            except Exception:
+                pass
         return source, cache_entry
 
     async def _build_segment_runtime(self, playback, segment_index, activate_session_state=True):
