@@ -182,6 +182,7 @@ class CsoIngestSession:
         self.failover_exhausted = False
         self.session_start_ts = 0.0
         self.failover_start_ts = 0.0
+        self.pending_switch_success = None
         self.current_attempt_start_ts = 0.0
         self.current_attempt_first_chunk_logged = False
         self.current_source_probe = {}
@@ -308,6 +309,7 @@ class CsoIngestSession:
             self.failover_start_ts = 0.0
             self.failover_in_progress = False
             self.failover_exhausted = False
+            self.pending_switch_success = None
             start_result = await self._start_best_source_unlocked(reason="initial_start")
             if not start_result.success:
                 self.running = False
@@ -679,27 +681,18 @@ class CsoIngestSession:
             if source.id is not None:
                 self.source_program_index[source.id] = int(program_index)
             self.startup_jump_done = True
-            self._activate_process_unlocked(process)
-            if old_capacity_key:
-                await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key, slot_id=old_source_id)
-
-            await emit_channel_stream_event(
-                channel_id=self.channel_id,
-                source=source,
-                session_id=self.key,
-                event_type="switch_success",
-                severity="info",
-                details={
+            if reason == "failover":
+                self.pending_switch_success = {
                     "reason": reason,
                     "pipeline": "ingest",
                     "program_index": self.current_program_index,
                     "variant_count": len(self.hls_variants),
-                    **source_event_context(
-                        self.current_source,
-                        source_url=self.current_source_url,
-                    ),
-                },
-            )
+                }
+            else:
+                self.pending_switch_success = None
+            self._activate_process_unlocked(process)
+            if old_capacity_key:
+                await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key, slot_id=old_source_id)
             return CsoStartResult(success=True)
 
         return CsoStartResult(success=False, reason="capacity_blocked" if saw_capacity_block else "no_available_source")
@@ -916,6 +909,23 @@ class CsoIngestSession:
                     )
                     self.current_attempt_first_chunk_logged = True
                     self.first_healthy_stream_seen = True
+                    pending_switch_success = self.pending_switch_success
+                    self.pending_switch_success = None
+                    if pending_switch_success:
+                        await emit_channel_stream_event(
+                            channel_id=self.channel_id,
+                            source=self.current_source,
+                            session_id=self.key,
+                            event_type="switch_success",
+                            severity="info",
+                            details={
+                                **pending_switch_success,
+                                **source_event_context(
+                                    self.current_source,
+                                    source_url=self.current_source_url,
+                                ),
+                            },
+                        )
                 saw_data = True
                 self.last_chunk_ts = time.time()
                 await self._broadcast(chunk)
@@ -1022,6 +1032,7 @@ class CsoIngestSession:
             multi_source_channel = len(self.sources or []) > 1
             hold_down_applicable = reason in {"under_speed", "stall_timeout"} or is_connectivity_startup_failure
             hold_down_applied = bool(failed_source_id and multi_source_channel and hold_down_applicable)
+            terminal_startup_failure = bool(is_connectivity_startup_failure and not multi_source_channel)
 
             if hold_down_applied:
                 self.failed_source_until[failed_source_id] = time.time() + CSO_SOURCE_HOLD_DOWN_SECONDS
@@ -1034,8 +1045,9 @@ class CsoIngestSession:
             self.current_variant_position = None
             self.current_program_index = 0
             self.startup_jump_done = False
+            self.pending_switch_success = None
             self.process = None
-            self.running = bool(self.allow_failover)
+            self.running = bool(self.allow_failover and not terminal_startup_failure)
             if old_capacity_key:
                 await cso_capacity_registry.release(
                     old_capacity_key,
@@ -1070,6 +1082,28 @@ class CsoIngestSession:
                     **source_event_context(failed_source),
                 },
             )
+            return False
+
+        if terminal_startup_failure:
+            await emit_channel_stream_event(
+                channel_id=self.channel_id,
+                source=failed_source,
+                session_id=self.key,
+                event_type="playback_unavailable",
+                severity="warning",
+                details={
+                    "reason": reason,
+                    "return_code": return_code,
+                    "saw_data": saw_data,
+                    "pipeline": "ingest",
+                    "ffmpeg_error": ffmpeg_error or None,
+                    **(details or {}),
+                    **source_event_context(failed_source),
+                },
+            )
+            self.failover_in_progress = False
+            self.failover_exhausted = True
+            self.running = False
             return False
 
         await emit_channel_stream_event(
@@ -1274,6 +1308,7 @@ class CsoIngestSession:
             self.failover_failed_sources.clear()
             self.failover_in_progress = False
             self.failover_exhausted = False
+            self.pending_switch_success = None
             subscriber_count = len(self.subscribers)
         # Release capacity immediately so other channels are not blocked while
         # this ingest session drains/tears down.
