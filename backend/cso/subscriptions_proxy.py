@@ -257,7 +257,7 @@ async def subscribe_vod_proxy_output_stream(
                 cache_entry.final_path,
                 start_seconds=start_seconds,
                 max_duration_seconds=max_duration_seconds,
-                realtime=True,
+                realtime=not bool(cache_entry.complete),
             )
             logger.info(
                 "Starting VOD local output stream item=%s source_id=%s profile=%s start_seconds=%s duration_seconds=%s path=%s command=%s",
