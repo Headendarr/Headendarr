@@ -144,14 +144,13 @@ import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
 import {TicButton, TicDialogPopup, TicListToolbar, TicSelectInput, TicVodContentCard} from 'components/ui';
 import VodContentDetails from 'components/VodContentDetails.vue';
+import {
+  buildVodPlaybackProfiles,
+  ORIGINAL_BROWSER_VOD_PROFILE,
+  resolveVodPlayerStreamType,
+} from 'src/utils/vodPlaybackProfiles';
 
 const BROWSER_PAGE_SIZE = 40;
-const ORIGINAL_BROWSER_VOD_PROFILE = 'original';
-const VOD_BROWSER_QUALITY_PRESETS = [
-  {key: '1080p', width: 1920, bitrate: '2500k'},
-  {key: '720p', width: 1280, bitrate: '1300k'},
-  {key: '480p', width: 854, bitrate: '600k'},
-];
 
 export default {
   name: 'VodContentBrowser',
@@ -430,20 +429,6 @@ export default {
     },
   },
   methods: {
-    formatPlaybackBitrateLabel(bitrate) {
-      const value = String(bitrate || '').trim().toLowerCase();
-      if (!value.endsWith('k')) {
-        return value;
-      }
-      const numeric = Number(value.slice(0, -1));
-      if (!Number.isFinite(numeric) || numeric <= 0) {
-        return value;
-      }
-      if (numeric >= 1000) {
-        return `${(numeric / 1000).toFixed(1)} Mbps`;
-      }
-      return `${Math.round(numeric)} Kbps`;
-    },
     buildCategoryOptions(sourceId) {
       if (this.mode === 'upstream') {
         const options = [{label: 'All categories', value: null}];
@@ -632,8 +617,8 @@ export default {
       }
       const sourceResolution = payload?.source_resolution || null;
       const durationSeconds = Number(payload?.duration_seconds || 0) || null;
-      const streamType = this.resolvePlayerStreamType(payload?.stream_type);
-      const playbackProfiles = this.buildVodPlaybackProfiles(sourceResolution, streamType);
+      const streamType = resolveVodPlayerStreamType(payload?.stream_type);
+      const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType);
       const initialProfile = playbackProfiles[0] || null;
       const playbackUrl = this.appendPlaybackProfile(previewUrl, initialProfile?.profile || '');
       this.videoStore.showPlayer({
@@ -643,16 +628,10 @@ export default {
         seekMode: initialProfile?.seekMode || 'native',
         playbackProfiles,
         selectedPlaybackProfile: initialProfile?.id || ORIGINAL_BROWSER_VOD_PROFILE,
+        previewMetadataUrl: previewUrl,
         sourceResolution,
         durationSeconds,
       });
-    },
-    resolvePlayerStreamType(streamType) {
-      const value = String(streamType || '').toLowerCase();
-      if (value === 'hls' || value === 'mpegts') {
-        return value;
-      }
-      return 'native';
     },
     appendPlaybackProfile(url, profileId) {
       if (!url) {
@@ -670,39 +649,6 @@ export default {
         console.warn('Failed to append playback profile', error);
         return url;
       }
-    },
-    buildVodPlaybackProfiles(sourceResolution, originalStreamType = 'native') {
-      const sourceWidth = Number(sourceResolution?.width || 0);
-      const profiles = [
-        {
-          id: ORIGINAL_BROWSER_VOD_PROFILE,
-          label: 'Original',
-          description: '',
-          profile: '',
-          streamType: originalStreamType,
-          seekMode: 'native',
-          target_width: null,
-          video_bitrate: '',
-          default: true,
-        },
-      ];
-      for (const preset of VOD_BROWSER_QUALITY_PRESETS) {
-        if (sourceWidth > 0 && preset.width > sourceWidth) {
-          continue;
-        }
-        profiles.push({
-          id: `h264-aac-mp4[qty=${preset.key}]`,
-          label: `Convert ${preset.key} (${this.formatPlaybackBitrateLabel(preset.bitrate)})`,
-          description: '',
-          profile: `h264-aac-mp4[qty=${preset.key}]`,
-          streamType: 'native',
-          seekMode: 'time_restart',
-          target_width: preset.width,
-          video_bitrate: preset.bitrate,
-          default: false,
-        });
-      }
-      return profiles;
     },
     async resolveCuratedMoviePreview(item, options = {}) {
       const response = await axios.get(`/tic-api/vod/movie/${Number(item.id)}/preview`, {

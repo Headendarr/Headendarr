@@ -270,6 +270,7 @@ import {useVideoStore} from 'stores/video';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import {useMobile} from 'src/composables/useMobile';
+import {buildVodPlaybackProfiles, resolveVodPlayerStreamType} from 'src/utils/vodPlaybackProfiles';
 
 const videoStore = useVideoStore();
 const {isMobile} = useMobile();
@@ -336,6 +337,8 @@ const mobileControlsVisible = ref(false);
 const controlsHideTimer = ref(null);
 const seekDraftSeconds = ref(null);
 const isSeekDragging = ref(false);
+const activeVodMetadataUrl = ref('');
+const vodPreviewMetadataRetryTimer = ref(null);
 const textTracksRef = ref(null);
 const textTrackChangeHandler = ref(null);
 const textTrackAddHandler = ref(null);
@@ -523,6 +526,73 @@ function usesRestartBasedSeek(url = videoStore.streamUrl, forcedSeekMode = video
     return false;
   }
   return String(url || '').includes('/tic-api/cso/vod/');
+}
+
+function clearVodPreviewMetadataRetry() {
+  if (vodPreviewMetadataRetryTimer.value) {
+    clearTimeout(vodPreviewMetadataRetryTimer.value);
+    vodPreviewMetadataRetryTimer.value = null;
+  }
+}
+
+function scheduleVodPreviewMetadataRetry(previewMetadataUrl, attemptNumber) {
+  if (attemptNumber > 4) {
+    return;
+  }
+  clearVodPreviewMetadataRetry();
+  const delayMs = Math.min(3000, 800 * attemptNumber);
+  vodPreviewMetadataRetryTimer.value = setTimeout(() => {
+    vodPreviewMetadataRetryTimer.value = null;
+    if (!videoStore.isVisible || String(videoStore.previewMetadataUrl || '').trim() !== previewMetadataUrl) {
+      return;
+    }
+    void loadVodPreviewMetadata(attemptNumber);
+  }, delayMs);
+}
+
+async function loadVodPreviewMetadata(attemptNumber = 1) {
+  const previewMetadataUrl = String(videoStore.previewMetadataUrl || '').trim();
+  if (!videoStore.isVisible || !previewMetadataUrl || !previewMetadataUrl.includes('/tic-api/cso/vod/')) {
+    return;
+  }
+  const hasDuration = Number(videoStore.durationSeconds || 0) > 0;
+  const hasResolution = Number(videoStore.sourceResolution?.width || 0) > 0 &&
+    Number(videoStore.sourceResolution?.height || 0) > 0;
+  if (hasDuration && hasResolution) {
+    return;
+  }
+  if (activeVodMetadataUrl.value === previewMetadataUrl) {
+    return;
+  }
+  clearVodPreviewMetadataRetry();
+  activeVodMetadataUrl.value = previewMetadataUrl;
+  try {
+    const response = await axios.post('/tic-api/vod/preview-metadata', {
+      preview_url: previewMetadataUrl,
+    });
+    const payload = response?.data || {};
+    if (!payload?.success || String(videoStore.previewMetadataUrl || '').trim() !== previewMetadataUrl) {
+      return;
+    }
+    const streamType = resolveVodPlayerStreamType(payload?.stream_type || videoStore.streamType);
+    const sourceResolution = payload?.source_resolution || null;
+    const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType);
+    videoStore.setVodMetadata({
+      sourceResolution,
+      durationSeconds: Number(payload?.duration_seconds || 0) || null,
+      playbackProfiles,
+    });
+    if (payload?.pending) {
+      scheduleVodPreviewMetadataRetry(previewMetadataUrl, attemptNumber + 1);
+    }
+  } catch (error) {
+    console.warn('[FloatingPlayer] failed to load VOD preview metadata', error);
+    scheduleVodPreviewMetadataRetry(previewMetadataUrl, attemptNumber + 1);
+  } finally {
+    if (activeVodMetadataUrl.value === previewMetadataUrl) {
+      activeVodMetadataUrl.value = '';
+    }
+  }
 }
 
 function currentAbsolutePlaybackTime(el = getVideoElement()) {
@@ -1983,6 +2053,8 @@ watch(
   () => videoStore.isVisible,
   (visible) => {
     if (!visible) {
+      clearVodPreviewMetadataRetry();
+      activeVodMetadataUrl.value = '';
       cleanupPlayer();
       return;
     }
@@ -2002,6 +2074,18 @@ watch(
     }
 
     initPlayer();
+    void loadVodPreviewMetadata();
+  },
+);
+
+watch(
+  () => videoStore.previewMetadataUrl,
+  () => {
+    clearVodPreviewMetadataRetry();
+    activeVodMetadataUrl.value = '';
+    if (videoStore.isVisible) {
+      void loadVodPreviewMetadata();
+    }
   },
 );
 
@@ -2042,6 +2126,7 @@ if (typeof document !== 'undefined') {
 }
 
 onBeforeUnmount(() => {
+  clearVodPreviewMetadataRetry();
   cleanupPlayer();
   if (typeof document !== 'undefined') {
     document.removeEventListener('fullscreenchange', handleFullscreenChange);

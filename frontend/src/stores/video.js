@@ -46,6 +46,7 @@ export const useVideoStore = defineStore('video', {
     seekMode: 'native',
     playbackProfiles: [],
     selectedPlaybackProfile: null,
+    previewMetadataUrl: null,
     sourceResolution: null,
     durationSeconds: null,
     size: LOADED_STATE.size || DEFAULT_SIZE,
@@ -60,6 +61,7 @@ export const useVideoStore = defineStore('video', {
                  seekMode = 'native',
                  playbackProfiles = [],
                  selectedPlaybackProfile = null,
+                 previewMetadataUrl = null,
                  sourceResolution = null,
                  durationSeconds = null,
                }) {
@@ -72,6 +74,7 @@ export const useVideoStore = defineStore('video', {
         [];
       this.selectedPlaybackProfile = selectedPlaybackProfile ||
         this.playbackProfiles[0]?.id || null;
+      this.previewMetadataUrl = previewMetadataUrl || null;
       this.sourceResolution = sourceResolution || null;
       this.durationSeconds = typeof durationSeconds === 'number' &&
       Number.isFinite(durationSeconds) ? durationSeconds : null;
@@ -85,6 +88,7 @@ export const useVideoStore = defineStore('video', {
       this.seekMode = 'native';
       this.playbackProfiles = [];
       this.selectedPlaybackProfile = null;
+      this.previewMetadataUrl = null;
       this.sourceResolution = null;
       this.durationSeconds = null;
     },
@@ -98,6 +102,26 @@ export const useVideoStore = defineStore('video', {
       }
       if (seekMode) {
         this.seekMode = seekMode;
+      }
+    },
+    setVodMetadata({
+                     sourceResolution = null,
+                     durationSeconds = null,
+                     playbackProfiles = null,
+                   }) {
+      if (sourceResolution) {
+        this.sourceResolution = sourceResolution;
+      }
+      if (typeof durationSeconds === 'number' &&
+        Number.isFinite(durationSeconds) && durationSeconds > 0) {
+        this.durationSeconds = durationSeconds;
+      }
+      if (Array.isArray(playbackProfiles) && playbackProfiles.length) {
+        this.playbackProfiles = playbackProfiles;
+        if (!this.playbackProfiles.some(
+          (profile) => profile.id === this.selectedPlaybackProfile)) {
+          this.selectedPlaybackProfile = this.playbackProfiles[0]?.id || null;
+        }
       }
     },
     setSize(size) {

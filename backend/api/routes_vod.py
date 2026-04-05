@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import mimetypes
+import re
 import xml.etree.ElementTree as ET
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from quart import Response, jsonify, request
 
@@ -10,6 +11,7 @@ from backend.api import blueprint
 from backend.auth import (
     admin_auth_required,
     authenticate_stream_request,
+    forbidden_response,
     get_user_from_token,
     mark_stream_key_usage,
     rate_limited_basic_auth_response,
@@ -41,6 +43,7 @@ from backend.vod import (
     user_can_access_vod_kind,
     user_has_vod_access,
 )
+from backend.users import user_has_admin_role
 from backend.utils import convert_to_int, int_or_none
 
 ignored_library_probe_suffixes = (
@@ -52,6 +55,14 @@ ignored_library_probe_suffixes = (
     "/index.bdm",
     "/bdmv/index.bdm",
 )
+
+_CURATED_CSO_VOD_PREVIEW_RE = re.compile(r"^/tic-api/cso/vod/(?P<content_type>movie|series)/(?P<item_id>\d+)$")
+_UPSTREAM_CSO_VOD_PREVIEW_RE = re.compile(
+    r"^/tic-api/cso/vod/upstream/(?P<source_id>\d+)/(?P<content_type>movie|series)/(?P<item_id>\d+)"
+    r"(?:/(?P<upstream_episode_id>[^/]+))?$"
+)
+
+
 def _resolved_preview_profile(default_profile: str = "") -> str:
     requested = parse_stream_profile_request(request.args.get("profile"))
     if requested["profile_id"] in SUPPORTED_STREAM_PROFILES:
@@ -84,6 +95,34 @@ def _build_cso_vod_preview_url(
     if container_extension:
         query_items["container_extension"] = str(container_extension).strip().lstrip(".").lower()
     return f"{request_base_url.rstrip('/')}{base_path}?{urlencode(query_items)}"
+
+
+def _parse_vod_preview_reference(preview_url: str) -> dict[str, object] | None:
+    parsed = urlparse(str(preview_url or "").strip())
+    path = str(parsed.path or "").strip()
+    query = parse_qs(parsed.query or "", keep_blank_values=False)
+
+    match = _CURATED_CSO_VOD_PREVIEW_RE.match(path)
+    if match:
+        return {
+            "mode": "curated",
+            "content_type": match.group("content_type"),
+            "item_id": int(match.group("item_id")),
+            "container_extension": str((query.get("container_extension") or [""])[0] or "").strip(),
+        }
+
+    match = _UPSTREAM_CSO_VOD_PREVIEW_RE.match(path)
+    if match:
+        return {
+            "mode": "upstream",
+            "source_id": int(match.group("source_id")),
+            "content_type": match.group("content_type"),
+            "item_id": int(match.group("item_id")),
+            "upstream_episode_id": unquote(str(match.group("upstream_episode_id") or "").strip()),
+            "container_extension": str((query.get("container_extension") or [""])[0] or "").strip(),
+        }
+
+    return None
 
 
 @blueprint.route("/tic-api/vod/status", methods=["GET"])
@@ -192,7 +231,7 @@ async def curated_movie_preview(item_id: int):
     user = await get_user_from_token()
     if not user or not getattr(user, "streaming_key", None):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
-    payload = await build_curated_movie_browser_playback(user, int(item_id))
+    payload = await build_curated_movie_browser_playback(user, int(item_id), allow_probe=False, background_probe=True)
     if payload is None:
         return jsonify({"success": False, "message": "VOD item not found"}), 404
     if not payload.get("success"):
@@ -224,7 +263,7 @@ async def curated_series_preview(item_id: int):
     user = await get_user_from_token()
     if not user or not getattr(user, "streaming_key", None):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
-    payload = await build_curated_episode_browser_playback(user, int(item_id))
+    payload = await build_curated_episode_browser_playback(user, int(item_id), allow_probe=False, background_probe=True)
     if payload is None:
         return jsonify({"success": False, "message": "Episode not found"}), 404
     if not payload.get("success"):
@@ -256,7 +295,9 @@ async def upstream_movie_preview(item_id: int):
     user = await get_user_from_token()
     if not user or not getattr(user, "streaming_key", None):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
-    payload = await build_upstream_browser_playback(int(item_id), VOD_KIND_MOVIE)
+    payload = await build_upstream_browser_playback(
+        int(item_id), VOD_KIND_MOVIE, allow_probe=False, background_probe=True
+    )
     if not payload.get("success"):
         return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
             payload.get("status_code") or 404
@@ -300,6 +341,8 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
         VOD_KIND_SERIES,
         upstream_episode_id=upstream_episode_id,
         container_extension=container_extension,
+        allow_probe=False,
+        background_probe=True,
     )
     if not payload.get("success"):
         return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
@@ -327,6 +370,88 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
             "stream_type": payload.get("stream_type") or "auto",
             "source_resolution": payload.get("source_resolution") or {},
             "duration_seconds": payload.get("duration_seconds"),
+        }
+    )
+
+
+@blueprint.route("/tic-api/vod/preview-metadata", methods=["POST"])
+@user_auth_required
+async def vod_preview_metadata():
+    user = await get_user_from_token()
+    payload = await request.get_json(force=True, silent=True) or {}
+    preview_url = str(payload.get("preview_url") or "").strip()
+    if not preview_url:
+        return jsonify({"success": False, "message": "Preview URL is required"}), 400
+
+    preview_ref = _parse_vod_preview_reference(preview_url)
+    if preview_ref is None:
+        return jsonify({"success": False, "message": "Unsupported preview URL"}), 400
+
+    mode = str(preview_ref.get("mode") or "")
+    content_type = str(preview_ref.get("content_type") or "")
+    item_id = int(preview_ref.get("item_id") or 0)
+
+    if mode == "curated":
+        if content_type == VOD_KIND_MOVIE:
+            result = await build_curated_movie_browser_playback(
+                user,
+                item_id,
+                allow_probe=True,
+                probe_wait_timeout_seconds=2.5,
+            )
+        else:
+            result = await build_curated_episode_browser_playback(
+                user,
+                item_id,
+                allow_probe=True,
+                probe_wait_timeout_seconds=2.5,
+            )
+    elif mode == "upstream":
+        if not user_has_admin_role(user):
+            return forbidden_response("Admin access required")
+        result = await build_upstream_browser_playback(
+            item_id,
+            content_type,
+            upstream_episode_id=str(preview_ref.get("upstream_episode_id") or "").strip() or None,
+            container_extension=str(preview_ref.get("container_extension") or "").strip() or None,
+            allow_probe=True,
+            probe_wait_timeout_seconds=2.5,
+        )
+    else:
+        result = None
+
+    if not result:
+        return jsonify({"success": False, "message": "Preview metadata unavailable"}), 404
+    if not result.get("success"):
+        return jsonify({"success": False, "message": result.get("message") or "Preview metadata unavailable"}), int(
+            result.get("status_code") or 404
+        )
+
+    metadata_pending = bool(result.get("metadata_pending"))
+    has_duration = bool(result.get("duration_seconds"))
+    resolution = result.get("source_resolution") or {}
+    has_resolution = int(resolution.get("width") or 0) > 0 and int(resolution.get("height") or 0) > 0
+    if metadata_pending and not (has_duration and has_resolution):
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "pending": True,
+                    "stream_type": result.get("stream_type") or "auto",
+                    "source_resolution": resolution,
+                    "duration_seconds": result.get("duration_seconds"),
+                }
+            ),
+            202,
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "pending": False,
+            "stream_type": result.get("stream_type") or "auto",
+            "source_resolution": result.get("source_resolution") or {},
+            "duration_seconds": result.get("duration_seconds"),
         }
     )
 

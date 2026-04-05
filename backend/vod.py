@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -81,6 +82,10 @@ _VOD_HTTP_MANIFEST_CACHE_TTL_SECONDS = 10
 _vod_http_manifest_cache: dict[str, tuple[float, float, object]] = {}
 _VOD_TITLE_MAX_LENGTH = 500
 _BROWSER_VOD_MEDIA_SHAPE_TTL_SECONDS = 24 * 60 * 60
+_VOD_MEDIA_PROBE_WAIT_TIMEOUT_SECONDS = 2.5
+_VOD_MEDIA_PROBE_RESULT_RETENTION_SECONDS = 60.0
+_vod_media_probe_registry_lock = asyncio.Lock()
+_vod_media_probe_registry: dict[str, dict[str, object]] = {}
 
 
 @dataclass
@@ -2520,6 +2525,130 @@ def _media_shape_has_core_vod_details(media_shape: dict[str, object] | None) -> 
     )
 
 
+def _vod_media_probe_registry_key(
+    source: XcVodItem | VodCategoryEpisode,
+    source_url: str,
+    source_type: str,
+    persist_result: bool,
+) -> str:
+    source_id = int(getattr(source, "id", 0) or 0)
+    payload = json.dumps(
+        {
+            "persist_result": bool(persist_result),
+            "source_id": source_id,
+            "source_type": clean_text(source_type),
+            "source_url": clean_text(source_url),
+        },
+        sort_keys=True,
+    )
+    return hashlib.md5(payload.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _prune_vod_media_probe_registry(now_monotonic: float):
+    stale_keys = []
+    for key, entry in _vod_media_probe_registry.items():
+        task = entry.get("task")
+        finished_at = float(entry.get("finished_at") or 0.0)
+        if task is None:
+            stale_keys.append(key)
+            continue
+        if not getattr(task, "done", lambda: False)():
+            continue
+        if finished_at <= 0:
+            continue
+        if (now_monotonic - finished_at) >= _VOD_MEDIA_PROBE_RESULT_RETENTION_SECONDS:
+            stale_keys.append(key)
+    for key in stale_keys:
+        _vod_media_probe_registry.pop(key, None)
+
+
+def _mark_vod_media_probe_finished(key: str, task: asyncio.Task):
+    entry = _vod_media_probe_registry.get(key)
+    if not entry or entry.get("task") is not task:
+        return
+    entry["finished_at"] = time.monotonic()
+
+
+async def _get_or_start_vod_media_probe_task(
+    source: XcVodItem | VodCategoryEpisode,
+    source_url: str,
+    source_type: str,
+    playlist: Playlist | None = None,
+    persist_result: bool = True,
+) -> asyncio.Task | None:
+    if not clean_text(source_url):
+        return None
+
+    registry_key = _vod_media_probe_registry_key(source, source_url, source_type, persist_result)
+    now_monotonic = time.monotonic()
+
+    async with _vod_media_probe_registry_lock:
+        _prune_vod_media_probe_registry(now_monotonic)
+        existing_entry = _vod_media_probe_registry.get(registry_key)
+        if existing_entry:
+            existing_task = existing_entry.get("task")
+            if existing_task is not None:
+                return existing_task
+
+        source_id = int(getattr(source, "id", 0) or 0)
+        user_agent = clean_text(getattr(playlist, "user_agent", ""))
+
+        async def _runner() -> dict[str, object]:
+            probed_shape = await probe_stream_media_shape(
+                source_url,
+                user_agent=user_agent,
+            )
+            if probed_shape and persist_result and source_id > 0:
+                await persist_source_media_shape(
+                    source_id,
+                    probed_shape,
+                    observed_at=as_naive_utc(utc_now()),
+                    source_type=source_type,
+                )
+            return dict(probed_shape or {})
+
+        task = asyncio.create_task(_runner(), name=f"vod-media-probe:{registry_key}")
+        _vod_media_probe_registry[registry_key] = {
+            "finished_at": 0.0,
+            "task": task,
+        }
+        task.add_done_callback(
+            lambda completed_task, key=registry_key: _mark_vod_media_probe_finished(key, completed_task)
+        )
+        return task
+
+
+async def _await_vod_media_probe_result(
+    source: XcVodItem | VodCategoryEpisode,
+    source_url: str,
+    source_type: str,
+    playlist: Playlist | None = None,
+    persist_result: bool = True,
+    wait_timeout_seconds: float | None = None,
+) -> tuple[dict[str, object], bool]:
+    task = await _get_or_start_vod_media_probe_task(
+        source,
+        source_url,
+        source_type,
+        playlist=playlist,
+        persist_result=persist_result,
+    )
+    if task is None:
+        return {}, False
+
+    try:
+        if wait_timeout_seconds is None:
+            result = await asyncio.shield(task)
+        else:
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=max(0.1, float(wait_timeout_seconds or 0.0)))
+    except asyncio.TimeoutError:
+        return {}, True
+    except Exception:
+        return {}, False
+
+    return dict(result or {}), False
+
+
 def _stream_type_from_media_shape(media_shape: dict[str, object] | None, container_extension: str = "") -> str:
     extension = clean_key(container_extension)
     if extension == "mkv":
@@ -2548,7 +2677,10 @@ async def _refresh_vod_media_shape_if_needed(
     source_type: str,
     playlist: Playlist | None = None,
     persist_result: bool = True,
-) -> dict[str, object]:
+    allow_probe: bool = True,
+    background_probe: bool = False,
+    probe_wait_timeout_seconds: float | None = None,
+) -> tuple[dict[str, object], bool]:
     existing_shape = load_source_media_shape(source)
     if (
         existing_shape
@@ -2556,24 +2688,32 @@ async def _refresh_vod_media_shape_if_needed(
         and source.stream_probe_at is not None
         and _media_shape_timestamp_is_fresh(source.stream_probe_at)
     ):
-        return existing_shape
+        return existing_shape, False
 
-    probed_shape = await probe_stream_media_shape(
+    should_probe = bool(allow_probe or background_probe)
+    if should_probe:
+        await _get_or_start_vod_media_probe_task(
+            source,
+            source_url,
+            source_type,
+            playlist=playlist,
+            persist_result=persist_result,
+        )
+
+    if not allow_probe:
+        return existing_shape, False
+
+    probed_shape, probe_pending = await _await_vod_media_probe_result(
+        source,
         source_url,
-        user_agent=clean_text(getattr(playlist, "user_agent", "")),
+        source_type,
+        playlist=playlist,
+        persist_result=persist_result,
+        wait_timeout_seconds=probe_wait_timeout_seconds,
     )
-    if not probed_shape:
-        return existing_shape
-    if persist_result:
-        source_id = int(source.id)
-        if source_id > 0:
-            await persist_source_media_shape(
-                source_id,
-                probed_shape,
-                observed_at=as_naive_utc(utc_now()),
-                source_type=source_type,
-            )
-    return probed_shape
+    if probed_shape:
+        return probed_shape, False
+    return existing_shape, probe_pending
 
 
 async def list_upstream_vod_items(
@@ -2902,7 +3042,13 @@ async def fetch_curated_library_item_details(
     return detail
 
 
-async def build_curated_movie_browser_playback(user: User | None, item_id: int) -> dict[str, object] | None:
+async def build_curated_movie_browser_playback(
+    user: User | None,
+    item_id: int,
+    allow_probe: bool = True,
+    background_probe: bool = False,
+    probe_wait_timeout_seconds: float | None = None,
+) -> dict[str, object] | None:
     if not user_can_access_vod_kind(user, VOD_KIND_MOVIE):
         return None
     candidates = await resolve_movie_playback_candidates(int(item_id))
@@ -2919,21 +3065,25 @@ async def build_curated_movie_browser_playback(user: User | None, item_id: int) 
         }
 
     playlist = getattr(candidate.source_item, "playlist", None)
-    if playlist is None:
+    if (allow_probe or background_probe) and playlist is None:
         async with Session() as session:
             playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
 
-    media_shape = await _refresh_vod_media_shape_if_needed(
+    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
         candidate.source_item,
         upstream_url,
         "vod_movie",
         playlist=playlist,
         persist_result=True,
+        allow_probe=allow_probe,
+        background_probe=background_probe,
+        probe_wait_timeout_seconds=probe_wait_timeout_seconds,
     )
     return {
         "success": True,
         "item_id": int(item_id),
         "content_type": VOD_KIND_MOVIE,
+        "metadata_pending": bool(probe_pending),
         "stream_type": _stream_type_from_media_shape(
             media_shape,
             container_extension=clean_text(getattr(candidate.source_item, "container_extension", "")),
@@ -2943,7 +3093,13 @@ async def build_curated_movie_browser_playback(user: User | None, item_id: int) 
     }
 
 
-async def build_curated_episode_browser_playback(user: User | None, episode_id: int) -> dict[str, object] | None:
+async def build_curated_episode_browser_playback(
+    user: User | None,
+    episode_id: int,
+    allow_probe: bool = True,
+    background_probe: bool = False,
+    probe_wait_timeout_seconds: float | None = None,
+) -> dict[str, object] | None:
     if not user_can_access_vod_kind(user, VOD_KIND_SERIES):
         return None
     candidates, episode = await resolve_episode_playback_candidates(int(episode_id))
@@ -2962,21 +3118,25 @@ async def build_curated_episode_browser_playback(user: User | None, episode_id: 
         }
 
     playlist = getattr(candidate.source_item, "playlist", None)
-    if playlist is None:
+    if (allow_probe or background_probe) and playlist is None:
         async with Session() as session:
             playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
 
-    media_shape = await _refresh_vod_media_shape_if_needed(
+    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
         episode,
         upstream_url,
         "vod_episode",
         playlist=playlist,
         persist_result=True,
+        allow_probe=allow_probe,
+        background_probe=background_probe,
+        probe_wait_timeout_seconds=probe_wait_timeout_seconds,
     )
     return {
         "success": True,
         "episode_id": int(episode_id),
         "content_type": VOD_KIND_SERIES,
+        "metadata_pending": bool(probe_pending),
         "stream_type": _stream_type_from_media_shape(
             media_shape,
             container_extension=clean_text(getattr(episode, "container_extension", "")),
@@ -2991,6 +3151,9 @@ async def build_upstream_browser_playback(
     content_type: str,
     upstream_episode_id: str | None = None,
     container_extension: str | None = None,
+    allow_probe: bool = True,
+    background_probe: bool = False,
+    probe_wait_timeout_seconds: float | None = None,
 ) -> dict[str, object]:
     source_item, preview_url, account, error_message = await resolve_xc_item_upstream_url(
         int(item_id),
@@ -3006,7 +3169,7 @@ async def build_upstream_browser_playback(
         }
 
     playlist = getattr(source_item, "playlist", None)
-    if playlist is None:
+    if (allow_probe or background_probe) and playlist is None:
         async with Session() as session:
             playlist = await session.get(Playlist, int(source_item.playlist_id))
 
@@ -3018,12 +3181,15 @@ async def build_upstream_browser_playback(
         persist_result = False
         probe_source = source_item
 
-    media_shape = await _refresh_vod_media_shape_if_needed(
+    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
         probe_source,
         preview_url,
         source_type,
         playlist=playlist,
         persist_result=persist_result,
+        allow_probe=allow_probe,
+        background_probe=background_probe,
+        probe_wait_timeout_seconds=probe_wait_timeout_seconds,
     )
 
     return {
@@ -3035,6 +3201,7 @@ async def build_upstream_browser_playback(
         "upstream_episode_id": clean_text(upstream_episode_id),
         "container_extension": clean_text(container_extension).lstrip(".").lower() or None,
         "xc_account_id": int(getattr(account, "id", 0) or 0) or None,
+        "metadata_pending": bool(probe_pending),
         "stream_type": _stream_type_from_media_shape(
             media_shape,
             container_extension=clean_text(container_extension)
@@ -3543,7 +3710,7 @@ async def _rebuild_series_episode_cache(group_item_id: int, rows) -> dict[str, o
     representative_payload = None
     group_profile_id = ""
     strip_rules_by_category_id = {}
-    for source_link, source_item, group_item, group in rows:
+    for source_link, source_item, _group_item, group in rows:
         group_profile_id = clean_text(getattr(group, "profile_id", "")) or group_profile_id
         if not strip_rules_by_category_id:
             strip_rules_by_category_id = {
