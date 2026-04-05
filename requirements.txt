@@ -8,7 +8,7 @@ aiofiles==25.1.0
     # via quart
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.3
+aiohttp==3.13.5
     # via -r requirements.in
 aiosignal==1.4.0
     # via aiohttp
@@ -26,7 +26,7 @@ argon2-cffi-bindings==25.1.0
     # via argon2-cffi
 asyncpg==0.31.0
     # via -r requirements.in
-attrs==25.4.0
+attrs==26.1.0
     # via
     #   aiohttp
     #   jsonschema
@@ -45,14 +45,14 @@ cffi==2.0.0
     # via
     #   argon2-cffi-bindings
     #   cryptography
-charset-normalizer==3.4.6
+charset-normalizer==3.4.7
     # via requests
-click==8.3.1
+click==8.3.2
     # via
     #   flask
     #   m3u-ipytv
     #   quart
-cryptography==46.0.5
+cryptography==46.0.6
     # via authlib
 flask==3.1.3
     # via
@@ -138,7 +138,7 @@ referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
-requests==2.32.5
+requests==2.33.1
     # via
     #   -r requirements.in
     #   m3u-ipytv
@@ -150,7 +150,7 @@ sniffio==1.3.1
     # via anyio
 soupsieve==2.8.3
     # via beautifulsoup4
-sqlalchemy==2.0.48
+sqlalchemy==2.0.49
     # via
     #   -r requirements.in
     #   alembic
@@ -166,7 +166,7 @@ urllib3==2.6.3
     # via requests
 watchgod==0.8.2
     # via -r requirements.in
-werkzeug==3.1.6
+werkzeug==3.1.8
     # via
     #   flask
     #   quart
