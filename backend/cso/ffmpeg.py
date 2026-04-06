@@ -407,6 +407,10 @@ class CsoFfmpegCommandBuilder:
             return []
         if not bool(effective_policy.get("hardware_decode", True)):
             return []
+        video_codec = clean_key(self.source_probe.get("video_codec"))
+        if video_codec == "mpeg4":
+            # VAAPI hardware decode for mpeg4 is often unsupported or unreliable.
+            return []
         vaapi_device = detect_vaapi_device_path()
         if not vaapi_device:
             return []

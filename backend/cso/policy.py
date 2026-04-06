@@ -1,10 +1,14 @@
+import logging
 from typing import Any
 
 from backend.stream_profiles import content_type_for_media_path, generate_cso_policy_from_profile
-from backend.utils import clean_key
+from backend.utils import clean_key, clean_text
 
 from .constants import CONTAINER_TO_FFMPEG_FORMAT
 from .types import CsoSource
+
+
+logger = logging.getLogger("cso")
 
 
 def policy_content_type(policy: dict[str, Any] | None) -> str:
@@ -82,16 +86,37 @@ def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str,
     return "matroska"
 
 
+def should_prefer_direct_vod_url_input(source: CsoSource | None, start_seconds: int = 0, source_probe: dict[str, Any] | None = None) -> bool:
+    if source is None or not source.url:
+        return False
+    if int(start_seconds or 0) > 0:
+        return True
+    container_key = clean_key((source_probe or {}).get("container")) or clean_key(
+        getattr(source, "container_extension", "")
+    )
+    return container_key not in {"mp4", "mkv", "matroska", "webm", "mpegts", "ts"}
+
+
 def pipe_container_from_content_type(content_type: str) -> str:
-    lowered = clean_key(content_type)
+    raw_content_type = clean_text(content_type)
+    lowered = clean_key(raw_content_type)
     if lowered == "video/mp4":
         return "mp4"
+    if lowered in {"video/x-msvideo", "video/avi", "video/msvideo"}:
+        return "avi"
+    if lowered in {"video/x-flv", "video/flv"}:
+        return "flv"
     if lowered in {"video/webm", "audio/webm"}:
         return "webm"
     if lowered in {"video/mp2t", "video/ts"}:
         return "mpegts"
     if lowered in {"video/x-matroska", "audio/x-matroska"}:
         return "matroska"
+    if raw_content_type:
+        logger.warning(
+            "Unable to map VOD proxy content type to pipe container; falling back to source container resolution content_type=%s",
+            raw_content_type,
+        )
     return ""
 
 def effective_vod_hls_runtime_policy(policy, source: CsoSource | None):

@@ -3181,9 +3181,44 @@ async def build_upstream_browser_playback(
         persist_result = False
         probe_source = source_item
 
+    resolved_container_extension = clean_text(container_extension).lstrip(".").lower()
+    if content_type == VOD_KIND_SERIES and clean_text(upstream_episode_id) and not resolved_container_extension:
+        resolved_container_extension = await resolve_upstream_episode_container_extension(
+            int(getattr(source_item, "id", 0) or 0),
+            clean_text(upstream_episode_id),
+        )
+    if not resolved_container_extension:
+        resolved_container_extension = clean_text(getattr(source_item, "container_extension", "")).lstrip(".").lower()
+
+    probe_url = preview_url
+    try:
+        from backend.cso.sources import cso_source_from_vod_source
+        from backend.cso.vod_cache import vod_cache_manager
+
+        cache_internal_id = int(getattr(source_item, "id", 0) or 0) or None
+        resolved_episode_id = clean_text(upstream_episode_id)
+        if content_type == VOD_KIND_SERIES and resolved_episode_id.isdigit():
+            cache_internal_id = int(resolved_episode_id)
+        candidate = VodSourcePlaybackCandidate(
+            source_item=source_item,
+            content_type=content_type,
+            xc_account=account,
+            host_url="",
+            container_extension=resolved_container_extension or None,
+            upstream_episode_id=resolved_episode_id or None,
+            internal_id=None,
+            cache_internal_id=cache_internal_id,
+        )
+        cso_source = await cso_source_from_vod_source(candidate, preview_url)
+        cache_entry = await vod_cache_manager.get_or_create(cso_source, preview_url or cso_source.url)
+        if cache_entry.complete and cache_entry.final_path.exists():
+            probe_url = str(cache_entry.final_path)
+    except Exception:
+        probe_url = preview_url
+
     media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
         probe_source,
-        preview_url,
+        probe_url,
         source_type,
         playlist=playlist,
         persist_result=persist_result,
@@ -3199,13 +3234,12 @@ async def build_upstream_browser_playback(
         "source_id": int(getattr(source_item, "playlist_id", 0) or 0) or None,
         "source_item_id": int(getattr(source_item, "id", 0) or 0) or None,
         "upstream_episode_id": clean_text(upstream_episode_id),
-        "container_extension": clean_text(container_extension).lstrip(".").lower() or None,
+        "container_extension": resolved_container_extension or None,
         "xc_account_id": int(getattr(account, "id", 0) or 0) or None,
         "metadata_pending": bool(probe_pending),
         "stream_type": _stream_type_from_media_shape(
             media_shape,
-            container_extension=clean_text(container_extension)
-            or clean_text(getattr(source_item, "container_extension", "")),
+            container_extension=resolved_container_extension,
         ),
         "source_resolution": _source_resolution_payload(media_shape),
         "duration_seconds": _duration_seconds_payload(media_shape),
@@ -3573,6 +3607,9 @@ async def resolve_xc_item_upstream_url(
         return source_item, "", None, "No available XC account or reachable host was found"
 
     extension = clean_text(container_extension).lstrip(".").lower()
+    episode_id = clean_text(upstream_episode_id)
+    if clean_text(item_type) == VOD_KIND_SERIES and episode_id and not extension:
+        extension = await resolve_upstream_episode_container_extension(int(source_item_id), episode_id)
     if not extension:
         extension = clean_text(source_item.container_extension).lstrip(".").lower() or "mp4"
 
@@ -3584,7 +3621,6 @@ async def resolve_xc_item_upstream_url(
             None,
         )
 
-    episode_id = clean_text(upstream_episode_id)
     if not episode_id:
         return source_item, "", account, "Series episode mapping is missing an upstream episode id"
     return (
@@ -3593,6 +3629,50 @@ async def resolve_xc_item_upstream_url(
         account,
         None,
     )
+
+
+async def resolve_upstream_episode_container_extension(source_item_id: int, upstream_episode_id: str) -> str:
+    episode_id = clean_text(upstream_episode_id)
+    if not episode_id:
+        return ""
+    async with Session() as session:
+        episode_source_result = await session.execute(
+            select(VodCategoryEpisodeSource.container_extension)
+            .join(
+                VodCategoryItemSource,
+                VodCategoryItemSource.id == VodCategoryEpisodeSource.category_item_source_id,
+            )
+            .join(VodCategoryEpisode, VodCategoryEpisode.id == VodCategoryEpisodeSource.episode_id)
+            .join(VodCategoryItem, VodCategoryItem.id == VodCategoryEpisode.category_item_id)
+            .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .where(
+                VodCategoryItemSource.source_item_id == int(source_item_id),
+                VodCategoryEpisodeSource.upstream_episode_id == episode_id,
+                VodCategory.enabled.is_(True),
+            )
+            .order_by(VodCategoryEpisodeSource.id.asc())
+        )
+        episode_source_row = episode_source_result.first()
+    if episode_source_row:
+        return clean_text(episode_source_row[0] or "").lstrip(".").lower()
+
+    payload = await fetch_xc_series_info_payload(int(source_item_id))
+    if not isinstance(payload, dict):
+        return ""
+    episodes = payload.get("episodes")
+    if not isinstance(episodes, dict):
+        return ""
+    for entries in episodes.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_episode_id = clean_text(entry.get("id") or entry.get("stream_id"))
+            if entry_episode_id != episode_id:
+                continue
+            return clean_text(entry.get("container_extension") or "").lstrip(".").lower()
+    return ""
 
 
 async def _fetch_upstream_metadata(

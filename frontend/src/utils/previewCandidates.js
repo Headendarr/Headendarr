@@ -13,6 +13,12 @@ export function normalisePreviewCandidates(payload) {
     sourceResolution: candidate?.source_resolution ||
       candidate?.sourceResolution ||
       payload?.source_resolution || null,
+    containerExtension: String(
+      candidate?.container_extension ||
+      candidate?.containerExtension ||
+      payload?.container_extension ||
+      '',
+    ).trim().toLowerCase() || null,
     durationSeconds: typeof candidate?.duration_seconds === 'number' ?
       candidate.duration_seconds :
       (typeof candidate?.durationSeconds === 'number' ?
@@ -38,6 +44,9 @@ export function normalisePreviewCandidates(payload) {
         Number(payload.priority) :
         0,
       sourceResolution: payload?.source_resolution || null,
+      containerExtension: String(payload?.container_extension || '').
+        trim().
+        toLowerCase() || null,
       durationSeconds: payload?.duration_seconds ?? null,
     },
   ];

@@ -1,4 +1,10 @@
 export const ORIGINAL_BROWSER_VOD_PROFILE = 'original';
+const BROWSER_SAFE_SOURCE_CONTAINERS = new Set([
+  'mp4',
+  'mkv',
+  'matroska',
+  'webm',
+]);
 
 const VOD_BROWSER_QUALITY_PRESETS = [
   {key: '1080p', width: 1920, bitrate: '2500k'},
@@ -29,10 +35,28 @@ export function resolveVodPlayerStreamType(streamType) {
   return 'native';
 }
 
+export function isBrowserSafeVodSourceContainer(containerExtension) {
+  const value = String(containerExtension || '').trim().toLowerCase();
+  return Boolean(value) && BROWSER_SAFE_SOURCE_CONTAINERS.has(value);
+}
+
 export function buildVodPlaybackProfiles(
-  sourceResolution, originalStreamType = 'native') {
+  sourceResolution, originalStreamType = 'native',
+  forceBrowserTranscode = false) {
   const sourceWidth = Number(sourceResolution?.width || 0);
-  const profiles = [
+  const profiles = forceBrowserTranscode ? [
+    {
+      id: 'h264-aac-mp4',
+      label: 'Transcoding for Browser',
+      description: '',
+      profile: 'h264-aac-mp4',
+      streamType: 'native',
+      seekMode: 'time_restart',
+      target_width: null,
+      video_bitrate: '',
+      default: true,
+    },
+  ] : [
     {
       id: ORIGINAL_BROWSER_VOD_PROFILE,
       label: 'Original',

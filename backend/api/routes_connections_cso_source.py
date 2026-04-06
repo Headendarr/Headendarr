@@ -418,9 +418,14 @@ async def _resolve_upstream_vod_request(
         if resolved_type == VOD_KIND_SERIES
         else int(getattr(source_item, "id", 0) or 0) or None,
     )
-    default_profile = resolve_upstream_vod_profile_id(source_item, container_extension=container_extension)
-    effective_profile = _resolve_requested_vod_profile(config, default_profile)
-    use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
+    requested_profile = parse_stream_profile_request(request.args.get("profile"))
+    if not requested_profile["profile_id"]:
+        effective_profile = ""
+        use_proxy_session = True
+    else:
+        default_profile = resolve_upstream_vod_profile_id(source_item, container_extension=container_extension)
+        effective_profile = _resolve_requested_vod_profile(config, default_profile)
+        use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
     return {
         "candidate": candidate,
         "episode": None,
@@ -1462,7 +1467,10 @@ async def _stream_cso_vod_route(resolver, identity: str):
     stream_username = stream_user.username if stream_user is not None else None
     source_item = getattr(candidate, "source_item", None)
     source_id = getattr(source_item, "id", None)
-    source_container = str(getattr(source_item, "container_extension", "") or "").strip().lower() or None
+    requested_container_extension = str(request.args.get("container_extension") or "").strip().lstrip(".").lower() or None
+    source_container = requested_container_extension or (
+        str(getattr(source_item, "container_extension", "") or "").strip().lower() or None
+    )
 
     vod_item_id = None
     vod_category_id = None

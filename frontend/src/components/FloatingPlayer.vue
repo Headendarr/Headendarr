@@ -270,7 +270,11 @@ import {useVideoStore} from 'stores/video';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import {useMobile} from 'src/composables/useMobile';
-import {buildVodPlaybackProfiles, resolveVodPlayerStreamType} from 'src/utils/vodPlaybackProfiles';
+import {
+  buildVodPlaybackProfiles,
+  isBrowserSafeVodSourceContainer,
+  resolveVodPlayerStreamType,
+} from 'src/utils/vodPlaybackProfiles';
 
 const videoStore = useVideoStore();
 const {isMobile} = useMobile();
@@ -653,7 +657,12 @@ async function loadVodPreviewMetadata(attemptNumber = 1) {
     }
     const streamType = resolveVodPlayerStreamType(payload?.stream_type || videoStore.streamType);
     const sourceResolution = payload?.source_resolution || null;
-    const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType);
+    const primaryCandidate = Array.isArray(videoStore.streamCandidates) ? videoStore.streamCandidates[0] || null : null;
+    const sourceContainer = String(
+      primaryCandidate?.containerExtension || payload?.container_extension || '',
+    ).trim().toLowerCase();
+    const forceBrowserTranscode = sourceContainer && !isBrowserSafeVodSourceContainer(sourceContainer);
+    const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType, forceBrowserTranscode);
     videoStore.setVodMetadata({
       sourceResolution,
       durationSeconds: Number(payload?.duration_seconds || 0) || null,

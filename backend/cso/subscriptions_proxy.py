@@ -14,9 +14,15 @@ from .ffmpeg import (
     redact_ingest_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
+    wait_for_process_output_start,
 )
 from .output import CsoOutputSession
-from .policy import pipe_container_from_content_type, policy_content_type, resolve_vod_pipe_container
+from .policy import (
+    pipe_container_from_content_type,
+    policy_content_type,
+    resolve_vod_pipe_container,
+    should_prefer_direct_vod_url_input,
+)
 from .sources import cso_source_from_vod_source
 from .subscriptions_shared import should_use_vod_proxy_session
 from .live_ingest import resolve_cso_ingest_headers, resolve_cso_ingest_user_agent
@@ -172,7 +178,14 @@ async def subscribe_vod_proxy_output_stream(
     cache_entry = await vod_cache_manager.get_or_create(source, upstream_url or source.url)
     local_cache_ready = bool(cache_entry.complete and cache_entry.final_path.exists())
     using_local_cache = local_cache_ready
-    use_direct_upstream_input = bool(not using_local_cache and int(start_seconds or 0) > 0 and source.url)
+    use_direct_upstream_input = bool(
+        not using_local_cache
+        and should_prefer_direct_vod_url_input(
+            source,
+            start_seconds=start_seconds,
+            source_probe=source_probe,
+        )
+    )
     proxy_session = None
 
     if not using_local_cache and not source.url:
@@ -399,10 +412,40 @@ async def subscribe_vod_proxy_output_stream(
         else:
             writer_task = None
         stderr_task = asyncio.create_task(_log_stderr(), name=f"vod-proxy-output-stderr-{connection_id}")
-        stdout_task = asyncio.create_task(_read_stdout(), name=f"vod-proxy-output-stdout-{connection_id}")
+        stdout_task = None
         await register_vod_proxy_output_disconnect(connection_id, _disconnect_active_output)
         if use_direct_upstream_input:
-            return True, (process, writer_task, stderr_task, stdout_task, b""), ""
+            started, startup_failure_reason, first_output_chunk = await wait_for_process_output_start(
+                process,
+                process.stdout,
+                timeout_seconds=20.0,
+            )
+            if not started:
+                await unregister_vod_proxy_output_disconnect(connection_id)
+                await terminate_ffmpeg_process(process)
+                if stderr_task is not None and not stderr_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(stderr_task), timeout=0.5)
+                    except Exception:
+                        pass
+                for task in (stderr_task, stdout_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except BaseException:
+                            pass
+                process = None
+                failure_summary = " | ".join(recent_stderr) or startup_failure_reason
+                return False, None, failure_summary
+            stdout_task = asyncio.create_task(_read_stdout(), name=f"vod-proxy-output-stdout-{connection_id}")
+            if should_start_cache_warm:
+                await start_vod_cache_download(
+                    cache_entry, f"{proxy_session_key}:cache-warm", request_headers=request_headers
+                )
+                should_start_cache_warm = False
+            return True, (process, writer_task, stderr_task, stdout_task, first_output_chunk), ""
+        stdout_task = asyncio.create_task(_read_stdout(), name=f"vod-proxy-output-stdout-{connection_id}")
         startup_timeout_seconds = 8.0
         if not using_local_cache and int(start_seconds or 0) > 0:
             startup_timeout_seconds = min(180.0, max(20.0, float(start_seconds) / 12.0))
@@ -502,7 +545,6 @@ async def subscribe_vod_proxy_output_stream(
 
     async def _generator():
         nonlocal should_start_cache_warm
-        closing_via_generator_exit = False
 
         async def _cleanup():
             await unregister_vod_proxy_output_disconnect(connection_id)
@@ -519,9 +561,6 @@ async def subscribe_vod_proxy_output_stream(
                     **source_event_context(source, source_url=source.url),
                 },
             )
-
-        def _schedule_cleanup() -> None:
-            asyncio.create_task(_cleanup())
 
         try:
             if first_output_chunk:
@@ -541,13 +580,7 @@ async def subscribe_vod_proxy_output_stream(
                     )
                     should_start_cache_warm = False
                 yield chunk
-        except GeneratorExit:
-            closing_via_generator_exit = True
-            raise
         finally:
-            if closing_via_generator_exit:
-                event_loop.call_soon(_schedule_cleanup)
-            else:
-                await _cleanup()
+            await _cleanup()
 
     return build_cso_stream_plan(_generator(), policy_content_type(policy), None, 200)

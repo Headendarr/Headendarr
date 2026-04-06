@@ -146,7 +146,7 @@ import {TicButton, TicDialogPopup, TicListToolbar, TicSelectInput, TicVodContent
 import VodContentDetails from 'components/VodContentDetails.vue';
 import {
   buildVodPlaybackProfiles,
-  ORIGINAL_BROWSER_VOD_PROFILE,
+  isBrowserSafeVodSourceContainer,
   resolveVodPlayerStreamType,
 } from 'src/utils/vodPlaybackProfiles';
 import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
@@ -621,7 +621,11 @@ export default {
       const sourceResolution = primaryCandidate?.sourceResolution || payload?.source_resolution || null;
       const durationSeconds = Number(primaryCandidate?.durationSeconds || payload?.duration_seconds || 0) || null;
       const streamType = resolveVodPlayerStreamType(primaryCandidate?.streamType || payload?.stream_type);
-      const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType);
+      const sourceContainer = String(
+        primaryCandidate?.containerExtension || payload?.container_extension || '',
+      ).trim().toLowerCase();
+      const forceBrowserTranscode = sourceContainer && !isBrowserSafeVodSourceContainer(sourceContainer);
+      const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType, forceBrowserTranscode);
       const initialProfile = playbackProfiles[0] || null;
       const playbackUrl = this.appendPlaybackProfile(previewUrl, initialProfile?.profile || '');
       this.videoStore.showPlayer({
@@ -682,15 +686,9 @@ export default {
       throw new Error(response?.data?.message || 'Failed to load preview');
     },
     async resolveUpstreamEpisodePreview(item, episode, options = {}) {
-      const containerExtension = episode?.container_extension || item?.container_extension || undefined;
       const response = await axios.get(
         `/tic-api/vod/upstream/series/${Number(item.id)}/${Number(episode?.id || 0)}/preview`,
-        {
-          params: {
-            container_extension: containerExtension,
-            ...options,
-          },
-        },
+        {params: options},
       );
       if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
         return response.data;

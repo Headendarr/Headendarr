@@ -56,10 +56,10 @@ CSO_INGEST_RW_TIMEOUT_US = 15_000_000
 CSO_INGEST_TIMEOUT_US = 10_000_000
 
 # Probe size for ingest ffmpeg input inspection.
-CSO_INGEST_PROBE_SIZE_BYTES = 2 * 1024 * 1024
+CSO_INGEST_PROBE_SIZE_BYTES = 1 * 1024 * 1024
 
 # Analyse duration for ingest ffmpeg input inspection.
-CSO_INGEST_ANALYSE_DURATION_US = 3_000_000
+CSO_INGEST_ANALYSE_DURATION_US = 1_000_000
 
 # Frame-rate probe sample size for ingest ffmpeg input inspection.
 CSO_INGEST_FPS_PROBE_SIZE = 64
@@ -166,6 +166,8 @@ MPEGTS_CHUNK_BYTES = MPEGTS_PACKET_SIZE_BYTES * 87
 CONTAINER_TO_FFMPEG_FORMAT = {
     "mpegts": "mpegts",
     "ts": "mpegts",
+    "avi": "avi",
+    "flv": "flv",
     "matroska": "matroska",
     "mkv": "matroska",
     "mp4": "mp4",

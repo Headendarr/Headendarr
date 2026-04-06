@@ -70,6 +70,7 @@ def _build_preview_candidate(
     priority: int | None = 0,
     source_resolution=None,
     duration_seconds=None,
+    container_extension: str | None = None,
 ) -> dict[str, object]:
     resolved_priority = 0 if priority is None else int(priority)
     candidate = {
@@ -82,6 +83,8 @@ def _build_preview_candidate(
         candidate["source_resolution"] = source_resolution
     if duration_seconds is not None:
         candidate["duration_seconds"] = duration_seconds
+    if container_extension:
+        candidate["container_extension"] = str(container_extension).strip().lstrip(".").lower()
     return candidate
 
 
@@ -356,6 +359,7 @@ async def upstream_movie_preview(item_id: int):
                     source_id=source_id,
                     source_resolution=payload.get("source_resolution") or {},
                     duration_seconds=payload.get("duration_seconds"),
+                    container_extension=payload.get("container_extension"),
                 )
             ]
         )
@@ -368,7 +372,6 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
     user = await get_user_from_token()
     if not user or not getattr(user, "streaming_key", None):
         return jsonify({"success": False, "message": "Streaming key missing"}), 400
-    container_extension = request.args.get("container_extension")
     resolved_episode_id = convert_to_int(upstream_episode_id, default=0)
     if resolved_episode_id <= 0:
         return jsonify({"success": False, "message": "Series episode id is required"}), 400
@@ -376,7 +379,6 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
         int(item_id),
         VOD_KIND_SERIES,
         upstream_episode_id=upstream_episode_id,
-        container_extension=container_extension,
         allow_probe=False,
         background_probe=True,
     )
@@ -397,7 +399,6 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
         profile=profile,
         source_id=source_id,
         upstream_episode_id=str(resolved_episode_id),
-        container_extension=container_extension,
     )
     return jsonify(
         _build_preview_response(
@@ -408,6 +409,7 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
                     source_id=source_id,
                     source_resolution=payload.get("source_resolution") or {},
                     duration_seconds=payload.get("duration_seconds"),
+                    container_extension=payload.get("container_extension"),
                 )
             ]
         )
