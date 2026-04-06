@@ -314,6 +314,8 @@ const hlsRecoveryState = ref({
   networkRecoveryAttempts: 0,
   lastMediaRecoveryAt: 0,
 });
+let playerInitSequence = Promise.resolve();
+let activeInitRunId = 0;
 const streamDetails = ref({
   resolution: '',
   videoCodec: '',
@@ -451,6 +453,17 @@ const streamDetailsText = computed(() => {
   return parts.join(' · ');
 });
 
+const playbackInitKey = computed(() => {
+  if (!videoStore.isVisible) {
+    return '';
+  }
+  const url = String(videoStore.streamUrl || '').trim();
+  if (!url) {
+    return '';
+  }
+  return `${url}|${videoStore.streamType || 'auto'}`;
+});
+
 function formatTime(totalSeconds) {
   const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
   const hours = Math.floor(seconds / 3600);
@@ -470,6 +483,69 @@ async function safePlay(el) {
     console.warn('[FloatingPlayer] play failed', error);
     return {started: false, error};
   }
+}
+
+async function waitForMpegtsStartupReady(player, el, timeoutMs = 2500) {
+  await new Promise((resolve) => {
+    let settled = false;
+    let timeoutId = null;
+    let mediaInfoHandler = null;
+    let loadedMetadataHandler = null;
+    let canPlayHandler = null;
+    let playingHandler = null;
+
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (player && mediaInfoHandler && player.off) {
+        try {
+          player.off(mpegts.Events.MEDIA_INFO, mediaInfoHandler);
+        } catch (error) {
+          console.warn('Failed to detach MPEG-TS media info handler:', error);
+        }
+      }
+      if (el && loadedMetadataHandler) {
+        el.removeEventListener('loadedmetadata', loadedMetadataHandler);
+      }
+      if (el && canPlayHandler) {
+        el.removeEventListener('canplay', canPlayHandler);
+      }
+      if (el && playingHandler) {
+        el.removeEventListener('playing', playingHandler);
+      }
+    };
+
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    mediaInfoHandler = () => finish();
+    loadedMetadataHandler = () => finish();
+    canPlayHandler = () => finish();
+    playingHandler = () => finish();
+
+    if (player && player.on) {
+      player.on(mpegts.Events.MEDIA_INFO, mediaInfoHandler);
+    }
+    if (el) {
+      el.addEventListener('loadedmetadata', loadedMetadataHandler, {once: true});
+      el.addEventListener('canplay', canPlayHandler, {once: true});
+      el.addEventListener('playing', playingHandler, {once: true});
+      if (el.readyState >= 1) {
+        finish();
+        return;
+      }
+    }
+
+    timeoutId = setTimeout(() => finish(), timeoutMs);
+  });
 }
 
 function clearErrorMessage() {
@@ -1241,6 +1317,7 @@ function updateFullscreenState() {
 }
 
 async function initPlayer() {
+  const runId = ++activeInitRunId;
   const token = ++initToken.value;
   cleanupPlayer();
   clearErrorMessage();
@@ -1450,6 +1527,14 @@ async function initPlayer() {
         levelLoadingMaxRetry: 2,
         levelLoadingRetryDelay: 1000,
       });
+      if (runId !== activeInitRunId || token !== initToken.value) {
+        try {
+          hls.destroy();
+        } catch (error) {
+          console.warn('Failed to destroy stale HLS instance:', error);
+        }
+        return;
+      }
       hlsInstance.value = hls;
       hlsInstances.add(hls);
       hls.loadSource(url);
@@ -1573,10 +1658,46 @@ async function initPlayer() {
         url,
         isLive: true,
       });
+      if (!player) {
+        setErrorMessage('Unable to start playback.');
+        isLoading.value = false;
+        return;
+      }
+      if (runId !== activeInitRunId || token !== initToken.value) {
+        try {
+          player.pause();
+          player.unload?.();
+          player.detachMediaElement?.();
+        } catch (error) {
+          console.warn('Failed to stop stale MPEG-TS instance:', error);
+        }
+        try {
+          player.destroy();
+        } catch (error) {
+          console.warn('Failed to destroy stale MPEG-TS instance:', error);
+        }
+        return;
+      }
       mpegtsInstance.value = player;
       mpegtsInstances.add(player);
       player.attachMediaElement(el);
       player.load();
+      await waitForMpegtsStartupReady(player, el);
+      if (runId !== activeInitRunId || token !== initToken.value) {
+        try {
+          player.pause();
+          player.unload?.();
+          player.detachMediaElement?.();
+        } catch (error) {
+          console.warn('Failed to stop stale MPEG-TS instance after startup delay:', error);
+        }
+        try {
+          player.destroy();
+        } catch (error) {
+          console.warn('Failed to destroy stale MPEG-TS instance after startup delay:', error);
+        }
+        return;
+      }
       const {started, error} = await safePlay(el);
       applyPersistedVolume(el);
       attachTextTrackListeners(el);
@@ -2096,12 +2217,24 @@ function handlePiPChange() {
   updatePiPState();
 }
 
-watch(
-  () => videoStore.streamUrl,
-  () => {
-    if (videoStore.isVisible) {
-      initPlayer();
+function requestPlayerInit() {
+  playerInitSequence = playerInitSequence.catch(() => {
+  }).then(async () => {
+    if (!videoStore.isVisible || !videoStore.streamUrl) {
+      return;
     }
+    await initPlayer();
+  });
+  return playerInitSequence;
+}
+
+watch(
+  playbackInitKey,
+  (nextKey, previousKey) => {
+    if (!nextKey || nextKey === previousKey) {
+      return;
+    }
+    void requestPlayerInit();
   },
 );
 
@@ -2129,7 +2262,6 @@ watch(
       desktopControlsActive.value = false;
     }
 
-    initPlayer();
     void loadVodPreviewMetadata();
   },
 );
