@@ -78,6 +78,7 @@ class CsoOutputSession:
         self.ingest_recovery_task = None
         self.stderr_task = None
         self.running = False
+        self.lifecycle_lock = asyncio.Lock()
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
         self.clients = {}
@@ -242,124 +243,125 @@ class CsoOutputSession:
         return True
 
     async def start(self):
-        async with self.lock:
-            if self.running:
-                return
-            if self.ingest_session is None and self.slate_session is None:
-                self.last_error = "no_input_session"
-                return
-            self.start_ts = time.time()
-            self.first_output_chunk_logged = False
-            self.first_ingest_chunk_logged = False
-            self._input_mode = "slate" if self.use_slate_as_input else "ingest"
-            if self.ingest_session is not None:
-                await self.ingest_session.start()
-                self.ingest_queue = await self.ingest_session.add_subscriber(
-                    self.key,
-                    prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
-                )
-            if self.use_slate_as_input and self.slate_session is not None:
-                await self.slate_session.start()
-                self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
-                prime_deadline = time.time() + 3.0
-                primed_bytes = 0
-                while time.time() < prime_deadline and primed_bytes < 128 * 1024:
-                    timeout_seconds = max(0.1, prime_deadline - time.time())
-                    try:
-                        primed_chunk = await asyncio.wait_for(self.slate_queue.get(), timeout=timeout_seconds)
-                    except asyncio.TimeoutError:
-                        break
-                    if primed_chunk is None:
-                        break
-                    self._pending_input_chunks.append(("slate", primed_chunk))
-                    primed_bytes += len(primed_chunk)
+        async with self.lifecycle_lock:
+            async with self.lock:
+                if self.running:
+                    return
+                if self.ingest_session is None and self.slate_session is None:
+                    self.last_error = "no_input_session"
+                    return
+                self.start_ts = time.time()
+                self.first_output_chunk_logged = False
+                self.first_ingest_chunk_logged = False
+                self._input_mode = "slate" if self.use_slate_as_input else "ingest"
+                if self.ingest_session is not None:
+                    await self.ingest_session.start()
+                    self.ingest_queue = await self.ingest_session.add_subscriber(
+                        self.key,
+                        prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                    )
+                if self.use_slate_as_input and self.slate_session is not None:
+                    await self.slate_session.start()
+                    self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
+                    prime_deadline = time.time() + 3.0
+                    primed_bytes = 0
+                    while time.time() < prime_deadline and primed_bytes < 128 * 1024:
+                        timeout_seconds = max(0.1, prime_deadline - time.time())
+                        try:
+                            primed_chunk = await asyncio.wait_for(self.slate_queue.get(), timeout=timeout_seconds)
+                        except asyncio.TimeoutError:
+                            break
+                        if primed_chunk is None:
+                            break
+                        self._pending_input_chunks.append(("slate", primed_chunk))
+                        primed_bytes += len(primed_chunk)
+                    logger.info(
+                        "CSO output primed slate input channel=%s output_key=%s primed_bytes=%s pending_chunks=%s elapsed_ms=%s",
+                        self.channel_id,
+                        self.key,
+                        primed_bytes,
+                        len(self._pending_input_chunks),
+                        int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000),
+                    )
+                self.running = True
+                try:
+                    if self.use_slate_as_input or self.ingest_session is None:
+                        pipe_input_format = "mpegts"
+                        source_probe = dict(getattr(self.slate_session, "media_hint", {}) or {})
+                        source_identity = clean_text(getattr(self.slate_session, "key", "")) or self.key
+                    else:
+                        pipe_input_format = resolve_vod_pipe_container(
+                            self.ingest_session.current_source,
+                            source_probe=self.ingest_session.current_source_probe,
+                        )
+                        source_probe = dict(self.ingest_session.current_source_probe or {})
+                        source_identity = self.ingest_session.current_source_url or clean_text(
+                            getattr(self.ingest_session.current_source, "url", "")
+                        )
+
+                    async def _attempt_start(effective_policy):
+                        command = CsoFfmpegCommandBuilder(
+                            effective_policy,
+                            pipe_input_format=pipe_input_format,
+                            source_probe=source_probe,
+                        ).build_output_command()
+                        self._recent_ffmpeg_stderr.clear()
+                        logger.info(
+                            "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
+                            self.channel_id,
+                            self.key,
+                            policy_log_label(effective_policy),
+                            command,
+                        )
+                        process = await asyncio.create_subprocess_exec(
+                            *command,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        self.process = process
+                        read_task = asyncio.create_task(self._read_loop())
+                        write_task = asyncio.create_task(self._write_loop())
+                        stderr_task = asyncio.create_task(self._stderr_loop())
+                        started, failure_reason = await self._wait_for_startup_ready(process)
+                        if started:
+                            return True, (process, read_task, write_task, stderr_task), ""
+                        logger.warning(
+                            "CSO output start failed channel=%s output_key=%s reason=%s",
+                            self.channel_id,
+                            self.key,
+                            failure_reason or "unknown",
+                        )
+                        await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
+                        self.process = None
+                        return False, None, failure_reason
+
+                    started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+                        self.output_policy,
+                        source_identity,
+                        _attempt_start,
+                    )
+                    if not started:
+                        log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
+                        self.running = False
+                        self.last_error = failure_reason or "output_start_failed"
+                        return
+                    self.output_policy = dict(start_policy)
+                    self.process, self.read_task, self.write_task, self.stderr_task = result
+                    self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
+                except Exception as exc:
+                    self.running = False
+                    self.last_error = f"output_start_failed:{exc}"
+                    raise
                 logger.info(
-                    "CSO output primed slate input channel=%s output_key=%s primed_bytes=%s pending_chunks=%s elapsed_ms=%s",
+                    "CSO output started channel=%s output_key=%s policy=(%s) clients=%s",
                     self.channel_id,
                     self.key,
-                    primed_bytes,
-                    len(self._pending_input_chunks),
-                    int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000),
+                    policy_log_label(self.output_policy),
+                    len(self.clients),
                 )
-            self.running = True
-            try:
-                if self.use_slate_as_input or self.ingest_session is None:
-                    pipe_input_format = "mpegts"
-                    source_probe = dict(getattr(self.slate_session, "media_hint", {}) or {})
-                    source_identity = clean_text(getattr(self.slate_session, "key", "")) or self.key
-                else:
-                    pipe_input_format = resolve_vod_pipe_container(
-                        self.ingest_session.current_source,
-                        source_probe=self.ingest_session.current_source_probe,
-                    )
-                    source_probe = dict(self.ingest_session.current_source_probe or {})
-                    source_identity = self.ingest_session.current_source_url or clean_text(
-                        getattr(self.ingest_session.current_source, "url", "")
-                    )
-
-                async def _attempt_start(effective_policy):
-                    command = CsoFfmpegCommandBuilder(
-                        effective_policy,
-                        pipe_input_format=pipe_input_format,
-                        source_probe=source_probe,
-                    ).build_output_command()
-                    self._recent_ffmpeg_stderr.clear()
-                    logger.info(
-                        "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
-                        self.channel_id,
-                        self.key,
-                        policy_log_label(effective_policy),
-                        command,
-                    )
-                    process = await asyncio.create_subprocess_exec(
-                        *command,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    self.process = process
-                    read_task = asyncio.create_task(self._read_loop())
-                    write_task = asyncio.create_task(self._write_loop())
-                    stderr_task = asyncio.create_task(self._stderr_loop())
-                    started, failure_reason = await self._wait_for_startup_ready(process)
-                    if started:
-                        return True, (process, read_task, write_task, stderr_task), ""
-                    logger.warning(
-                        "CSO output start failed channel=%s output_key=%s reason=%s",
-                        self.channel_id,
-                        self.key,
-                        failure_reason or "unknown",
-                    )
-                    await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
-                    self.process = None
-                    return False, None, failure_reason
-
-                started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
-                    self.output_policy,
-                    source_identity,
-                    _attempt_start,
-                )
-                if not started:
-                    log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
-                    self.running = False
-                    self.last_error = failure_reason or "output_start_failed"
-                    return
-                self.output_policy = dict(start_policy)
-                self.process, self.read_task, self.write_task, self.stderr_task = result
-                self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
-            except Exception as exc:
-                self.running = False
-                self.last_error = f"output_start_failed:{exc}"
-                raise
-            logger.info(
-                "CSO output started channel=%s output_key=%s policy=(%s) clients=%s",
-                self.channel_id,
-                self.key,
-                policy_log_label(self.output_policy),
-                len(self.clients),
-            )
-            if self.ingest_recovery_task is None:
-                self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
+                if self.ingest_recovery_task is None:
+                    self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
 
     async def _ingest_recovery_loop(self):
         if self.ingest_session is None:
@@ -826,95 +828,96 @@ class CsoOutputSession:
             removed += 1
         return removed
 
-    async def stop(self, force=False):
-        async with self.lock:
-            if not self.running and not self.process and not self.clients:
-                return
-            if not force and self.clients:
-                return
-            self.running = False
-            process = self.process
-            self.process = None
-            ingest_queue = self.ingest_queue
-            self.ingest_queue = None
-            slate_queue = self.slate_queue
-            self.slate_queue = None
-            read_task = self.read_task
-            self.read_task = None
-            write_task = self.write_task
-            self.write_task = None
-            ingest_recovery_task = self.ingest_recovery_task
-            self.ingest_recovery_task = None
-            stderr_task = self.stderr_task
-            self.stderr_task = None
-            client_count = len(self.clients)
-        logger.info(
-            "Stopping CSO output channel=%s output_key=%s clients=%s force=%s policy=(%s)",
-            self.channel_id,
-            self.key,
-            client_count,
-            force,
-            policy_log_label(self.output_policy),
-        )
-        return_code = None
-        if process:
-            try:
-                if process.stdin:
-                    process.stdin.close()
-            except Exception:
-                pass
-            try:
-                return_code = await wait_process_exit_with_timeout(process, timeout_seconds=0.75)
-            except Exception:
+    async def stop(self, force: bool = False):
+        async with self.lifecycle_lock:
+            async with self.lock:
+                if not self.running and not self.process and not self.clients:
+                    return
+                if not force and self.clients:
+                    return
+                self.running = False
+                process = self.process
+                self.process = None
+                ingest_queue = self.ingest_queue
+                self.ingest_queue = None
+                slate_queue = self.slate_queue
+                self.slate_queue = None
+                read_task = self.read_task
+                self.read_task = None
+                write_task = self.write_task
+                self.write_task = None
+                ingest_recovery_task = self.ingest_recovery_task
+                self.ingest_recovery_task = None
+                stderr_task = self.stderr_task
+                self.stderr_task = None
+                client_count = len(self.clients)
+            logger.info(
+                "Stopping CSO output channel=%s output_key=%s clients=%s force=%s policy=(%s)",
+                self.channel_id,
+                self.key,
+                client_count,
+                force,
+                policy_log_label(self.output_policy),
+            )
+            return_code = None
+            if process:
                 try:
-                    process.terminate()
-                    return_code = await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
+                    if process.stdin:
+                        process.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    return_code = await wait_process_exit_with_timeout(process, timeout_seconds=0.75)
                 except Exception:
                     try:
-                        process.kill()
-                        return_code = await wait_process_exit_with_timeout(process, timeout_seconds=6.0)
+                        process.terminate()
+                        return_code = await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
                     except Exception:
-                        if process.returncode is not None or not process_is_running(process.pid):
-                            return_code = process.returncode if process.returncode is not None else -9
-                        else:
-                            logger.warning(
-                                "CSO output process did not exit after kill channel=%s output_key=%s",
-                                self.channel_id,
-                                self.key,
-                            )
-        try:
-            if ingest_queue is not None and self.ingest_session is not None:
-                await self.ingest_session.remove_subscriber(self.key)
-        except Exception:
-            pass
-        try:
-            if slate_queue is not None and self.slate_session is not None:
-                await slate_queue.clear()
-                await self.slate_session.remove_subscriber(self.key)
-        except Exception:
-            pass
-        for task in (read_task, write_task, ingest_recovery_task, stderr_task):
-            if not task or task.done():
-                continue
-            task.cancel()
+                        try:
+                            process.kill()
+                            return_code = await wait_process_exit_with_timeout(process, timeout_seconds=6.0)
+                        except Exception:
+                            if process.returncode is not None or not process_is_running(process.pid):
+                                return_code = process.returncode if process.returncode is not None else -9
+                            else:
+                                logger.warning(
+                                    "CSO output process did not exit after kill channel=%s output_key=%s",
+                                    self.channel_id,
+                                    self.key,
+                                )
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                if ingest_queue is not None and self.ingest_session is not None:
+                    await self.ingest_session.remove_subscriber(self.key)
             except Exception:
                 pass
-        logger.info(
-            "CSO output stopped channel=%s output_key=%s return_code=%s policy=(%s)",
-            self.channel_id,
-            self.key,
-            return_code,
-            policy_log_label(self.output_policy),
-        )
-        async with self.lock:
-            for q in self.clients.values():
-                await q.put_eof()
-            self.client_drop_state.clear()
-            self.client_last_touch.clear()
+            try:
+                if slate_queue is not None and self.slate_session is not None:
+                    await slate_queue.clear()
+                    await self.slate_session.remove_subscriber(self.key)
+            except Exception:
+                pass
+            for task in (read_task, write_task, ingest_recovery_task, stderr_task):
+                if not task or task.done():
+                    continue
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+            logger.info(
+                "CSO output stopped channel=%s output_key=%s return_code=%s policy=(%s)",
+                self.channel_id,
+                self.key,
+                return_code,
+                policy_log_label(self.output_policy),
+            )
+            async with self.lock:
+                for q in self.clients.values():
+                    await q.put_eof()
+                self.client_drop_state.clear()
+                self.client_last_touch.clear()
 
 
 class CsoHlsOutputSession:

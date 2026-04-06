@@ -51,6 +51,7 @@ class VodChannelIngestSession:
         self.segment_task = None
         self.stderr_task = None
         self.running = False
+        self.lifecycle_lock = asyncio.Lock()
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
         self.subscribers = {}
@@ -142,29 +143,30 @@ class VodChannelIngestSession:
         return remaining
 
     async def start(self):
-        async with self.lock:
-            if self.running and self.segment_task is not None and not self.segment_task.done():
-                return
-            self.running = True
-            self.last_error = None
-            self.failover_exhausted = False
-            self.current_source = None
-            self.current_source_url = ""
-            self.current_source_probe = {}
-            self.history.clear()
-            self.history_bytes = 0
-            self.first_healthy_stream_seen = False
-            self.current_segment_healthy = False
-            self.session_start_ts = time.time()
-            self._recent_ffmpeg_stderr.clear()
-            self._startup_event = asyncio.Event()
-            self._startup_succeeded = False
-            self.segment_task = asyncio.create_task(
-                self._run_loop(),
-                name=f"vod-channel-ingest-{self.channel_id}",
-            )
-            startup_event = self._startup_event
-        await startup_event.wait()
+        async with self.lifecycle_lock:
+            async with self.lock:
+                if self.running and self.segment_task is not None and not self.segment_task.done():
+                    return
+                self.running = True
+                self.last_error = None
+                self.failover_exhausted = False
+                self.current_source = None
+                self.current_source_url = ""
+                self.current_source_probe = {}
+                self.history.clear()
+                self.history_bytes = 0
+                self.first_healthy_stream_seen = False
+                self.current_segment_healthy = False
+                self.session_start_ts = time.time()
+                self._recent_ffmpeg_stderr.clear()
+                self._startup_event = asyncio.Event()
+                self._startup_succeeded = False
+                self.segment_task = asyncio.create_task(
+                    self._run_loop(),
+                    name=f"vod-channel-ingest-{self.channel_id}",
+                )
+                startup_event = self._startup_event
+            await startup_event.wait()
 
     async def _read_stderr(self, process, entry):
         if process.stderr is None:
@@ -721,20 +723,21 @@ class VodChannelIngestSession:
         for queue in subscribers:
             await queue.put_eof()
 
-    async def stop(self, force=False):
-        async with self.lock:
-            if not self.running and self.segment_task is None and not self.subscribers:
-                return
-            if not force and self.subscribers:
-                return
-            self.running = False
-            segment_task = self.segment_task
-            self.segment_task = None
-        await self._close_active_segment()
-        if segment_task is not None and not segment_task.done():
-            segment_task.cancel()
-            try:
-                await segment_task
-            except BaseException:
-                pass
-        await self._finish_session()
+    async def stop(self, force: bool = False):
+        async with self.lifecycle_lock:
+            async with self.lock:
+                if not self.running and self.segment_task is None and not self.subscribers:
+                    return
+                if not force and self.subscribers:
+                    return
+                self.running = False
+                segment_task = self.segment_task
+                self.segment_task = None
+            await self._close_active_segment()
+            if segment_task is not None and not segment_task.done():
+                segment_task.cancel()
+                try:
+                    await segment_task
+                except BaseException:
+                    pass
+            await self._finish_session()
