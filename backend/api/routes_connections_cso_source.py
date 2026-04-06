@@ -1460,6 +1460,9 @@ async def _stream_cso_vod_route(resolver, identity: str):
     stream_key = get_request_stream_key()
     stream_user = get_request_stream_user()
     stream_username = stream_user.username if stream_user is not None else None
+    source_item = getattr(candidate, "source_item", None)
+    source_id = getattr(source_item, "id", None)
+    source_container = str(getattr(source_item, "container_extension", "") or "").strip().lower() or None
 
     vod_item_id = None
     vod_category_id = None
@@ -1486,6 +1489,24 @@ async def _stream_cso_vod_route(resolver, identity: str):
     connection_id = _get_connection_id()
     request_client_ip = get_request_client_ip()
     request_user_agent = request.headers.get("User-Agent")
+    selected_mode = "session"
+    if use_proxy_session:
+        selected_mode = "proxy"
+    elif use_restartable_output:
+        selected_mode = "restartable_output"
+    logger.info(
+        "CSO VOD route request path=%s connection_id=%s mode=%s profile=%s source_id=%s item_id=%s episode_id=%s start_seconds=%s container_extension=%s upstream_url=%s",
+        request.path,
+        connection_id,
+        selected_mode,
+        effective_profile,
+        source_id,
+        vod_item_id,
+        vod_episode_id,
+        start_seconds,
+        source_container,
+        upstream_url or "",
+    )
     await upsert_stream_activity(
         identity,
         connection_id=connection_id,
@@ -1535,7 +1556,27 @@ async def _stream_cso_vod_route(resolver, identity: str):
         )
 
     if plan.generator is None:
+        logger.warning(
+            "CSO VOD route start failed path=%s connection_id=%s mode=%s profile=%s source_id=%s status=%s",
+            request.path,
+            connection_id,
+            selected_mode,
+            effective_profile,
+            source_id,
+            int(plan.status_code or 503),
+        )
         return Response("Unable to start playback", status=int(plan.status_code or 503))
+
+    logger.info(
+        "CSO VOD route stream started path=%s connection_id=%s mode=%s profile=%s source_id=%s content_type=%s status=%s",
+        request.path,
+        connection_id,
+        selected_mode,
+        effective_profile,
+        source_id,
+        plan.content_type or "application/octet-stream",
+        int(plan.status_code or 200),
+    )
 
     @stream_with_context
     async def generate_vod_stream():
@@ -1553,6 +1594,14 @@ async def _stream_cso_vod_route(resolver, identity: str):
                 event_type="stream_stop",
                 endpoint_override=request.path,
                 user=stream_user,
+            )
+            logger.info(
+                "CSO VOD route stream closed path=%s connection_id=%s mode=%s profile=%s source_id=%s",
+                request.path,
+                connection_id,
+                selected_mode,
+                effective_profile,
+                source_id,
             )
 
     response = Response(
