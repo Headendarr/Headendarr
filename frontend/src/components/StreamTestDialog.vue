@@ -5,7 +5,7 @@
     width="700px"
     @hide="onDialogHide"
   >
-    <div class="q-pa-md">
+    <div class="q-pa-md stream-test-dialog">
       <q-form class="tic-form-layout q-mb-md">
         <TicTextInput
           v-model="localStreamUrl"
@@ -79,7 +79,7 @@
         </div>
       </div>
 
-      <div v-else-if="report">
+      <div v-else-if="report" class="diagnostic-report">
         <div class="row q-col-gutter-md">
           <!-- Geo Info -->
           <div class="col-12 col-md-6">
@@ -97,8 +97,24 @@
                 </q-item>
                 <q-item>
                   <q-item-section>
-                    <q-item-label caption>IP Address</q-item-label>
-                    <q-item-label>{{ report.dns?.ip || 'Unknown' }}</q-item-label>
+                    <q-item-label caption>DNS Answers</q-item-label>
+                    <q-item-label>
+                      {{ formatDnsAnswers(report.dns?.answers) }}
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label caption>Connected Endpoint</q-item-label>
+                    <q-item-label>
+                      {{ formatConnectedEndpoint(report.connection) }}
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item v-if="report.connection?.final_hostname">
+                  <q-item-section>
+                    <q-item-label caption>Final Host</q-item-label>
+                    <q-item-label>{{ report.connection.final_hostname }}</q-item-label>
                   </q-item-section>
                 </q-item>
                 <q-item>
@@ -116,6 +132,12 @@
                   <q-item-section>
                     <q-item-label caption>ISP</q-item-label>
                     <q-item-label>{{ report.geo?.isp || 'Unknown' }}</q-item-label>
+                  </q-item-section>
+                </q-item>
+                <q-item v-if="report.trace?.target">
+                  <q-item-section>
+                    <q-item-label caption>Route Trace</q-item-label>
+                    <q-item-label>{{ formatTraceSummary(report.trace) }}</q-item-label>
                   </q-item-section>
                 </q-item>
                 <q-item v-if="report.proxy_hops_count > 0">
@@ -150,6 +172,14 @@
               </q-card-section>
               <q-separator />
               <q-list dense>
+                <q-item>
+                  <q-item-section>
+                    <q-item-label caption>Time To First Data</q-item-label>
+                    <q-item-label :class="firstDataClass(report.probe?.time_to_first_media_seconds)">
+                      {{ formatFirstDataTime(report.probe?.time_to_first_media_seconds) }}
+                    </q-item-label>
+                  </q-item-section>
+                </q-item>
                 <q-item>
                   <q-item-section>
                     <q-item-label caption>Average Speed</q-item-label>
@@ -196,10 +226,9 @@
         </div>
 
         <!-- Logs -->
-        <div class="q-mt-md">
+        <div class="q-mt-md diagnostic-logs-section">
           <div class="text-subtitle2 q-mb-sm">Detailed Logs</div>
-          <div class="diagnostic-logs q-pa-sm rounded-borders scroll"
-               style="max-height: 200px; font-family: monospace; font-size: 12px;">
+          <div class="diagnostic-logs q-pa-sm rounded-borders scroll">
             <div v-for="(log, i) in report.logs" :key="i">{{ log }}</div>
             <div v-for="(err, i) in report.errors" :key="'err-'+i" class="text-negative">{{ err }}</div>
           </div>
@@ -384,10 +413,36 @@ export default {
       if (speed === undefined || speed === null) return 'N/A';
       return speed.toFixed(2) + 'x';
     },
+    formatFirstDataTime(seconds) {
+      if (seconds === undefined || seconds === null) return 'N/A';
+      if (seconds < 1) return (seconds * 1000).toFixed(0) + ' ms';
+      return seconds.toFixed(2) + ' s';
+    },
     formatBitrate(bitrate) {
       if (!bitrate) return 'N/A';
       if (bitrate > 1000000) return (bitrate / 1000000).toFixed(2) + ' Mbps';
       return (bitrate / 1000).toFixed(0) + ' Kbps';
+    },
+    formatDnsAnswers(answers) {
+      if (!Array.isArray(answers) || answers.length === 0) return 'Unknown';
+      return answers.map((item) => item.address).join(', ');
+    },
+    formatConnectedEndpoint(connection) {
+      if (!connection?.peer_ip) return 'Unknown';
+      if (connection.peer_port) return connection.peer_ip + ':' + connection.peer_port;
+      return connection.peer_ip;
+    },
+    formatTraceSummary(trace) {
+      if (!trace?.target) return 'Not run';
+      const hopCount = Array.isArray(trace.hops) ? trace.hops.length : 0;
+      const status = trace.completed ? 'completed' : 'partial';
+      return `${trace.target} via ${hopCount} hop${hopCount === 1 ? '' : 's'} (${status})`;
+    },
+    firstDataClass(seconds) {
+      if (seconds === undefined || seconds === null) return '';
+      if (seconds < 1) return 'text-positive text-weight-bold';
+      if (seconds < 3) return 'text-warning text-weight-bold';
+      return 'text-negative text-weight-bold';
     },
     speedClass(speed) {
       if (!speed) return '';
@@ -434,6 +489,14 @@ export default {
 </script>
 
 <style scoped>
+.stream-test-dialog {
+  min-height: 100%;
+}
+
+.diagnostic-report {
+  min-height: 100%;
+}
+
 .diagnostic-loading-container {
   min-height: 350px;
 }
@@ -513,5 +576,19 @@ export default {
 .diagnostic-empty-state {
   background: color-mix(in srgb, var(--app-surface-bg), var(--q-primary) 4%);
   border: 1px solid var(--q-separator-color, rgba(0, 0, 0, 0.12));
+}
+
+.diagnostic-logs-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.diagnostic-logs {
+  min-height: 200px;
+  max-height: clamp(200px, 42vh, 420px);
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

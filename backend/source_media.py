@@ -7,6 +7,7 @@ from fractions import Fraction
 
 from sqlalchemy import select
 
+from backend.hls_multiplexer import get_header_value
 from backend.http_headers import sanitise_headers
 from backend.models import ChannelSource, VodCategoryEpisode, XcVodItem, Session
 
@@ -17,17 +18,6 @@ def _clean_text(value):
 
 def _clean_key(value):
     return _clean_text(value).lower()
-
-
-def _header_value(headers, name):
-    # TODO: Remove this and update all uses of this funciotn in this file with the hls_multiplexer.py version. Updte the hls_multiplexer to be named "get_header_value"
-    target = _clean_key(name)
-    if not target:
-        return ""
-    for key, value in (headers or {}).items():
-        if _clean_key(key) == target:
-            return _clean_text(value)
-    return ""
 
 
 def _format_ffmpeg_headers_arg(headers):
@@ -111,7 +101,7 @@ async def probe_stream_media_shape(source_url, user_agent=None, request_headers=
         "-show_streams",
         "-show_error",
     ]
-    user_agent_value = _clean_text(user_agent) or _header_value(header_values, "User-Agent")
+    user_agent_value = _clean_text(user_agent) or get_header_value(header_values, "User-Agent")
     if user_agent_value:
         command += ["-user_agent", user_agent_value]
     header_arg = _format_ffmpeg_headers_arg(header_values)

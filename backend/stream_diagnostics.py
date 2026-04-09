@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import ipaddress
 import logging
 import socket
 import time
 import aiohttp
 import base64
+import shutil
 from urllib.parse import parse_qsl, urlparse, urlunparse
 from backend.config import flask_run_port
+from backend.hls_multiplexer import get_header_value
 from backend.http_headers import sanitise_headers
 from backend.source_media import probe_stream_media_shape
 
@@ -45,9 +48,17 @@ class StreamProbe:
             "proxy_hops_count": 0,
             "proxy_chain": [],
             "dns": {},
+            "connection": {},
+            "trace": {"target": None, "protocol": "", "hops": [], "completed": False},
             "geo": {},
             "media": {},
-            "probe": {"avg_speed": 0, "avg_bitrate": 0, "health": "unknown", "summary": ""},
+            "probe": {
+                "time_to_first_media_seconds": None,
+                "avg_speed": 0,
+                "avg_bitrate": 0,
+                "health": "unknown",
+                "summary": "",
+            },
             "errors": [],
             "logs": [],
         }
@@ -114,17 +125,6 @@ class StreamProbe:
         )
 
     @staticmethod
-    def _header_value(headers, name):
-         # TODO: Remove this and update all uses of this funciotn in this file with the hls_multiplexer.py version. Updte the hls_multiplexer to be named "get_header_value"
-        target = str(name or "").strip().lower()
-        if not target:
-            return None
-        for key, value in (headers or {}).items():
-            if str(key or "").strip().lower() == target:
-                return str(value or "").strip() or None
-        return None
-
-    @staticmethod
     def _build_ffmpeg_headers_arg(headers):
         lines = []
         for key, value in (headers or {}).items():
@@ -160,6 +160,55 @@ class StreamProbe:
     def _normalize_localhost_proxy_url(self):
         self.url = self._normalize_localhost_url(self.url, log=True)
         self.report["resolved_url"] = self.url
+
+    @staticmethod
+    def _socket_family_name(family: int) -> str:
+        if family == socket.AF_INET:
+            return "ipv4"
+        if family == socket.AF_INET6:
+            return "ipv6"
+        return str(int(family))
+
+    @staticmethod
+    def _extract_response_peer(response):
+        connection = getattr(response, "connection", None)
+        transport = getattr(connection, "transport", None) if connection is not None else None
+        if transport is None:
+            return None
+        peername = transport.get_extra_info("peername")
+        if isinstance(peername, tuple) and peername:
+            return {"ip": str(peername[0]), "port": int(peername[1]) if len(peername) > 1 else None}
+        return None
+
+    def _record_connection_endpoint(self, response):
+        final_url = str(getattr(response, "url", "") or "").strip()
+        final_parsed = urlparse(final_url) if final_url else urlparse(self.url)
+        peer = self._extract_response_peer(response) or {}
+        connection_report = {
+            "final_url": final_url or self.url,
+            "final_hostname": final_parsed.hostname,
+            "final_port": final_parsed.port,
+            "peer_ip": peer.get("ip"),
+            "peer_port": peer.get("port"),
+        }
+        self.report["connection"] = connection_report
+        if connection_report.get("peer_ip"):
+            self.log(
+                "HTTP preflight connected to "
+                f"{connection_report['peer_ip']}:{connection_report.get('peer_port') or '?'} "
+                f"for host {connection_report.get('final_hostname') or 'unknown'}"
+            )
+
+    def _route_trace_target(self):
+        connection = self.report.get("connection") or {}
+        peer_ip = str(connection.get("peer_ip") or "").strip()
+        if peer_ip:
+            return peer_ip
+        dns = self.report.get("dns") or {}
+        primary_ip = str(dns.get("primary_ip") or "").strip()
+        if primary_ip:
+            return primary_ip
+        return str(dns.get("hostname") or "").strip() or None
 
     @staticmethod
     def _decode_b64_url_candidate(candidate: str):
@@ -233,6 +282,7 @@ class StreamProbe:
         probe = self.report["probe"]
         speed = probe.get("avg_speed", 0)
         bitrate = probe.get("avg_bitrate", 0)
+        startup_seconds = probe.get("time_to_first_media_seconds")
         errors = self.report.get("errors", [])
         has_usable_media = bool(self.report.get("media")) or speed > 0 or bitrate > 50000
 
@@ -244,7 +294,12 @@ class StreamProbe:
         if speed == 0:
             if bitrate > 50000:
                 probe["health"] = "uncertain"
-                probe["summary"] = f"Downloaded at {bitrate/1000000:.2f} Mbps, but could not verify playback clock."
+                startup_text = (
+                    f" First media data arrived in {startup_seconds:.2f}s." if startup_seconds is not None else ""
+                )
+                probe["summary"] = (
+                    f"Downloaded at {bitrate / 1000000:.2f} Mbps, but could not verify playback clock.{startup_text}"
+                )
             else:
                 probe["health"] = "critical"
                 probe["summary"] = "No data received. The stream appears to be offline or blocked."
@@ -278,6 +333,9 @@ class StreamProbe:
             probe["health"] = "good"
             probe["summary"] = f"Stream is performing well ({speed:.2f}x)."
 
+        if startup_seconds is not None:
+            probe["summary"] = f"Startup took {startup_seconds:.2f}s. {probe['summary']}"
+
     async def run(self):
         self._running = True
         try:
@@ -298,16 +356,16 @@ class StreamProbe:
                 route_url = self.report.get("final_url") or self.url
                 await self._resolve_dns(route_url)
 
-                if self.include_geo_lookup:
-                    self.status = "geo"
-                    await self._fetch_geo()
-
                 self.status = "probing"
                 await self._run_hybrid_probe()
                 if self._cancel_requested:
                     self.status = "cancelled"
                     self.log(f"Diagnostic was cancelled: {self._cancel_reason}")
                     return
+
+                if self.include_geo_lookup:
+                    self.status = "geo"
+                    await self._fetch_geo()
 
                 self._generate_summary()
                 self.status = "finished"
@@ -335,9 +393,37 @@ class StreamProbe:
             raise ValueError("Invalid URL")
         try:
             loop = asyncio.get_running_loop()
-            ip = await asyncio.wait_for(loop.run_in_executor(None, socket.gethostbyname, hostname), timeout=10.0)
-            self.report["dns"] = {"hostname": hostname, "ip": ip}
-            self.log(f"Resolved to {ip}")
+            addrinfo = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)),
+                timeout=10.0,
+            )
+            answers = []
+            seen = set()
+            for family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+                address = str(sockaddr[0]).strip() if sockaddr else ""
+                if not address or address in seen:
+                    continue
+                seen.add(address)
+                answers.append({"family": self._socket_family_name(family), "address": address})
+            primary_ip = next((item["address"] for item in answers if item["family"] == "ipv4"), None)
+            if primary_ip is None and answers:
+                primary_ip = answers[0]["address"]
+            self.report["dns"] = {
+                "hostname": hostname,
+                "primary_ip": primary_ip,
+                "ip": primary_ip,
+                "answers": answers,
+            }
+            if answers:
+                answer_summary = ", ".join(f"{item['address']} ({item['family']})" for item in answers[:6])
+                extra_count = len(answers) - 6
+                if extra_count > 0:
+                    answer_summary = f"{answer_summary}, +{extra_count} more"
+                self.log(f"DNS answers: {answer_summary}")
+            elif primary_ip:
+                self.log(f"Resolved to {primary_ip}")
+            else:
+                self.log("DNS returned no addresses.")
         except asyncio.TimeoutError:
             self.log("DNS resolution timed out.")
             raise Exception("DNS Timeout")
@@ -346,7 +432,8 @@ class StreamProbe:
             raise
 
     async def _fetch_geo(self):
-        ip = self.report["dns"].get("ip")
+        connection = self.report.get("connection") or {}
+        ip = connection.get("peer_ip") or self.report["dns"].get("primary_ip") or self.report["dns"].get("ip")
         if not ip:
             return
         try:
@@ -356,6 +443,7 @@ class StreamProbe:
                         data = await resp.json()
                         if data.get("status") == "success":
                             self.report["geo"] = {
+                                "ip": ip,
                                 "country": data.get("country"),
                                 "city": data.get("city"),
                                 "isp": data.get("isp"),
@@ -363,6 +451,105 @@ class StreamProbe:
                             self.log(f"Location: {data.get('city')}, {data.get('country')} ({data.get('isp')})")
         except:
             pass
+
+    async def _run_route_trace(self):
+        target = self._route_trace_target()
+        if not target:
+            return
+        traceroute_binary = shutil.which("traceroute")
+        if not traceroute_binary:
+            self.log("Traceroute is not available in this environment.")
+            return
+
+        parsed_url = urlparse(self.report.get("connection", {}).get("final_url") or self.url)
+        target_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        protocol = "tcp"
+        command = [
+            traceroute_binary,
+            "-n",
+            "-T",
+            "-p",
+            str(int(target_port)),
+            "-q",
+            "1",
+            "-w",
+            "1",
+            "-m",
+            "20",
+            target,
+        ]
+        self.report["trace"] = {"target": target, "protocol": protocol, "hops": [], "completed": False}
+        self.log(f"Starting route trace to {target} using TCP/{target_port}.")
+
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_data, stderr_data = await asyncio.wait_for(process.communicate(), timeout=18.0)
+            if process.returncode not in (0, None):
+                stderr_text = (stderr_data or b"").decode("utf-8", errors="replace").strip()
+                self.log(f"Traceroute exited with code {process.returncode}: {stderr_text or 'no stderr output'}")
+                return
+            output = (stdout_data or b"").decode("utf-8", errors="replace")
+            hops = []
+            for raw_line in output.splitlines():
+                line = raw_line.strip()
+                if not line or line.lower().startswith("traceroute to "):
+                    continue
+                if line[0].isdigit():
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    try:
+                        hop_number = int(parts[0])
+                    except ValueError:
+                        continue
+                    address = ""
+                    latency_ms = None
+                    for token in parts[1:]:
+                        text = str(token).strip()
+                        if not text or text == "ms":
+                            continue
+                        if text == "*":
+                            if not address:
+                                address = "*"
+                            continue
+                        if address in {"", "*"}:
+                            try:
+                                ipaddress.ip_address(text)
+                                address = text
+                                continue
+                            except ValueError:
+                                pass
+                        try:
+                            latency_ms = float(text)
+                            break
+                        except ValueError:
+                            continue
+                    hop = {"hop": hop_number, "address": address or "*", "latency_ms": latency_ms}
+                    hops.append(hop)
+                    if hop["address"] == "*":
+                        self.log(f"Route hop {hop_number}: no reply")
+                    elif latency_ms is None:
+                        self.log(f"Route hop {hop_number}: {hop['address']}")
+                    else:
+                        self.log(f"Route hop {hop_number}: {hop['address']} {latency_ms:.1f} ms")
+            self.report["trace"] = {"target": target, "protocol": protocol, "hops": hops, "completed": True}
+            if hops:
+                self.log(f"Route trace completed with {len(hops)} hop(s).")
+        except asyncio.TimeoutError:
+            self.log("Traceroute timed out; returning partial route results if available.")
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
+        except Exception as exc:
+            self.log(f"Traceroute failed: {exc}")
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
 
     def _extract_pcr(self, packet):
         if len(packet) < 188 or packet[0] != 0x47:
@@ -380,7 +567,7 @@ class StreamProbe:
         self.log(f"Starting hybrid FFmpeg/Python probe ({int(self.probe_window_seconds)}s wall-clock limit)...")
         default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         base_headers = sanitise_headers(self.preferred_headers)
-        configured_header_user_agent = self._header_value(base_headers, "User-Agent")
+        configured_header_user_agent = get_header_value(base_headers, "User-Agent")
         user_agent_candidates = []
         if configured_header_user_agent:
             user_agent_candidates.append(configured_header_user_agent)
@@ -412,6 +599,7 @@ class StreamProbe:
                         ) as preflight:
                             if preflight.status >= 400:
                                 raise Exception(f"Preflight failed with HTTP {preflight.status}")
+                            self._record_connection_endpoint(preflight)
                             # For live stream endpoints, do not wait for full body completion.
                             # A successful status + ability to read initial bytes is enough.
                             try:
@@ -429,7 +617,7 @@ class StreamProbe:
                 except Exception as exc:
                     last_preflight_error = exc
                     self.log(
-                        "Preflight request failed with configured user-agent candidate: " f"{type(exc).__name__}: {exc}"
+                        f"Preflight request failed with configured user-agent candidate: {type(exc).__name__}: {exc}"
                     )
 
         if not user_agent:
@@ -451,6 +639,8 @@ class StreamProbe:
             self.log("Preflight succeeded using source-configured user-agent.")
         elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
             self.log("Preflight succeeded using fallback browser user-agent.")
+
+        route_trace_task = asyncio.create_task(self._run_route_trace())
 
         media_shape = await probe_stream_media_shape(
             self.url,
@@ -488,7 +678,7 @@ class StreamProbe:
             "mpegts",
             "pipe:1",
         ]
-        referer_value = self._header_value(base_headers, "Referer")
+        referer_value = get_header_value(base_headers, "Referer")
         extra_headers = self._build_ffmpeg_headers_arg({**base_headers, "User-Agent": user_agent})
         if referer_value:
             insert_idx = cmd.index("-probesize")
@@ -534,6 +724,7 @@ class StreamProbe:
                     now = time.time()
                     if sample_start_time is None:
                         sample_start_time = now
+                        self.report["probe"]["time_to_first_media_seconds"] = sample_start_time - start_time
                         self.log(f"First media bytes received; sampling for {int(self.probe_window_seconds)}s.")
                     total_bytes += len(chunk)
                     buffer.extend(chunk)
@@ -605,7 +796,12 @@ class StreamProbe:
                 self.log("No media bytes received from stream.")
 
             res = self.report["probe"]
-            self.log(f"Probe complete. Bitrate: {res['avg_bitrate']/1000000:.2f} Mbps, Speed: {res['avg_speed']:.2f}x")
+            startup_seconds = res.get("time_to_first_media_seconds")
+            startup_log = f", Startup: {startup_seconds:.2f}s" if startup_seconds is not None else ""
+            self.log(
+                f"Probe complete. Bitrate: {res['avg_bitrate'] / 1000000:.2f} Mbps, "
+                f"Speed: {res['avg_speed']:.2f}x{startup_log}"
+            )
 
         except Exception as e:
             self.log(f"Probe error: {e}")
@@ -616,6 +812,11 @@ class StreamProbe:
                 except:
                     pass
         finally:
+            if "route_trace_task" in locals():
+                try:
+                    await route_trace_task
+                except Exception:
+                    pass
             self._ffmpeg_process = None
 
 
