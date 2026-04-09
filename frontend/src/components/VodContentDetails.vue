@@ -43,6 +43,29 @@
               </div>
             </div>
 
+            <div v-if="externalLinks.length" class="vod-content-details__links q-mt-md">
+              <a
+                v-for="link in externalLinks"
+                :key="link.key"
+                :href="link.href"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="vod-content-details__link-anchor"
+              >
+                <q-chip
+                  dense
+                  clickable
+                  outline
+                  :icon="link.icon"
+                  color="primary"
+                  text-color="primary"
+                  class="vod-content-details__link-chip"
+                >
+                  {{ link.label }}
+                </q-chip>
+              </a>
+            </div>
+
             <div v-if="showInlinePlot" class="vod-content-details__inline-plot q-mt-md">
               <div class="vod-content-details__plot-divider" />
               <div class="vod-content-details__plot vod-content-details__plot--plain q-mt-md">
@@ -90,12 +113,6 @@
         </div>
 
         <div class="vod-content-details__lower q-mt-xs">
-          <div v-if="castLine" class="vod-content-details__pills">
-            <div v-if="castLine" class="vod-content-details__pill">
-              {{ castLine }}
-            </div>
-          </div>
-
           <div v-if="showLowerPlot" class="vod-content-details__plot q-mt-xs">
             {{ detailItem.plot }}
           </div>
@@ -202,6 +219,10 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    externalLinks: {
+      type: Array,
+      default: () => [],
+    },
     detailActions: {
       type: Array,
       default: () => [],
@@ -255,6 +276,12 @@ export default defineComponent({
           value: this.genreLine.replace(/^Genres:\s*/i, ''),
         });
       }
+      if (this.castLine) {
+        items.push({
+          label: 'Cast',
+          value: this.castLine.replace(/^Cast:\s*/i, ''),
+        });
+      }
       return items;
     },
     isOpen: {
@@ -306,26 +333,24 @@ export default defineComponent({
   justify-content: center;
 }
 
-.vod-content-details__pills {
+.vod-content-details__summary {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vod-content-details__links {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.vod-content-details__pill {
-  padding: 8px 10px;
-  border-radius: var(--tic-radius-md);
-  background: var(--guide-channel-bg);
-  color: var(--q-grey-8);
-  font-size: 0.78rem;
-  line-height: 1.4;
-  border: var(--tic-elevated-border);
+.vod-content-details__link-anchor {
+  text-decoration: none;
 }
 
-.vod-content-details__summary {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+.vod-content-details__link-chip {
+  margin: 0;
 }
 
 .vod-content-details__title-row {
@@ -486,14 +511,6 @@ export default defineComponent({
 
   .vod-content-details__lower {
     margin-top: 14px !important;
-  }
-
-  .vod-content-details__pills {
-    gap: 6px;
-  }
-
-  .vod-content-details__pill {
-    width: 100%;
   }
 
   .vod-content-details__season-tabs {

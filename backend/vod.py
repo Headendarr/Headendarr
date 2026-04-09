@@ -2442,6 +2442,9 @@ def _vod_item_summary_fields(summary_json: str | None) -> dict[str, object]:
         "genre": _nfo_text_values(
             info.get("genre") or summary.get("genre") or info.get("genres") or summary.get("genres")
         ),
+        "imdb_id": clean_text(_first_summary_value(summary, "imdb_id", "imdb")),
+        "tmdb_id": clean_text(_first_summary_value(summary, "tmdb_id", "tmdb")),
+        "trailer": clean_text(_first_summary_value(summary, "trailer")),
     }
 
 
@@ -2845,6 +2848,9 @@ async def fetch_upstream_vod_item_details(content_type: str, item_id: int) -> di
         "genre": _nfo_text_values(info_payload.get("genre") or info_payload.get("genres") or summary_fields["genre"]),
         "cast": _nfo_text_values(info_payload.get("cast") or info_payload.get("actors")),
         "director": _nfo_text_values(info_payload.get("director") or info_payload.get("directors")),
+        "imdb_id": clean_text(_first_summary_value(metadata_payload, "imdb_id", "imdb")) or summary_fields["imdb_id"],
+        "tmdb_id": clean_text(_first_summary_value(metadata_payload, "tmdb_id", "tmdb")) or summary_fields["tmdb_id"],
+        "trailer": clean_text(_first_summary_value(metadata_payload, "trailer")) or summary_fields["trailer"],
         "playlist_id": int(playlist.id),
         "playlist_name": clean_text(playlist.name),
         "category_id": int(source_category.id) if source_category is not None else None,
@@ -3003,6 +3009,9 @@ async def fetch_curated_library_item_details(
         "release_date": clean_text(item.release_date),
         "plot": summary_fields["plot"],
         "genre": summary_fields["genre"],
+        "imdb_id": summary_fields["imdb_id"],
+        "tmdb_id": summary_fields["tmdb_id"],
+        "trailer": summary_fields["trailer"],
         "category_id": int(category.id),
         "category_name": clean_text(category.name),
         "episodes": [],
@@ -3023,6 +3032,9 @@ async def fetch_curated_library_item_details(
             detail["genre"] = _nfo_text_values(
                 info_payload.get("genre") or movie_data.get("genre") or info_payload.get("genres") or detail["genre"]
             )
+            detail["imdb_id"] = clean_text(_first_summary_value(payload, "imdb_id", "imdb")) or detail["imdb_id"]
+            detail["tmdb_id"] = clean_text(_first_summary_value(payload, "tmdb_id", "tmdb")) or detail["tmdb_id"]
+            detail["trailer"] = clean_text(_first_summary_value(payload, "trailer")) or detail["trailer"]
         detail["container_extension"] = _resolve_group_output_extension(category.profile_id, item.container_extension)
         return detail
 
@@ -3038,6 +3050,9 @@ async def fetch_curated_library_item_details(
         )
         detail["poster_url"] = clean_text(info_payload.get("cover") or info_payload.get("cover_big") or item.poster_url)
         detail["genre"] = _nfo_text_values(info_payload.get("genre") or info_payload.get("genres") or detail["genre"])
+        detail["imdb_id"] = clean_text(_first_summary_value(payload, "imdb_id", "imdb")) or detail["imdb_id"]
+        detail["tmdb_id"] = clean_text(_first_summary_value(payload, "tmdb_id", "tmdb")) or detail["tmdb_id"]
+        detail["trailer"] = clean_text(_first_summary_value(payload, "trailer")) or detail["trailer"]
         detail["episodes"] = _flatten_series_episode_payload(payload)
     return detail
 

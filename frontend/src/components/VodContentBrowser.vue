@@ -81,6 +81,7 @@
       :meta-items="detailMetaItems"
       :genre-line="detailGenreLine"
       :cast-line="detailCastLine"
+      :external-links="detailExternalLinks"
       :detail-actions="detailActions"
       :season-options="detailSeasonOptions"
       :selected-season="selectedDetailSeason"
@@ -325,6 +326,44 @@ export default {
         return '';
       }
       return `Cast: ${this.detailItem.cast.slice(0, 8).join(', ')}`;
+    },
+    detailExternalLinks() {
+      if (!this.detailItem) {
+        return [];
+      }
+
+      const links = [];
+      const imdbId = String(this.detailItem.imdb_id || this.detailItem.imdb || '').trim();
+      const tmdbId = String(this.detailItem.tmdb_id || this.detailItem.tmdb || '').trim();
+      const trailerValue = String(this.detailItem.trailer || '').trim();
+
+      if (tmdbId) {
+        links.push({
+          key: 'tmdb',
+          label: 'TMDb',
+          icon: 'movie',
+          href: `https://www.themoviedb.org/${this.activeTab === 'series' ? 'tv' : 'movie'}/${encodeURIComponent(
+            tmdbId)}`,
+        });
+      }
+      if (imdbId) {
+        links.push({
+          key: 'imdb',
+          label: 'IMDb',
+          icon: 'open_in_new',
+          href: `https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`,
+        });
+      }
+      if (trailerValue) {
+        links.push({
+          key: 'trailer',
+          label: 'Trailer',
+          icon: 'smart_display',
+          href: this.resolveTrailerUrl(trailerValue),
+        });
+      }
+
+      return links.filter((link) => link.href);
     },
     detailSeasonOptions() {
       if (this.activeTab !== 'series' || !Array.isArray(this.detailItem?.episodes)) {
@@ -610,6 +649,16 @@ export default {
         parts.push(episode.title);
       }
       return parts.join(' • ') || 'Episode';
+    },
+    resolveTrailerUrl(value) {
+      const trailerValue = String(value || '').trim();
+      if (!trailerValue) {
+        return '';
+      }
+      if (/^https?:\/\//i.test(trailerValue)) {
+        return trailerValue;
+      }
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(trailerValue)}`;
     },
     startBrowserPlayback(payload, title) {
       const candidates = normalisePreviewCandidates(payload);
