@@ -40,7 +40,7 @@ from .ffmpeg import (
 )
 from .hls import discover_hls_variants
 from .output import CsoOutputSession
-from .policy import policy_content_type, resolve_vod_pipe_container
+from .policy import policy_content_type, resolve_live_pipe_container, resolve_vod_pipe_container
 from .slate import cso_unavailable_duration_seconds, should_allow_unavailable_slate
 from .sources import (
     cso_source_from_channel_source,
@@ -337,10 +337,15 @@ class CsoIngestSession:
         elif source is not None:
             source_probe = load_source_media_shape(source)
 
-        pipe_format = self.vod_pipe_output_format_override or resolve_vod_pipe_container(
-            source,
-            source_probe=source_probe,
-        )
+        if self.vod_pipe_output_format_override:
+            pipe_format = self.vod_pipe_output_format_override
+        else:
+            pipe_format = resolve_live_pipe_container(source_probe=source_probe)
+            if source is not None and source.source_type in {"vod_movie", "vod_episode"}:
+                pipe_format = resolve_vod_pipe_container(
+                    source,
+                    source_probe=source_probe,
+                )
         ingest_policy = {
             "output_mode": "force_remux",
             "container": pipe_format or "mpegts",

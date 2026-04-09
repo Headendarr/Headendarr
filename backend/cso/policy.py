@@ -12,6 +12,7 @@ logger = logging.getLogger("cso")
 
 
 VOD_CHANNEL_TS_SAFE_VIDEO_CODECS = {"h264", "h265", "mpeg2video"}
+LIVE_PIPE_TS_SAFE_AUDIO_CODECS = {"", "aac", "ac3", "eac3", "mp2", "mp3"}
 
 
 def policy_content_type(policy: dict[str, Any] | None) -> str:
@@ -119,6 +120,17 @@ def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str,
     if video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
         return "mpegts"
     return "nut"
+
+
+def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> str:
+    probe = dict(source_probe or {})
+    video_codec = clean_key(probe.get("video_codec"))
+    if video_codec not in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+        return "nut"
+    audio_codec = clean_key(probe.get("audio_codec"))
+    if audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
+        return "nut"
+    return "mpegts"
 
 
 def should_prefer_direct_vod_url_input(source: CsoSource | None, start_seconds: int = 0, source_probe: dict[str, Any] | None = None) -> bool:
