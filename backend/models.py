@@ -190,6 +190,7 @@ class Playlist(Base):
     channel_sources = relationship("ChannelSource", back_populates="playlist", cascade="all, delete-orphan")
     playlist_streams = relationship("PlaylistStreams", back_populates="playlist", cascade="all, delete-orphan")
     xc_accounts = relationship("XcAccount", back_populates="playlist", cascade="all, delete-orphan")
+    suggestions = relationship("ChannelSuggestion", back_populates="playlist", cascade="all, delete-orphan")
 
     def __repr__(self):
         return "<Playlist {}>".format(self.id)
@@ -556,7 +557,7 @@ class ChannelSuggestion(Base):
     id = Column(Integer, primary_key=True)
 
     channel_id = Column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True)
-    playlist_id = Column(Integer, ForeignKey("playlists.id"), nullable=False, index=True)
+    playlist_id = Column(Integer, ForeignKey("playlists.id", ondelete="CASCADE"), nullable=False, index=True)
     stream_id = Column(Integer, nullable=False, index=True)
     stream_name = Column(String(500), index=True, unique=False)
     stream_url = Column(Text, index=False, unique=False)
@@ -569,7 +570,7 @@ class ChannelSuggestion(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     channel = relationship("Channel", back_populates="suggestions")
-    playlist = relationship("Playlist")
+    playlist = relationship("Playlist", back_populates="suggestions")
 
     def __repr__(self):
         return "<ChannelSuggestion {}>".format(self.id)

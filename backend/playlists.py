@@ -23,6 +23,7 @@ from backend.http_headers import (
 )
 from backend.models import (
     CsoEventLog,
+    ChannelSuggestion,
     Playlist,
     PlaylistStreams,
     Session,
@@ -552,8 +553,8 @@ async def read_config_all_playlists(config, output_for_export=False):
 async def read_config_one_playlist(config, playlist_id):
     try:
         playlist_id = int(playlist_id)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid playlist id: {playlist_id}")
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"Invalid playlist id: {playlist_id}") from err
 
     return_item = {}
     playlist_health_map = _read_playlist_health_map(config) if config else {}
@@ -783,6 +784,7 @@ async def delete_playlist(config, playlist_id):
             await session.execute(
                 update(CsoEventLog).where(CsoEventLog.playlist_id == playlist.id).values(playlist_id=None)
             )
+            await session.execute(delete(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist.id))
             await session.execute(delete(XcVodItem).where(XcVodItem.playlist_id == playlist.id))
             await session.execute(delete(XcVodCategory).where(XcVodCategory.playlist_id == playlist.id))
             # Remove from DB
@@ -981,8 +983,8 @@ async def store_playlist_streams(config, playlist_id):
 async def import_playlist_data(config, playlist_id):
     try:
         playlist_id = int(playlist_id)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid playlist id: {playlist_id}")
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"Invalid playlist id: {playlist_id}") from err
     settings = config.read_settings()
     async with Session() as session:
         async with session.begin():
@@ -1110,7 +1112,7 @@ async def import_playlist_data_for_all_playlists(config):
     skipped_off = 0
 
     async with Session() as session:
-        result = await session.execute(select(Playlist.id, Playlist.update_schedule).where(Playlist.enabled == True))
+        result = await session.execute(select(Playlist.id, Playlist.update_schedule).where(Playlist.enabled))
         playlist_rows = result.all()
 
     for playlist_id, configured_schedule in playlist_rows:
@@ -1503,7 +1505,7 @@ async def get_playlist_groups(
                 select(PlaylistStreams.group_title)
                 .filter(
                     PlaylistStreams.playlist_id == playlist_id,
-                    PlaylistStreams.group_title != None,
+                    PlaylistStreams.group_title.is_not(None),
                     PlaylistStreams.group_title != "",
                 )
                 .group_by(PlaylistStreams.group_title)
@@ -1519,7 +1521,7 @@ async def get_playlist_groups(
                     select(PlaylistStreams.group_title)
                     .filter(
                         PlaylistStreams.playlist_id == playlist_id,
-                        PlaylistStreams.group_title != None,
+                        PlaylistStreams.group_title.is_not(None),
                         PlaylistStreams.group_title != "",
                         PlaylistStreams.group_title.ilike(f"%{search_value}%"),
                     )
@@ -1536,7 +1538,7 @@ async def get_playlist_groups(
                 func.count(PlaylistStreams.id).label("channel_count"),
             ).filter(
                 PlaylistStreams.playlist_id == playlist_id,
-                PlaylistStreams.group_title != None,  # Exclude streams without group
+                PlaylistStreams.group_title.is_not(None),  # Exclude streams without group
                 PlaylistStreams.group_title != "",  # Exclude streams with empty group
             )
 
