@@ -47,6 +47,7 @@ DEFAULT_SCHEDULE_MODE = SCHEDULE_MODE_SERIES_ORDER
 DEFAULT_SCHEDULE_DIRECTION = "asc"
 MIN_EPG_WINDOW_HOURS = 72
 MAX_EPG_WINDOW_HOURS = 168
+TARGET_EPG_WINDOW_HOURS = 168
 NEXT_ITEM_CACHE_WARM_SECONDS = 2 * 60
 FIXED_SCHEDULE_ANCHOR_UTC = datetime(2026, 1, 1, tzinfo=timezone.utc)
 SCHEDULE_GENERATION_VERSION = 2
@@ -454,7 +455,10 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
     if not force and schedule_path.exists():
         try:
             cached = json.loads(schedule_path.read_text(encoding="utf-8"))
-            if clean_text(cached.get("fingerprint")) == fingerprint:
+            if clean_text(cached.get("fingerprint")) == fingerprint and _schedule_cache_is_still_usable(
+                cached,
+                int(time.time()),
+            ):
                 return cached
         except Exception:
             pass
@@ -510,10 +514,10 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
     now = utc_now()
     window_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     cycle_duration_seconds = sum(max(0, convert_to_int(entry.get("duration_seconds"), 0)) for entry in ordered_entries)
-    target_window_hours = MIN_EPG_WINDOW_HOURS
+    target_window_hours = TARGET_EPG_WINDOW_HOURS
     if cycle_duration_seconds > 0:
         cycle_window_hours = max(1, (cycle_duration_seconds + 3599) // 3600)
-        target_window_hours = max(MIN_EPG_WINDOW_HOURS, min(MAX_EPG_WINDOW_HOURS, int(cycle_window_hours)))
+        target_window_hours = max(target_window_hours, min(MAX_EPG_WINDOW_HOURS, int(cycle_window_hours)))
     window_end = now + timedelta(hours=target_window_hours)
     schedule_entries: list[dict[str, Any]] = []
     if ordered_entries:
@@ -559,13 +563,42 @@ async def build_vod_channel_schedule(config: Any, channel_id: int, force: bool =
     return payload
 
 
+def _schedule_cache_is_still_usable(schedule: dict[str, Any], now_ts: int) -> bool:
+    entries = list(schedule.get("entries") or [])
+    if not entries:
+        return False
+
+    current_index = None
+    for index, entry in enumerate(entries):
+        start_ts = int(entry.get("start_ts") or 0)
+        stop_ts = int(entry.get("stop_ts") or 0)
+        if start_ts <= now_ts < stop_ts:
+            current_index = index
+            break
+
+    if current_index is None:
+        return False
+
+    last_stop_ts = int(entries[-1].get("stop_ts") or 0)
+    minimum_future_coverage_ts = now_ts + (TARGET_EPG_WINDOW_HOURS * 3600) - 3600
+    if last_stop_ts < minimum_future_coverage_ts:
+        return False
+
+    if current_index + 1 >= len(entries):
+        return False
+
+    return True
+
+
 async def read_vod_channel_schedule(config: Any, channel_id: int, force: bool = False) -> dict[str, Any]:
     if force:
         return await build_vod_channel_schedule(config, channel_id, force=True)
     schedule_path = vod_channel_schedule_path(config, int(channel_id))
     if schedule_path.exists():
         try:
-            return json.loads(schedule_path.read_text(encoding="utf-8"))
+            cached = json.loads(schedule_path.read_text(encoding="utf-8"))
+            if _schedule_cache_is_still_usable(cached, int(time.time())):
+                return cached
         except Exception:
             pass
     return await build_vod_channel_schedule(config, channel_id, force=False)
