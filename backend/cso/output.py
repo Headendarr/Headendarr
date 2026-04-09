@@ -674,7 +674,6 @@ class CsoOutputSession:
                 self.history_bytes -= len(old)
             for connection_id, q in list(self.clients.items()):
                 last_touch = float(self.client_last_touch.get(connection_id, now) or now)
-                last_touch = max(last_touch, float(self.last_activity or 0.0))
                 stale_seconds = self._stale_seconds_for_connection(connection_id)
                 if not suspend_stale_checks and (now - last_touch) >= stale_seconds:
                     stale_clients.append((connection_id, stale_seconds))
@@ -760,7 +759,6 @@ class CsoOutputSession:
         async with self.lock:
             for connection_id in list(self.clients.keys()):
                 last_touch = float(self.client_last_touch.get(connection_id, 0.0) or 0.0)
-                last_touch = max(last_touch, float(self.last_activity or 0.0))
                 stale_seconds = self._stale_seconds_for_connection(connection_id)
                 if (now_value - last_touch) >= stale_seconds:
                     stale_ids.append((connection_id, stale_seconds))
