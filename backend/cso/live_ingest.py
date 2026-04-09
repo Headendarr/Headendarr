@@ -190,6 +190,13 @@ class CsoIngestSession:
         self._current_source_probe_input_section_closed = False
         self.first_healthy_stream_seen = False
         self.vod_pipe_output_format_override = vod_pipe_output_format_override
+        self.ingest_policy = {
+            "output_mode": "force_remux",
+            "container": "mpegts",
+            "video_codec": "copy",
+            "audio_codec": "copy",
+            "subtitle_mode": "copy",
+        }
 
     def build_unavailable_stream_plan(
         self, policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
@@ -334,6 +341,20 @@ class CsoIngestSession:
             source,
             source_probe=source_probe,
         )
+        ingest_policy = {
+            "output_mode": "force_remux",
+            "container": pipe_format or "mpegts",
+            "video_codec": "copy",
+            "audio_codec": "copy",
+            "subtitle_mode": "copy",
+        }
+        video_codec = clean_key(source_probe.get("video_codec"))
+        audio_codec = clean_key(source_probe.get("audio_codec"))
+        if video_codec:
+            ingest_policy["video_codec"] = video_codec
+        if audio_codec:
+            ingest_policy["audio_codec"] = audio_codec
+        self.ingest_policy = ingest_policy
         command = CsoFfmpegCommandBuilder(pipe_output_format=pipe_format).build_ingest_command(
             source_url,
             program_index=program_index,
