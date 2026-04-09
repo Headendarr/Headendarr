@@ -125,7 +125,7 @@ async def subscribe_channel_hls(
             channel_id=channel.id,
             source=getattr(ingest_session, "current_source", None),
             session_id=output_session_key,
-            event_type="session_end",
+            event_type="session_start",
             severity="info",
             details={
                 "profile": profile,
