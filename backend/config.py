@@ -241,6 +241,7 @@ class Config:
                     profile_key: {"enabled": True, "hwaccel": False, "deinterlace": False}
                     for profile_key in SUPPORTED_STREAM_PROFILES.keys()
                 },
+                "enable_hw_decode": False,
                 "audit_log_retention_days": 7,
                 "user_agents": [
                     {

@@ -39,7 +39,7 @@ from backend.cso import (
     subscribe_source_stream,
     subscribe_vod_channel_hls,
     subscribe_vod_hls,
-    subscribe_vod_proxy_output_stream,
+    subscribe_vod_ingest_stream,
     subscribe_vod_proxy_stream,
     subscribe_vod_stream,
     source_capacity_key,
@@ -1542,12 +1542,13 @@ async def _stream_cso_vod_route(resolver, identity: str):
             episode=episode,
         )
     elif use_restartable_output:
-        plan = await subscribe_vod_proxy_output_stream(
+        plan = await subscribe_vod_ingest_stream(
             config,
             candidate,
             upstream_url,
             effective_profile,
             connection_id,
+            episode=episode,
             start_seconds=start_seconds,
             request_headers=dict(request.headers),
         )

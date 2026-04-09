@@ -21,7 +21,6 @@ from .subscriptions_live import (
 )
 from .subscriptions_proxy import (
     should_use_vod_proxy_session,
-    subscribe_vod_proxy_output_stream,
     subscribe_vod_proxy_stream,
 )
 from .subscriptions_slate import subscribe_slate_hls, subscribe_slate_stream
@@ -29,6 +28,7 @@ from .subscriptions_vod import (
     subscribe_vod_channel_hls,
     subscribe_vod_channel_output_stream,
     subscribe_vod_hls,
+    subscribe_vod_ingest_stream,
     subscribe_vod_stream,
 )
 from .live_ingest import resolve_channel_for_stream

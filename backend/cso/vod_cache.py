@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import aiofiles
 import aiohttp
 import requests
+import urllib3
 
 from backend.hls_multiplexer import get_header_value
 from backend.stream_profiles import content_type_for_media_path
@@ -201,56 +202,141 @@ async def start_vod_cache_download(entry: VodCacheEntry, owner_key: str, request
 async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_headers=None):
     from .vod_proxy import filter_vod_proxy_request_headers, proxy_response_headers
 
-    headers = filter_vod_proxy_request_headers(request_headers, entry.source)
-    headers["Range"] = "bytes=0-"
+    base_headers = filter_vod_proxy_request_headers(request_headers, entry.source)
     await asyncio.to_thread(entry.part_path.parent.mkdir, 0o755, True, True)
-    http_session = None
-    response = None
-    iterator = None
+    max_attempts = 4
+    attempt = 0
     try:
-        if entry.part_path.exists():
-            await asyncio.to_thread(entry.part_path.unlink, True)
-        http_session = requests.Session()
-        response = await asyncio.to_thread(
-            lambda: http_session.get(
-                entry.upstream_url,
-                headers=headers,
-                allow_redirects=True,
-                stream=True,
-                timeout=(15, 30),
-            )
-        )
-        status_code = int(response.status_code or 502)
-        if status_code >= 400:
-            entry.failed_reason = f"download_status_{status_code}"
-            entry.ready_event.set()
-            return
-        entry.metadata_headers = proxy_response_headers(status_code, response.headers)
-        entry.content_type = clean_text(response.headers.get("Content-Type")) or entry.content_type
-        size_header = clean_text(response.headers.get("Content-Length"))
-        if not entry.expected_size and size_header.isdigit():
-            entry.expected_size = int(size_header)
-        entry.ready_event.set()
-        bytes_written = 0
-        iterator = response.iter_content(chunk_size=VOD_CACHE_CHUNK_BYTES)
-        async with aiofiles.open(entry.part_path, "wb") as handle:
-            while True:
-                chunk = await asyncio.to_thread(next, iterator, None)
-                if not chunk:
-                    break
-                await handle.write(chunk)
-                bytes_written += len(chunk)
-                entry.bytes_written = bytes_written
-                entry.touch()
-                entry.progress_event.set()
-                entry.progress_event = asyncio.Event()
-            await handle.flush()
-        if entry.expected_size and bytes_written >= entry.expected_size:
+        while True:
+            if entry.complete:
+                break
+
+            part_size = 0
+            if entry.part_path.exists():
+                try:
+                    part_size = int(entry.part_path.stat().st_size or 0)
+                except Exception:
+                    part_size = 0
+            entry.bytes_written = part_size
+
+            range_start = max(0, int(entry.bytes_written or 0))
+            headers = dict(base_headers)
+            headers["Range"] = f"bytes={range_start}-"
+
+            http_session = requests.Session()
+            response = None
+            iterator = None
+            try:
+                response = await asyncio.to_thread(
+                    lambda session=http_session, request_headers=headers: session.get(
+                        entry.upstream_url,
+                        headers=request_headers,
+                        allow_redirects=True,
+                        stream=True,
+                        timeout=(15, 30),
+                    )
+                )
+                status_code = int(response.status_code or 502)
+                if status_code >= 400:
+                    entry.failed_reason = f"download_status_{status_code}"
+                    entry.ready_event.set()
+                    return
+
+                if range_start > 0 and status_code == 200:
+                    logger.warning(
+                        "VOD cache resume was ignored by upstream; restarting download asset=%s source_id=%s offset=%s",
+                        entry.key,
+                        entry.source.id,
+                        range_start,
+                    )
+                    if entry.part_path.exists():
+                        await asyncio.to_thread(entry.part_path.unlink, True)
+                    entry.bytes_written = 0
+                    range_start = 0
+                    continue
+
+                entry.metadata_headers = proxy_response_headers(status_code, response.headers)
+                entry.content_type = clean_text(response.headers.get("Content-Type")) or entry.content_type
+
+                content_range = clean_text(response.headers.get("Content-Range"))
+                if not entry.expected_size and "/" in content_range:
+                    total_text = content_range.rsplit("/", 1)[-1].strip()
+                    if total_text.isdigit():
+                        entry.expected_size = int(total_text)
+                if not entry.expected_size:
+                    size_header = clean_text(response.headers.get("Content-Length"))
+                    if size_header.isdigit():
+                        content_length = int(size_header)
+                        entry.expected_size = range_start + content_length if status_code == 206 else content_length
+
+                entry.ready_event.set()
+                open_mode = "ab" if range_start > 0 else "wb"
+                iterator = response.iter_content(chunk_size=VOD_CACHE_CHUNK_BYTES)
+                async with aiofiles.open(entry.part_path, open_mode) as handle:
+                    while True:
+                        try:
+                            chunk = await asyncio.to_thread(next, iterator, None)
+                        except (
+                            requests.exceptions.ChunkedEncodingError,
+                            requests.exceptions.ConnectionError,
+                            requests.exceptions.ReadTimeout,
+                            urllib3.exceptions.ProtocolError,
+                            ConnectionResetError,
+                            OSError,
+                        ) as exc:
+                            attempt += 1
+                            entry.failed_reason = f"download_retry:{exc}"
+                            if attempt >= max_attempts:
+                                raise
+                            logger.warning(
+                                "VOD cache download interrupted; retrying asset=%s source_id=%s bytes_written=%s attempt=%s error=%s",
+                                entry.key,
+                                entry.source.id,
+                                int(entry.bytes_written or 0),
+                                attempt,
+                                exc,
+                            )
+                            break
+                        if not chunk:
+                            break
+                        await handle.write(chunk)
+                        entry.bytes_written += len(chunk)
+                        entry.touch()
+                        entry.progress_event.set()
+                        entry.progress_event = asyncio.Event()
+                    await handle.flush()
+            finally:
+                try:
+                    if response is not None:
+                        await asyncio.to_thread(response.close)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.to_thread(http_session.close)
+                except Exception:
+                    pass
+
+            if entry.expected_size and int(entry.bytes_written or 0) >= int(entry.expected_size):
+                break
+            if attempt >= max_attempts:
+                break
+            if entry.failed_reason and str(entry.failed_reason).startswith("download_retry:"):
+                await asyncio.sleep(0.5)
+                continue
+            entry.failed_reason = "download_incomplete"
+            break
+
+        if entry.expected_size and int(entry.bytes_written or 0) >= int(entry.expected_size):
             await asyncio.to_thread(os.replace, entry.part_path, entry.final_path)
             entry.complete = True
-            entry.bytes_written = bytes_written
+            entry.bytes_written = int(entry.expected_size)
             entry.failed_reason = None
-            logger.info("VOD cache completed asset=%s bytes=%s path=%s", entry.key, bytes_written, entry.final_path)
+            logger.info(
+                "VOD cache completed asset=%s bytes=%s path=%s",
+                entry.key,
+                int(entry.bytes_written or 0),
+                entry.final_path,
+            )
         else:
             entry.failed_reason = "download_incomplete"
         entry.touch()
@@ -263,16 +349,6 @@ async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_
     finally:
         entry.ready_event.set()
         entry.progress_event.set()
-        try:
-            if response is not None:
-                await asyncio.to_thread(response.close)
-        except Exception:
-            pass
-        try:
-            if http_session is not None:
-                await asyncio.to_thread(http_session.close)
-        except Exception:
-            pass
         await cso_capacity_registry.release(source_capacity_key(entry.source), owner_key, slot_id=owner_key)
         async with entry.state_lock:
             entry.downloader_owner_key = None
@@ -511,32 +587,10 @@ class VodCacheManager:
             entry.touch()
 
     async def detach_session(self, entry: VodCacheEntry):
-        task_to_cancel = None
         async with entry.state_lock:
             entry.active_sessions = max(0, int(entry.active_sessions or 0) - 1)
             entry.touch()
-            if (
-                int(entry.active_sessions or 0) <= 0
-                and int(entry.active_readers or 0) <= 0
-                and not entry.complete
-                and entry.download_task is not None
-                and not entry.download_task.done()
-            ):
-                task_to_cancel = entry.download_task
-        if task_to_cancel is None:
             return
-        task_to_cancel.cancel()
-        try:
-            await task_to_cancel
-        except BaseException:
-            pass
-        async with entry.state_lock:
-            entry.bytes_written = 0
-            entry.failed_reason = "cancelled_no_clients"
-            entry.ready_event.set()
-            entry.progress_event.set()
-        if entry.part_path.exists():
-            await asyncio.to_thread(entry.part_path.unlink, True)
 
     async def cleanup(self, idle_seconds=VOD_CACHE_TTL_SECONDS):
         now_ts = time.time()

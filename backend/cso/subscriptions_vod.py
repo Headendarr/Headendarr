@@ -7,6 +7,7 @@ from quart import request
 
 from backend.stream_profiles import generate_cso_policy_from_profile
 from backend.vod import VodCuratedPlaybackCandidate, VodSourcePlaybackCandidate
+from backend.utils import clean_text
 
 from .common import build_cso_stream_plan, cso_session_manager, current_quart_app_object
 from .constants import CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS, CSO_UNAVAILABLE_SHOW_SLATE
@@ -16,13 +17,14 @@ from .output import CsoHlsOutputSession, CsoOutputSession
 from .policy import (
     generate_vod_channel_ingest_policy,
     policy_content_type,
+    policy_log_label,
     resolve_vod_channel_output_policy,
 )
 from .slate import CsoSlateSession
 from .sources import cso_source_from_vod_source
 from .subscriptions_shared import resolve_username_for_stream_key
 from .vod_cache import vod_cache_manager
-from .vod_ingest import VodChannelIngestSession
+from .vod_ingest import Vod247ChannelManager, VodIngestSession
 
 
 logger = logging.getLogger("cso")
@@ -350,13 +352,14 @@ async def subscribe_vod_channel_output_stream(
     output_session_key = f"cso-vod-channel-output-{int(channel_id)}-{profile}"
 
     def _ingest_factory():
-        return VodChannelIngestSession(
+        return Vod247ChannelManager(
             ingest_key,
             config,
             int(channel_id),
             stream_key=stream_key,
             request_headers=request_headers,
             output_policy=policy,
+            requested_policy=requested_policy,
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -413,13 +416,14 @@ async def subscribe_vod_channel_hls(
     output_session_key = f"cso-vod-channel-hls-output-{int(channel_id)}-{profile}"
 
     def _ingest_factory():
-        return VodChannelIngestSession(
+        return Vod247ChannelManager(
             ingest_key,
             config,
             int(channel_id),
             stream_key=stream_key,
             request_headers=request_headers,
             output_policy=policy,
+            requested_policy=requested_policy,
         )
 
     ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -462,3 +466,119 @@ async def subscribe_vod_channel_hls(
             },
         )
     return output_session, None, 200
+
+
+async def subscribe_vod_ingest_stream(
+    config: Any,
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate,
+    upstream_url: str | None,
+    profile: str,
+    connection_id: str,
+    episode: Any = None,
+    start_seconds: int = 0,
+    duration_seconds: int | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> Any:
+    """Subscribe a playback client to a VOD ingest/remux/transcode session."""
+    if not candidate:
+        return build_cso_stream_plan(None, None, "VOD item not found", 404)
+
+    item = candidate.group_item if isinstance(candidate, VodCuratedPlaybackCandidate) else None
+    source = await cso_source_from_vod_source(candidate, upstream_url)
+
+    if not source:
+        return build_cso_stream_plan(None, None, "Source not found", 404)
+
+    playlist = source.playlist
+    if playlist is not None and not bool(getattr(playlist, "enabled", False)):
+        return build_cso_stream_plan(None, None, "Source playlist is disabled", 404)
+
+    source_url = clean_text(upstream_url or source.url)
+    if not source_url:
+        cache_entry = await vod_cache_manager.get_or_create(source, source.url)
+        if not cache_entry.complete or not cache_entry.final_path.exists():
+            return build_cso_stream_plan(None, None, "No available stream source", 503)
+
+    policy = generate_cso_policy_from_profile(config, profile)
+    ingest_key = f"vod-ingest-{source.id}-{connection_id}"
+
+    vod_category_id = None
+    vod_item_id = None
+    vod_episode_id = None
+    if item is not None:
+        vod_category_id = item.category_id
+        vod_item_id = item.id
+    if episode is not None:
+        vod_episode_id = episode.id
+
+    # Init ingest pipeline
+    ingest_session = VodIngestSession(
+        ingest_key,
+        config,
+        source,
+        upstream_url=source_url,
+        profile=profile,
+        start_seconds=start_seconds,
+        duration_seconds=duration_seconds,
+        request_headers=request_headers,
+        output_policy=policy,
+        realtime=False,
+    )
+
+    started = await ingest_session.start()
+    if not started:
+        reason = ingest_session.last_error or "ingest_start_failed"
+        await emit_channel_stream_event(
+            vod_category_id=vod_category_id,
+            vod_item_id=vod_item_id,
+            vod_episode_id=vod_episode_id,
+            session_id=ingest_key,
+            event_type="playback_unavailable",
+            severity="warning",
+            details={"reason": reason, "profile": profile},
+        )
+        return build_cso_stream_plan(None, None, f"VOD unavailable: {reason}", 503)
+
+    # Init event
+    await emit_channel_stream_event(
+        vod_category_id=vod_category_id,
+        vod_item_id=vod_item_id,
+        vod_episode_id=vod_episode_id,
+        source=source,
+        session_id=ingest_key,
+        event_type="session_start",
+        severity="info",
+        details={
+            "profile": profile,
+            "connection_id": connection_id,
+            "mode": "ingest_output",
+            "policy": policy_log_label(ingest_session.ingest_policy),
+            **source_event_context(source, source_url=source_url),
+        },
+    )
+
+    content_type = policy_content_type(policy)
+
+    async def _generator():
+        try:
+            async for chunk in ingest_session.iter_bytes():
+                yield chunk
+        finally:
+            await ingest_session.stop()
+            await emit_channel_stream_event(
+                vod_category_id=vod_category_id,
+                vod_item_id=vod_item_id,
+                vod_episode_id=vod_episode_id,
+                source=source,
+                session_id=ingest_key,
+                event_type="session_end",
+                severity="info",
+                details={
+                    "profile": profile,
+                    "connection_id": connection_id,
+                    "mode": "ingest_output",
+                    **source_event_context(source, source_url=source_url),
+                },
+            )
+
+    return build_cso_stream_plan(_generator(), content_type, None, 200)

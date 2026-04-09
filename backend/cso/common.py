@@ -189,6 +189,13 @@ class ByteBudgetQueue:
                 self._bytes = max(0, self._bytes - size)
             return payload
 
+    async def iter_items(self):
+        while True:
+            item = await self.get()
+            if item is None:
+                break
+            yield item
+
     async def stats(self):
         now_value = time.time()
         async with self._cond:

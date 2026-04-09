@@ -153,6 +153,20 @@
                   </q-item>
                 </q-list>
 
+                <div>
+                  <TicToggleInput
+                    v-model="enableHwDecode"
+                    @update:model-value="triggerImmediateAutoSave"
+                    label="Enable hardware accelerated decoding and filters"
+                    description="When enabled, CSO attempts to use hardware accelerated decoding and filters, falling back to software if it fails. Software decoding is recommended for maximum compatibility with upstream formats."
+                    :disable="!anyProfileHasHwaccel"
+                  />
+                  <AdmonitionBanner v-if="enableHwDecode" type="warning" class="q-mb-md">
+                    Hardware decoding reduces system load but may increase stream startup time if fallback to software
+                    is required. For best compatibility, software decoding paired with hardware encoding is recommended.
+                  </AdmonitionBanner>
+                </div>
+
                 <q-separator />
 
                 <h5 class="text-primary q-mt-none q-mb-none">User Agents</h5>
@@ -466,6 +480,7 @@ export default defineComponent({
       periodicChannelStreamHealthChecks: ref(true),
       routePlaylistsThroughCso: ref(true),
       routePlaylistsThroughTvh: ref(false),
+      enableHwDecode: ref(false),
       cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
       userAgents: ref([]),
@@ -490,6 +505,7 @@ export default defineComponent({
         periodicChannelStreamHealthChecks: true,
         routePlaylistsThroughCso: true,
         routePlaylistsThroughTvh: false,
+        enableHwDecode: false,
         cacheChannelLogos: true,
         streamProfiles: {},
         auditLogRetentionDays: 7,
@@ -567,6 +583,9 @@ export default defineComponent({
     routePlaylistsThroughTvh() {
       this.queueAutoSave();
     },
+    enableHwDecode() {
+      this.queueAutoSave();
+    },
     cacheChannelLogos() {
       this.queueAutoSave();
     },
@@ -602,6 +621,11 @@ export default defineComponent({
     },
     auditLogRetentionDays() {
       this.queueAutoSave();
+    },
+  },
+  computed: {
+    anyProfileHasHwaccel() {
+      return Object.values(this.streamProfiles).some((p) => !!p.hwaccel);
     },
   },
   methods: {

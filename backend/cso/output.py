@@ -30,6 +30,8 @@ from .ffmpeg import (
 )
 from .policy import (
     effective_vod_hls_runtime_policy,
+    policy_ffmpeg_format,
+    policy_log_label,
     resolve_cso_output_policy,
     resolve_vod_pipe_container,
 )
@@ -37,20 +39,6 @@ from .policy import (
 logger = logging.getLogger("cso")
 
 SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-
-
-def policy_log_label(policy):
-    data = policy or {}
-    return (
-        f"output_mode={data.get('output_mode', 'force_remux')}, "
-        f"container={data.get('container', 'mpegts')}, "
-        f"video_codec={data.get('video_codec', '') or 'copy'}, "
-        f"audio_codec={data.get('audio_codec', '') or 'copy'}, "
-        f"subtitle_mode={data.get('subtitle_mode', 'copy')}, "
-        f"hwaccel={bool(data.get('hwaccel', False))}, "
-        f"hardware_decode={bool(data.get('hardware_decode', True))}, "
-        f"deinterlace={bool(data.get('deinterlace', False))}"
-    )
 
 
 class CsoOutputSession:
@@ -290,10 +278,14 @@ class CsoOutputSession:
                         source_probe = dict(getattr(self.slate_session, "media_hint", {}) or {})
                         source_identity = clean_text(getattr(self.slate_session, "key", "")) or self.key
                     else:
-                        pipe_input_format = resolve_vod_pipe_container(
-                            self.ingest_session.current_source,
-                            source_probe=self.ingest_session.current_source_probe,
-                        )
+                        ingest_policy = dict(self.ingest_session.ingest_policy or {})
+                        if ingest_policy:
+                            pipe_input_format = policy_ffmpeg_format(ingest_policy)
+                        else:
+                            pipe_input_format = resolve_vod_pipe_container(
+                                self.ingest_session.current_source,
+                                source_probe=self.ingest_session.current_source_probe,
+                            )
                         source_probe = dict(self.ingest_session.current_source_probe or {})
                         source_identity = self.ingest_session.current_source_url or clean_text(
                             getattr(self.ingest_session.current_source, "url", "")
@@ -1122,10 +1114,14 @@ class CsoHlsOutputSession:
             pipe_input_format = None
             source = self.event_source or self.ingest_session.current_source
             if not use_direct_input:
-                pipe_input_format = resolve_vod_pipe_container(
-                    self.ingest_session.current_source,
-                    source_probe=self.ingest_session.current_source_probe,
-                )
+                ingest_policy = dict(self.ingest_session.ingest_policy or {})
+                if ingest_policy:
+                    pipe_input_format = policy_ffmpeg_format(ingest_policy)
+                else:
+                    pipe_input_format = resolve_vod_pipe_container(
+                        self.ingest_session.current_source,
+                        source_probe=self.ingest_session.current_source_probe,
+                    )
                 source = self.ingest_session.current_source
             source_probe = (
                 event_source_probe(source) if use_direct_input else dict(self.ingest_session.current_source_probe or {})

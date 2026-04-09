@@ -179,8 +179,9 @@ async def _prepare_hw_decode_policy(
 ) -> tuple[dict[str, Any], str]:
     resolved_policy = dict(policy or {})
     cache_key = _build_hwaccel_failure_cache_key(resolved_policy, source_identity)
-    resolved_policy["hardware_decode"] = True
-    if cache_key and await hwaccel_failure_state_store.has_failure(cache_key):
+    if "hardware_decode" not in resolved_policy:
+        resolved_policy["hardware_decode"] = True
+    if resolved_policy.get("hardware_decode") and cache_key and await hwaccel_failure_state_store.has_failure(cache_key):
         resolved_policy["hardware_decode"] = False
     return resolved_policy, cache_key
 
@@ -804,9 +805,11 @@ class CsoFfmpegCommandBuilder:
         if self.pipe_input_format == "mpegts" and (
             clean_key(self.source_probe.get("video_codec")) or clean_key(self.source_probe.get("audio_codec"))
         ):
-            probe_size_bytes = min(probe_size_bytes, 64 * 1024)
-            analyse_duration_us = min(analyse_duration_us, 250_000)
-            fps_probe_size = min(fps_probe_size, 8)
+            # TS is append-friendly for VOD handoff, but the output-side remux still needs
+            # enough probe budget to recover AAC parameters from the live pipe.
+            probe_size_bytes = min(probe_size_bytes, 512 * 1024)
+            analyse_duration_us = min(analyse_duration_us, 1_000_000)
+            fps_probe_size = min(fps_probe_size, 16)
         command += self._build_pipe_input(
             probe_size_bytes,
             analyse_duration_us,
@@ -1014,8 +1017,6 @@ class CsoFfmpegCommandBuilder:
                 command += [
                     "-readrate",
                     "1",
-                    "-readrate_initial_burst",
-                    "20",
                 ]
             else:
                 command += ["-re"]
@@ -1178,9 +1179,12 @@ class CsoFfmpegCommandBuilder:
             self._apply_transcode_options(command, subtitle_mode, policy=hls_policy)
         else:
             command += ["-c", "copy"]
+            if segment_type == "fmp4":
+                command += ["-bsf:a", "aac_adtstoasc"]
             if subtitle_mode == "drop":
                 command.append("-sn")
-            command += self._mpegts_output_flags(zero_latency=False)
+            if segment_type == "mpegts":
+                command += self._mpegts_output_flags(zero_latency=False)
 
         command += self._drop_data_streams()
         segment_pattern = str(output_dir / f"seg_%06d.{segment_extension}")

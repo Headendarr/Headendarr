@@ -164,6 +164,7 @@ MPEGTS_CHUNK_BYTES = MPEGTS_PACKET_SIZE_BYTES * 87
 
 # Shared mapping from CSO container/profile names to ffmpeg muxer names.
 CONTAINER_TO_FFMPEG_FORMAT = {
+    "nut": "nut",
     "mpegts": "mpegts",
     "ts": "mpegts",
     "avi": "avi",
