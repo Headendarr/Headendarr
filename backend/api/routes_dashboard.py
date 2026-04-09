@@ -9,13 +9,19 @@ import stat
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from quart import current_app, jsonify
+from quart import current_app, jsonify, request
 from sqlalchemy import select
 
 from backend.api import blueprint
-from backend.api.routes_channels import _build_channel_status, _fetch_channel_suggestion_counts, _fetch_cso_attention_map
+# TODO: Rename these functions
+from backend.api.routes_channels import (
+    _build_channel_status,
+    _fetch_channel_suggestion_counts,
+    _fetch_cso_attention_map,
+)
 from backend.audit_view import build_device_label, serialize_audit_row
 from backend.auth import admin_auth_required
+from backend.cso import disconnect_active_stream_connection
 from backend.channels import (
     build_stream_source_index,
     read_config_all_channels,
@@ -24,7 +30,7 @@ from backend.channels import (
     resolve_stream_target,
 )
 from backend.models import Channel, ChannelSource, Session, StreamAuditLog, User
-from backend.stream_activity import get_stream_activity_snapshot
+from backend.stream_activity import get_stream_activity_snapshot, stop_stream_activity
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.config import Config
 
@@ -32,6 +38,12 @@ _CHANNEL_ISSUE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}
 _CHANNEL_ISSUE_SUMMARY_CACHE_LOCK = asyncio.Lock()
 _STORAGE_SUMMARY_CACHE = {"expires_at": 0.0, "data": None}
 _STORAGE_SUMMARY_CACHE_LOCK = asyncio.Lock()
+
+
+def _can_force_disconnect_activity(row: dict) -> bool:
+    connection_id = str(row.get("connection_id") or "").strip()
+    return bool(connection_id)
+
 
 def _measure_path_bytes(target: Path) -> int:
     try:
@@ -269,7 +281,7 @@ async def _channel_issue_summary_cached() -> dict[str, object]:
         return data
 
 
-@blueprint.route('/tic-api/dashboard/activity', methods=['GET'])
+@blueprint.route("/tic-api/dashboard/activity", methods=["GET"])
 @admin_auth_required
 async def api_dashboard_activity():
     activity_rows = await get_stream_activity_snapshot()
@@ -325,12 +337,39 @@ async def api_dashboard_activity():
                 "active_seconds": row.get("active_seconds"),
                 "age_seconds": row.get("age_seconds"),
                 "region_label": region_label(ip_address),
+                "can_force_disconnect": _can_force_disconnect_activity(row),
             }
         )
     return jsonify({"success": True, "data": data})
 
 
-@blueprint.route('/tic-api/dashboard/summary', methods=['GET'])
+@blueprint.route("/tic-api/dashboard/activity/disconnect", methods=["POST"])
+@admin_auth_required
+async def api_dashboard_activity_disconnect():
+    payload = await request.get_json(force=True, silent=True) or {}
+    connection_id = str(payload.get("connection_id") or payload.get("cid") or "").strip()
+    if not connection_id:
+        return jsonify({"success": False, "message": "Missing connection id"}), 400
+
+    disconnected = await disconnect_active_stream_connection(connection_id)
+    stopped = await stop_stream_activity(
+        "",
+        connection_id=connection_id,
+        event_type="stream_stop",
+        endpoint_override="/tic-api/dashboard/activity/disconnect",
+    )
+    if not disconnected and not stopped:
+        return jsonify({"success": False, "message": "Active stream not found"}), 404
+    return jsonify(
+        {
+            "success": True,
+            "disconnected": bool(disconnected),
+            "stopped": bool(stopped),
+        }
+    )
+
+
+@blueprint.route("/tic-api/dashboard/summary", methods=["GET"])
 @admin_auth_required
 async def api_dashboard_summary():
     app_config = current_app.config["APP_CONFIG"]

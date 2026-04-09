@@ -119,6 +119,32 @@ class CsoRuntimeManager:
         async with self.ingest.lock:
             return self.ingest.sessions.get(prefix) is not None
 
+    async def disconnect_output_client(self, connection_id: str) -> bool:
+        connection_key = str(connection_id or "").strip()
+        if not connection_key:
+            return False
+        async with self.output.lock:
+            sessions = list(self.output.sessions.values())
+        for session in sessions:
+            has_client_hook = getattr(session, "has_client", None)
+            try:
+                if callable(has_client_hook):
+                    if not bool(await has_client_hook(connection_key)):
+                        continue
+                else:
+                    async with session.lock:
+                        clients = getattr(session, "clients", None) or {}
+                        if connection_key not in clients:
+                            continue
+                remove_client_hook = getattr(session, "remove_client", None)
+                if not callable(remove_client_hook):
+                    continue
+                await remove_client_hook(connection_key)
+                return True
+            except Exception:
+                continue
+        return False
+
 
 cso_session_manager = CsoRuntimeManager()
 

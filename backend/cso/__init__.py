@@ -37,3 +37,10 @@ from .sources import cso_source_from_vod_source, order_cso_channel_sources, reso
 from .types import CsoSource
 from .vod_cache import cleanup_vod_proxy_cache, vod_cache_manager
 from .vod_proxy import disconnect_vod_proxy_output
+
+
+async def disconnect_active_stream_connection(connection_id: str) -> bool:
+    disconnected_output = await cso_session_manager.disconnect_output_client(connection_id)
+    if disconnected_output:
+        return True
+    return await disconnect_vod_proxy_output(connection_id)

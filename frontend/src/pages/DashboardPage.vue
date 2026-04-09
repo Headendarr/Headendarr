@@ -17,8 +17,22 @@
                   class="col-12 col-sm-6"
                 >
                   <q-card flat bordered class="activity-tile">
-                    <q-card-section class="q-pa-sm q-pb-xs">
-                      <div class="row items-start justify-between no-wrap">
+                    <button
+                      v-if="canForceDisconnectActivity(item)"
+                      type="button"
+                      class="activity-disconnect-corner"
+                      :disabled="isDisconnectingActivity(item)"
+                      :aria-label="`Force disconnect ${displayActivityTitle(item)}`"
+                      @click="confirmForceDisconnect(item)"
+                    >
+                      <q-icon
+                        :name="isDisconnectingActivity(item) ? 'hourglass_top' : 'link_off'"
+                        size="18px"
+                      />
+                      <q-tooltip>Force disconnect</q-tooltip>
+                    </button>
+                    <q-card-section class="q-px-sm q-pt-sm q-pb-xs">
+                      <div class="row items-start no-wrap activity-header-row">
                         <div class="row items-center no-wrap activity-title-wrap">
                           <q-avatar size="34px" class="q-mr-sm activity-logo">
                             <q-img
@@ -32,20 +46,23 @@
                             {{ displayActivityTitle(item) }}
                           </div>
                         </div>
-                        <div class="column items-end q-ml-sm">
-                          <q-chip dense color="primary" text-color="white" size="sm">
-                            Active {{ activityAgeLabel(item.active_seconds ?? item.age_seconds) }}
-                          </q-chip>
-                          <div class="text-caption text-grey-7">
-                            User: {{ displayUsername(item) }}
-                          </div>
-                        </div>
                       </div>
-                      <div class="activity-subtitle text-grey-7 q-mt-xs">
-                        Client: {{ item.device_label || fallbackDevice(item.user_agent) }}
+                      <div class="row items-center activity-chip-group">
+                        <q-chip dense color="primary" text-color="white" size="sm" class="activity-chip">
+                          Active {{ activityAgeLabel(item.active_seconds ?? item.age_seconds) }}
+                        </q-chip>
+                        <q-chip dense outline color="grey-7" size="sm" class="activity-chip activity-chip--user">
+                          User: {{ displayUsername(item) }}
+                        </q-chip>
                       </div>
                     </q-card-section>
-                    <q-card-section class="q-pa-sm q-pt-xs">
+                    <q-card-section class="q-px-sm q-pb-sm q-pt-xs">
+                      <div class="activity-field activity-field--compact">
+                        <span class="activity-field-label">Client</span>
+                        <span class="activity-field-value">
+                          {{ item.device_label || fallbackDevice(item.user_agent) }}
+                        </span>
+                      </div>
                       <div class="activity-field activity-field--compact">
                         <span class="activity-field-label">Streaming</span>
                         <span class="activity-field-value activity-url ellipsis" :title="displayStreamTarget(item)">
@@ -231,6 +248,7 @@
 <script>
 import axios from 'axios';
 import {defineComponent} from 'vue';
+import TicConfirmDialog from 'components/ui/dialogs/TicConfirmDialog.vue';
 import {useAuthStore} from 'stores/auth';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
@@ -264,6 +282,7 @@ export default defineComponent({
       pollTimer: null,
       pollCancelled: false,
       pollInFlight: false,
+      disconnectingActivity: {},
     };
   },
   computed: {
@@ -330,6 +349,86 @@ export default defineComponent({
     displayStreamTarget(item) {
       const value = String(item?.display_url || item?.source_url || '').trim();
       return value || '-';
+    },
+    activityConnectionId(item) {
+      return String(item?.connection_id || '').trim();
+    },
+    canForceDisconnectActivity(item) {
+      return Boolean(item?.can_force_disconnect && this.activityConnectionId(item));
+    },
+    isDisconnectingActivity(item) {
+      const connectionId = this.activityConnectionId(item);
+      if (!connectionId) {
+        return false;
+      }
+      return Boolean(this.disconnectingActivity[connectionId]);
+    },
+    forceDisconnectDetails(item) {
+      const parts = [];
+      const title = this.displayActivityTitle(item);
+      if (title) {
+        parts.push(`Stream: ${title}`);
+      }
+      const target = this.displayStreamTarget(item);
+      if (target && target !== '-') {
+        parts.push(`Target: ${target}`);
+      }
+      const connectionId = this.activityConnectionId(item);
+      if (connectionId) {
+        parts.push(`Connection ID: ${connectionId}`);
+      }
+      return parts.join('\n');
+    },
+    confirmForceDisconnect(item) {
+      if (!this.canForceDisconnectActivity(item) || this.isDisconnectingActivity(item)) {
+        return;
+      }
+      this.$q.dialog({
+        component: TicConfirmDialog,
+        componentProps: {
+          title: 'Force Disconnect Stream',
+          message: 'This will terminate the active playback session from TIC. The client will see the stream end.',
+          details: this.forceDisconnectDetails(item),
+          icon: 'link_off',
+          iconColor: 'negative',
+          confirmLabel: 'Disconnect',
+          confirmIcon: 'link_off',
+          confirmColor: 'negative',
+        },
+      }).onOk(() => {
+        this.forceDisconnectActivity(item);
+      });
+    },
+    async forceDisconnectActivity(item) {
+      const connectionId = this.activityConnectionId(item);
+      if (!connectionId) {
+        return;
+      }
+      this.disconnectingActivity = {
+        ...this.disconnectingActivity,
+        [connectionId]: true,
+      };
+      try {
+        await axios.post('/tic-api/dashboard/activity/disconnect', {
+          connection_id: connectionId,
+        });
+        this.$q.notify({
+          color: 'positive',
+          message: 'Playback session disconnected',
+        });
+        await this.loadActivity({silent: true});
+      } catch (error) {
+        const message = String(error?.response?.data?.message || '').trim() || 'Failed to disconnect playback session';
+        console.error('Failed to force disconnect activity:', error);
+        this.$q.notify({
+          color: 'negative',
+          message,
+        });
+      } finally {
+        const nextState = {...this.disconnectingActivity};
+        delete nextState[connectionId];
+        this.disconnectingActivity = nextState;
+      }
     },
     formatAuditTimestamp(value) {
       if (!value) {
@@ -504,6 +603,8 @@ export default defineComponent({
 .activity-tile {
   border-color: var(--tic-elevated-border);
   min-height: 132px;
+  position: relative;
+  overflow: hidden;
 }
 
 .activity-title {
@@ -518,6 +619,7 @@ export default defineComponent({
 .activity-title-wrap {
   min-width: 0;
   flex: 1 1 auto;
+  padding-right: 30px;
 }
 
 .activity-logo {
@@ -525,9 +627,55 @@ export default defineComponent({
   background: #fff;
 }
 
-.activity-subtitle {
-  font-size: 0.8rem;
-  line-height: 1.2;
+.activity-chip-group {
+  margin-top: 8px;
+  gap: 8px;
+  padding-right: 0;
+  flex-wrap: wrap;
+}
+
+.activity-chip {
+  margin: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.activity-chip--user :deep(.q-chip__content) {
+  color: inherit;
+}
+
+.activity-disconnect-corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-top-right-radius: var(--tic-radius-md);
+  border-bottom-left-radius: var(--tic-radius-md);
+  background: var(--q-negative);
+  color: #fff;
+  cursor: pointer;
+  z-index: 2;
+  transition: filter 0.18s ease;
+}
+
+.activity-disconnect-corner:hover:not(:disabled),
+.activity-disconnect-corner:focus-visible:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+.activity-disconnect-corner:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.92);
+  outline-offset: -2px;
+}
+
+.activity-disconnect-corner:disabled {
+  cursor: wait;
+  opacity: 0.9;
 }
 
 .activity-field {
@@ -637,5 +785,37 @@ export default defineComponent({
 
 .channels-issues {
   padding-left: 12px;
+}
+
+@media (max-width: 599px) {
+  .activity-header-row {
+    display: block;
+  }
+
+  .activity-chip-group {
+    align-items: flex-start;
+    row-gap: 4px;
+  }
+
+  .activity-title {
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  .activity-title-wrap {
+    min-width: 0;
+    max-width: 100%;
+    padding-right: 30px;
+  }
+
+  .activity-url {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .activity-field-value {
+    word-break: break-word;
+  }
 }
 </style>
