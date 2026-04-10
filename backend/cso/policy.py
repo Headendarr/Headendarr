@@ -129,7 +129,7 @@ def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str,
 def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> str:
     probe = dict(source_probe or {})
     video_codec = clean_key(probe.get("video_codec"))
-    if video_codec and video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+    if video_codec and video_codec not in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
         return "nut"
     audio_codec = clean_key(probe.get("audio_codec"))
     if audio_codec and audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
