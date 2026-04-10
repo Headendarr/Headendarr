@@ -175,6 +175,7 @@ class CsoIngestSession:
         self.current_variant_position = None
         self.current_program_index = 0
         self.source_program_index = {}
+        self.source_variant_position = {}
         self.startup_jump_done = False
         self.process_token = 0
         self.failover_failed_sources = set()
@@ -621,7 +622,7 @@ class CsoIngestSession:
             resolved_url = ""
             variants = []
             variant_position = None
-            remembered_program_index = self.source_program_index.get(source.id)
+            remembered_variant_position = self.source_variant_position.get(source.id)
             last_error = None
             for candidate_url in source_urls:
                 variants = await discover_hls_variants(candidate_url)
@@ -629,29 +630,27 @@ class CsoIngestSession:
                 ingest_url = candidate_url
                 url_path = urlparse(candidate_url).path.lower()
                 if (url_path.endswith(".m3u8") or url_path.endswith(".m3u")) and variants:
-                    if remembered_program_index is not None:
-                        for idx, item in enumerate(variants):
-                            if int(item.get("program_index") or 0) == int(remembered_program_index):
-                                variant_position = idx
-                                break
+                    if remembered_variant_position is not None and 0 <= int(remembered_variant_position) < len(variants):
+                        variant_position = int(remembered_variant_position)
                     if variant_position is None:
                         variant_position = len(variants) - 1
                     selected_variant = variants[variant_position]
-                    program_index = int(selected_variant.get("program_index") or 0)
+                    program_index = int(selected_variant.get("ffmpeg_program_index") or 0)
                     ingest_url = (selected_variant.get("variant_url") or "").strip() or candidate_url
                     logger.info(
                         "CSO HLS ingest selected variant channel=%s source_id=%s "
-                        "program_index=%s variant_position=%s variant_count=%s ingest_url=%s",
+                        "program_index=%s variant_position=%s variant_count=%s playlist_type=%s ingest_url=%s",
                         self.channel_id,
                         source.id,
                         program_index,
                         variant_position,
                         len(variants),
+                        clean_text(selected_variant.get("playlist_type")) or "unknown",
                         ingest_url,
                     )
                 else:
-                    program_index = int(remembered_program_index or 0)
-                    if remembered_program_index is not None:
+                    program_index = int(self.source_program_index.get(source.id) or 0)
+                    if source.id is not None and source.id in self.source_program_index:
                         logger.info(
                             "CSO ingest variant discovery empty; reusing remembered program index "
                             "channel=%s source_id=%s program_index=%s",
@@ -706,6 +705,8 @@ class CsoIngestSession:
             self.current_program_index = program_index
             if source.id is not None:
                 self.source_program_index[source.id] = int(program_index)
+                if variant_position is not None:
+                    self.source_variant_position[source.id] = int(variant_position)
             self.startup_jump_done = True
             if reason == "failover":
                 self.pending_switch_success = {

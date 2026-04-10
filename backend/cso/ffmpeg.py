@@ -181,7 +181,11 @@ async def _prepare_hw_decode_policy(
     cache_key = _build_hwaccel_failure_cache_key(resolved_policy, source_identity)
     if "hardware_decode" not in resolved_policy:
         resolved_policy["hardware_decode"] = True
-    if resolved_policy.get("hardware_decode") and cache_key and await hwaccel_failure_state_store.has_failure(cache_key):
+    if (
+        resolved_policy.get("hardware_decode")
+        and cache_key
+        and await hwaccel_failure_state_store.has_failure(cache_key)
+    ):
         resolved_policy["hardware_decode"] = False
     return resolved_policy, cache_key
 
@@ -735,6 +739,9 @@ class CsoFfmpegCommandBuilder:
     def build_ingest_command(self, source_url, program_index=0, user_agent=None, request_headers=None):
         map_program = max(0, int(program_index or 0))
         is_hls_input = (urlparse(source_url or "").path or "").lower().endswith(".m3u8")
+        probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
+        analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
+        fps_probe_size = int(CSO_INGEST_FPS_PROBE_SIZE)
         header_values = sanitise_headers(request_headers)
         command = self._ffmpeg_logging_command(enable_cso_ingest_command_debug_logging, quiet_level="info")
         command += [
@@ -767,12 +774,34 @@ class CsoFfmpegCommandBuilder:
             ]
         else:
             command += ["-reconnect_streamed", "0"]
+            # NOTE: HLS playlists seem to need a larger initial probe window before AAC parameters such as sample rate and channel count are available to the output muxer.
+            probe_size_bytes = max(probe_size_bytes, 5 * 1024 * 1024)
+            analyse_duration_us = max(analyse_duration_us, 5_000_000)
+            fps_probe_size = max(fps_probe_size, 128)
         command += self._input_resilience_flags()
         command += self._probe_flags(
-            CSO_INGEST_PROBE_SIZE_BYTES,
-            CSO_INGEST_ANALYSE_DURATION_US,
-            CSO_INGEST_FPS_PROBE_SIZE,
+            probe_size_bytes,
+            analyse_duration_us,
+            fps_probe_size,
         )
+        if is_hls_input:
+            stream_maps = [
+                "-map",
+                "0:v:0?",
+                "-map",
+                "0:a:0?",
+                "-map",
+                "0:s?",
+            ]
+        else:
+            stream_maps = [
+                "-map",
+                f"0:p:{map_program}:v:0?",
+                "-map",
+                f"0:p:{map_program}:a?",
+                "-map",
+                f"0:p:{map_program}:s?",
+            ]
         command += [
             "-rw_timeout",
             str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
@@ -780,15 +809,9 @@ class CsoFfmpegCommandBuilder:
             str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
             "-i",
             source_url,
-            "-map",
-            f"0:p:{map_program}:v:0?",
-            "-map",
-            f"0:p:{map_program}:a?",
-            "-map",
-            f"0:p:{map_program}:s?",
-            "-c",
-            "copy",
         ]
+        command += stream_maps
+        command += ["-c", "copy"]
         command += self._drop_data_streams()
         if self.pipe_output_format == "mpegts":
             command += self._mpegts_output_flags(zero_latency=True)

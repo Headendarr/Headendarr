@@ -7,7 +7,13 @@ HLS_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
 HLS_RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
 
 
-async def discover_hls_variants(url):
+async def discover_hls_variants(url: str) -> list[dict[str, int | str]]:
+    """Return HLS variant metadata for a playlist URL.
+
+    For master playlists, this returns one entry per `#EXT-X-STREAM-INF` variant.
+    For media playlists, this returns a single entry describing the concrete
+    playlist URL so callers can treat it as an already-selected variant.
+    """
     parsed = urlparse(url or "")
     if not parsed.path.lower().endswith(".m3u8"):
         return []
@@ -24,9 +30,16 @@ async def discover_hls_variants(url):
     return parse_hls_playlist_variants(resolved_url, payload)
 
 
-def parse_hls_playlist_variants(base_url, payload):
+def parse_hls_playlist_variants(base_url: str, payload: str) -> list[dict[str, int | str]]:
+    """Parse HLS playlist text into sorted variant descriptors.
+
+    Master playlists are sorted by ascending `BANDWIDTH`, so callers that select
+    the last entry get the highest-bandwidth rendition. `RESOLUTION` is parsed
+    and recorded for diagnostics and future selection policies, but the current
+    ordering logic uses `BANDWIDTH`.
+    """
     lines = [line.strip() for line in (payload or "").splitlines() if line.strip()]
-    variants = []
+    variants: list[dict[str, int | str]] = []
     pending_bandwidth = None
     pending_width = 0
     pending_height = 0

@@ -11,7 +11,7 @@ from .types import CsoSource
 logger = logging.getLogger("cso")
 
 
-VOD_CHANNEL_TS_SAFE_VIDEO_CODECS = {"h264", "h265", "mpeg2video"}
+VOD_CHANNEL_TS_SAFE_VIDEO_CODECS = {"h264", "h265", "hevc", "mpeg2video"}
 LIVE_PIPE_TS_SAFE_AUDIO_CODECS = {"", "aac", "ac3", "eac3", "mp2", "mp3"}
 
 
@@ -114,10 +114,14 @@ def resolve_vod_channel_output_policy(policy: dict[str, Any] | None, ingest_poli
 
 
 def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> str:
-    if source is None or source.source_type not in {"vod_movie", "vod_episode"}:
-        return "nut"
     video_codec = clean_key((source_probe or {}).get("video_codec"))
-    if video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+    if video_codec and video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+        return "mpegts"
+    if video_codec:
+        return "nut"
+    if source is None:
+        return "mpegts"
+    if source.source_type not in {"vod_movie", "vod_episode"}:
         return "mpegts"
     return "nut"
 
@@ -125,15 +129,17 @@ def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str,
 def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> str:
     probe = dict(source_probe or {})
     video_codec = clean_key(probe.get("video_codec"))
-    if video_codec not in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+    if video_codec and video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
         return "nut"
     audio_codec = clean_key(probe.get("audio_codec"))
-    if audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
+    if audio_codec and audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
         return "nut"
     return "mpegts"
 
 
-def should_prefer_direct_vod_url_input(source: CsoSource | None, start_seconds: int = 0, source_probe: dict[str, Any] | None = None) -> bool:
+def should_prefer_direct_vod_url_input(
+    source: CsoSource | None, start_seconds: int = 0, source_probe: dict[str, Any] | None = None
+) -> bool:
     if source is None or not source.url:
         return False
     if int(start_seconds or 0) > 0:
@@ -165,6 +171,7 @@ def pipe_container_from_content_type(content_type: str) -> str:
             raw_content_type,
         )
     return ""
+
 
 def effective_vod_hls_runtime_policy(policy, source: CsoSource | None):
     resolved = dict(policy or {})
