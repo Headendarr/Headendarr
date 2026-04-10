@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
+import shutil
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from backend.utils import clean_key, clean_text
@@ -11,6 +14,7 @@ from .constants import (
     CSO_INGEST_HISTORY_MAX_BYTES,
     CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES,
     MPEGTS_CHUNK_BYTES,
+    CSO_SEGMENT_CACHE_ROOT,
     VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES,
     VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS,
 )
@@ -23,6 +27,7 @@ from .ffmpeg import (
 from .live_ingest import resolve_cso_ingest_headers, resolve_cso_ingest_user_agent
 from .output import CsoOutputSession, policy_log_label
 from .policy import generate_vod_channel_ingest_policy, should_prefer_direct_vod_url_input
+from .segmented_handoff import SegmentedHandoffSession
 from .sources import cso_source_from_vod_source
 from .vod_cache import vod_cache_manager, warm_vod_cache
 
@@ -339,6 +344,19 @@ class Vod247ChannelManager:
         self._startup_succeeded = False
         self._warm_task = None
         self._active_ingest = None
+        self.canonical_output_shape = {}
+        self.segment_cache_root = Path(CSO_SEGMENT_CACHE_ROOT) / self.key
+        self.stitched_output_dir = self.segment_cache_root / "stitched"
+        self.stitched_playlist_path = self.stitched_output_dir / "index.m3u8"
+        self.stitched_init_path = self.stitched_output_dir / "init.mp4"
+        self._stitched_playlist_lines = []
+        self._stitched_segment_names = set()
+        self._stitched_segment_index = 0
+        self._stitched_episode_count = 0
+        self._stitched_ready_event = asyncio.Event()
+
+    def get_output_input_target(self):
+        return str(self.stitched_playlist_path)
 
     def is_hunting_for_stream(self):
         if not self.running:
@@ -348,6 +366,141 @@ class Vod247ChannelManager:
         if not self.current_segment_healthy:
             return True
         return False
+
+    async def _prepare_stitched_output_dir(self):
+        if self.stitched_output_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, self.stitched_output_dir, True)
+        self.stitched_output_dir.mkdir(parents=True, exist_ok=True)
+        self._stitched_playlist_lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-PLAYLIST-TYPE:EVENT",
+            "#EXT-X-INDEPENDENT-SEGMENTS",
+            "#EXT-X-TARGETDURATION:2",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+        ]
+        self._stitched_segment_names.clear()
+        self._stitched_segment_index = 0
+        self._stitched_episode_count = 0
+        self._stitched_ready_event = asyncio.Event()
+        await self._write_stitched_playlist(endlist=False)
+
+    async def _write_stitched_playlist(self, endlist: bool = False):
+        lines = list(self._stitched_playlist_lines)
+        if self.stitched_init_path.exists():
+            map_line = '#EXT-X-MAP:URI="init.mp4"'
+            if map_line not in lines:
+                lines.insert(6, map_line)
+        if endlist and (not lines or lines[-1] != "#EXT-X-ENDLIST"):
+            lines.append("#EXT-X-ENDLIST")
+        payload = "\n".join(lines).rstrip() + "\n"
+        temp_path = self.stitched_output_dir / "index.m3u8.tmp"
+        await asyncio.to_thread(temp_path.write_text, payload, "utf-8")
+        await asyncio.to_thread(temp_path.replace, self.stitched_playlist_path)
+
+    @staticmethod
+    def _parse_playlist_segments(playlist_text: str) -> list[tuple[float, str]]:
+        segments = []
+        pending_duration = 0.0
+        for raw_line in str(playlist_text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#EXTINF:"):
+                duration_text = line.split(":", 1)[1].split(",", 1)[0]
+                try:
+                    pending_duration = float(duration_text or 0.0)
+                except Exception:
+                    pending_duration = 0.0
+                continue
+            if line.startswith("#"):
+                continue
+            segments.append((pending_duration or 2.0, line.split("?", 1)[0]))
+            pending_duration = 0.0
+        return segments
+
+    def _canonical_shape_matches(self, probe: dict[str, Any]) -> bool:
+        if not self.canonical_output_shape:
+            return True
+        for field_name in (
+            "video_codec",
+            "width",
+            "height",
+            "pixel_format",
+            "audio_codec",
+            "audio_sample_rate",
+            "audio_channels",
+        ):
+            expected = self.canonical_output_shape.get(field_name)
+            if expected in {None, "", 0}:
+                continue
+            if probe.get(field_name) != expected:
+                return False
+        expected_fps = float(self.canonical_output_shape.get("fps") or 0.0)
+        observed_fps = float(probe.get("fps") or 0.0)
+        if expected_fps > 0.0 and abs(expected_fps - observed_fps) > 0.05:
+            return False
+        return True
+
+    def _segment_policy_for_runtime(self) -> dict[str, Any]:
+        policy = generate_vod_channel_ingest_policy(self.config, self.requested_policy)
+        policy["container"] = "hls"
+        policy["hls_segment_type"] = "fmp4"
+        policy["hls_playlist_mode"] = "event"
+        if self.canonical_output_shape:
+            policy["target_width"] = int(self.canonical_output_shape.get("width") or 0)
+            policy["target_height"] = int(self.canonical_output_shape.get("height") or 0)
+            policy["output_pixel_format"] = clean_key(self.canonical_output_shape.get("pixel_format")) or "yuv420p"
+            policy["output_fps"] = float(self.canonical_output_shape.get("fps") or 0.0)
+            policy["audio_sample_rate"] = int(self.canonical_output_shape.get("audio_sample_rate") or 48000)
+            policy["audio_channels"] = int(self.canonical_output_shape.get("audio_channels") or 2)
+        return policy
+
+    async def _append_runtime_segments(self, runtime, discontinuity: bool = False):
+        segment_session = runtime.get("segment_session")
+        if segment_session is None:
+            return
+        seen_segment_names = runtime.setdefault("seen_segment_names", set())
+        if not self.stitched_init_path.exists():
+            init_path = segment_session.init_segment_path()
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not init_path.exists():
+                await asyncio.sleep(0.1)
+            if init_path.exists():
+                await asyncio.to_thread(shutil.copyfile, init_path, self.stitched_init_path)
+                await self._write_stitched_playlist(endlist=False)
+        if discontinuity and self._stitched_segment_index > 0:
+            self._stitched_playlist_lines.append("#EXT-X-DISCONTINUITY")
+        while self.running:
+            if segment_session.playlist_path.exists():
+                try:
+                    playlist_text = await asyncio.to_thread(segment_session.playlist_path.read_text, "utf-8")
+                except Exception:
+                    playlist_text = ""
+                for duration_seconds, segment_name in self._parse_playlist_segments(playlist_text):
+                    source_segment_path = segment_session.output_dir / segment_name
+                    if segment_name in seen_segment_names:
+                        continue
+                    if not source_segment_path.exists():
+                        continue
+                    stitched_name = f"seg_{self._stitched_segment_index:06d}.m4s"
+                    stitched_path = self.stitched_output_dir / stitched_name
+                    if stitched_path.exists():
+                        stitched_path.unlink(missing_ok=True)
+                    try:
+                        await asyncio.to_thread(os.link, source_segment_path, stitched_path)
+                    except Exception:
+                        await asyncio.to_thread(shutil.copyfile, source_segment_path, stitched_path)
+                    seen_segment_names.add(segment_name)
+                    self._stitched_segment_names.add(stitched_name)
+                    self._stitched_playlist_lines.append(f"#EXTINF:{duration_seconds:.3f},")
+                    self._stitched_playlist_lines.append(stitched_name)
+                    self._stitched_segment_index += 1
+                    await self._write_stitched_playlist(endlist=False)
+                    self._stitched_ready_event.set()
+            if segment_session.process is not None and segment_session.process.returncode is not None:
+                break
+            await asyncio.sleep(0.2)
 
     async def _broadcast(self, chunk):
         if not chunk:
@@ -420,6 +573,7 @@ class Vod247ChannelManager:
                 self.current_segment_healthy = False
                 self.session_start_ts = time.time()
                 self._recent_ffmpeg_stderr.clear()
+                self.canonical_output_shape = {}
                 self._startup_event = asyncio.Event()
                 self._startup_succeeded = False
                 self.segment_task = asyncio.create_task(
@@ -464,27 +618,27 @@ class Vod247ChannelManager:
     def _activate_runtime(self, runtime):
         if not runtime:
             return
-        self._active_ingest = runtime.get("ingest")
+        self._active_ingest = runtime.get("segment_session")
         self.process = self._active_ingest.process if self._active_ingest else runtime.get("process")
         self.stderr_task = self._active_ingest.stderr_task if self._active_ingest else runtime.get("stderr_task")
-        self._warm_task = self._active_ingest._warm_task if self._active_ingest else runtime.get("warm_task")
+        self._warm_task = runtime.get("warm_task")
         self.current_source = runtime.get("source")
         self.current_source_url = clean_text(runtime.get("input_target"))
         runtime_probe = dict(runtime.get("source_probe") or {})
         self.current_source_probe = {
-            "container": clean_key(runtime.get("pipe_container")) or "mpegts",
+            "container": "hls",
             "video_codec": clean_key(runtime_probe.get("video_codec"))
-            or clean_key(self._active_ingest.ingest_policy.get("video_codec") if self._active_ingest else "")
+            or clean_key(self._active_ingest.policy.get("video_codec") if self._active_ingest else "")
             or "h264",
             "audio_codec": clean_key(runtime_probe.get("audio_codec"))
-            or clean_key(self._active_ingest.ingest_policy.get("audio_codec") if self._active_ingest else "")
+            or clean_key(self._active_ingest.policy.get("audio_codec") if self._active_ingest else "")
             or "aac",
         }
 
     async def _close_runtime(self, runtime):
         if not runtime:
             return
-        for task_name in ("prefetch_reader_task", "warm_task", "stderr_task"):
+        for task_name in ("prefetch_reader_task", "warm_task", "stitch_task"):
             task = runtime.get(task_name)
             if task is None or task.done():
                 continue
@@ -499,34 +653,28 @@ class Vod247ChannelManager:
                 await queue.put_eof()
             except Exception:
                 pass
-        ingest = runtime.get("ingest")
+        ingest = runtime.get("segment_session")
         if ingest is not None:
-            await ingest.stop()
-        else:
-            process = runtime.get("process")
-            if process is not None and process.returncode is None:
+            await ingest.stop(force=True)
+            return
+        process = runtime.get("process")
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+                await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
+            except Exception:
                 try:
-                    process.terminate()
+                    process.kill()
                     await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
                 except Exception:
-                    try:
-                        process.kill()
-                        await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-                    except Exception:
-                        pass
+                    pass
 
     async def _buffer_prefetched_runtime(self, runtime):
-        ingest = runtime.get("ingest")
+        ingest = runtime.get("segment_session")
         queue = runtime.get("prefetch_queue")
         if ingest is None or queue is None:
             return
-        try:
-            async for chunk in ingest.iter_bytes():
-                if not self.running:
-                    break
-                await queue.put_drop_oldest(chunk)
-        finally:
-            await queue.put_eof()
+        await queue.put_eof()
 
     async def _warm_next_item_cache(self, next_entry, remaining_seconds):
         if not next_entry:
@@ -663,30 +811,56 @@ class Vod247ChannelManager:
         if cache_entry.complete and cache_entry.final_path.exists():
             input_target = str(cache_entry.final_path)
 
-        ingest = VodIngestSession(
-            f"{self.key}-{segment_index}",
-            self.config,
-            source,
-            upstream_url=upstream_url,
+        segment_policy = self._segment_policy_for_runtime()
+        segment_session = SegmentedHandoffSession(
+            key=f"{self.key}-segment-{segment_index}",
+            policy=segment_policy,
+            input_target=input_target,
+            input_is_url=bool(input_target.startswith("http://") or input_target.startswith("https://")),
+            user_agent=resolve_cso_ingest_user_agent(self.config, source),
+            request_headers=resolve_cso_ingest_headers(source),
+            cache_root_dir=self.segment_cache_root,
             start_seconds=offset_seconds,
-            duration_seconds=remaining_seconds,
-            request_headers=self.request_headers,
-            output_policy=generate_vod_channel_ingest_policy(self.config, self.requested_policy),
-            realtime=True,
+            max_duration_seconds=remaining_seconds,
         )
-        started = await ingest.start()
+        started = await segment_session.start()
         if not started:
+            return None
+        output_probe = await segment_session.detect_output_probe()
+        source_probe = dict(source.probe_details or {})
+        if float(output_probe.get("fps") or 0.0) <= 0.0:
+            fallback_fps = float(source_probe.get("fps") or 0.0)
+            if fallback_fps > 0.0:
+                output_probe["fps"] = fallback_fps
+                avg_frame_rate = clean_text(source_probe.get("avg_frame_rate"))
+                if avg_frame_rate:
+                    output_probe["avg_frame_rate"] = avg_frame_rate
+        if not self.canonical_output_shape:
+            self.canonical_output_shape = dict(output_probe or {})
+        elif not self._canonical_shape_matches(output_probe):
+            logger.warning(
+                "VOD channel prepared runtime shape mismatch channel=%s start_ts=%s expected=%s observed=%s",
+                self.channel_id,
+                entry_start_ts,
+                self.canonical_output_shape,
+                output_probe,
+            )
+            await segment_session.stop(force=True)
             return None
 
         runtime = {
-            "ingest": ingest,
+            "segment_session": segment_session,
             "entry": entry,
             "playback": playback,
             "source": source,
             "input_target": input_target,
-            "pipe_container": clean_key(ingest.ingest_policy.get("container")) or "mpegts",
-            "source_probe": dict(source.probe_details or {}),
+            "pipe_container": "hls",
+            "source_probe": dict(output_probe or source_probe or {}),
         }
+        runtime["stitch_task"] = asyncio.create_task(
+            self._append_runtime_segments(runtime, discontinuity=segment_index > 0),
+            name=f"vod-channel-stitch-{self.channel_id}-{segment_index}",
+        )
         if activate_session_state:
             self._activate_runtime(runtime)
         return runtime
@@ -748,12 +922,6 @@ class Vod247ChannelManager:
             )
             return None
 
-        prefetch_queue = ByteBudgetQueue(max_bytes=VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES)
-        runtime["prefetch_queue"] = prefetch_queue
-        runtime["prefetch_reader_task"] = asyncio.create_task(
-            self._buffer_prefetched_runtime(runtime),
-            name=f"vod-channel-prefetch-{self.channel_id}-{segment_index}",
-        )
         logger.info(
             "Prepared next VOD channel segment channel=%s start_ts=%s source_item_id=%s prestart_seconds=%s",
             self.channel_id,
@@ -851,7 +1019,7 @@ class Vod247ChannelManager:
 
     async def _close_active_segment(self):
         runtime = {
-            "ingest": self._active_ingest,
+            "segment_session": self._active_ingest,
             "process": self.process,
             "warm_task": self._warm_task,
             "stderr_task": self.stderr_task,
@@ -866,6 +1034,7 @@ class Vod247ChannelManager:
         from backend.vod_channels import resolve_vod_channel_playback_target
 
         startup_event = self._startup_event
+        await self._prepare_stitched_output_dir()
         playback = await resolve_vod_channel_playback_target(self.config, self.channel_id)
         if not playback:
             self.last_error = "no_scheduled_programme"
@@ -893,12 +1062,16 @@ class Vod247ChannelManager:
                         startup_event.set()
                     break
                 if startup_event is not None and not startup_event.is_set():
-                    self._startup_succeeded = True
+                    try:
+                        await asyncio.wait_for(self._stitched_ready_event.wait(), timeout=12.0)
+                        self._startup_succeeded = True
+                    except asyncio.TimeoutError:
+                        self.last_error = "vod_channel_segment_startup_timeout"
+                        self.running = False
                     startup_event.set()
+                    if not self.running:
+                        break
 
-                ingest = runtime["ingest"]
-                self.stderr_task = ingest.stderr_task
-                self._warm_task = ingest._warm_task
                 current_entry = runtime["entry"]
                 remaining_seconds = max(0, int(current_entry.get("stop_ts") or 0) - int(time.time()))
                 next_warm_task = asyncio.create_task(
@@ -909,40 +1082,32 @@ class Vod247ChannelManager:
                     self._prepare_next_segment_runtime(current_playback, segment_index + 1),
                     name=f"vod-channel-prepare-{self.channel_id}-{segment_index + 1}",
                 )
-                saw_data = False
                 self.current_segment_healthy = False
                 boundary_ts = int(current_entry.get("stop_ts") or 0)
                 try:
-                    prefetch_queue = runtime.get("prefetch_queue")
-                    async for chunk in prefetch_queue.iter_items() if prefetch_queue else ingest.iter_bytes():
-                        if not self.running:
+                    while self.running:
+                        if self._stitched_ready_event.is_set():
+                            self.current_segment_healthy = True
+                            if not self.first_healthy_stream_seen:
+                                logger.info(
+                                    "VOD channel segmented playlist primed channel=%s ingest_key=%s elapsed_ms=%s",
+                                    self.channel_id,
+                                    self.key,
+                                    int(max(0.0, time.time() - float(self.session_start_ts or time.time())) * 1000),
+                                )
+                                self.first_healthy_stream_seen = True
+                        now_ts = int(time.time())
+                        if boundary_ts > 0 and now_ts >= boundary_ts:
                             break
-                        if not chunk:
-                            break
-                        if not self.first_healthy_stream_seen:
-                            logger.info(
-                                "VOD channel ingest first chunk channel=%s ingest_key=%s bytes=%s elapsed_ms=%s",
-                                self.channel_id,
-                                self.key,
-                                len(chunk),
-                                int(max(0.0, time.time() - float(self.session_start_ts or time.time())) * 1000),
-                            )
-                            self.first_healthy_stream_seen = True
-                        self.current_segment_healthy = True
-                        saw_data = True
-                        await self._broadcast(chunk)
+                        await asyncio.sleep(0.25)
                 finally:
                     self.last_reader_end_reason = "ingest_reader_ended"
-                    self.last_reader_end_saw_data = saw_data
-                    self.last_reader_end_return_code = ingest.process.returncode if ingest.process else None
+                    self.last_reader_end_saw_data = bool(self._stitched_segment_names)
+                    segment_session = runtime.get("segment_session")
+                    self.last_reader_end_return_code = (
+                        segment_session.process.returncode if segment_session and segment_session.process else None
+                    )
                     self.last_reader_end_ts = time.time()
-                    if self.stderr_task is not None and not self.stderr_task.done():
-                        self.stderr_task.cancel()
-                        try:
-                            await self.stderr_task
-                        except BaseException:
-                            pass
-                        self.stderr_task = None
 
                 if not self.running:
                     if next_warm_task is not None and not next_warm_task.done():
@@ -998,6 +1163,7 @@ class Vod247ChannelManager:
                 startup_event.set()
         finally:
             self.running = False
+            await self._write_stitched_playlist(endlist=True)
             await self._finish_session()
 
     async def _finish_session(self):
@@ -1011,8 +1177,11 @@ class Vod247ChannelManager:
             self.history.clear()
             self.history_bytes = 0
             self.failover_exhausted = bool(self.last_error)
+            self.canonical_output_shape = {}
         for queue in subscribers:
             await queue.put_eof()
+        if self.segment_cache_root.exists():
+            await asyncio.to_thread(shutil.rmtree, self.segment_cache_root, True)
 
     async def stop(self, force: bool = False):
         async with self.lifecycle_lock:
@@ -1031,4 +1200,3 @@ class Vod247ChannelManager:
                     await segment_task
                 except BaseException:
                     pass
-            await self._finish_session()

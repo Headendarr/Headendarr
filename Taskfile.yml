@@ -90,6 +90,7 @@ tasks:
     desc: Clear Quasar CLI caches for frontend
     deps: [init]
     cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npm install"
       - docker compose -f {{.COMPOSE_FILE}} run --rm frontend bash -lc "npx quasar clean"
 
   frontend:build:

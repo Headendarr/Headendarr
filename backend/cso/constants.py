@@ -86,6 +86,10 @@ CSO_OUTPUT_FPS_PROBE_SIZE = 32
 # Per-client output queue ceiling before old data is dropped.
 CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES = 90_000_000
 
+# Initial output history burst offered to newly attached byte-stream clients so
+# they do not join after the first TS headers/keyframe have already been emitted.
+CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES = 2 * 1024 * 1024
+
 # Idle/stale timeout for normal output clients before cleanup.
 CSO_OUTPUT_CLIENT_STALE_SECONDS = 15.0
 
@@ -100,10 +104,10 @@ CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS = 10
 
 
 # HLS segment duration used for generated CSO playlists.
-CSO_HLS_SEGMENT_SECONDS = 3
+CSO_HLS_SEGMENT_SECONDS = 2
 
 # HLS live playlist depth exposed to clients.
-CSO_HLS_LIST_SIZE = 5
+CSO_HLS_LIST_SIZE = 13
 
 # Idle timeout for HLS clients before an output can be cleaned up.
 CSO_HLS_CLIENT_IDLE_SECONDS = max(10, int(CSO_HLS_SEGMENT_SECONDS) * 3)
@@ -117,6 +121,12 @@ VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES = 256 * 1024 * 1024
 
 # Root directory used for VOD cache and timeshift files.
 VOD_CACHE_ROOT = Path("/timeshift/vod")
+
+# Root directory for local segmented ingest/output handoff.
+CSO_SEGMENT_CACHE_ROOT = Path("/tmp/cache")
+
+# Minimum free space required before a segmented handoff session can start.
+CSO_SEGMENT_CACHE_MIN_FREE_BYTES = 256 * 1024 * 1024
 
 # How long unused VOD cache entries should be kept before cleanup.
 VOD_CACHE_TTL_SECONDS = 10 * 60

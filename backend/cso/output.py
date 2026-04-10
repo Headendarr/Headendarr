@@ -87,6 +87,20 @@ class CsoOutputSession:
         self._pending_input_chunks = deque()
         self._first_output_event = asyncio.Event()
 
+    def _segmented_input_target(self) -> str:
+        if self.ingest_session is None:
+            return ""
+        getter = getattr(self.ingest_session, "get_output_input_target", None)
+        if not callable(getter):
+            return ""
+        try:
+            return clean_text(getter())
+        except Exception:
+            return ""
+
+    def _uses_direct_ingest_input(self) -> bool:
+        return bool(self._segmented_input_target())
+
     async def _cleanup_failed_start_attempt(self, process, read_task, write_task, stderr_task):
         for task in (read_task, write_task, stderr_task):
             if task is not None and not task.done():
@@ -205,6 +219,8 @@ class CsoOutputSession:
     async def _ensure_ingest_queue(self, prebuffer_bytes=0):
         if self.use_slate_as_input or self.ingest_session is None:
             return False
+        if self._segmented_input_target():
+            return False
         if self.ingest_queue is not None:
             return True
         if not self.running or not self.ingest_session.running:
@@ -242,12 +258,14 @@ class CsoOutputSession:
                 self.first_output_chunk_logged = False
                 self.first_ingest_chunk_logged = False
                 self._input_mode = "slate" if self.use_slate_as_input else "ingest"
+                segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
                 if self.ingest_session is not None:
                     await self.ingest_session.start()
-                    self.ingest_queue = await self.ingest_session.add_subscriber(
-                        self.key,
-                        prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
-                    )
+                    if not segmented_input_target:
+                        self.ingest_queue = await self.ingest_session.add_subscriber(
+                            self.key,
+                            prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                        )
                 if self.use_slate_as_input and self.slate_session is not None:
                     await self.slate_session.start()
                     self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
@@ -279,7 +297,9 @@ class CsoOutputSession:
                         source_identity = clean_text(getattr(self.slate_session, "key", "")) or self.key
                     else:
                         ingest_policy = dict(self.ingest_session.ingest_policy or {})
-                        if ingest_policy:
+                        if segmented_input_target:
+                            pipe_input_format = ""
+                        elif ingest_policy:
                             pipe_input_format = policy_ffmpeg_format(ingest_policy)
                         else:
                             pipe_input_format = resolve_vod_pipe_container(
@@ -296,7 +316,10 @@ class CsoOutputSession:
                             effective_policy,
                             pipe_input_format=pipe_input_format,
                             source_probe=source_probe,
-                        ).build_output_command()
+                        ).build_output_command(
+                            input_target=segmented_input_target,
+                            input_is_url=False,
+                        )
                         self._recent_ffmpeg_stderr.clear()
                         logger.info(
                             "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
@@ -307,15 +330,19 @@ class CsoOutputSession:
                         )
                         process = await asyncio.create_subprocess_exec(
                             *command,
-                            stdin=asyncio.subprocess.PIPE,
+                            stdin=asyncio.subprocess.DEVNULL if segmented_input_target else asyncio.subprocess.PIPE,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
                         )
                         self.process = process
                         read_task = asyncio.create_task(self._read_loop())
-                        write_task = asyncio.create_task(self._write_loop())
+                        write_task = None if segmented_input_target else asyncio.create_task(self._write_loop())
                         stderr_task = asyncio.create_task(self._stderr_loop())
-                        started, failure_reason = await self._wait_for_startup_ready(process)
+                        startup_timeout_seconds = 20.0 if segmented_input_target else 8.0
+                        started, failure_reason = await self._wait_for_startup_ready(
+                            process,
+                            timeout_seconds=startup_timeout_seconds,
+                        )
                         if started:
                             return True, (process, read_task, write_task, stderr_task), ""
                         logger.warning(
@@ -357,6 +384,8 @@ class CsoOutputSession:
 
     async def _ingest_recovery_loop(self):
         if self.ingest_session is None:
+            return
+        if self._uses_direct_ingest_input():
             return
         retry_interval_seconds = max(1.0, float(CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS))
         while self.running:
@@ -589,6 +618,10 @@ class CsoOutputSession:
                 still_running = bool(self.running)
 
             if still_running and client_count > 0:
+                if self._uses_direct_ingest_input():
+                    self.last_error = "output_reader_ended"
+                    await self.stop(force=True)
+                    return
                 intentional_failover = bool(self.ingest_session.health_failover_reason)
                 ingest_graceful_reader_end = bool(
                     self.ingest_session is not None
@@ -881,6 +914,11 @@ class CsoOutputSession:
             except Exception:
                 pass
             try:
+                if ingest_queue is None and self.ingest_session is not None and self._uses_direct_ingest_input():
+                    await self.ingest_session.stop(force=True)
+            except Exception:
+                pass
+            try:
                 if slate_queue is not None and self.slate_session is not None:
                     await slate_queue.clear()
                     await self.slate_session.remove_subscriber(self.key)
@@ -960,6 +998,17 @@ class CsoHlsOutputSession:
         self._last_good_playlist_ts = 0.0
         self._retain_completed_output_until = 0.0
         self.runtime_policy = dict(policy or {})
+
+    def _segmented_input_target(self) -> str:
+        if self.ingest_session is None:
+            return ""
+        getter = getattr(self.ingest_session, "get_output_input_target", None)
+        if not callable(getter):
+            return ""
+        try:
+            return clean_text(getter())
+        except Exception:
+            return ""
 
     async def _cleanup_failed_start_attempt(self, process, write_task, stderr_task, wait_task):
         for task in (write_task, stderr_task, wait_task):
@@ -1048,7 +1097,8 @@ class CsoHlsOutputSession:
             if self._retain_completed_output_until > time.time() and self._last_good_playlist_text:
                 self.running = True
                 return
-            use_direct_input = bool(self.input_target)
+            segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
+            use_direct_input = bool(self.input_target or segmented_input_target)
             if self.use_slate_as_input:
                 await self.slate_session.start()
                 if not self.slate_session.running:
@@ -1144,7 +1194,7 @@ class CsoHlsOutputSession:
                 )
                 command = builder.build_hls_output_command(
                     self.output_dir,
-                    input_target=self.input_target if use_direct_input else "",
+                    input_target=(self.input_target or segmented_input_target) if use_direct_input else "",
                     input_is_url=self.input_is_url,
                     start_seconds=self.start_seconds,
                     user_agent=self.input_user_agent,

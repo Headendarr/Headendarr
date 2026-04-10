@@ -67,9 +67,8 @@ CSO honours `profile` arguments where supported and falls back to defaults when 
 
 - Remux/copy profiles include `default`, `mpegts`, `matroska`, `mp4`, `webm`, and `hls`.
 - Audio-only transform profiles include `aac-mpegts`, `aac-matroska`, `aac-mp4`, and `aac-hls`.
-- Video/audio transform profiles include H.264, H.265, VP8, and AV1 variants such as `h264-aac-mpegts`, `h264-aac-hls`, `h265-aac-mp4`, `vp8-vorbis-webm`, and `av1-aac-hls`.
-- HLS profiles can emit MPEG-TS segments or fragmented MP4 segments depending on the requested profile modifiers.
-- Browser-oriented playback commonly uses HLS with `seg=fmp4`, and AV1-over-HLS is exposed through `av1-aac-hls`.
+- Video/audio transform profiles include H.264, H.265, VP8, and AV1 variants such as `h264-aac-mpegts`, `h264-aac-hls`, `h265-aac-mp4`, `vp8-vorbis-webm`, `av1-aac-hls`, `av1-opus-hls`, and `av1-opus-webm`.
+- AV1-over-HLS is exposed through `av1-aac-hls` and `av1-opus-hls`.
 - TVHeadend-only profile semantics: `tvh`
 
 Profile details and endpoint-level behaviour are documented in [Connectivity Endpoints](./connectivity/endpoints.md).

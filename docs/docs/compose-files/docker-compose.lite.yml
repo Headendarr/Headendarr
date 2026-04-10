@@ -35,6 +35,8 @@ services:
     volumes:
       # Configuration files
       - /data/containers/tvh-iptv/tic-config:/config
+    tmpfs:
+      - /tmp/cache:size=${TMP_CACHE_SIZE:-536870912}
 
     depends_on:
       - tvheadend

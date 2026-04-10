@@ -391,6 +391,7 @@ class CsoFfmpegCommandBuilder:
         return {
             "aac": "aac",
             "ac3": "ac3",
+            "opus": "libopus",
             "vorbis": "libvorbis",
         }.get(codec, "aac")
 
@@ -400,11 +401,22 @@ class CsoFfmpegCommandBuilder:
         return "bwdif=mode=send_frame:parity=auto:deint=interlaced"
 
     @staticmethod
-    def _software_scale_filter(target_width: int) -> str:
-        return f"scale=w='min({int(target_width)},iw)':h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2"
+    def _software_scale_filter(target_width: int, target_height: int = 0) -> str:
+        width_value = max(0, int(target_width or 0))
+        height_value = max(0, int(target_height or 0))
+        if width_value > 0 and height_value > 0:
+            return (
+                f"scale=w={width_value}:h={height_value}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                f"pad={width_value}:{height_value}:(ow-iw)/2:(oh-ih)/2"
+            )
+        return f"scale=w='min({width_value},iw)':h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2"
 
-    def _vaapi_scale_filter(self, target_width: int) -> str:
-        return f"scale_vaapi=w={int(target_width)}:h=-2"
+    def _vaapi_scale_filter(self, target_width: int, target_height: int = 0) -> str:
+        width_value = max(0, int(target_width or 0))
+        height_value = max(0, int(target_height or 0))
+        if width_value > 0 and height_value > 0:
+            return f"scale_vaapi=w={width_value}:h={height_value}"
+        return f"scale_vaapi=w={width_value}:h=-2"
 
     def _input_hwaccel_args(self, policy=None) -> list[str]:
         effective_policy = dict(policy or self.policy or {})
@@ -579,10 +591,15 @@ class CsoFfmpegCommandBuilder:
         video_codec = effective_policy["video_codec"]
         audio_codec = effective_policy["audio_codec"]
         target_width = max(0, int(effective_policy["target_width"] or 0))
+        target_height = max(0, int(effective_policy.get("target_height") or 0))
+        output_fps = float(effective_policy.get("output_fps") or 0.0)
+        output_pixel_format = clean_key(effective_policy.get("output_pixel_format")) or "yuv420p"
         target_video_bitrate = effective_policy["target_video_bitrate"]
         target_video_maxrate = effective_policy["target_video_maxrate"]
         target_video_bufsize = effective_policy["target_video_bufsize"]
         target_audio_bitrate = effective_policy["audio_bitrate"]
+        target_audio_sample_rate = max(0, int(effective_policy.get("audio_sample_rate") or 0))
+        target_audio_channels = max(0, int(effective_policy.get("audio_channels") or 0))
         hwaccel_requested = bool(effective_policy["hwaccel"]) and bool(video_codec)
         hardware_decode = bool(effective_policy.get("hardware_decode", True))
         deinterlace = bool(effective_policy["deinterlace"]) and bool(video_codec)
@@ -609,14 +626,14 @@ class CsoFfmpegCommandBuilder:
                     if deinterlace:
                         filters.append("deinterlace_vaapi=rate=field:auto=1")
                     if target_width > 0:
-                        scale_filter = self._vaapi_scale_filter(target_width)
+                        scale_filter = self._vaapi_scale_filter(target_width, target_height)
                         if scale_filter:
                             filters.append(scale_filter)
                 else:
                     if deinterlace:
                         filters.append(self._software_deinterlace_filter())
                     if target_width > 0:
-                        filters.append(self._software_scale_filter(target_width))
+                        filters.append(self._software_scale_filter(target_width, target_height))
                     if deinterlace or target_width > 0:
                         filters.append("setsar=1")
                     filters += ["format=nv12", "hwupload"]
@@ -637,7 +654,7 @@ class CsoFfmpegCommandBuilder:
                 if deinterlace:
                     filters.append(self._software_deinterlace_filter())
                 if target_width > 0:
-                    filters.append(self._software_scale_filter(target_width))
+                    filters.append(self._software_scale_filter(target_width, target_height))
                     filters.append("setsar=1")
                 if filters:
                     command += ["-vf", ",".join(filters)]
@@ -650,7 +667,7 @@ class CsoFfmpegCommandBuilder:
                         "-tune",
                         "zerolatency",
                         "-pix_fmt",
-                        "yuv420p",
+                        output_pixel_format,
                         "-profile:v",
                         "high",
                         "-g",
@@ -669,7 +686,7 @@ class CsoFfmpegCommandBuilder:
                         "-preset",
                         "8",
                         "-pix_fmt",
-                        "yuv420p",
+                        output_pixel_format,
                         "-g",
                         "48",
                         "-keyint_min",
@@ -686,6 +703,8 @@ class CsoFfmpegCommandBuilder:
                     command += ["-maxrate", target_video_maxrate]
                 if target_video_bufsize:
                     command += ["-bufsize", target_video_bufsize]
+            if output_fps > 0:
+                command += ["-r", f"{output_fps:.06f}"]
         else:
             command += ["-c:v", "copy"]
 
@@ -694,7 +713,23 @@ class CsoFfmpegCommandBuilder:
             command += ["-c:a", sw_audio_encoder]
             command += ["-af", "aresample=async=1:first_pts=0"]
             if audio_codec == "aac":
-                command += ["-b:a", target_audio_bitrate or "128k", "-ar", "48000", "-ac", "2"]
+                command += [
+                    "-b:a",
+                    target_audio_bitrate or "128k",
+                    "-ar",
+                    str(target_audio_sample_rate or 48000),
+                    "-ac",
+                    str(target_audio_channels or 2),
+                ]
+            elif audio_codec == "opus":
+                command += [
+                    "-b:a",
+                    target_audio_bitrate or "96k",
+                    "-ar",
+                    str(target_audio_sample_rate or 48000),
+                    "-ac",
+                    str(target_audio_channels or 2),
+                ]
         else:
             command += ["-c:a", "copy"]
         command += ["-c:s", "copy" if subtitle_mode != "drop" else "none"]
@@ -820,12 +855,21 @@ class CsoFfmpegCommandBuilder:
         command += self._pipe_output_target(self.pipe_output_format)
         return command
 
-    def build_output_command(self, start_seconds=0, max_duration_seconds=None):
+    def build_output_command(
+        self,
+        start_seconds=0,
+        max_duration_seconds=None,
+        input_target: str = "",
+        input_is_url: bool = False,
+        user_agent: str | None = None,
+        request_headers: dict[str, str] | None = None,
+    ):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         probe_size_bytes = int(CSO_OUTPUT_PROBE_SIZE_BYTES)
         analyse_duration_us = int(CSO_OUTPUT_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_OUTPUT_FPS_PROBE_SIZE)
-        if self.pipe_input_format == "mpegts" and (
+        use_direct_input = bool(clean_text(input_target))
+        if not use_direct_input and self.pipe_input_format == "mpegts" and (
             clean_key(self.source_probe.get("video_codec")) or clean_key(self.source_probe.get("audio_codec"))
         ):
             # TS is append-friendly for VOD handoff, but the output-side remux still needs
@@ -833,14 +877,38 @@ class CsoFfmpegCommandBuilder:
             probe_size_bytes = min(probe_size_bytes, 512 * 1024)
             analyse_duration_us = min(analyse_duration_us, 1_000_000)
             fps_probe_size = min(fps_probe_size, 16)
-        command += self._build_pipe_input(
-            probe_size_bytes,
-            analyse_duration_us,
-            fps_probe_size,
-            low_latency=True,
-            pipe_format=self.pipe_input_format,
-            input_hwaccel_args=self._input_hwaccel_args(),
-        )
+        if use_direct_input:
+            header_values = sanitise_headers(request_headers)
+            user_agent_value = clean_text(user_agent) or get_header_value(header_values, "User-Agent")
+            if input_is_url:
+                command += ["-progress", "pipe:2"]
+                if user_agent_value:
+                    command += ["-user_agent", user_agent_value]
+                referer_value = get_header_value(header_values, "Referer")
+                if referer_value:
+                    command += ["-referer", referer_value]
+                extra_headers = _format_ffmpeg_headers_arg(header_values)
+                if extra_headers:
+                    command += ["-headers", extra_headers]
+                command += [
+                    "-rw_timeout",
+                    str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
+                    "-timeout",
+                    str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
+                ]
+            command += self._input_hwaccel_args()
+            command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
+            command += self._input_resilience_flags()
+            command += ["-i", str(input_target), "-map", "0:v:0?", "-map", "0:a?", "-max_muxing_queue_size", "4096"]
+        else:
+            command += self._build_pipe_input(
+                probe_size_bytes,
+                analyse_duration_us,
+                fps_probe_size,
+                low_latency=True,
+                pipe_format=self.pipe_input_format,
+                input_hwaccel_args=self._input_hwaccel_args(),
+            )
         start_value = max(0, int(start_seconds or 0))
         duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
         if start_value > 0:

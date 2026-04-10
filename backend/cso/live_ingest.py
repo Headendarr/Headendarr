@@ -40,7 +40,14 @@ from .ffmpeg import (
 )
 from .hls import discover_hls_variants
 from .output import CsoOutputSession
-from .policy import policy_content_type, resolve_live_pipe_container, resolve_vod_pipe_container
+from .policy import (
+    policy_content_type,
+    resolve_live_pipe_container,
+    resolve_vod_pipe_container,
+    segmented_hls_segment_type,
+    source_uses_segmented_handoff,
+)
+from .segmented_handoff import SegmentedHandoffSession
 from .slate import cso_unavailable_duration_seconds, should_allow_unavailable_slate
 from .sources import (
     cso_source_from_channel_source,
@@ -198,6 +205,12 @@ class CsoIngestSession:
             "audio_codec": "copy",
             "subtitle_mode": "copy",
         }
+        self.segmented_handoff_session = None
+
+    def get_output_input_target(self):
+        if self.segmented_handoff_session is None:
+            return ""
+        return self.segmented_handoff_session.input_path()
 
     def build_unavailable_stream_plan(
         self, policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
@@ -338,6 +351,7 @@ class CsoIngestSession:
         elif source is not None:
             source_probe = load_source_media_shape(source)
 
+        use_segmented_handoff = source_uses_segmented_handoff(source, source_probe=source_probe)
         if self.vod_pipe_output_format_override:
             pipe_format = self.vod_pipe_output_format_override
         else:
@@ -361,15 +375,51 @@ class CsoIngestSession:
         if audio_codec:
             ingest_policy["audio_codec"] = audio_codec
         self.ingest_policy = ingest_policy
+        self.current_source_probe = dict(source_probe or {})
+        self._current_source_probe_persisted = False
+        self._current_source_probe_input_section_closed = False
+        if use_segmented_handoff:
+            segment_type = segmented_hls_segment_type(source, source_probe=source_probe)
+            segmented_policy = {
+                "output_mode": "force_remux",
+                "container": "hls",
+                "video_codec": "copy",
+                "audio_codec": "copy",
+                "subtitle_mode": "drop",
+                "hls_segment_type": segment_type,
+                "hls_playlist_mode": "live",
+                "hls_list_size": 13,
+            }
+            self.ingest_policy = dict(segmented_policy)
+            self.segmented_handoff_session = SegmentedHandoffSession(
+                key=f"{self.key}-segmented",
+                policy=segmented_policy,
+                input_target=source_url,
+                input_is_url=True,
+                user_agent=source_user_agent,
+                request_headers=source_headers,
+            )
+            logger.info(
+                "Starting segmented CSO ingest channel=%s source=%s policy=(%s) source_probe=%s input=%s",
+                self.channel_id,
+                source.id if source is not None else getattr(self.current_source, "id", None),
+                "segmented-handoff",
+                self.current_source_probe or {},
+                source_url,
+            )
+            started = await self.segmented_handoff_session.start()
+            if not started:
+                self.last_error = self.segmented_handoff_session.last_error or "segmented_handoff_start_failed"
+                return None
+            self.running = True
+            self.process = self.segmented_handoff_session.process
+            return self.process
         command = CsoFfmpegCommandBuilder(pipe_output_format=pipe_format).build_ingest_command(
             source_url,
             program_index=program_index,
             user_agent=source_user_agent,
             request_headers=source_headers,
         )
-        self.current_source_probe = dict(source_probe or {})
-        self._current_source_probe_persisted = False
-        self._current_source_probe_input_section_closed = False
         logger.info(
             "Starting CSO ingest channel=%s source=%s policy=(%s) source_probe=%s command=%s",
             self.channel_id,
@@ -514,6 +564,31 @@ class CsoIngestSession:
         return False
 
     def _activate_process_unlocked(self, process):
+        if self.segmented_handoff_session is not None:
+            self.process = process
+            self.running = True
+            self.read_task = None
+            self.stderr_task = None
+            self.health_task = None
+            self.history.clear()
+            self.history_bytes = 0
+            self.process_token += 1
+            self.last_source_start_ts = time.time()
+            self.current_attempt_start_ts = self.last_source_start_ts
+            self.current_attempt_first_chunk_logged = False
+            self.last_chunk_ts = self.last_source_start_ts
+            self.low_speed_since = None
+            self.last_ffmpeg_speed = None
+            self.last_ffmpeg_speed_ts = self.last_source_start_ts
+            self.http_error_timestamps.clear()
+            self.health_failover_reason = None
+            self.health_failover_details = None
+            self.last_reader_end_reason = None
+            self.last_reader_end_saw_data = False
+            self.last_reader_end_return_code = None
+            self.last_reader_end_ts = 0.0
+            self.first_healthy_stream_seen = True
+            return
         self.process = process
         self.running = True
         self.history.clear()
@@ -1267,6 +1342,8 @@ class CsoIngestSession:
             await q.put_drop_oldest(chunk)
 
     async def add_subscriber(self, subscriber_id, prebuffer_bytes=0):
+        if self.segmented_handoff_session is not None:
+            raise RuntimeError("segmented_handoff_has_no_subscriber_queue")
         async with self.lock:
             q = ByteBudgetQueue(max_bytes=CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES)
             if prebuffer_bytes > 0 and self.history:
@@ -1336,6 +1413,8 @@ class CsoIngestSession:
             self.failover_in_progress = False
             self.failover_exhausted = False
             self.pending_switch_success = None
+            segmented_handoff_session = self.segmented_handoff_session
+            self.segmented_handoff_session = None
             subscriber_count = len(self.subscribers)
         # Release capacity immediately so other channels are not blocked while
         # this ingest session drains/tears down.
@@ -1357,6 +1436,8 @@ class CsoIngestSession:
             force,
         )
         return_code = None
+        if segmented_handoff_session is not None:
+            await segmented_handoff_session.stop(force=True)
         if process:
             try:
                 process.terminate()

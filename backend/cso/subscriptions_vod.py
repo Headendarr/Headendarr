@@ -10,7 +10,11 @@ from backend.vod import VodCuratedPlaybackCandidate, VodSourcePlaybackCandidate
 from backend.utils import clean_text
 
 from .common import build_cso_stream_plan, cso_session_manager, current_quart_app_object
-from .constants import CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS, CSO_UNAVAILABLE_SHOW_SLATE
+from .constants import (
+    CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS,
+    CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES,
+    CSO_UNAVAILABLE_SHOW_SLATE,
+)
 from .events import emit_channel_stream_event, source_event_context, summarize_cso_playback_issue
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
 from .output import CsoHlsOutputSession, CsoOutputSession
@@ -383,7 +387,10 @@ async def subscribe_vod_channel_output_stream(
     if not output_session.running:
         return build_cso_stream_plan(None, None, "Unable to start VOD channel output", 503)
 
-    queue = await output_session.add_client(connection_id, prebuffer_bytes=0)
+    queue = await output_session.add_client(
+        connection_id,
+        prebuffer_bytes=int(CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES),
+    )
     content_type = policy_content_type(policy)
 
     async def _generator():

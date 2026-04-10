@@ -65,14 +65,21 @@ def generate_vod_channel_ingest_policy(config: Any, output_policy: dict[str, Any
         resolved_video_codec = "h264"
     resolved["video_codec"] = resolved_video_codec
     resolved["audio_codec"] = "aac" if audio_codec == "copy" else audio_codec
-    resolved["container"] = "mpegts"
+    resolved["container"] = "hls"
+    resolved["hls_segment_type"] = "fmp4"
+    resolved["hls_playlist_mode"] = "event"
     # 24/7 VOD channel ingest is a shared intermediate feed. Keep source-cleanup behaviour such
     # as deinterlacing when requested by the first viewer that establishes the ingest, but do not
     # bake request-specific sizing and bitrate-shaping into the shared ingest.
     resolved["target_width"] = 0
+    resolved["target_height"] = 0
+    resolved["output_fps"] = 0.0
+    resolved["output_pixel_format"] = ""
     resolved["target_video_bitrate"] = ""
     resolved["target_video_maxrate"] = ""
     resolved["target_video_bufsize"] = ""
+    resolved["audio_sample_rate"] = 48000
+    resolved["audio_channels"] = 2
     resolved["subtitle_mode"] = "drop"
     resolved["transcode"] = True
     return resolved
@@ -118,23 +125,50 @@ def resolve_vod_pipe_container(source: CsoSource | None, source_probe: dict[str,
     if video_codec and video_codec in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
         return "mpegts"
     if video_codec:
-        return "nut"
+        return "mpegts"
     if source is None:
         return "mpegts"
     if source.source_type not in {"vod_movie", "vod_episode"}:
         return "mpegts"
-    return "nut"
+    return "mpegts"
 
 
 def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> str:
     probe = dict(source_probe or {})
     video_codec = clean_key(probe.get("video_codec"))
     if video_codec and video_codec not in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
-        return "nut"
+        return "mpegts"
     audio_codec = clean_key(probe.get("audio_codec"))
     if audio_codec and audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
-        return "nut"
+        return "mpegts"
     return "mpegts"
+
+
+def source_uses_segmented_handoff(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> bool:
+    probe = dict(source_probe or {})
+    if source is not None:
+        source_url = clean_text(getattr(source, "url", ""))
+        source_type = clean_key(getattr(source, "source_type", ""))
+        if source_url.lower().endswith(".m3u8") or source_type in {"vod_movie", "vod_episode"}:
+            return True
+    container = clean_key(probe.get("container")) or clean_key(getattr(source, "container_extension", ""))
+    if container and container not in {"mpegts", "ts"}:
+        return True
+    video_codec = clean_key(probe.get("video_codec"))
+    if video_codec and video_codec not in VOD_CHANNEL_TS_SAFE_VIDEO_CODECS:
+        return True
+    audio_codec = clean_key(probe.get("audio_codec"))
+    if audio_codec and audio_codec not in LIVE_PIPE_TS_SAFE_AUDIO_CODECS:
+        return True
+    return False
+
+
+def segmented_hls_segment_type(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> str:
+    probe = dict(source_probe or {})
+    container = clean_key(probe.get("container")) or clean_key(getattr(source, "container_extension", ""))
+    if container in {"mpegts", "ts"}:
+        return "mpegts"
+    return "fmp4"
 
 
 def should_prefer_direct_vod_url_input(

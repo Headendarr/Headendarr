@@ -46,7 +46,7 @@ services:
       # Enables Hypercorn auto-reload for the Quart app
       - ENABLE_APP_HOT_RELOAD=true
       # Logs the CSO ingest FFmpeg command stderr to our debug logs
-      - ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING=false
+      - ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING=true
       # Logs the CSO slate FFmpeg command stderr to our debug logs
       - ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING=true
       # Logs the CSO output FFmpeg command stderr to our debug logs
@@ -60,6 +60,7 @@ services:
       - ../dev_env/recordings:/recordings
       - ../dev_env/timeshift:/timeshift
       - ../dev_env/library:/library
+      - ../dev_env/cache:/tmp/cache
       # Application source passthrough
       - ../:/app
     ulimits:

@@ -315,6 +315,29 @@ SUPPORTED_STREAM_PROFILES = {
         "transcode": True,
         "tvh_profile_name": "pass",
     },
+    "av1-opus-hls": {
+        "label": "av1-opus-hls",
+        "description": "Transcode to AV1/Opus in HLS with fMP4 segments.",
+        "output_mode": "force_transcode",
+        "container": "hls",
+        "video_codec": "av1",
+        "audio_codec": "opus",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "pass",
+        "hls_segment_type": "fmp4",
+    },
+    "av1-opus-webm": {
+        "label": "av1-opus-webm",
+        "description": "Transcode to AV1/Opus in WebM.",
+        "output_mode": "force_transcode",
+        "container": "webm",
+        "video_codec": "av1",
+        "audio_codec": "opus",
+        "subtitle_mode": "drop",
+        "transcode": True,
+        "tvh_profile_name": "pass",
+    },
 }
 
 

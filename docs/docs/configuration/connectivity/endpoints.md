@@ -113,8 +113,10 @@ Configurable profiles (Application Settings -> Connections):
 - `aac-hls`
 - `h264-aac-hls`
 - `av1-aac-hls`
+- `av1-opus-hls`
 - `av1-aac-mp4`
 - `av1-aac-matroska`
+- `av1-opus-webm`
 - `h265-aac-mp4`
 - `h265-aac-matroska`
 - `h265-ac3-mp4`
@@ -141,11 +143,7 @@ Examples:
 - `h264-aac-hls[qty=720p,seg=fmp4]`
 - `h264-aac-mp4[qty=480p]`
 - `av1-aac-hls`
-
-Notes:
-
-- Headendarr's default browser-oriented HLS profile request is `h264-aac-hls[seg=fmp4]`.
-- `av1-aac-hls` uses HLS with fMP4 segments so AV1 playback can work through HLS clients that support that combination.
+- `av1-opus-hls`
 
 ## Route Playlists & HDHomeRun Through TVHeadend (Per-Source Only)
 

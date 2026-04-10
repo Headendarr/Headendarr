@@ -40,7 +40,6 @@ These settings define how Headendarr interacts with external services and how cl
   - Configure per-profile hardware acceleration preference (`HW Accel`, VAAPI encode path) for transcoding profiles.
   - Configure per-profile `Deinterlace` for transcoding profiles.
   - Profiles cover remux targets (`mpegts`, `matroska`, `mp4`, `webm`, `hls`), audio-only transforms, and full video/audio transcodes including H.264, H.265, VP8, and AV1 variants.
-  - HLS profiles can be requested with either MPEG-TS or fMP4 segment layouts, and the AV1 HLS profile uses fMP4 segments.
   - `Deinterlace` adds a small processing overhead when enabled.
   - If a stream is not interlaced, enabling `Deinterlace` does not materially change visual output.
   - If a client requests a disabled profile, Headendarr falls back to `default`.
