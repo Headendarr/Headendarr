@@ -1018,6 +1018,7 @@ class CsoHlsOutputSession:
         self._last_good_playlist_ts = 0.0
         self._retain_completed_output_until = 0.0
         self.runtime_policy = dict(policy or {})
+        self._idle_cleanup_task = None
 
     def _segmented_input_target(self) -> str:
         if self.ingest_session is None:
@@ -1102,6 +1103,36 @@ class CsoHlsOutputSession:
         ]
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
+
+    def _is_vod_hls_output(self) -> bool:
+        return str(self.key or "").startswith("cso-vod-hls-output-")
+
+    def _client_idle_seconds(self) -> float:
+        if self._is_vod_hls_output():
+            return max(5.0, float(CSO_HLS_CLIENT_IDLE_SECONDS) / 2.0)
+        return float(CSO_HLS_CLIENT_IDLE_SECONDS)
+
+    def _schedule_idle_cleanup(self):
+        if not self._is_vod_hls_output():
+            return
+        existing_task = self._idle_cleanup_task
+        if existing_task is not None and not existing_task.done():
+            existing_task.cancel()
+        self._idle_cleanup_task = asyncio.create_task(self._delayed_idle_cleanup())
+
+    async def _delayed_idle_cleanup(self):
+        try:
+            await asyncio.sleep(self._client_idle_seconds())
+            await self.prune_idle_clients()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "CSO HLS idle cleanup failed channel=%s output_key=%s error=%s",
+                self.channel_id,
+                self.key,
+                exc,
+            )
 
     async def _prepare_output_dir(self):
         await prepare_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
@@ -1448,6 +1479,7 @@ class CsoHlsOutputSession:
                 client_count,
                 policy_log_label(self.runtime_policy),
             )
+        self._schedule_idle_cleanup()
         return not existed
 
     async def has_client(self, connection_id):
@@ -1477,6 +1509,7 @@ class CsoHlsOutputSession:
                 self.clients[key] = entry
             entry["last_touch"] = time.time()
             self.last_activity = time.time()
+        self._schedule_idle_cleanup()
 
     async def remove_client(self, connection_id):
         disconnect_hook = None
@@ -1495,18 +1528,19 @@ class CsoHlsOutputSession:
             policy_log_label(self.runtime_policy),
         )
         if remaining == 0:
-            await self.stop(force=True)
+            await asyncio.shield(self.stop(force=True))
         return remaining
 
     async def prune_idle_clients(self, now_ts=None):
         now_value = float(now_ts if now_ts is not None else time.time())
+        idle_seconds = self._client_idle_seconds()
         stale_ids = []
         async with self.lock:
             for connection_id, entry in list(self.clients.items()):
                 last_touch = 0.0
                 if isinstance(entry, dict):
                     last_touch = float(entry.get("last_touch") or 0.0)
-                if (now_value - last_touch) >= float(CSO_HLS_CLIENT_IDLE_SECONDS):
+                if (now_value - last_touch) >= idle_seconds:
                     stale_ids.append(connection_id)
         for connection_id in stale_ids:
             logger.info(
@@ -1514,7 +1548,7 @@ class CsoHlsOutputSession:
                 self.channel_id,
                 self.key,
                 connection_id,
-                int(CSO_HLS_CLIENT_IDLE_SECONDS),
+                int(idle_seconds),
             )
             await self.remove_client(connection_id)
 
@@ -1581,6 +1615,8 @@ class CsoHlsOutputSession:
             slate_queue = self.slate_queue
             self.slate_queue = None
             self._retain_completed_output_until = 0.0
+            idle_cleanup_task = self._idle_cleanup_task
+            self._idle_cleanup_task = None
             client_count = len(self.clients)
             disconnected_clients = list(self.clients.items())
             self.clients = {}
@@ -1592,6 +1628,12 @@ class CsoHlsOutputSession:
             force,
             policy_log_label(self.runtime_policy),
         )
+        if (
+            idle_cleanup_task is not None
+            and idle_cleanup_task is not asyncio.current_task()
+            and not idle_cleanup_task.done()
+        ):
+            idle_cleanup_task.cancel()
         for disconnected_id, disconnected_entry in disconnected_clients:
             disconnect_hook = None
             if isinstance(disconnected_entry, dict):
@@ -1607,7 +1649,10 @@ class CsoHlsOutputSession:
             )
         if process:
             try:
-                process.terminate()
+                if force and self._is_vod_hls_output():
+                    process.kill()
+                else:
+                    process.terminate()
                 await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
             except Exception:
                 try:

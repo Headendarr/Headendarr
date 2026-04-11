@@ -549,7 +549,7 @@ class CsoFfmpegCommandBuilder:
     def _pipe_output_target(ffmpeg_format, target="pipe:1"):
         command = []
         if ffmpeg_format == "mp4":
-            command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
+            command += ["-movflags", "+frag_keyframe+empty_moov+default_base_moof+delay_moov"]
         command += ["-f", ffmpeg_format, target]
         return command
 
@@ -881,8 +881,10 @@ class CsoFfmpegCommandBuilder:
         analyse_duration_us = int(CSO_OUTPUT_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_OUTPUT_FPS_PROBE_SIZE)
         use_direct_input = bool(clean_text(input_target))
-        if not use_direct_input and self.pipe_input_format == "mpegts" and (
-            clean_key(self.source_probe.get("video_codec")) or clean_key(self.source_probe.get("audio_codec"))
+        if (
+            not use_direct_input
+            and self.pipe_input_format == "mpegts"
+            and (clean_key(self.source_probe.get("video_codec")) or clean_key(self.source_probe.get("audio_codec")))
         ):
             # TS is append-friendly for VOD handoff, but the output-side remux still needs
             # enough probe budget to recover AAC parameters from the live pipe.
