@@ -380,9 +380,11 @@ async def subscribe_vod_channel_output_stream(
             int(channel_id),
             policy,
             ingest_session,
+            direct_input_realtime=True,
         )
 
     output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session.direct_input_realtime = True
     await output_session.start()
     if not output_session.running:
         return build_cso_stream_plan(None, None, "Unable to start VOD channel output", 503)

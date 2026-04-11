@@ -116,6 +116,12 @@ CSO_HLS_CLIENT_IDLE_SECONDS = max(10, int(CSO_HLS_SEGMENT_SECONDS) * 3)
 # Lead time before starting the next VOD channel segment ingest.
 VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS = 20
 
+# Time to keep VOD 24/7 stitched segment files after they leave the live playlist.
+VOD_CHANNEL_STITCHED_SEGMENT_DELETE_GRACE_SECONDS = 20
+
+# How long the VOD 24/7 stitcher waits without a real segment before inserting filler.
+VOD_CHANNEL_STITCHED_FILLER_GRACE_SECONDS = max(4.0, float(CSO_HLS_SEGMENT_SECONDS) * 3.0)
+
 # Buffer target for preparing the next VOD channel segment.
 VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES = 256 * 1024 * 1024
 

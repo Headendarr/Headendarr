@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-import shutil
 import time
 from collections import deque
 from pathlib import Path
@@ -10,7 +9,13 @@ from backend.config import enable_cso_output_command_debug_logging
 from backend.http_headers import sanitise_headers
 from backend.utils import clean_key, clean_text
 
-from .common import ByteBudgetQueue, process_is_running, wait_process_exit_with_timeout
+from .common import (
+    ByteBudgetQueue,
+    prepare_cso_cache_dir,
+    process_is_running,
+    remove_cso_cache_dir,
+    wait_process_exit_with_timeout,
+)
 from .constants import (
     CSO_HLS_CLIENT_IDLE_SECONDS,
     CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS,
@@ -51,11 +56,13 @@ class CsoOutputSession:
         slate_session=None,
         event_source=None,
         use_slate_as_input=False,
+        direct_input_realtime=False,
     ):
         self.key = key
         self.channel_id = channel_id
         self.policy = policy
         self.use_slate_as_input = bool(use_slate_as_input)
+        self.direct_input_realtime = bool(direct_input_realtime)
         self.output_policy = resolve_cso_output_policy(policy, self.use_slate_as_input)
         self.ingest_session = ingest_session
         self.slate_session = slate_session
@@ -75,6 +82,7 @@ class CsoOutputSession:
         self.max_history_bytes = 16 * 1024 * 1024
         self.last_error = None
         self.ingest_queue = None
+        self.ingest_lifecycle_reference = False
         self.slate_queue = None
         self._recent_ffmpeg_stderr = deque(maxlen=30)
         self.client_drop_state = {}
@@ -261,7 +269,10 @@ class CsoOutputSession:
                 segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
                 if self.ingest_session is not None:
                     await self.ingest_session.start()
-                    if not segmented_input_target:
+                    if segmented_input_target:
+                        await self.ingest_session.add_lifecycle_reference(self.key)
+                        self.ingest_lifecycle_reference = True
+                    else:
                         self.ingest_queue = await self.ingest_session.add_subscriber(
                             self.key,
                             prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
@@ -319,6 +330,7 @@ class CsoOutputSession:
                         ).build_output_command(
                             input_target=segmented_input_target,
                             input_is_url=False,
+                            realtime=self.direct_input_realtime and bool(segmented_input_target),
                         )
                         self._recent_ffmpeg_stderr.clear()
                         logger.info(
@@ -364,6 +376,9 @@ class CsoOutputSession:
                         log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
                         self.running = False
                         self.last_error = failure_reason or "output_start_failed"
+                        if self.ingest_lifecycle_reference and self.ingest_session is not None:
+                            await self.ingest_session.remove_lifecycle_reference(self.key)
+                            self.ingest_lifecycle_reference = False
                         return
                     self.output_policy = dict(start_policy)
                     self.process, self.read_task, self.write_task, self.stderr_task = result
@@ -371,6 +386,9 @@ class CsoOutputSession:
                 except Exception as exc:
                     self.running = False
                     self.last_error = f"output_start_failed:{exc}"
+                    if self.ingest_lifecycle_reference and self.ingest_session is not None:
+                        await self.ingest_session.remove_lifecycle_reference(self.key)
+                        self.ingest_lifecycle_reference = False
                     raise
                 logger.info(
                     "CSO output started channel=%s output_key=%s policy=(%s) clients=%s",
@@ -675,8 +693,7 @@ class CsoOutputSession:
 
             await self.stop(force=True)
 
-    @staticmethod
-    def _stale_seconds_for_connection(connection_id):
+    def _stale_seconds_for_connection(self, connection_id):
         connection_text = str(connection_id or "")
         if connection_text.startswith("tvh-"):
             return float(CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH)
@@ -863,6 +880,8 @@ class CsoOutputSession:
                 self.process = None
                 ingest_queue = self.ingest_queue
                 self.ingest_queue = None
+                ingest_lifecycle_reference = self.ingest_lifecycle_reference
+                self.ingest_lifecycle_reference = False
                 slate_queue = self.slate_queue
                 self.slate_queue = None
                 read_task = self.read_task
@@ -914,8 +933,8 @@ class CsoOutputSession:
             except Exception:
                 pass
             try:
-                if ingest_queue is None and self.ingest_session is not None and self._uses_direct_ingest_input():
-                    await self.ingest_session.stop(force=True)
+                if ingest_lifecycle_reference and self.ingest_session is not None:
+                    await self.ingest_session.remove_lifecycle_reference(self.key)
             except Exception:
                 pass
             try:
@@ -989,6 +1008,7 @@ class CsoHlsOutputSession:
         self.last_activity = time.time()
         self.last_error = None
         self.ingest_queue = None
+        self.ingest_lifecycle_reference = False
         self.slate_queue = None
         self._recent_ffmpeg_stderr = deque(maxlen=30)
         self.clients = {}
@@ -1084,9 +1104,7 @@ class CsoHlsOutputSession:
         return " | ".join(selected)
 
     async def _prepare_output_dir(self):
-        if self.output_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        await prepare_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
         self._last_good_playlist_text = None
         self._last_good_playlist_ts = 0.0
 
@@ -1115,6 +1133,9 @@ class CsoHlsOutputSession:
             self.slate_queue = None
             if self.use_slate_as_input:
                 self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
+            elif segmented_input_target:
+                await self.ingest_session.add_lifecycle_reference(self.key)
+                self.ingest_lifecycle_reference = True
             elif not use_direct_input:
                 self.ingest_queue = await self.ingest_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
             self._pending_input_chunks.clear()
@@ -1240,11 +1261,18 @@ class CsoHlsOutputSession:
                 self.process = None
                 return False, None, failure_reason
 
-            started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
-                base_runtime_policy,
-                source_identity,
-                _attempt_start,
-            )
+            try:
+                started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+                    base_runtime_policy,
+                    source_identity,
+                    _attempt_start,
+                )
+            except Exception:
+                if self.ingest_lifecycle_reference and self.ingest_session is not None:
+                    await self.ingest_session.remove_lifecycle_reference(self.key)
+                    self.ingest_lifecycle_reference = False
+                self.running = False
+                raise
             if started:
                 self.runtime_policy = dict(start_policy)
                 self.process, self.write_task, self.stderr_task, self.wait_task = result
@@ -1253,6 +1281,9 @@ class CsoHlsOutputSession:
             log_hwaccel_failure(self.runtime_policy, f"hls:{self.key}", failure_reason)
             self.running = False
             self.last_error = failure_reason or "output_start_failed"
+            if self.ingest_lifecycle_reference and self.ingest_session is not None:
+                await self.ingest_session.remove_lifecycle_reference(self.key)
+                self.ingest_lifecycle_reference = False
 
     async def _write_loop(self, token, process):
         exit_reason = "loop_exit"
@@ -1545,6 +1576,8 @@ class CsoHlsOutputSession:
             stop_token = self.process_token
             ingest_queue = self.ingest_queue
             self.ingest_queue = None
+            ingest_lifecycle_reference = self.ingest_lifecycle_reference
+            self.ingest_lifecycle_reference = False
             slate_queue = self.slate_queue
             self.slate_queue = None
             self._retain_completed_output_until = 0.0
@@ -1593,6 +1626,11 @@ class CsoHlsOutputSession:
         except Exception:
             pass
         try:
+            if ingest_lifecycle_reference and self.ingest_session is not None:
+                await self.ingest_session.remove_lifecycle_reference(self.key)
+        except Exception:
+            pass
+        try:
             if slate_queue is not None and self.slate_session is not None:
                 await self.slate_session.remove_subscriber(self.key)
         except Exception:
@@ -1601,5 +1639,5 @@ class CsoHlsOutputSession:
             should_cleanup_output_dir = (
                 self.process_token == stop_token and not self.running and not self.process and not self.clients
             )
-        if should_cleanup_output_dir and self.output_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
+        if should_cleanup_output_dir:
+            await remove_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")

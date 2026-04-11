@@ -10,6 +10,7 @@ from typing import Any
 from backend.http_headers import sanitise_headers
 from backend.utils import clean_key, clean_text
 
+from .common import prepare_cso_cache_dir, remove_cso_cache_dir
 from .constants import (
     CSO_HLS_SEGMENT_SECONDS,
     CSO_SEGMENT_CACHE_MIN_FREE_BYTES,
@@ -58,6 +59,7 @@ class SegmentedHandoffSession:
         cache_root_dir: Path | str | None = None,
         start_seconds: int = 0,
         max_duration_seconds: int | None = None,
+        realtime: bool = False,
     ):
         self.key = str(key)
         self.policy = dict(policy or {})
@@ -74,6 +76,7 @@ class SegmentedHandoffSession:
             if max_duration_seconds is None
             else max(1, int(max_duration_seconds or 0))
         )
+        self.realtime = bool(realtime)
         self.process = None
         self.stderr_task = None
         self.wait_task = None
@@ -100,9 +103,7 @@ class SegmentedHandoffSession:
 
     async def _prepare_output_dir(self):
         self.cache_root_dir.mkdir(parents=True, exist_ok=True)
-        if self.output_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        await prepare_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
 
     async def _ensure_capacity(self):
         usage = await asyncio.to_thread(shutil.disk_usage, self.cache_root_dir)
@@ -248,6 +249,8 @@ class SegmentedHandoffSession:
                     input_target=self.input_target,
                     input_is_url=self.input_is_url,
                     start_seconds=self.start_seconds,
+                    max_duration_seconds=self.max_duration_seconds,
+                    realtime=self.realtime,
                     user_agent=self.user_agent,
                     request_headers=self.request_headers,
                 )
@@ -277,7 +280,11 @@ class SegmentedHandoffSession:
                 wait_task = asyncio.create_task(
                     self._wait_loop(token, process), name=f"segmented-wait-{self.key}"
                 )
-                started, failure_reason = await self._wait_for_startup_ready(process)
+                startup_timeout_seconds = 30.0 if self.input_is_url else 10.0
+                started, failure_reason = await self._wait_for_startup_ready(
+                    process,
+                    timeout_seconds=startup_timeout_seconds,
+                )
                 if started:
                     return True, (process, stderr_task, wait_task), ""
                 await self._cleanup_failed_start_attempt(
@@ -402,5 +409,4 @@ class SegmentedHandoffSession:
                     await asyncio.wait_for(process.wait(), timeout=2.0)
                 except Exception:
                     pass
-        if self.output_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, self.output_dir, True)
+        await remove_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")

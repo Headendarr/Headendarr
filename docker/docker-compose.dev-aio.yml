@@ -51,6 +51,8 @@ services:
       - ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING=true
       # Logs the CSO output FFmpeg command stderr to our debug logs
       - ENABLE_CSO_OUTPUT_COMMAND_DEBUG_LOGGING=true
+      # Preserves CSO segment cache files for post-failure inspection
+      - ENABLE_CSO_PRESERVE_SEGMENT_CACHE=false
 
     # VOLUMES:
     volumes:

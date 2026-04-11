@@ -31,6 +31,7 @@ from backend.dummy_epg import (
 )
 from backend.epgs import (
     build_channel_logo_output_url,
+    cache_channel_logos_enabled,
     load_preferred_epg_channel_rows,
     pick_best_epg_channel_row,
     read_channel_dummy_epg_settings,

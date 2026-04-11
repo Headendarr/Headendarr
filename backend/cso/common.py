@@ -1,9 +1,13 @@
 import asyncio
+import logging
 import os
+import shutil
 import time
 from collections import deque
 from pathlib import Path
 from typing import cast
+
+from backend.config import enable_cso_preserve_segment_cache
 
 from quart import Quart
 from werkzeug.local import LocalProxy
@@ -34,6 +38,48 @@ async def wait_process_exit_with_timeout(process, timeout_seconds=2.0):
     return await asyncio.wait_for(process.wait(), timeout=float(timeout_seconds))
 
 
+def _debug_archive_path(path: Path) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    base_path = path.with_name(f"{path.name}.debug-{stamp}-{os.getpid()}")
+    candidate = base_path
+    counter = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{base_path.name}-{counter}")
+        counter += 1
+    return candidate
+
+
+async def prepare_cso_cache_dir(path: Path | str, logger: logging.Logger, label: str):
+    cache_path = Path(path)
+    if cache_path.exists():
+        if enable_cso_preserve_segment_cache:
+            archive_path = _debug_archive_path(cache_path)
+            await asyncio.to_thread(shutil.move, str(cache_path), str(archive_path))
+            logger.info(
+                "Preserved CSO segment cache before reuse label=%s path=%s preserved_path=%s",
+                label,
+                cache_path,
+                archive_path,
+            )
+        else:
+            await asyncio.to_thread(shutil.rmtree, cache_path, True)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+
+async def remove_cso_cache_dir(path: Path | str, logger: logging.Logger, label: str):
+    cache_path = Path(path)
+    if not cache_path.exists():
+        return
+    if enable_cso_preserve_segment_cache:
+        logger.info(
+            "Preserving CSO segment cache label=%s path=%s because ENABLE_CSO_PRESERVE_SEGMENT_CACHE=true",
+            label,
+            cache_path,
+        )
+        return
+    await asyncio.to_thread(shutil.rmtree, cache_path, True)
+
+
 class _SessionMap:
     def __init__(self):
         self.sessions = {}
@@ -59,7 +105,11 @@ class _SessionMap:
             if session.running and (now - session.last_activity) < idle_timeout:
                 continue
             async with session.lock:
-                has_subscribers = bool(getattr(session, "subscribers", None) or getattr(session, "clients", None))
+                has_subscribers = bool(
+                    getattr(session, "subscribers", None)
+                    or getattr(session, "clients", None)
+                    or getattr(session, "lifecycle_references", None)
+                )
                 running = bool(session.running)
             if running and has_subscribers:
                 continue

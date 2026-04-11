@@ -37,6 +37,8 @@ services:
       - ENABLE_APP_DEBUGGING=true
       # Enables debug logging for DB queries
       - ENABLE_SQLALCHEMY_DEBUGGING=false
+      # Preserves CSO segment cache files for post-failure inspection
+      - ENABLE_CSO_PRESERVE_SEGMENT_CACHE=false
 
     # VOLUMES:
     volumes:

@@ -492,6 +492,10 @@ enable_cso_output_command_debug_logging = False
 if _env_bool("ENABLE_CSO_OUTPUT_COMMAND_DEBUG_LOGGING", False):
     enable_cso_output_command_debug_logging = True
 
+enable_cso_preserve_segment_cache = False
+if _env_bool("ENABLE_CSO_PRESERVE_SEGMENT_CACHE", False):
+    enable_cso_preserve_segment_cache = True
+
 enable_cso_ingest_command_debug_logging = False
 if _env_bool("ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING", False):
     enable_cso_ingest_command_debug_logging = True

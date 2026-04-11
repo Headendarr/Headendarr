@@ -202,15 +202,26 @@ async def start_ffmpeg_with_hw_decode_fallback(
 ) -> tuple[bool, dict[str, Any], Any, str]:
     start_policy, hwaccel_failure_key = await _prepare_hw_decode_policy(base_policy, source_identity)
     attempted_hw_decode = bool(start_policy.get("hardware_decode", True))
+    attempted_hw_encode = bool(start_policy.get("hwaccel", False))
     while True:
         success, result, failure_reason = await attempt_start(start_policy)
         if success:
             return True, dict(start_policy), result, ""
+        failure_is_hwaccel = _is_cacheable_hwaccel_failure(failure_reason)
         if attempted_hw_decode and bool(start_policy.get("hardware_decode", True)):
-            if hwaccel_failure_key and _is_cacheable_hwaccel_failure(failure_reason):
+            if hwaccel_failure_key and failure_is_hwaccel:
                 await hwaccel_failure_state_store.mark_failed(hwaccel_failure_key, failure_reason)
             start_policy = dict(base_policy or {})
             start_policy["hardware_decode"] = False
+            attempted_hw_decode = False
+            continue
+        if attempted_hw_encode and bool(start_policy.get("hwaccel", False)) and failure_is_hwaccel:
+            if hwaccel_failure_key:
+                await hwaccel_failure_state_store.mark_failed(hwaccel_failure_key, failure_reason)
+            start_policy = dict(base_policy or {})
+            start_policy["hwaccel"] = False
+            start_policy["hardware_decode"] = False
+            attempted_hw_encode = False
             attempted_hw_decode = False
             continue
         return False, dict(start_policy), None, failure_reason or "output_start_failed"
@@ -861,6 +872,7 @@ class CsoFfmpegCommandBuilder:
         max_duration_seconds=None,
         input_target: str = "",
         input_is_url: bool = False,
+        realtime: bool = False,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
     ):
@@ -896,6 +908,8 @@ class CsoFfmpegCommandBuilder:
                     "-timeout",
                     str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
                 ]
+            if realtime:
+                command += ["-readrate", "1"]
             command += self._input_hwaccel_args()
             command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
             command += self._input_resilience_flags()
@@ -1192,6 +1206,8 @@ class CsoFfmpegCommandBuilder:
         input_target: str = "",
         input_is_url: bool = False,
         start_seconds: int = 0,
+        max_duration_seconds: int | None = None,
+        realtime: bool = False,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
     ):
@@ -1239,6 +1255,8 @@ class CsoFfmpegCommandBuilder:
                 ]
             if input_seek_value > 0:
                 command += ["-ss", str(input_seek_value)]
+            if realtime:
+                command += ["-readrate", "1"]
             command += self._input_hwaccel_args(policy=self.policy)
             command += self._probe_flags(
                 CSO_INGEST_PROBE_SIZE_BYTES,
@@ -1278,6 +1296,8 @@ class CsoFfmpegCommandBuilder:
                 command += self._mpegts_output_flags(zero_latency=False)
 
         command += self._drop_data_streams()
+        if max_duration_seconds is not None:
+            command += ["-t", str(max(1, int(max_duration_seconds or 0)))]
         segment_pattern = str(output_dir / f"seg_%06d.{segment_extension}")
         playlist_path = str(output_dir / "index.m3u8")
         hls_flags = ["temp_file", "independent_segments"]
