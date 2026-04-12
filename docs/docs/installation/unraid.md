@@ -37,6 +37,7 @@ Advanced options include:
 
 - **Path: `/recordings`**: Set this to a location on your array (for example `/mnt/user/media/dvr`).
 - **Path: `/timeshift`**: Set this to fast temporary storage such as your cache pool or memory-backed storage (for example `/dev/shm`). Headendarr uses this for timeshift data and temporary VOD caching, including VOD 24/7 channel cache warm and handoff.
+- **Path: `/tmp/cache`**: **(Recommended)** Set this to memory-backed storage (for example `/dev/shm/headendarr`). This is a temporary storage area used by the Channel Stream Orchestrator (CSO) for local segmented ingest and output handoff. Using RAM-based storage here significantly improves performance and avoids unnecessary disk wear. It requires approximately 50MB of space per concurrent VOD stream.
 - **Variables**: `TZ`, `PUID`, `PGID`.
 
 You can keep defaults for a first install, but most users should customise `/recordings` and `/timeshift`.
