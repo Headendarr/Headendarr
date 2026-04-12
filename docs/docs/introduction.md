@@ -14,6 +14,7 @@ Headendarr acts as a central hub for your IPTV sources, allowing you to map chan
 - **Centralised IPTV Management**: Manage all your IPTV playlists and EPG sources in one place.
 - **Flexible Channel Mapping**: Easily map channels from your sources to create a customised channel lineup.
 - **Powerful EPG Integration**: Assign EPG data to your channels from multiple XMLTV sources.
+- **VOD 24/7 Channels**: Create custom linear channels from your imported VOD pool with synthetic guide data and connection-saving caching. [Learn more...](/configuration/vod-24-7-channels)
 - **Curated VOD Libraries**: Import VOD from compatible providers, organise it into cleaner categories, and publish it in ways that suit different clients.
 - **Embedded TVHeadend**: The recommended All-in-One (AIO) installation includes a pre-configured TVHeadend instance, providing a robust and widely compatible backend for streaming and DVR.
 - **Multiple Client Options**:
