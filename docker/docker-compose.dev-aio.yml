@@ -119,5 +119,5 @@ services:
     ports:
       - 8030:8030
     volumes:
-      - ../docs/build:/usr/share/nginx/html:ro
+      - ../docs/build:/usr/share/nginx/html/Headendarr:ro
       - ../docs/docker/nginx-docs.conf:/etc/nginx/nginx.conf:ro

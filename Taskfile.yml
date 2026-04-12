@@ -129,6 +129,12 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm docs bash -lc "npm run build"
 
+  docs:upgrade:
+    desc: Upgrade Docusaurus and npm dependencies
+    deps: [init]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm docs bash -c "npm i @docusaurus/core@latest @docusaurus/preset-classic@latest @docusaurus/module-type-aliases@latest @docusaurus/types@latest @docusaurus/faster@latest && npm update && npm audit fix"
+
   docs:static:start:
     desc: Start docs static server service in dev AIO stack (detached)
     cmds:
