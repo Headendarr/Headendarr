@@ -132,7 +132,7 @@ VOD_CACHE_ROOT = Path("/timeshift/vod")
 CSO_SEGMENT_CACHE_ROOT = Path("/tmp/cache")
 
 # Minimum free space required before a segmented handoff session can start.
-CSO_SEGMENT_CACHE_MIN_FREE_BYTES = 256 * 1024 * 1024
+CSO_SEGMENT_CACHE_MIN_FREE_BYTES = 50 * 1024 * 1024
 
 # How long unused VOD cache entries should be kept before cleanup.
 VOD_CACHE_TTL_SECONDS = 10 * 60
