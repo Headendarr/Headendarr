@@ -1215,6 +1215,7 @@ class CsoFfmpegCommandBuilder:
     ):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         input_target_value = str(input_target or "").strip()
+        input_is_hls_url = input_is_url and (urlparse(input_target_value).path or "").lower().endswith(".m3u8")
         start_value = max(0, int(start_seconds or 0))
         input_seek_value = start_value
         trim_seek_value = 0
@@ -1243,13 +1244,18 @@ class CsoFfmpegCommandBuilder:
                 extra_headers = _format_ffmpeg_headers_arg(header_values)
                 if extra_headers:
                     command += ["-headers", extra_headers]
+                if input_is_hls_url:
+                    command += ["-reconnect_streamed", "0"]
+                else:
+                    command += [
+                        "-reconnect_at_eof",
+                        "1",
+                        "-reconnect_streamed",
+                        "1",
+                        "-reconnect_on_http_error",
+                        "4xx,5xx",
+                    ]
                 command += [
-                    "-reconnect_at_eof",
-                    "1",
-                    "-reconnect_streamed",
-                    "1",
-                    "-reconnect_on_http_error",
-                    "4xx,5xx",
                     "-rw_timeout",
                     str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
                     "-timeout",
@@ -1260,10 +1266,17 @@ class CsoFfmpegCommandBuilder:
             if realtime:
                 command += ["-readrate", "1"]
             command += self._input_hwaccel_args(policy=self.policy)
+            probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
+            analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
+            fps_probe_size = int(CSO_INGEST_FPS_PROBE_SIZE)
+            if input_is_hls_url:
+                probe_size_bytes = max(probe_size_bytes, 10 * 1024 * 1024)
+                analyse_duration_us = max(analyse_duration_us, 10_000_000)
+                fps_probe_size = max(fps_probe_size, 128)
             command += self._probe_flags(
-                CSO_INGEST_PROBE_SIZE_BYTES,
-                CSO_INGEST_ANALYSE_DURATION_US,
-                CSO_INGEST_FPS_PROBE_SIZE,
+                probe_size_bytes,
+                analyse_duration_us,
+                fps_probe_size,
             )
             command += self._input_resilience_flags()
             command += ["-i", input_target_value]
@@ -1277,6 +1290,7 @@ class CsoFfmpegCommandBuilder:
                 low_latency=False,
                 pipe_format=self.pipe_input_format,
             )
+        command += ["-map", "0:v:0?", "-map", "0:a?", "-max_muxing_queue_size", "4096"]
         subtitle_mode = self._apply_stream_selection(command)
         hls_policy = dict(self.policy or {})
         mode = hls_policy.get("output_mode") or "force_remux"
