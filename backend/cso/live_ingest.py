@@ -656,6 +656,7 @@ class CsoIngestSession:
             others = [source for source in candidates if source.id != preferred_source_id]
             candidates = preferred + others
         saw_capacity_block = False
+        start_failure_reason = ""
         for source in candidates:
             if source.id in excluded_ids:
                 continue
@@ -759,12 +760,15 @@ class CsoIngestSession:
                     continue
 
             if not process:
-                if last_error:
+                source_failure_reason = clean_text(self.last_error) or (str(last_error) if last_error else "")
+                if source_failure_reason:
+                    start_failure_reason = source_failure_reason
+                if last_error or source_failure_reason:
                     logger.warning(
                         "CSO ingest failed for all URLs on source channel=%s source_id=%s error=%s",
                         self.channel_id,
                         source.id,
-                        last_error,
+                        source_failure_reason or last_error,
                     )
                 self.current_source = None
                 self.current_source_url = ""
@@ -800,7 +804,10 @@ class CsoIngestSession:
                 await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key, slot_id=old_source_id)
             return CsoStartResult(success=True)
 
-        return CsoStartResult(success=False, reason="capacity_blocked" if saw_capacity_block else "no_available_source")
+        return CsoStartResult(
+            success=False,
+            reason="capacity_blocked" if saw_capacity_block else start_failure_reason or "no_available_source",
+        )
 
     async def _stderr_loop(self, token, process):
         if not process:

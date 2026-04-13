@@ -71,11 +71,7 @@ class SegmentedHandoffSession:
         self.output_dir = self.cache_root_dir / self.key
         self.playlist_path = self.output_dir / "index.m3u8"
         self.start_seconds = max(0, int(start_seconds or 0))
-        self.max_duration_seconds = (
-            None
-            if max_duration_seconds is None
-            else max(1, int(max_duration_seconds or 0))
-        )
+        self.max_duration_seconds = None if max_duration_seconds is None else max(1, int(max_duration_seconds or 0))
         self.realtime = bool(realtime)
         self.process = None
         self.stderr_task = None
@@ -106,7 +102,17 @@ class SegmentedHandoffSession:
         await prepare_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
 
     async def _ensure_capacity(self):
-        usage = await asyncio.to_thread(shutil.disk_usage, self.cache_root_dir)
+        try:
+            self.cache_root_dir.mkdir(parents=True, exist_ok=True)
+            usage = await asyncio.to_thread(shutil.disk_usage, self.cache_root_dir)
+        except Exception as exc:
+            self.last_error = "segment_cache_unavailable"
+            logger.error(
+                "Segmented handoff unavailable because cache root could not be inspected cache_root=%s error=%s",
+                self.cache_root_dir,
+                exc,
+            )
+            raise RuntimeError(self.last_error) from exc
         minimum_free_bytes = int(CSO_SEGMENT_CACHE_MIN_FREE_BYTES)
         if int(usage.free) >= minimum_free_bytes:
             return
@@ -135,9 +141,7 @@ class SegmentedHandoffSession:
                 except Exception:
                     pass
 
-    async def _wait_for_startup_ready(
-        self, process, timeout_seconds: float = 10.0
-    ) -> tuple[bool, str]:
+    async def _wait_for_startup_ready(self, process, timeout_seconds: float = 10.0) -> tuple[bool, str]:
         startup_idle_timeout = max(1.0, float(timeout_seconds))
         hard_deadline = time.time() + max(30.0, startup_idle_timeout * 6.0)
         idle_deadline = time.time() + startup_idle_timeout
@@ -151,19 +155,14 @@ class SegmentedHandoffSession:
             if self.playlist_path.exists():
                 try:
                     playlist_stat = self.playlist_path.stat()
-                    last_seen_mtime = max(
-                        last_seen_mtime, float(playlist_stat.st_mtime)
-                    )
+                    last_seen_mtime = max(last_seen_mtime, float(playlist_stat.st_mtime))
                     if int(playlist_stat.st_size or 0) > 0:
                         return True, ""
                 except Exception:
                     pass
             try:
                 child_mtime = max(
-                    (
-                        float(child.stat().st_mtime)
-                        for child in self.output_dir.iterdir()
-                    ),
+                    (float(child.stat().st_mtime) for child in self.output_dir.iterdir()),
                     default=0.0,
                 )
             except Exception:
@@ -188,10 +187,7 @@ class SegmentedHandoffSession:
         error_lines = [
             line
             for line in lines
-            if any(
-                token in line.lower()
-                for token in ("error", "invalid", "failed", "could not", "unsupported")
-            )
+            if any(token in line.lower() for token in ("error", "invalid", "failed", "could not", "unsupported"))
         ]
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
@@ -261,9 +257,7 @@ class SegmentedHandoffSession:
                     self.input_target,
                     dict(effective_policy or {}),
                     self.output_dir,
-                    redact_ingest_command_for_log(command)
-                    if self.input_is_url
-                    else command,
+                    redact_ingest_command_for_log(command) if self.input_is_url else command,
                 )
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -277,9 +271,7 @@ class SegmentedHandoffSession:
                     self._stderr_loop(token, process),
                     name=f"segmented-stderr-{self.key}",
                 )
-                wait_task = asyncio.create_task(
-                    self._wait_loop(token, process), name=f"segmented-wait-{self.key}"
-                )
+                wait_task = asyncio.create_task(self._wait_loop(token, process), name=f"segmented-wait-{self.key}")
                 startup_timeout_seconds = 30.0 if self.input_is_url else 10.0
                 started, failure_reason = await self._wait_for_startup_ready(
                     process,
@@ -287,9 +279,7 @@ class SegmentedHandoffSession:
                 )
                 if started:
                     return True, (process, stderr_task, wait_task), ""
-                await self._cleanup_failed_start_attempt(
-                    process, stderr_task, wait_task
-                )
+                await self._cleanup_failed_start_attempt(process, stderr_task, wait_task)
                 return False, None, failure_reason
 
             (
@@ -364,9 +354,7 @@ class SegmentedHandoffSession:
                 probe["width"] = int(stream.get("width") or 0)
                 probe["height"] = int(stream.get("height") or 0)
                 probe["pixel_format"] = clean_key(stream.get("pix_fmt"))
-                avg_frame_rate = clean_text(
-                    stream.get("avg_frame_rate") or stream.get("r_frame_rate")
-                )
+                avg_frame_rate = clean_text(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
                 fps_value = _parse_rate(avg_frame_rate)
                 if fps_value > 0:
                     probe["fps"] = fps_value
