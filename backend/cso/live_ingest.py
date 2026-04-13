@@ -156,6 +156,7 @@ class CsoIngestSession:
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
         self.subscribers = {}
+        self.lifecycle_references = set()
         self.history = deque()
         self.history_bytes = 0
         self.max_history_bytes = int(CSO_INGEST_HISTORY_MAX_BYTES)
@@ -705,7 +706,9 @@ class CsoIngestSession:
                 ingest_url = candidate_url
                 url_path = urlparse(candidate_url).path.lower()
                 if (url_path.endswith(".m3u8") or url_path.endswith(".m3u")) and variants:
-                    if remembered_variant_position is not None and 0 <= int(remembered_variant_position) < len(variants):
+                    if remembered_variant_position is not None and 0 <= int(remembered_variant_position) < len(
+                        variants
+                    ):
                         variant_position = int(remembered_variant_position)
                     if variant_position is None:
                         variant_position = len(variants) - 1
@@ -1049,10 +1052,10 @@ class CsoIngestSession:
         self.last_reader_end_ts = time.time()
 
         async with self.lock:
-            has_subscribers = bool(self.subscribers)
+            has_subscribers = bool(self.subscribers or self.lifecycle_references)
         if not has_subscribers:
             logger.info(
-                "CSO ingest channel=%s reader ended with no subscribers (saw_data=%s return_code=%s)",
+                "CSO ingest channel=%s reader ended with no subscribers or lifecycle references (saw_data=%s return_code=%s)",
                 self.channel_id,
                 saw_data,
                 return_code,
@@ -1090,7 +1093,7 @@ class CsoIngestSession:
         graceful_reader_end = bool(reason == "ingest_reader_ended" and saw_data and return_code == 0)
         self.failover_exhausted = False
         async with self.lock:
-            if not self.subscribers:
+            if not self.subscribers and not self.lifecycle_references:
                 old_capacity_key = self.current_capacity_key
                 self.current_source = None
                 self.current_source_url = ""
@@ -1270,7 +1273,7 @@ class CsoIngestSession:
         last_result = CsoStartResult(success=False, reason="no_available_source")
         while True:
             async with self.lock:
-                has_subscribers = bool(self.subscribers)
+                has_subscribers = bool(self.subscribers or self.lifecycle_references)
                 eligible_ids = self._eligible_source_ids_unlocked()
                 cycle_failed_ids = set(self.failover_failed_sources).intersection(eligible_ids)
                 untried_ids = eligible_ids.difference(cycle_failed_ids)
@@ -1375,26 +1378,68 @@ class CsoIngestSession:
         async with self.lock:
             self.subscribers.pop(subscriber_id, None)
             remaining = len(self.subscribers)
+            lifecycle_references = len(self.lifecycle_references)
             source_id = getattr(self.current_source, "id", None)
             source_url = self.current_source_url
         logger.info(
-            "CSO ingest subscriber removed channel=%s ingest_key=%s subscriber=%s subscribers=%s source_id=%s source_url=%s",
+            "CSO ingest subscriber removed channel=%s ingest_key=%s subscriber=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
             self.channel_id,
             self.key,
             subscriber_id,
             remaining,
+            lifecycle_references,
             source_id,
             source_url,
         )
-        if remaining == 0:
+        if remaining == 0 and lifecycle_references == 0:
             await self.stop(force=True)
         return remaining
 
+    async def add_lifecycle_reference(self, reference_id: str):
+        async with self.lock:
+            self.lifecycle_references.add(str(reference_id))
+            lifecycle_references = len(self.lifecycle_references)
+            subscriber_count = len(self.subscribers)
+            source_id = getattr(self.current_source, "id", None)
+            source_url = self.current_source_url
+            self.last_activity = time.time()
+        logger.info(
+            "CSO ingest lifecycle reference added channel=%s ingest_key=%s reference=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
+            self.channel_id,
+            self.key,
+            reference_id,
+            subscriber_count,
+            lifecycle_references,
+            source_id,
+            source_url,
+        )
+
+    async def remove_lifecycle_reference(self, reference_id: str) -> int:
+        async with self.lock:
+            self.lifecycle_references.discard(str(reference_id))
+            lifecycle_references = len(self.lifecycle_references)
+            subscriber_count = len(self.subscribers)
+            source_id = getattr(self.current_source, "id", None)
+            source_url = self.current_source_url
+        logger.info(
+            "CSO ingest lifecycle reference removed channel=%s ingest_key=%s reference=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
+            self.channel_id,
+            self.key,
+            reference_id,
+            subscriber_count,
+            lifecycle_references,
+            source_id,
+            source_url,
+        )
+        if subscriber_count == 0 and lifecycle_references == 0:
+            await self.stop(force=True)
+        return lifecycle_references
+
     async def stop(self, force=False):
         async with self.lock:
-            if not self.running and not self.process and not self.subscribers:
+            if not self.running and not self.process and not self.subscribers and not self.lifecycle_references:
                 return
-            if not force and self.subscribers:
+            if not force and (self.subscribers or self.lifecycle_references):
                 return
             self.running = False
             process = self.process
