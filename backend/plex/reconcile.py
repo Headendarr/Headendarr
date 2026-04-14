@@ -30,6 +30,57 @@ def _status_cache_path(config) -> str:
     return os.path.join(config.config_path, "cache", "plex_reconcile_status.json")
 
 
+def _plex_client_identifier_path(config) -> str:
+    return os.path.join(config.config_path, "cache", "plex_client_id")
+
+
+def _read_plex_client_identifier(path: str) -> str | None:
+    try:
+        with open(path, "r") as infile:
+            value = infile.read().strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("Failed to read Plex client identifier from %s", path)
+        return None
+    if value:
+        return value
+    logger.warning("Ignoring empty Plex client identifier file at %s", path)
+    return None
+
+
+def get_plex_client_identifier(config) -> str:
+    path = _plex_client_identifier_path(config)
+    existing = _read_plex_client_identifier(path)
+    if existing:
+        return existing
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    generated = f"headendarr-plex-{uuid.uuid4().hex[:12]}"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        existing = _read_plex_client_identifier(path)
+        if existing:
+            return existing
+        try:
+            with open(path, "w") as outfile:
+                outfile.write(f"{generated}\n")
+        except OSError:
+            logger.exception("Failed to replace invalid Plex client identifier at %s", path)
+        return generated
+    except OSError:
+        logger.exception("Failed to create Plex client identifier at %s", path)
+        return generated
+
+    try:
+        with os.fdopen(fd, "w") as outfile:
+            outfile.write(f"{generated}\n")
+    except OSError:
+        logger.exception("Failed to write Plex client identifier to %s", path)
+    return generated
+
+
 def _build_hdhr_base_url(headendarr_base_url: str, stream_key: str, source_id: str, profile: str | None) -> str:
     base = str(headendarr_base_url or "").rstrip("/")
     if source_id == "combined":
@@ -51,8 +102,7 @@ def _build_xmltv_url(headendarr_base_url: str, stream_key: str, xmltv_path: str 
 
 def _build_lineup_id(xmltv_url: str) -> str:
     return (
-        f"lineup://tv.plex.providers.epg.xmltv/{quote(xmltv_url, safe='')}"
-        f"#{quote(DEFAULT_PLEX_GUIDE_TITLE, safe='')}"
+        f"lineup://tv.plex.providers.epg.xmltv/{quote(xmltv_url, safe='')}#{quote(DEFAULT_PLEX_GUIDE_TITLE, safe='')}"
     )
 
 
@@ -756,7 +806,7 @@ async def reconcile_server(
             "reason": "server_disabled",
             "duration_ms": int((time.monotonic() - started_at) * 1000),
         }
-    client = PlexClient(runtime_server, client_identifier=f"headendarr-plex-{uuid.uuid4().hex[:12]}")
+    client = PlexClient(runtime_server, client_identifier=get_plex_client_identifier(config))
     machine_id, friendly_name = await client.get_identity()
     if not friendly_name:
         return {
