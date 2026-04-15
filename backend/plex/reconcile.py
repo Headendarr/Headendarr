@@ -394,16 +394,32 @@ def _server_settings_lookup(plex_settings: dict, server_id: str) -> dict:
     return {}
 
 
-async def _http_json_get(url: str, timeout_seconds: int):
+def _http_error_reason(exc: BaseException, timeout_seconds: int | None = None) -> str:
+    if isinstance(exc, asyncio.TimeoutError):
+        if timeout_seconds is not None:
+            return f"request timed out after {max(1, int(timeout_seconds))}s"
+        return "request timed out"
+    message = str(exc).strip()
+    if message:
+        return f"{exc.__class__.__name__}: {message}"
+    return exc.__class__.__name__
+
+
+async def _http_json_get(url: str, timeout_seconds: int) -> tuple[int, object]:
     timeout = aiohttp.ClientTimeout(total=max(1, int(timeout_seconds)))
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
-            text = await response.text()
-            try:
-                payload = json.loads(text) if text else {}
-            except json.JSONDecodeError:
-                payload = {"_raw": text}
-            return int(response.status), payload
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                text = await response.text()
+                try:
+                    payload = json.loads(text) if text else {}
+                except json.JSONDecodeError:
+                    payload = {"_raw": text}
+                return int(response.status), payload
+    except asyncio.CancelledError:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        return 0, {"_error": _http_error_reason(exc, timeout_seconds)}
 
 
 async def _apply_tuner_for_source(
@@ -434,18 +450,24 @@ async def _apply_tuner_for_source(
 
     discover_status, discover_payload = await _http_json_get(discover_url, timeout_seconds)
     if not (200 <= discover_status < 300 and isinstance(discover_payload, dict)):
+        discover_error = ""
+        if isinstance(discover_payload, dict):
+            discover_error = str(discover_payload.get("_error") or "").strip()
         return {
             "source_id": source_id,
             "status": "failed",
-            "error": f"discover.json returned {discover_status}",
+            "error": discover_error or f"discover.json returned {discover_status}",
         }
 
     hdhr_lineup_status, hdhr_lineup_payload = await _http_json_get(lineup_url, timeout_seconds)
     if not (200 <= hdhr_lineup_status < 300 and isinstance(hdhr_lineup_payload, list)):
+        lineup_error = ""
+        if isinstance(hdhr_lineup_payload, dict):
+            lineup_error = str(hdhr_lineup_payload.get("_error") or "").strip()
         return {
             "source_id": source_id,
             "status": "failed",
-            "error": f"lineup.json returned {hdhr_lineup_status}",
+            "error": lineup_error or f"lineup.json returned {hdhr_lineup_status}",
         }
 
     devices_response = await client.get_devices()
@@ -1002,6 +1024,17 @@ async def reconcile_plex_servers(config, server_ids: list[str] | None = None) ->
                 source_name_map=source_name_map,
                 app_dvr_settings=app_dvr_settings,
             )
+        except asyncio.CancelledError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            reason = _http_error_reason(exc)
+            logger.warning("Plex reconcile failed for server_id=%s reason=%s", runtime_server.server_id, reason)
+            result = {
+                "server_id": runtime_server.server_id,
+                "name": runtime_server.name,
+                "status": "failed",
+                "reason": reason,
+            }
         except Exception as exc:
             logger.exception("Plex reconcile failed for server_id=%s", runtime_server.server_id)
             result = {
