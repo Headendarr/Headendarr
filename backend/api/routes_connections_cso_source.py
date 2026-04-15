@@ -60,7 +60,7 @@ from backend.stream_profiles import (
     resolve_cso_profile_name,
 )
 from backend.stream_profiles import parse_stream_profile_request
-from backend.streaming import normalize_local_proxy_url
+from backend.streaming import parse_local_proxy_url
 from backend.url_resolver import get_request_base_url
 from backend.utils import convert_to_int, int_or_none
 from backend.vod import (
@@ -525,7 +525,7 @@ def _build_target_url(
     if not source_url:
         return ""
 
-    return normalize_local_proxy_url(
+    return parse_local_proxy_url(
         source_url,
         base_url=request_base_url,
         instance_id=instance_id,

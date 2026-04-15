@@ -76,6 +76,18 @@ def _append_query_params(url: str, items: list[tuple[str, str]]) -> str:
     return urlunparse(parsed._replace(query=urlencode(query_items)))
 
 
+def _activity_query_items(source_id=None, playlist_id=None, xc_account_id=None) -> list[tuple[str, str]]:
+    items = []
+    for key, value in (
+        ("activity_source_id", source_id),
+        ("activity_playlist_id", playlist_id),
+        ("activity_xc_account_id", xc_account_id),
+    ):
+        if value:
+            items.append((key, str(value)))
+    return items
+
+
 def append_stream_key(url: str, stream_key: str = None, username: str = None) -> str:
     if not stream_key:
         return url
@@ -98,12 +110,15 @@ def is_local_hls_proxy_url(url: str, instance_id: str | None) -> bool:
     return f"/tic-hls-proxy/{instance_id}/" in url
 
 
-def normalize_local_proxy_url(
+def parse_local_proxy_url(
     url: str,
     base_url: str,
     instance_id: str | None,
     stream_key: str | None = None,
     username: str | None = None,
+    activity_source_id=None,
+    activity_playlist_id=None,
+    activity_xc_account_id=None,
 ) -> str:
     if not is_local_hls_proxy_url(url, instance_id):
         return url
@@ -115,6 +130,13 @@ def normalize_local_proxy_url(
             query_items.append(("stream_key", stream_key))
         else:
             query_items.append(("stream_key", stream_key))
+    query_items.extend(
+        _activity_query_items(
+            source_id=activity_source_id,
+            playlist_id=activity_playlist_id,
+            xc_account_id=activity_xc_account_id,
+        )
+    )
     new_query = urlencode(query_items)
     base = base_url.rstrip("/")
     path = parsed.path or ""
@@ -136,6 +158,9 @@ def build_local_hls_proxy_url(
     headers: dict | None = None,
     prefer_stream_endpoint: bool = True,
     direct: bool = False,
+    activity_source_id=None,
+    activity_playlist_id=None,
+    activity_xc_account_id=None,
 ) -> str:
     parsed = urlparse(source_url)
     is_hls = (parsed.path or "").lower().endswith(".m3u8")
@@ -163,6 +188,13 @@ def build_local_hls_proxy_url(
     encoded_headers = encode_headers_query_param(headers)
     if encoded_headers:
         query_items.append(("h", encoded_headers))
+    query_items.extend(
+        _activity_query_items(
+            source_id=activity_source_id,
+            playlist_id=activity_playlist_id,
+            xc_account_id=activity_xc_account_id,
+        )
+    )
 
     if query_items:
         separator = "&" if "?" in url else "?"
@@ -210,6 +242,9 @@ def build_configured_hls_proxy_url(
     headers: dict | None = None,
     prefer_stream_endpoint: bool = True,
     direct: bool = False,
+    activity_source_id=None,
+    activity_playlist_id=None,
+    activity_xc_account_id=None,
 ) -> str:
     if not use_hls_proxy and not use_custom_hls_proxy:
         return source_url
@@ -237,6 +272,9 @@ def build_configured_hls_proxy_url(
                 headers=headers,
                 prefer_stream_endpoint=prefer_stream_endpoint,
                 direct=direct,
+                activity_source_id=activity_source_id,
+                activity_playlist_id=activity_playlist_id,
+                activity_xc_account_id=activity_xc_account_id,
             )
         if not use_custom_hls_proxy or not custom_url:
             return build_local_hls_proxy_url(
@@ -250,6 +288,9 @@ def build_configured_hls_proxy_url(
                 headers=headers,
                 prefer_stream_endpoint=prefer_stream_endpoint,
                 direct=direct,
+                activity_source_id=activity_source_id,
+                activity_playlist_id=activity_playlist_id,
+                activity_xc_account_id=activity_xc_account_id,
             )
 
     if use_custom_hls_proxy and custom_url:

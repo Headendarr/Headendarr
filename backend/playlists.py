@@ -1458,9 +1458,11 @@ async def resolve_playlist_stream_url(
     stream_key: str | None = None,
 ) -> str:
     stream_url = playlist_stream.url
+    xc_account_id = None
     if playlist_stream.source_type == XC_ACCOUNT_TYPE and playlist_stream.xc_stream_id:
         account = await _get_primary_xc_account_async(playlist_stream.playlist_id)
         if account:
+            xc_account_id = account.id
             stream_url = _build_xc_live_stream_url(
                 first_xc_host(playlist_stream.playlist.url),
                 playlist_stream.xc_stream_id,
@@ -1482,6 +1484,8 @@ async def resolve_playlist_stream_url(
             ffmpeg=playlist_info.hls_proxy_use_ffmpeg,
             prebuffer=playlist_info.hls_proxy_prebuffer,
             headers=_resolve_hls_proxy_headers(playlist_info),
+            activity_playlist_id=playlist_stream.playlist_id,
+            activity_xc_account_id=xc_account_id,
         )
     return stream_url
 

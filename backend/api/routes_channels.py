@@ -29,7 +29,7 @@ from backend.channels import (
     build_cso_channel_stream_url,
 )
 from backend.epgs import build_channel_logo_output_url
-from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url
+from backend.streaming import build_local_hls_proxy_url, parse_local_proxy_url
 from backend.url_resolver import get_request_base_url
 from backend.utils import fast_url_hash, parse_entity_id, is_truthy, to_utc_iso
 from backend.tvheadend.tvh_requests import get_tvh
@@ -752,13 +752,17 @@ def _build_preview_url_for_source(
             instance_id,
             source.playlist_stream_url,
             stream_key=user.streaming_key,
+            activity_source_id=source.id,
         )
     else:
-        preview_url = normalize_local_proxy_url(
+        preview_url = parse_local_proxy_url(
             source.playlist_stream_url,
             base_url=request_base_url,
             instance_id=instance_id,
             stream_key=user.streaming_key,
+            activity_source_id=source.id,
+            activity_playlist_id=source.playlist_id,
+            activity_xc_account_id=source.xc_account_id,
         )
     stream_type = _infer_stream_type(preview_url)
     return preview_url, stream_type

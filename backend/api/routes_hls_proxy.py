@@ -81,6 +81,22 @@ def _query_flag_enabled(name: str) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _query_int(name: str):
+    try:
+        value = int(request.args.get(name) or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _activity_metadata_from_query() -> dict:
+    return {
+        "source_id": _query_int("activity_source_id"),
+        "playlist_id": _query_int("activity_playlist_id"),
+        "xc_account_id": _query_int("activity_xc_account_id"),
+    }
+
+
 async def cleanup_hls_proxy_state():
     """Cleanup expired cache entries and idle stream activity."""
     global _last_cso_event_cleanup_ts
@@ -252,7 +268,12 @@ async def proxy_m3u8(instance_id, encoded_url):
         return redirect(target, code=302)
 
     decoded_url = b64_urlsafe_decode(encoded_url)
-    await upsert_stream_activity(decoded_url, connection_id=connection_id, enrich_metadata=False)
+    await upsert_stream_activity(
+        decoded_url,
+        connection_id=connection_id,
+        enrich_metadata=False,
+        **_activity_metadata_from_query(),
+    )
     asyncio.create_task(_enrich_stream_activity_background(decoded_url, connection_id))
 
     stream_key = request.args.get("stream_key") or request.args.get("password")
@@ -346,7 +367,12 @@ async def proxy_key(instance_id, encoded_url):
     # Decode the Base64 encoded URL
     decoded_url = b64_urlsafe_decode(encoded_url)
     # Touch activity via connection_id if available
-    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    await upsert_stream_activity(
+        decoded_url,
+        connection_id=_get_connection_id(),
+        perform_audit=False,
+        **_activity_metadata_from_query(),
+    )
 
     content, status, _ = await handle_segment_proxy(
         decoded_url,
@@ -383,11 +409,18 @@ async def proxy_ts(instance_id, encoded_url):
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = b64_urlsafe_decode(encoded_url)
-    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    await upsert_stream_activity(
+        decoded_url,
+        connection_id=_get_connection_id(),
+        perform_audit=False,
+        **_activity_metadata_from_query(),
+    )
 
     # Direct proxy routing
     if _query_flag_enabled("direct"):
-        proxy_logger.warning("proxy_ts direct passthrough request decoded_url=%s method=%s", decoded_url, request.method)
+        proxy_logger.warning(
+            "proxy_ts direct passthrough request decoded_url=%s method=%s", decoded_url, request.method
+        )
         return await _direct_passthrough_response(decoded_url)
 
     headers = _build_upstream_headers(configured_headers=_configured_upstream_headers_from_query())
@@ -429,7 +462,12 @@ async def proxy_direct(instance_id, encoded_url):
     if invalid:
         return invalid
     decoded_url = b64_urlsafe_decode(encoded_url)
-    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    await upsert_stream_activity(
+        decoded_url,
+        connection_id=_get_connection_id(),
+        perform_audit=False,
+        **_activity_metadata_from_query(),
+    )
     proxy_logger.warning("proxy_direct passthrough request decoded_url=%s method=%s", decoded_url, request.method)
     return await _direct_passthrough_response(decoded_url)
 
@@ -446,7 +484,12 @@ async def proxy_vtt(instance_id, encoded_url):
         return invalid
     # Decode the Base64 encoded URL
     decoded_url = b64_urlsafe_decode(encoded_url)
-    await upsert_stream_activity(decoded_url, connection_id=_get_connection_id(), perform_audit=False)
+    await upsert_stream_activity(
+        decoded_url,
+        connection_id=_get_connection_id(),
+        perform_audit=False,
+        **_activity_metadata_from_query(),
+    )
 
     content, status, _ = await handle_segment_proxy(
         decoded_url,
@@ -488,7 +531,7 @@ async def stream_ts(instance_id, encoded_url):
 
     decoded_url = b64_urlsafe_decode(encoded_url)
     connection_id = _get_connection_id(default_new=True)
-    await upsert_stream_activity(decoded_url, connection_id=connection_id)
+    await upsert_stream_activity(decoded_url, connection_id=connection_id, **_activity_metadata_from_query())
 
     use_ffmpeg = _query_flag_enabled("ffmpeg")
     prebuffer_bytes = parse_size(

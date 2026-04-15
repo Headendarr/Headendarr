@@ -69,7 +69,7 @@ from backend.streaming import (
     build_configured_hls_proxy_url,
     get_tvh_stream_auth,
     is_local_hls_proxy_url,
-    normalize_local_proxy_url,
+    parse_local_proxy_url,
 )
 from backend.tvheadend.tvh_requests import get_tvh
 from backend.url_resolver import get_tvh_publish_base_url
@@ -2826,7 +2826,7 @@ async def publish_channel_muxes(config):
                     else:
                         stream_url = source_obj.playlist_stream_url
                         if is_local_hls_proxy_url(stream_url, instance_id=instance_id):
-                            stream_url = normalize_local_proxy_url(
+                            stream_url = parse_local_proxy_url(
                                 stream_url,
                                 base_url=tic_base_url,
                                 instance_id=instance_id,

@@ -6,7 +6,7 @@ from typing import Any
 import sqlalchemy.exc
 from quart import current_app
 
-from backend.streaming import build_local_hls_proxy_url, normalize_local_proxy_url, append_stream_key
+from backend.streaming import build_local_hls_proxy_url, parse_local_proxy_url, append_stream_key
 from backend.stream_profiles import resolve_cso_profile_name, resolve_tvh_profile_name
 from backend.url_resolver import get_tvh_publish_base_url
 from backend.vod_channels import is_vod_channel_type, vod_channel_has_playlist_items
@@ -15,7 +15,7 @@ from backend.vod_channels import is_vod_channel_type, vod_channel_has_playlist_i
 def build_proxy_stream_url(
     base_url: str, source_url: str, stream_key: str | None, instance_id: str, username: str | None = None
 ) -> str:
-    return normalize_local_proxy_url(
+    return parse_local_proxy_url(
         source_url,
         base_url=base_url,
         instance_id=instance_id,
