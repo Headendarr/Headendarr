@@ -294,6 +294,8 @@ def _count_dvr_devices(dvrs_payload, dvr_key: str) -> int:
 def _can_remove_dvr_device(dvrs_payload, dvr_key: str, device_key: str) -> bool:
     device_count = _count_dvr_devices(dvrs_payload, dvr_key)
     if device_count <= 1:
+        # Plex removes the DVR when its last tuner is removed, which also clears scheduled recordings.
+        # Callers must create and attach a replacement first, or leave the last tuner in place.
         return False
     for dvr in _extract_dvrs(dvrs_payload):
         if str(dvr.get("key") or "").strip() != str(dvr_key or "").strip():
@@ -381,6 +383,31 @@ def _find_target_device(
 def _find_device_by_uri(devices: list[dict], expected_uri: str) -> dict | None:
     for device in devices:
         if str(device.get("uri") or "").strip() == str(expected_uri or "").strip():
+            return device
+    return None
+
+
+def _find_healthy_replacement_device(
+    devices: list[dict],
+    expected_device_id: str,
+    expected_model: str,
+    expected_uri: str,
+    old_device_key: str,
+) -> dict | None:
+    for device in devices:
+        device_key = str(device.get("key") or "").strip()
+        if old_device_key and device_key == old_device_key:
+            continue
+        if str(device.get("status") or "").strip().lower() == "dead":
+            continue
+        device_id = str(device.get("deviceId") or "").strip()
+        model = str(device.get("model") or "").strip()
+        uri = str(device.get("uri") or "").strip()
+        if expected_uri and uri == expected_uri:
+            return device
+        if expected_device_id and device_id == expected_device_id:
+            return device
+        if expected_model and model == expected_model:
             return device
     return None
 
@@ -487,6 +514,9 @@ async def _apply_tuner_for_source(
     expected_uri = hdhr_base_url
     target_device = _find_target_device(all_devices, expected_device_id, expected_model, expected_uri)
     recreated_due_to_uri_change = False
+    recreated_due_to_dead_device = False
+    dead_device_to_remove: tuple[str, str] | None = None
+    preserved_dead_device = False
     stale_device = None
 
     if target_device is not None:
@@ -494,8 +524,51 @@ async def _apply_tuner_for_source(
         if current_uri and current_uri != expected_uri:
             stale_device = target_device
             target_device = None
+        elif str(target_device.get("status") or "").strip().lower() == "dead" and hdhr_lineup_payload:
+            dead_device_key = str(target_device.get("key") or "").strip()
+            dead_dvr_key = str(target_device.get("parentID") or "").strip()
+            if not dead_dvr_key and dead_device_key:
+                for dvr in _extract_dvrs(dvrs_response.payload):
+                    dvr_key = str(dvr.get("key") or "").strip()
+                    for dvr_device in ensure_list(dvr.get("Device")):
+                        if not isinstance(dvr_device, dict):
+                            continue
+                        if str(dvr_device.get("key") or "").strip() == dead_device_key:
+                            dead_dvr_key = dvr_key
+                            break
+                    if dead_dvr_key:
+                        break
+
+            # Plex deletes the DVR, including scheduled recordings, when its last tuner is removed.
+            # Always attempt to create a replacement before any delete, and never delete the final tuner.
+            await client.try_create_device(hdhr_base_url, discover_payload)
+            devices_response = await client.get_devices()
+            dvrs_response = await client.get_dvrs()
+            all_devices = _flatten_devices(devices_response.payload, dvrs_response.payload)
+            replacement_device = _find_healthy_replacement_device(
+                all_devices,
+                expected_device_id,
+                expected_model,
+                expected_uri,
+                dead_device_key,
+            )
+            if replacement_device is not None:
+                recreated_due_to_dead_device = True
+                target_device = replacement_device
+                if dead_dvr_key and dead_device_key:
+                    dead_device_to_remove = (dead_dvr_key, dead_device_key)
+            else:
+                return {
+                    "source_id": source_id,
+                    "status": "preserved",
+                    "detail": "kept_dead_last_tuner_to_preserve_dvr",
+                    "device_key": dead_device_key,
+                    "dvr_key": dead_dvr_key,
+                    "mapped_channels": len(hdhr_lineup_payload) if isinstance(hdhr_lineup_payload, list) else 0,
+                }
 
     if target_device is None and hdhr_lineup_payload:
+        # NOTE: Create before delete: if Plex accepts a replacement tuner we can preserve the DVR and schedules.
         await client.try_create_device(hdhr_base_url, discover_payload)
         devices_response = await client.get_devices()
         dvrs_response = await client.get_dvrs()
@@ -526,6 +599,8 @@ async def _apply_tuner_for_source(
             and stale_device_key
             and _can_remove_dvr_device(dvrs_response.payload, stale_dvr_key, stale_device_key)
         ):
+            # Safe only after create-before-delete and the last-tuner guard above; removing the final
+            # Plex DVR tuner deletes the DVR and clears scheduled recordings.
             delete_response = await client.delete_dvr_device(stale_dvr_key, stale_device_key)
             if not (200 <= delete_response.status < 300 or delete_response.status == 404):
                 return {
@@ -670,6 +745,27 @@ async def _apply_tuner_for_source(
             }
         changed["dvr_attach"] = True
 
+    if dead_device_to_remove is not None:
+        dead_dvr_key, dead_device_key = dead_device_to_remove
+        dvrs_response = await client.get_dvrs()
+        if not (200 <= dvrs_response.status < 300):
+            return {
+                "source_id": source_id,
+                "status": "failed",
+                "error": f"failed to refresh DVRs before removing dead tuner ({dvrs_response.status})",
+            }
+        dvrs_payload = dvrs_response.payload
+        if _can_remove_dvr_device(dvrs_payload, dead_dvr_key, dead_device_key):
+            delete_response = await client.delete_dvr_device(dead_dvr_key, dead_device_key)
+            if not (200 <= delete_response.status < 300 or delete_response.status == 404):
+                return {
+                    "source_id": source_id,
+                    "status": "failed",
+                    "error": f"failed to remove dead tuner device ({delete_response.status})",
+                }
+        else:
+            preserved_dead_device = True
+
     desired_dvr_settings = _build_dvr_settings_query(server_settings, app_dvr_settings)
     current_dvr_settings = _extract_dvr_setting_map(dvrs_payload, resolved_dvr_key)
     dvr_settings_changed = any(
@@ -730,12 +826,16 @@ async def _apply_tuner_for_source(
 
     return {
         "source_id": source_id,
-        "status": "updated" if any(changed.values()) or recreated_due_to_uri_change else "unchanged",
+        "status": "updated"
+        if any(changed.values()) or recreated_due_to_uri_change or recreated_due_to_dead_device
+        else "unchanged",
         "device_key": device_key,
         "dvr_key": resolved_dvr_key,
         "mapped_channels": len(mapped_ids),
         "unmatched_channels": len(unmatched),
         "recreated_due_to_uri_change": recreated_due_to_uri_change,
+        "recreated_due_to_dead_device": recreated_due_to_dead_device,
+        "preserved_dead_device": preserved_dead_device,
         "device_title": device_title,
         "changed": changed,
     }
@@ -767,6 +867,7 @@ async def _delete_stale_managed_tuners(
             device_key = str(device.get("key") or "")
             if not dvr_key or not device_key:
                 continue
+            # WARNING: Do not remove the last tuner from a Plex DVR. Plex deletes the DVR and scheduled recordings.
             if not _can_remove_dvr_device(dvrs_response.payload, dvr_key, device_key):
                 deletions.append(
                     {

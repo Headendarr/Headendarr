@@ -246,6 +246,8 @@ async def device_xml(playlist_id, stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/discover.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/discover.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/discover.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/<profile>/discover.json", methods=["GET"])
 @skip_stream_connect_audit
 @stream_key_required
 async def discover_json_combined(stream_key=None, profile=None):
@@ -262,6 +264,8 @@ async def discover_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/lineup.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/<profile>/lineup.json", methods=["GET"])
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_json_combined(stream_key=None, profile=None):
@@ -277,6 +281,8 @@ async def lineup_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup_status.json", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup_status.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/lineup_status.json", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/<profile>/lineup_status.json", methods=["GET"])
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_status_json_combined(stream_key=None, profile=None):
@@ -293,6 +299,8 @@ async def lineup_status_json_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/lineup.post", methods=["GET", "POST"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/lineup.post", methods=["GET", "POST"])
+@blueprint.route("/tic-api/hdhr_device/combined/lineup.post", methods=["GET", "POST"])
+@blueprint.route("/tic-api/hdhr_device/combined/<profile>/lineup.post", methods=["GET", "POST"])
 @skip_stream_connect_audit
 @stream_key_required
 async def lineup_post_combined(stream_key=None, profile=None):
@@ -302,6 +310,8 @@ async def lineup_post_combined(stream_key=None, profile=None):
 
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/device.xml", methods=["GET"])
 @blueprint.route("/tic-api/hdhr_device/<stream_key>/combined/<profile>/device.xml", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/device.xml", methods=["GET"])
+@blueprint.route("/tic-api/hdhr_device/combined/<profile>/device.xml", methods=["GET"])
 @skip_stream_connect_audit
 @stream_key_required
 async def device_xml_combined(stream_key=None, profile=None):
