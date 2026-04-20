@@ -573,9 +573,6 @@ def _extract_stream_auth_credentials() -> tuple[str | None, str | None]:
 
 
 async def _lookup_stream_auth_user(stream_key: str):
-    user_from_token = await get_user_from_token()
-    if user_from_token:
-        return user_from_token
     # First attempt to see if the user is the TVH user
     try:
         config = current_app.config.get("APP_CONFIG") if has_request_context() else None
@@ -614,11 +611,12 @@ async def get_user_from_stream_key():
 
 
 async def authenticate_stream_request() -> StreamAuthResult:
-    user_from_token = await get_user_from_token()
-    if user_from_token:
-        return StreamAuthResult(user=user_from_token, stream_key=None)
-
     stream_key, failure_key = _extract_stream_auth_credentials()
+    if not stream_key:
+        user_from_token = await get_user_from_token()
+        if user_from_token:
+            return StreamAuthResult(user=user_from_token, stream_key=None)
+
     if not stream_key:
         return StreamAuthResult(user=None, stream_key=None, missing_credentials=True)
 
