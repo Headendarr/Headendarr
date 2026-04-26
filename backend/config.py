@@ -506,7 +506,7 @@ enable_cso_slate_command_debug_logging = False
 if _env_bool("ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING", False):
     enable_cso_slate_command_debug_logging = True
 
-vod_cache_retention_minutes = max(1, _env_int("VOD_CACHE_RETENTION_MINUTES", 10))
+vod_cache_retention_minutes = max(1, _env_int("TIC_VOD_CACHE_RETENTION_MINUTES", 10))
 
 flask_run_host = _env_str("FLASK_RUN_HOST", "0.0.0.0")
 flask_run_port = _env_int("FLASK_RUN_PORT", 9985)

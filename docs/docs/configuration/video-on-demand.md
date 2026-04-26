@@ -185,7 +185,7 @@ Second, it improves the playback experience. Once a complete local cache exists,
 
 A complete cache can also help when the upstream source has reached its connection limit. If Headendarr already has a finished local copy of the requested item, it can serve that instead of failing the request.
 
-The cache is temporary. Cached movies and episodes remain available while they are actively being used, but by default they are automatically cleaned up after 10 minutes of inactivity. You can change that retention window with the `VOD_CACHE_RETENTION_MINUTES` environment variable. The value is in minutes, so setting `VOD_CACHE_RETENTION_MINUTES=10080` keeps cached VOD files for up to one week of inactivity.
+The cache is temporary. Cached movies and episodes remain available while they are actively being used, but by default they are automatically cleaned up after 10 minutes of inactivity. You can change that retention window with the `TIC_VOD_CACHE_RETENTION_MINUTES` environment variable. The value is in minutes, so setting `TIC_VOD_CACHE_RETENTION_MINUTES=10080` keeps cached VOD files for up to one week of inactivity.
 
 When Headendarr needs space for a new VOD cache download, it now evicts the oldest inactive VOD cache files first. Active playback sessions, active readers, and in-progress downloads are left alone. If there is still not enough free space after those older cache files are removed, the new cache download is skipped and playback falls back to the normal non-cached behaviour.
 
