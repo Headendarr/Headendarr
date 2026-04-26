@@ -46,6 +46,7 @@ class SentryRuntimeConfig(TypedDict):
     SENTRY_PROFILES_SAMPLE_RATE: float
     SENTRY_RELEASE: str
     SENTRY_SERVICE_NAME: str
+    SENTRY_TRANSPORT_TIMEOUT: float
     SENTRY_TRACES_SAMPLE_RATE: float
     enable_tracing: bool
 
@@ -150,15 +151,17 @@ def _load_sentry_config() -> SentryRuntimeConfig | None:
         "SENTRY_PROFILES_SAMPLE_RATE": sentry_profiles_sample_rate,
         "SENTRY_RELEASE": str(_config_value("SENTRY_RELEASE", "unknown") or "unknown"),
         "SENTRY_SERVICE_NAME": str(_config_value("SENTRY_SERVICE_NAME", "headendarr") or "headendarr"),
+        "SENTRY_TRANSPORT_TIMEOUT": _parse_sentry_float(_config_value("SENTRY_TRANSPORT_TIMEOUT"), 30.0) or 30.0,
         "SENTRY_TRACES_SAMPLE_RATE": sentry_traces_sample_rate,
     }
     bootstrap_logger.info(
-        "Sentry runtime config accepted: environment=%s release=%s tracing=%s debug=%s service_name=%s",
+        "Sentry runtime config accepted: environment=%s release=%s tracing=%s debug=%s service_name=%s transport_timeout=%ss",
         sentry_runtime_config["SENTRY_ENVIRONMENT"],
         sentry_runtime_config["SENTRY_RELEASE"],
         "enabled" if sentry_runtime_config["enable_tracing"] else "disabled",
         sentry_runtime_config["SENTRY_DEBUG"],
         sentry_runtime_config["SENTRY_SERVICE_NAME"],
+        sentry_runtime_config["SENTRY_TRANSPORT_TIMEOUT"],
     )
     return sentry_runtime_config
 
@@ -173,9 +176,15 @@ def _initialise_sentry():
         import sentry_sdk
         from sentry_sdk.integrations.logging import LoggingIntegration
         from sentry_sdk.integrations.quart import QuartIntegration
+        from sentry_sdk.transport import HttpTransport
     except ImportError:
         bootstrap_logger.warning("SENTRY_CONFIG is set but sentry-sdk with Quart support is not installed")
         return
+
+    transport_timeout = max(float(sentry_runtime_config["SENTRY_TRANSPORT_TIMEOUT"]), 0.1)
+
+    class ConfiguredHttpTransport(HttpTransport):
+        TIMEOUT = transport_timeout
 
     bootstrap_logger.info("Initialising sentry-sdk with Quart and logging integrations")
     sentry_sdk.init(
@@ -190,6 +199,7 @@ def _initialise_sentry():
         profiles_sample_rate=sentry_runtime_config["SENTRY_PROFILES_SAMPLE_RATE"],
         release=sentry_runtime_config["SENTRY_RELEASE"],
         server_name=sentry_runtime_config["SENTRY_HOSTNAME"],
+        transport=ConfiguredHttpTransport,
         traces_sample_rate=sentry_runtime_config["SENTRY_TRACES_SAMPLE_RATE"],
     )
 

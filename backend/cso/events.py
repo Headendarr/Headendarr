@@ -119,6 +119,21 @@ async def emit_channel_stream_event(
         if playlist_id is None:
             playlist_id = source.playlist_id
 
+    if channel_id is not None and int(channel_id) <= 0:
+        channel_id = None
+    if source_id is not None and int(source_id) <= 0:
+        source_id = None
+    if playlist_id is not None and int(playlist_id) <= 0:
+        playlist_id = None
+    if recording_id is not None and int(recording_id) <= 0:
+        recording_id = None
+    if vod_category_id is not None and int(vod_category_id) <= 0:
+        vod_category_id = None
+    if vod_item_id is not None and int(vod_item_id) <= 0:
+        vod_item_id = None
+    if vod_episode_id is not None and int(vod_episode_id) <= 0:
+        vod_episode_id = None
+
     details_json = None
     if details is not None:
         try:
