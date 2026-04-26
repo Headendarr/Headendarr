@@ -85,6 +85,8 @@ def _parse_sentry_float(value: object, default: float) -> float | None:
 def _load_sentry_json_config() -> dict[str, object]:
     raw_sentry_config = os.environ.get("SENTRY_CONFIG", "")
     if len(raw_sentry_config) <= 10:
+        if os.environ.get("SENTRY_CONFIG"):
+            bootstrap_logger.warning("Ignoring SENTRY_CONFIG because it is too short to be valid JSON")
         return {}
 
     try:
@@ -102,6 +104,10 @@ def _load_sentry_json_config() -> dict[str, object]:
 
 def _load_sentry_config() -> SentryRuntimeConfig | None:
     parsed_sentry_config = _load_sentry_json_config()
+    if parsed_sentry_config:
+        bootstrap_logger.info("Detected SENTRY_CONFIG JSON with keys: %s", ", ".join(sorted(parsed_sentry_config.keys())))
+    elif os.environ.get("SENTRY_DSN"):
+        bootstrap_logger.info("Detected SENTRY_DSN environment variable")
 
     def _config_value(name: str, default: object = None) -> object:
         return parsed_sentry_config.get(name, os.environ.get(name, default))
@@ -146,12 +152,21 @@ def _load_sentry_config() -> SentryRuntimeConfig | None:
         "SENTRY_SERVICE_NAME": str(_config_value("SENTRY_SERVICE_NAME", "headendarr") or "headendarr"),
         "SENTRY_TRACES_SAMPLE_RATE": sentry_traces_sample_rate,
     }
+    bootstrap_logger.info(
+        "Sentry runtime config accepted: environment=%s release=%s tracing=%s debug=%s service_name=%s",
+        sentry_runtime_config["SENTRY_ENVIRONMENT"],
+        sentry_runtime_config["SENTRY_RELEASE"],
+        "enabled" if sentry_runtime_config["enable_tracing"] else "disabled",
+        sentry_runtime_config["SENTRY_DEBUG"],
+        sentry_runtime_config["SENTRY_SERVICE_NAME"],
+    )
     return sentry_runtime_config
 
 
 def _initialise_sentry():
     sentry_runtime_config = _load_sentry_config()
     if not sentry_runtime_config:
+        bootstrap_logger.info("Sentry is disabled for this process")
         return
 
     try:
@@ -162,6 +177,7 @@ def _initialise_sentry():
         bootstrap_logger.warning("SENTRY_CONFIG is set but sentry-sdk with Quart support is not installed")
         return
 
+    bootstrap_logger.info("Initialising sentry-sdk with Quart and logging integrations")
     sentry_sdk.init(
         dsn=sentry_runtime_config["SENTRY_DSN"],
         debug=sentry_runtime_config["SENTRY_DEBUG"],
@@ -181,6 +197,11 @@ def _initialise_sentry():
     docker_image_tag = sentry_runtime_config["SENTRY_DOCKER_IMAGE_TAG"]
     if docker_image_tag:
         sentry_sdk.set_tag("docker_image_tag", docker_image_tag)
+    if sentry_runtime_config["SENTRY_DEBUG"]:
+        bootstrap_logger.info("SENTRY_DEBUG is enabled; sending bootstrap test message")
+        sentry_sdk.capture_message("Headendarr Sentry bootstrap test", level="info")
+        bootstrap_logger.info("Bootstrap test message submitted to sentry-sdk")
+    bootstrap_logger.info("sentry-sdk initialised successfully")
 
 
 _initialise_sentry()
