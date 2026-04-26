@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import time
 from typing import TypedDict
@@ -81,20 +81,12 @@ class VodCacheEntry:
     active_readers: int = 0
     downloader_owner_key: str | None = None
     download_task: asyncio.Task | None = None
-    probe_lock: asyncio.Lock | None = None
-    state_lock: asyncio.Lock | None = None
-    ready_event: asyncio.Event | None = None
-    progress_event: asyncio.Event | None = None
+    probe_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    ready_event: asyncio.Event = field(default_factory=asyncio.Event)
+    progress_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def __post_init__(self):
-        if self.probe_lock is None:
-            self.probe_lock = asyncio.Lock()
-        if self.state_lock is None:
-            self.state_lock = asyncio.Lock()
-        if self.ready_event is None:
-            self.ready_event = asyncio.Event()
-        if self.progress_event is None:
-            self.progress_event = asyncio.Event()
         if not self.last_access_ts:
             self.last_access_ts = time.time()
 

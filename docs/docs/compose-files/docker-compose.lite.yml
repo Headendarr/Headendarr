@@ -22,6 +22,8 @@ services:
       - PGID=1000
       # Timezone
       - TZ=Pacific/Auckland
+      # Optional VOD cache retention window in minutes (default: 10)
+      # - VOD_CACHE_RETENTION_MINUTES=10080
       # Skips the DB migrate command execution on container startup
       - SKIP_MIGRATIONS=false
       # Executes a pip install on container startup (might be required to generate the venv)

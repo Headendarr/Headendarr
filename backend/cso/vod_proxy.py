@@ -541,8 +541,9 @@ class VodProxySession:
             return
         if self.status_code == 416:
             return
-        entry.active_readers += 1
-        entry.touch()
+        async with entry.state_lock:
+            entry.active_readers += 1
+            entry.touch()
         target_path = entry.final_path if entry.complete and entry.final_path.exists() else entry.part_path
         offset = int(self.local_start or 0)
         final_end = int(self.local_end) if self.local_end is not None else None
@@ -602,8 +603,9 @@ class VodProxySession:
                 if entry.complete and offset >= int(entry.expected_size or 0):
                     break
         finally:
-            entry.active_readers = max(0, int(entry.active_readers or 0) - 1)
-            entry.touch()
+            async with entry.state_lock:
+                entry.active_readers = max(0, int(entry.active_readers or 0) - 1)
+                entry.touch()
 
     async def stop(self, force=False):
         async with self.lock:

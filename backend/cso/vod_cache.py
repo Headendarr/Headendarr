@@ -153,6 +153,9 @@ async def ensure_vod_cache_ready(
             }
         has_space = await _vod_cache_has_space(expected_size * 2)
         if not has_space:
+            eviction = await vod_cache_manager.purge_oldest_for_space(expected_size * 2, preserve_key=entry.key)
+            has_space = bool(eviction.get("has_space"))
+        if not has_space:
             entry.failed_reason = "insufficient_space"
             return {
                 "cacheable": False,
@@ -602,12 +605,87 @@ class VodCacheManager:
                 continue
             if (now_ts - float(entry.last_access_ts or 0)) < max(30, int(idle_seconds or 0)):
                 continue
-            await self._remove_entry(entry)
+            removed_entry = await self._remove_entry(entry)
+            if not removed_entry:
+                continue
             removed += 1
         return removed
 
-    async def _remove_entry(self, entry: VodCacheEntry):
+    async def purge_oldest_for_space(
+        self, required_bytes: int, preserve_key: str | None = None
+    ) -> dict[str, int | bool]:
+        required = int(required_bytes or 0)
+        if required <= 0:
+            return {"has_space": True, "removed": 0, "freed_bytes": 0, "free_bytes": 0}
+
+        usage = await asyncio.to_thread(shutil.disk_usage, str(VOD_CACHE_ROOT.parent))
+        free_bytes = int(usage.free or 0)
+        if free_bytes >= required:
+            return {"has_space": True, "removed": 0, "freed_bytes": 0, "free_bytes": free_bytes}
+
+        async with self.lock:
+            candidates = sorted(self.entries.values(), key=lambda entry: float(entry.last_access_ts or 0))
+
+        removed = 0
+        freed_bytes = 0
+        for entry in candidates:
+            if preserve_key and entry.key == preserve_key:
+                continue
+            async with entry.state_lock:
+                if entry.downloader_running or entry.active_readers > 0 or entry.active_sessions > 0:
+                    continue
+                estimated_bytes = 0
+                if entry.final_path.exists():
+                    try:
+                        estimated_bytes += int(entry.final_path.stat().st_size or 0)
+                    except Exception:
+                        pass
+                if entry.part_path.exists():
+                    try:
+                        estimated_bytes += int(entry.part_path.stat().st_size or 0)
+                    except Exception:
+                        pass
+            removed_entry = await self._remove_entry(entry)
+            if not removed_entry:
+                continue
+            removed += 1
+            freed_bytes += estimated_bytes
+            usage = await asyncio.to_thread(shutil.disk_usage, str(VOD_CACHE_ROOT.parent))
+            free_bytes = int(usage.free or 0)
+            if free_bytes >= required:
+                logger.info(
+                    "VOD cache eviction freed space removed=%s freed_bytes=%s free_bytes=%s required_bytes=%s",
+                    removed,
+                    freed_bytes,
+                    free_bytes,
+                    required,
+                )
+                return {
+                    "has_space": True,
+                    "removed": removed,
+                    "freed_bytes": freed_bytes,
+                    "free_bytes": free_bytes,
+                }
+
+        if removed > 0:
+            logger.warning(
+                "VOD cache eviction could not free enough space removed=%s freed_bytes=%s free_bytes=%s required_bytes=%s",
+                removed,
+                freed_bytes,
+                free_bytes,
+                required,
+            )
+        return {
+            "has_space": free_bytes >= required,
+            "removed": removed,
+            "freed_bytes": freed_bytes,
+            "free_bytes": free_bytes,
+        }
+
+    async def _remove_entry(self, entry: VodCacheEntry) -> bool:
         async with entry.state_lock:
+            if entry.downloader_running or entry.active_readers > 0 or entry.active_sessions > 0:
+                return False
             task = entry.download_task
             entry.download_task = None
         if task and not task.done():
@@ -624,6 +702,7 @@ class VodCacheManager:
             current = self.entries.get(entry.key)
             if current is entry:
                 self.entries.pop(entry.key, None)
+        return True
 
 
 vod_cache_manager = VodCacheManager()

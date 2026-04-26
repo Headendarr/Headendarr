@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from backend import config
+
 
 # Whether VOD playback should prefer a managed proxy session when direct upstream input is not in use.
 CS_VOD_USE_PROXY_SESSION = True
@@ -135,7 +137,7 @@ CSO_SEGMENT_CACHE_ROOT = Path("/tmp/cache")
 CSO_SEGMENT_CACHE_MIN_FREE_BYTES = 50 * 1024 * 1024
 
 # How long unused VOD cache entries should be kept before cleanup.
-VOD_CACHE_TTL_SECONDS = 10 * 60
+VOD_CACHE_TTL_SECONDS = config.vod_cache_retention_minutes * 60
 
 # Chunk size used while downloading or serving cached VOD files.
 VOD_CACHE_CHUNK_BYTES = 64 * 1024

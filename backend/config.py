@@ -356,7 +356,9 @@ class Config:
 
         with self._settings_cache_lock:
             self._settings_cache = copy.deepcopy(self.settings)
-            self._settings_cache_mtime = current_mtime if current_mtime is not None else os.path.getmtime(self.config_file)
+            self._settings_cache_mtime = (
+                current_mtime if current_mtime is not None else os.path.getmtime(self.config_file)
+            )
 
         return self.settings
 
@@ -503,6 +505,8 @@ if _env_bool("ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING", False):
 enable_cso_slate_command_debug_logging = False
 if _env_bool("ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING", False):
     enable_cso_slate_command_debug_logging = True
+
+vod_cache_retention_minutes = max(1, _env_int("VOD_CACHE_RETENTION_MINUTES", 10))
 
 flask_run_host = _env_str("FLASK_RUN_HOST", "0.0.0.0")
 flask_run_port = _env_int("FLASK_RUN_PORT", 9985)
