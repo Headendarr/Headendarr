@@ -124,7 +124,7 @@ import {ref} from 'vue';
 import axios from 'axios';
 import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {TicDialogPopup} from 'components/ui';
 
 export default {
@@ -203,7 +203,7 @@ export default {
         try {
           const response = await axios.get(`/tic-api/playlists/streams/${stream.stream_id}/preview`);
           if (response.data.success) {
-            const candidates = normalisePreviewCandidates(response.data);
+            const candidates = parsePreviewCandidatesList(response.data);
             const primaryCandidate = candidates[0];
             if (!primaryCandidate) {
               this.$q.notify({color: 'negative', message: 'No preview sources available'});

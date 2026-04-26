@@ -420,7 +420,7 @@
 <script>
 import {defineComponent, ref, computed, onMounted, onBeforeUnmount, nextTick, watch} from 'vue';
 import axios from 'axios';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {useVideoStore} from 'stores/video';
 import {useUiStore} from 'stores/ui';
 import {useQuasar} from 'quasar';
@@ -900,7 +900,7 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
-          const candidates = normalisePreviewCandidates(response.data);
+          const candidates = parsePreviewCandidatesList(response.data);
           const primaryCandidate = candidates[0];
           if (!primaryCandidate) {
             $q.notify({color: 'negative', message: 'No preview sources available'});

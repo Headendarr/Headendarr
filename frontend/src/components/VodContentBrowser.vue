@@ -150,7 +150,7 @@ import {
   isBrowserSafeVodSourceContainer,
   resolveVodPlayerStreamType,
 } from 'src/utils/vodPlaybackProfiles';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 
 const BROWSER_PAGE_SIZE = 40;
 
@@ -661,7 +661,7 @@ export default {
       return `https://www.youtube.com/watch?v=${encodeURIComponent(trailerValue)}`;
     },
     startBrowserPlayback(payload, title) {
-      const candidates = normalisePreviewCandidates(payload);
+      const candidates = parsePreviewCandidatesList(payload);
       const primaryCandidate = candidates[0];
       const previewUrl = primaryCandidate?.url || '';
       if (!previewUrl) {
@@ -711,7 +711,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/movie/${Number(item.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
+      if (response?.data?.success && parsePreviewCandidatesList(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -720,7 +720,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/series/${Number(episode.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
+      if (response?.data?.success && parsePreviewCandidatesList(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -729,7 +729,7 @@ export default {
       const response = await axios.get(`/tic-api/vod/upstream/movie/${Number(item.id)}/preview`, {
         params: options,
       });
-      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
+      if (response?.data?.success && parsePreviewCandidatesList(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');
@@ -739,7 +739,7 @@ export default {
         `/tic-api/vod/upstream/series/${Number(item.id)}/${Number(episode?.id || 0)}/preview`,
         {params: options},
       );
-      if (response?.data?.success && normalisePreviewCandidates(response.data).length) {
+      if (response?.data?.success && parsePreviewCandidatesList(response.data).length) {
         return response.data;
       }
       throw new Error(response?.data?.message || 'Failed to load preview');

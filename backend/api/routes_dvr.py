@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import asyncio
+import json
+from pathlib import PurePosixPath
+from types import SimpleNamespace
+from urllib.parse import quote, urlsplit, urlunsplit
+
 import aiohttp
 from sqlalchemy import select
 
-from quart import request, jsonify, current_app
+from quart import current_app, jsonify, request
 
 from backend.api import blueprint
 from backend.auth import get_request_user, streamer_or_admin_required
+from backend.auth import skip_stream_connect_audit, stream_key_required
 from backend.api.tasks import TaskQueueBroker, reconcile_dvr_recordings, apply_dvr_rules
+from backend.api.routes_connections_cso_source import _stream_cso_vod_route
 from backend.dvr_profiles import get_profile_key_or_default, read_recording_profiles_from_settings
 from backend.dvr import (
-    list_recordings,
     list_rules,
+    list_recordings,
     create_recording,
-    stop_recording,
     delete_recording,
     create_rule,
     delete_rule,
+    stop_recording,
     update_rule,
 )
 from backend.models import Session, Recording, RecordingRule
+from backend.source_media import probe_stream_media_shape
+from backend.url_resolver import get_request_base_url
+from backend.vod import container_extension_from_media_shape
 
 
 def _is_admin(user) -> bool:
@@ -120,6 +130,112 @@ async def _fetch_tvh_dvr_entry(base_url, username, password, tvh_uuid):
     return None
 
 
+def _build_authenticated_tvh_url(base_url: str, username: str, password: str, path: str) -> str:
+    parsed = urlsplit(base_url)
+    auth_netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{parsed.netloc}"
+    target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
+    return urlunsplit((parsed.scheme, auth_netloc, target_path, "", ""))
+
+
+def _guess_recording_container_extension(tvh_entry: dict | None, media_shape: dict | None) -> str:
+    filename = ""
+    if isinstance(tvh_entry, dict):
+        for key in ("filename", "path", "files", "basename"):
+            value = str(tvh_entry.get(key) or "").strip()
+            if value:
+                filename = value
+                break
+    suffix = PurePosixPath(filename).suffix.lstrip(".").lower()
+    if suffix:
+        return suffix
+    return container_extension_from_media_shape(media_shape, fallback_extension="ts")
+
+
+def _recording_duration_seconds(recording, tvh_entry: dict | None = None) -> int:
+    duration = 0
+    if recording.start_ts and recording.stop_ts:
+        duration = max(int(recording.stop_ts - recording.start_ts), 1)
+    if isinstance(tvh_entry, dict):
+        entry_duration = tvh_entry.get("duration")
+        if entry_duration:
+            duration = max(int(entry_duration), duration)
+        else:
+            start_real = tvh_entry.get("start_real")
+            stop_real = tvh_entry.get("stop_real")
+            if start_real and stop_real and stop_real > start_real:
+                duration = max(int(stop_real - start_real), duration)
+    return max(duration, 1)
+
+
+async def _resolve_recording_playback_context(recording_id: int, include_media_probe: bool = True):
+    recording = await _get_recording(recording_id)
+    if not recording or not recording.tvh_uuid:
+        return None, {"success": False, "message": "Recording not found"}, 404
+
+    base_url, username, password = await _get_tvh_proxy_base()
+    if not base_url:
+        return None, {"success": False, "message": "TVHeadend credentials not configured"}, 502
+
+    tvh_entry = await _fetch_tvh_dvr_entry(base_url, username, password, recording.tvh_uuid)
+    upstream_url = _build_authenticated_tvh_url(base_url, username, password, f"dvrfile/{recording.tvh_uuid}")
+    media_shape = {}
+    if include_media_probe:
+        media_shape = await probe_stream_media_shape(upstream_url, timeout_seconds=2.5)
+    duration_seconds = _recording_duration_seconds(recording, tvh_entry=tvh_entry)
+    container_extension = _guess_recording_container_extension(tvh_entry, media_shape)
+    source_item = SimpleNamespace(
+        id=int(recording.id),
+        playlist_id=0,
+        container_extension=container_extension,
+        stream_probe_details=json.dumps(media_shape) if media_shape else None,
+        stream_probe_at=None,
+    )
+    candidate = SimpleNamespace(
+        source_item=source_item,
+        content_type="movie",
+        xc_account=None,
+        host_url=None,
+        container_extension=container_extension,
+        internal_id=int(recording.id),
+        cache_internal_id=int(recording.id),
+        group_item=None,
+    )
+    context = {
+        "recording": recording,
+        "tvh_entry": tvh_entry,
+        "upstream_url": upstream_url,
+        "duration_seconds": duration_seconds,
+        "media_shape": media_shape,
+        "container_extension": container_extension,
+        "candidate": candidate,
+    }
+    return context, None, 200
+
+
+async def _resolve_recording_cso_request(_config, recording_id: int) -> dict[str, object]:
+    context, error_payload, status = await _resolve_recording_playback_context(recording_id, include_media_probe=False)
+    if context is None:
+        return {
+            "error": str((error_payload or {}).get("message") or "Recording not found"),
+            "status": int(status or 404),
+        }
+    recording = context["recording"]
+    requested_profile = str(request.args.get("profile") or "").strip()
+    effective_profile = requested_profile or "h264-aac-mp4"
+    return {
+        "candidate": context["candidate"],
+        "upstream_url": context["upstream_url"],
+        "effective_profile": effective_profile,
+        "use_proxy_session": False,
+        "activity_metadata": {
+            "stream_name": str(recording.title or "Recording"),
+            "channel_name": "",
+            "channel_logo_url": "",
+            "display_url": f"recording:{int(recording.id)}",
+        },
+    }
+
+
 @blueprint.route("/tic-api/recordings/poll", methods=["GET"])
 @streamer_or_admin_required
 async def api_poll_recordings():
@@ -205,6 +321,65 @@ async def api_stream_recording(recording_id):
             await session.close()
 
     return current_app.response_class(stream_body(), status=resp.status, headers=response_headers)
+
+
+@blueprint.route("/tic-api/recordings/<int:recording_id>/preview", methods=["GET"])
+@streamer_or_admin_required
+async def api_recording_preview(recording_id):
+    user = get_request_user()
+    if user and not _can_use_dvr(user):
+        return jsonify({"success": False, "message": "DVR access is disabled for this user"}), 403
+
+    context, error_payload, status = await _resolve_recording_playback_context(recording_id)
+    if context is None:
+        return jsonify(error_payload), status
+
+    recording = context["recording"]
+    if user and not _can_read_all_dvr(user) and recording.owner_user_id != user.id:
+        return jsonify({"success": False, "message": "Forbidden"}), 403
+    stream_key = str(getattr(user, "streaming_key", "") or "").strip()
+    if not stream_key:
+        return jsonify({"success": False, "message": "Streaming key missing"}), 400
+
+    playback_url = (
+        f"{get_request_base_url(request).rstrip('/')}/tic-api/recordings/{int(recording.id)}/cso"
+        f"?stream_key={quote(stream_key, safe='')}"
+    )
+    media_shape = context["media_shape"]
+    return jsonify(
+        {
+            "success": True,
+            "candidates": [
+                {
+                    "url": playback_url,
+                    "stream_type": "native",
+                    "source_resolution": {
+                        "width": int((media_shape or {}).get("width") or 0),
+                        "height": int((media_shape or {}).get("height") or 0),
+                    },
+                    "duration_seconds": int(context["duration_seconds"]),
+                    "container_extension": context["container_extension"],
+                }
+            ],
+            "stream_type": "native",
+            "source_resolution": {
+                "width": int((media_shape or {}).get("width") or 0),
+                "height": int((media_shape or {}).get("height") or 0),
+            },
+            "duration_seconds": int(context["duration_seconds"]),
+            "container_extension": context["container_extension"],
+        }
+    )
+
+
+@blueprint.route("/tic-api/recordings/<int:recording_id>/cso", methods=["GET"])
+@stream_key_required
+@skip_stream_connect_audit
+async def api_recording_cso_stream(recording_id: int):
+    return await _stream_cso_vod_route(
+        lambda config: _resolve_recording_cso_request(config, int(recording_id)),
+        f"/tic-api/recordings/{int(recording_id)}/cso",
+    )
 
 
 @blueprint.route("/tic-api/recordings/<int:recording_id>/hls.m3u8", methods=["GET", "HEAD"])

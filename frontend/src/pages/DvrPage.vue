@@ -472,6 +472,12 @@ import {defineComponent} from 'vue';
 import axios from 'axios';
 import {useUiStore} from 'stores/ui';
 import {useVideoStore} from 'stores/video';
+import {parsePreviewCandidatesList} from 'src/utils/previewCandidates';
+import {
+  buildVodPlaybackProfiles,
+  ORIGINAL_BROWSER_VOD_PROFILE,
+  resolveVodPlayerStreamType,
+} from 'src/utils/vodPlaybackProfiles';
 import {
   TicButton,
   TicActionButton,
@@ -1006,13 +1012,55 @@ export default defineComponent({
       const status = String(recording?.status || '').toLowerCase();
       return status === 'recording' || status.includes('running') || status.includes('in_progress');
     },
-    playRecording(recording) {
+    appendPlaybackProfile(url, profileId) {
+      if (!url) {
+        return '';
+      }
+      try {
+        const parsed = new URL(url, window.location.origin);
+        if (profileId) {
+          parsed.searchParams.set('profile', profileId);
+        } else {
+          parsed.searchParams.delete('profile');
+        }
+        return parsed.toString();
+      } catch (error) {
+        console.warn('Failed to append playback profile', error);
+        return url;
+      }
+    },
+    async playRecording(recording) {
       if (!recording?.id) return;
-      this.videoStore.showPlayer({
-        url: `/tic-api/recordings/${recording.id}/hls.m3u8`,
-        title: recording.title || 'Recording',
-        type: 'application/x-mpegURL',
-      });
+      try {
+        const response = await axios.get(`/tic-api/recordings/${recording.id}/preview`);
+        const payload = response?.data || {};
+        const candidates = parsePreviewCandidatesList(payload);
+        const primaryCandidate = candidates[0];
+        const previewUrl = primaryCandidate?.url || '';
+        if (!payload?.success || !previewUrl) {
+          throw new Error('Playback URL unavailable');
+        }
+        const sourceResolution = primaryCandidate?.sourceResolution || payload?.source_resolution || null;
+        const durationSeconds = Number(primaryCandidate?.durationSeconds || payload?.duration_seconds || 0) || null;
+        const streamType = resolveVodPlayerStreamType(primaryCandidate?.streamType || payload?.stream_type);
+        const playbackProfiles = buildVodPlaybackProfiles(sourceResolution, streamType, true);
+        const initialProfile = playbackProfiles[0] || null;
+        const playbackUrl = this.appendPlaybackProfile(previewUrl, initialProfile?.profile || '');
+        this.videoStore.showPlayer({
+          url: playbackUrl,
+          candidates,
+          title: recording.title || 'Recording',
+          type: initialProfile?.streamType || streamType,
+          seekMode: initialProfile?.seekMode || 'native',
+          playbackProfiles,
+          selectedPlaybackProfile: initialProfile?.id || ORIGINAL_BROWSER_VOD_PROFILE,
+          previewMetadataUrl: previewUrl,
+          sourceResolution,
+          durationSeconds,
+        });
+      } catch {
+        this.$q.notify({color: 'negative', message: 'Failed to start recording playback'});
+      }
     },
     async cancelScheduledRecording(id) {
       try {

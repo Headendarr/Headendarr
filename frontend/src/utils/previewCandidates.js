@@ -1,4 +1,4 @@
-export function normalisePreviewCandidates(payload) {
+export function parsePreviewCandidatesList(payload) {
   const rawCandidates = Array.isArray(payload?.candidates) ?
     payload.candidates :
     [];
@@ -53,5 +53,5 @@ export function normalisePreviewCandidates(payload) {
 }
 
 export function primaryPreviewCandidate(payload) {
-  return normalisePreviewCandidates(payload)[0] || null;
+  return parsePreviewCandidatesList(payload)[0] || null;
 }

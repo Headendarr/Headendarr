@@ -68,6 +68,27 @@ _CONTAINER_PROFILE_MAP = {
     "m3u8": "hls",
     "hls": "hls",
 }
+_CONTAINER_EXTENSION_MAP = {
+    "mpegts": "ts",
+    "ts": "ts",
+    "matroska": "mkv",
+    "mkv": "mkv",
+    "mov": "mp4",
+    "mov,mp4,m4a,3gp,3g2,mj2": "mp4",
+    "mp4": "mp4",
+    "webm": "webm",
+    "hls": "m3u8",
+    "m3u8": "m3u8",
+}
+_STREAM_TYPE_BY_CONTAINER_EXTENSION = {
+    "mkv": "mkv",
+    "mp4": "mp4",
+    "ts": "ts",
+    "mpegts": "mpegts",
+    "webm": "webm",
+    "hls": "hls",
+    "m3u8": "hls",
+}
 _SAFE_VOD_SOURCE_CONTAINERS = {"mp4", "mkv", "matroska"}
 _FORCED_SAFE_VOD_PROFILE_BY_CONTAINER = {
     "avi": "matroska",
@@ -516,18 +537,30 @@ def _profile_for_container(container_extension: str) -> str:
     return _CONTAINER_PROFILE_MAP.get(clean_text(container_extension).lower(), "mpegts")
 
 
+def container_extension_from_container_name(container_name: str, fallback_extension: str = "ts") -> str:
+    extension = _CONTAINER_EXTENSION_MAP.get(clean_text(container_name).lower())
+    if extension:
+        return extension
+    return clean_text(fallback_extension).lower() or "ts"
+
+
+def container_extension_from_media_shape(media_shape: dict[str, object] | None, fallback_extension: str = "ts") -> str:
+    container_name = clean_text((media_shape or {}).get("container"))
+    return container_extension_from_container_name(container_name, fallback_extension=fallback_extension)
+
+
+def stream_type_from_container_extension(container_extension: str, fallback_stream_type: str = "auto") -> str:
+    stream_type = _STREAM_TYPE_BY_CONTAINER_EXTENSION.get(clean_key(container_extension))
+    if stream_type:
+        return stream_type
+    return clean_key(fallback_stream_type) or "auto"
+
+
 def _profile_extension(profile_id: str, fallback_extension: str = "") -> str:
     definitions = {item["key"]: item for item in get_stream_profile_definitions()}
     profile = definitions.get(profile_id or "")
     container = clean_text((profile or {}).get("container"))
-    mapping = {
-        "mpegts": "ts",
-        "matroska": "mkv",
-        "mp4": "mp4",
-        "webm": "webm",
-        "hls": "m3u8",
-    }
-    return mapping.get(container, clean_text(fallback_extension).lower() or "ts")
+    return container_extension_from_container_name(container, fallback_extension=fallback_extension)
 
 
 def _resolve_group_output_profile_id(group_profile_id: str | None, source_container_extension: str) -> str:
@@ -2654,24 +2687,12 @@ async def _await_vod_media_probe_result(
 
 def _stream_type_from_media_shape(media_shape: dict[str, object] | None, container_extension: str = "") -> str:
     extension = clean_key(container_extension)
-    if extension == "mkv":
-        return "mkv"
-    if extension in {"mp4", "ts", "webm", "hls"}:
-        return extension
+    mapped_stream_type = stream_type_from_container_extension(extension, fallback_stream_type="")
+    if mapped_stream_type:
+        return mapped_stream_type
 
-    container = clean_key((media_shape or {}).get("container"))
-    container_map = {
-        "mov": "mp4",
-        "mp4": "mp4",
-        "matroska": "mkv",
-        "mkv": "mkv",
-        "mpegts": "mpegts",
-        "ts": "mpegts",
-        "hls": "hls",
-        "m3u8": "hls",
-        "webm": "webm",
-    }
-    return container_map.get(container, extension or "auto")
+    fallback_extension = container_extension_from_media_shape(media_shape, fallback_extension=extension or "")
+    return stream_type_from_container_extension(fallback_extension, fallback_stream_type=extension or "auto")
 
 
 async def _refresh_vod_media_shape_if_needed(

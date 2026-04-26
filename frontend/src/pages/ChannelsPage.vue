@@ -573,7 +573,7 @@
 <script>
 import {defineComponent} from 'vue';
 import axios from 'axios';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import draggable from 'vuedraggable';
 import {useSettingsStore} from 'stores/settings';
 import {useUiStore} from 'stores/ui';
@@ -1163,7 +1163,7 @@ export default defineComponent({
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response.data.success) {
-          const candidates = normalisePreviewCandidates(response.data);
+          const candidates = parsePreviewCandidatesList(response.data);
           const primaryCandidate = candidates[0];
           if (!primaryCandidate) {
             this.$q.notify({color: 'negative', message: 'No preview sources available'});

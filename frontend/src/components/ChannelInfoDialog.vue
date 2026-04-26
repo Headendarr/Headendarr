@@ -406,7 +406,7 @@
 
 <script>
 import axios from 'axios';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {copyToClipboard} from 'quasar';
 import draggable from 'vuedraggable';
 import {useSettingsStore} from 'stores/settings';
@@ -1101,7 +1101,7 @@ export default {
       if (options.usePlaylistStream || options.useChannelSource) {
         try {
           const preview = await this.resolvePreviewUrl(stream, options);
-          const candidates = normalisePreviewCandidates(preview);
+          const candidates = parsePreviewCandidatesList(preview);
           const primaryCandidate = candidates[0];
           if (primaryCandidate?.url) {
             this.videoStore.showPlayer({

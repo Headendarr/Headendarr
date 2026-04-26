@@ -601,12 +601,18 @@ function updatePlaybackUrl(url, profileId, startSeconds = null) {
   }
 }
 
+function isCsoVodLikePlaybackUrl(url) {
+  const playbackUrl = String(url || '');
+  return playbackUrl.includes('/tic-api/cso/vod/') ||
+    (playbackUrl.includes('/tic-api/recordings/') && playbackUrl.includes('/cso'));
+}
+
 function usesRestartBasedSeek(url = videoStore.streamUrl, forcedSeekMode = videoStore.seekMode) {
   const seekMode = String(forcedSeekMode || '').toLowerCase();
   if (seekMode !== 'hls_restart' && seekMode !== 'time_restart') {
     return false;
   }
-  return String(url || '').includes('/tic-api/cso/vod/');
+  return isCsoVodLikePlaybackUrl(url);
 }
 
 function clearVodPreviewMetadataRetry() {

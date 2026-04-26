@@ -197,7 +197,7 @@
 
 <script>
 import axios from 'axios';
-import {normalisePreviewCandidates, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
 import {copyToClipboard} from 'quasar';
 import {useVideoStore} from 'stores/video';
 import {
@@ -449,7 +449,7 @@ export default {
       try {
         const response = await axios.get(`/tic-api/channels/${channel.id}/preview`);
         if (response?.data?.success) {
-          const candidates = normalisePreviewCandidates(response.data);
+          const candidates = parsePreviewCandidatesList(response.data);
           const primaryCandidate = candidates[0];
           if (!primaryCandidate) {
             this.$q.notify({color: 'negative', message: 'No preview sources available'});
