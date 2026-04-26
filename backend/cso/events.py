@@ -66,8 +66,11 @@ async def emit_channel_stream_event(
                 async with Session() as session:
                     item = await session.get(VodCategoryItem, event_item_id)
                 if item is not None:
+                    event_item_id = item.id
                     event_category_id = item.category_id
-            return event_category_id, event_item_id or None, None
+                else:
+                    event_item_id = None
+            return event_category_id, event_item_id, None
 
         if event_source.source_type == "vod_episode":
             event_episode_id = convert_to_int(event_source.internal_id, 0)
@@ -79,10 +82,14 @@ async def emit_channel_stream_event(
                         if episode is not None and int(episode.category_item_id) > 0
                         else None
                     )
-                if item is not None:
+                if item is not None and episode is not None:
                     event_item_id = item.id
                     event_category_id = item.category_id
-            return event_category_id, event_item_id, event_episode_id or None
+                    event_episode_id = episode.id
+                else:
+                    event_item_id = None
+                    event_episode_id = None
+            return event_category_id, event_item_id, event_episode_id
 
         return event_category_id, event_item_id, event_episode_id
 
