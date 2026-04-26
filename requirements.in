@@ -25,6 +25,9 @@ Quart~=0.20
     #   Import example:     N/A
 
 # -- Extensions
+sentry-sdk[quart]~=2.58
+    #   Reason:             Used to wrap the python library set and send trace logs to Sentry
+    #   Import example:     N/A (Executed from bin directory)
 quart-flask-patch~=0.3
     #   Reason:             Quart-Flask-Patch is a Quart extension that patches Quart to work with Flask extensions.
     #   Import example:     import quart_flask_patch

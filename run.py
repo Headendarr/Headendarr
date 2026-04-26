@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+import asyncio
+import json
+import logging
+import os
+from typing import TypedDict
+from urllib.parse import urlparse
+
 from backend.api.tasks import (
     scheduler,
     update_playlists,
@@ -25,8 +32,158 @@ from backend.cso import cleanup_vod_proxy_cache, vod_cache_manager
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
 from backend.auth import cleanup_stream_audit_logs, audit_stream_event
 from backend import create_app, config
-import asyncio
-import os
+
+
+bootstrap_logger = logging.getLogger("headendarr.bootstrap")
+
+
+class SentryRuntimeConfig(TypedDict):
+    SENTRY_DEBUG: bool
+    SENTRY_DOCKER_IMAGE_TAG: str
+    SENTRY_DSN: str
+    SENTRY_ENVIRONMENT: str
+    SENTRY_HOSTNAME: str | None
+    SENTRY_PROFILES_SAMPLE_RATE: float
+    SENTRY_RELEASE: str
+    SENTRY_SERVICE_NAME: str
+    SENTRY_TRACES_SAMPLE_RATE: float
+    enable_tracing: bool
+
+
+def _is_valid_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _parse_sentry_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _parse_sentry_float(value: object, default: float) -> float | None:
+    if value in (None, ""):
+        return default
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_sentry_json_config() -> dict[str, object]:
+    raw_sentry_config = os.environ.get("SENTRY_CONFIG", "")
+    if len(raw_sentry_config) <= 10:
+        return {}
+
+    try:
+        parsed_sentry_config = json.loads(raw_sentry_config)
+    except json.JSONDecodeError:
+        bootstrap_logger.warning("Ignoring SENTRY_CONFIG because it is not valid JSON")
+        return {}
+
+    if not isinstance(parsed_sentry_config, dict):
+        bootstrap_logger.warning("Ignoring SENTRY_CONFIG because it is not a JSON object")
+        return {}
+
+    return parsed_sentry_config
+
+
+def _load_sentry_config() -> SentryRuntimeConfig | None:
+    parsed_sentry_config = _load_sentry_json_config()
+
+    def _config_value(name: str, default: object = None) -> object:
+        return parsed_sentry_config.get(name, os.environ.get(name, default))
+
+    dsn = _config_value("SENTRY_DSN")
+    if not isinstance(dsn, str) or not _is_valid_url(dsn):
+        if parsed_sentry_config or os.environ.get("SENTRY_DSN"):
+            bootstrap_logger.warning("Ignoring Sentry configuration because SENTRY_DSN is missing or invalid")
+        return None
+
+    traces_sample_rate = _parse_sentry_float(_config_value("SENTRY_TRACES_SAMPLE_RATE"), 0.2)
+    profiles_sample_rate = _parse_sentry_float(_config_value("SENTRY_PROFILES_SAMPLE_RATE"), 0.2)
+    tracing_enabled = (
+        traces_sample_rate is not None
+        and profiles_sample_rate is not None
+        and traces_sample_rate > 0
+        and profiles_sample_rate > 0
+    )
+
+    if not tracing_enabled:
+        bootstrap_logger.warning(
+            "SENTRY_CONFIG tracing disabled because one or more sample rates are missing, invalid, or non-positive"
+        )
+
+    sentry_traces_sample_rate: float = 0.0
+    sentry_profiles_sample_rate: float = 0.0
+    if tracing_enabled:
+        assert traces_sample_rate is not None
+        assert profiles_sample_rate is not None
+        sentry_traces_sample_rate = traces_sample_rate
+        sentry_profiles_sample_rate = profiles_sample_rate
+
+    sentry_runtime_config: SentryRuntimeConfig = {
+        "SENTRY_DEBUG": _parse_sentry_bool(_config_value("SENTRY_DEBUG"), default=False),
+        "SENTRY_DOCKER_IMAGE_TAG": str(_config_value("SENTRY_DOCKER_IMAGE_TAG", "") or ""),
+        "SENTRY_DSN": dsn,
+        "enable_tracing": tracing_enabled,
+        "SENTRY_ENVIRONMENT": str(_config_value("SENTRY_ENVIRONMENT", "production") or "production"),
+        "SENTRY_HOSTNAME": str(_config_value("SENTRY_HOSTNAME", "") or "") or None,
+        "SENTRY_PROFILES_SAMPLE_RATE": sentry_profiles_sample_rate,
+        "SENTRY_RELEASE": str(_config_value("SENTRY_RELEASE", "unknown") or "unknown"),
+        "SENTRY_SERVICE_NAME": str(_config_value("SENTRY_SERVICE_NAME", "headendarr") or "headendarr"),
+        "SENTRY_TRACES_SAMPLE_RATE": sentry_traces_sample_rate,
+    }
+    return sentry_runtime_config
+
+
+def _initialise_sentry():
+    sentry_runtime_config = _load_sentry_config()
+    if not sentry_runtime_config:
+        return
+
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.logging import LoggingIntegration
+        from sentry_sdk.integrations.quart import QuartIntegration
+    except ImportError:
+        bootstrap_logger.warning("SENTRY_CONFIG is set but sentry-sdk with Quart support is not installed")
+        return
+
+    sentry_sdk.init(
+        dsn=sentry_runtime_config["SENTRY_DSN"],
+        debug=sentry_runtime_config["SENTRY_DEBUG"],
+        enable_tracing=sentry_runtime_config["enable_tracing"],
+        environment=sentry_runtime_config["SENTRY_ENVIRONMENT"],
+        integrations=[
+            QuartIntegration(transaction_style="url"),
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        profiles_sample_rate=sentry_runtime_config["SENTRY_PROFILES_SAMPLE_RATE"],
+        release=sentry_runtime_config["SENTRY_RELEASE"],
+        server_name=sentry_runtime_config["SENTRY_HOSTNAME"],
+        traces_sample_rate=sentry_runtime_config["SENTRY_TRACES_SAMPLE_RATE"],
+    )
+
+    sentry_sdk.set_tag("service_name", sentry_runtime_config["SENTRY_SERVICE_NAME"])
+    docker_image_tag = sentry_runtime_config["SENTRY_DOCKER_IMAGE_TAG"]
+    if docker_image_tag:
+        sentry_sdk.set_tag("docker_image_tag", docker_image_tag)
+
+
+_initialise_sentry()
 
 # Create app
 app = create_app()
@@ -255,7 +412,7 @@ async def hourly_playlist_check():
         task_broker = await TaskQueueBroker.get_instance()
         await task_broker.add_task(
             {
-                "name": f"Updating all playlists",
+                "name": "Updating all playlists",
                 "function": update_playlists,
                 "args": [app],
             },
