@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   COMPOSE_FILE: ./docker/docker-compose.dev-aio.yml
+  MIGRATION_COMPOSE_FILE: ./docker/docker-compose.dev-migrate.yml
 
 tasks:
   init:
@@ -66,7 +67,7 @@ tasks:
       - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true headendarr
 
   backend:migrate:create:
-    desc: "Create a new Alembic migration from the running backend (tic) container. Usage: task backend:migrate:create -- add_descriptive_message"
+    desc: "Create a new Alembic migration from a clean disposable backend (tic) container. Usage: task backend:migrate:create -- add_descriptive_message"
     cmds:
       - |
         migration_message="{{.CLI_ARGS}}"
@@ -75,7 +76,25 @@ tasks:
           echo "Usage: task backend:migrate:create -- add_descriptive_message"
           exit 1
         fi
-        docker compose -f {{.COMPOSE_FILE}} exec -w /app headendarr /var/venv-docker/bin/python -m alembic revision --autogenerate -m "$migration_message"
+        docker compose -f {{.MIGRATION_COMPOSE_FILE}} down -v --remove-orphans >/dev/null 2>&1 || true
+        docker compose -f {{.MIGRATION_COMPOSE_FILE}} up -d headendarr-migrate
+
+        ready=0
+        for _ in $(seq 1 60); do
+          if docker compose -f {{.MIGRATION_COMPOSE_FILE}} exec -T -w /app headendarr-migrate /var/venv-docker/bin/python -m alembic current >/dev/null 2>&1; then
+            ready=1
+            break
+          fi
+          sleep 2
+        done
+        if [ "$ready" -ne 1 ]; then
+          echo "Error: disposable migration container did not become ready in time."
+          docker compose -f {{.MIGRATION_COMPOSE_FILE}} logs --tail=120 headendarr-migrate || true
+          exit 1
+        fi
+
+        docker compose -f {{.MIGRATION_COMPOSE_FILE}} exec -T -w /app headendarr-migrate /var/venv-docker/bin/python -m alembic revision --autogenerate -m "$migration_message"
+        docker compose -f {{.MIGRATION_COMPOSE_FILE}} down -v --remove-orphans >/dev/null 2>&1 || true
 
   backend:shell:
     desc: Start backend (tic) service in dev AIO stack (detached)

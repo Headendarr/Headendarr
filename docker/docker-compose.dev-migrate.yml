@@ -1,0 +1,47 @@
+---
+networks:
+  private-net:
+
+services:
+  headendarr-migrate:
+    image: ghcr.io/headendarr/headendarr:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        VERSION: "UNKNOWN"
+        BUILD_DATE: "NOW"
+        BASE_IMAGE: "ghcr.io/tvheadend/tvheadend:edge-debian"
+    networks:
+      - private-net
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Pacific/Auckland
+      - SKIP_MIGRATIONS=false
+      - RUN_PIP_INSTALL=false
+      - ENABLE_APP_DEBUGGING=false
+      - ENABLE_SQLALCHEMY_DEBUGGING=false
+      - ENABLE_APP_HOT_RELOAD=false
+      - ENABLE_CSO_INGEST_COMMAND_DEBUG_LOGGING=false
+      - ENABLE_CSO_SLATE_COMMAND_DEBUG_LOGGING=false
+      - ENABLE_CSO_OUTPUT_COMMAND_DEBUG_LOGGING=false
+      - ENABLE_CSO_PRESERVE_SEGMENT_CACHE=false
+    volumes:
+      - migration-config:/config
+      - migration-recordings:/recordings
+      - migration-timeshift:/timeshift
+      - migration-library:/library
+      - migration-cache:/tmp/cache
+      - ../:/app
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  migration-config:
+  migration-recordings:
+  migration-timeshift:
+  migration-library:
+  migration-cache:
