@@ -146,6 +146,57 @@
           <div class="row q-gutter-sm justify-end">
             <TicButton icon="add" label="Add Category" color="primary" @click="selectCategoriesFromList" />
           </div>
+
+          <q-separator />
+
+          <h5 class="q-my-none">Content Rules</h5>
+
+          <div class="text-caption text-grey-7">
+            Add include or exclude rules to filter titles across all selected upstream source categories.
+          </div>
+
+          <q-list bordered separator class="rounded-borders">
+            <q-item v-for="(rule, index) in contentTitleRules" :key="rule.local_key">
+              <q-item-section class="q-gutter-md">
+                <TicSelectInput
+                  v-model="rule.operator"
+                  :options="contentRuleOperatorOptions"
+                  option-label="label"
+                  option-value="value"
+                  :emit-value="true"
+                  :map-options="true"
+                  :clearable="false"
+                  :behavior="$q.screen.lt.md ? 'dialog' : 'menu'"
+                  label="Rule Action"
+                />
+
+                <TicTextInput
+                  v-model="rule.value"
+                  :label="contentRuleValueLabel"
+                  description="Case-insensitive title match. Example: `Stargate`, `2160p`, or `[FR]`."
+                />
+              </q-item-section>
+
+              <q-item-section side top>
+                <TicButton
+                  icon="delete"
+                  label="Remove"
+                  color="negative"
+                  variant="text"
+                  @click="removeContentTitleRule(index)"
+                />
+              </q-item-section>
+            </q-item>
+          </q-list>
+
+          <div class="row justify-end">
+            <TicButton
+              icon="add"
+              label="Add Content Rule"
+              color="primary"
+              @click="addContentTitleRule"
+            />
+          </div>
         </template>
       </q-form>
     </div>
@@ -162,6 +213,7 @@ import {
   TicConfirmDialog,
   TicDialogWindow,
   TicListActions,
+  TicSelectInput,
   TicTextInput,
   TicToggleInput,
 } from 'components/ui';
@@ -174,6 +226,7 @@ export default {
     TicButton,
     TicDialogWindow,
     TicListActions,
+    TicSelectInput,
     TicTextInput,
     TicToggleInput,
   },
@@ -195,12 +248,14 @@ export default {
       exposeHttpLibrary: false,
       strmBaseUrl: '',
       selectedCategories: [],
+      contentTitleRules: [],
       availableCategories: [],
       profileDefinitions: [],
       profileSettings: {},
       existingCategoryNames: [],
       eligibleStrmUserCount: 0,
       nextCategoryKey: 1,
+      nextContentRuleKey: 1,
       categoryActions: [
         {id: 'remove', icon: 'delete', label: 'Remove category', color: 'negative'},
       ],
@@ -268,6 +323,15 @@ export default {
     showNoEligibleStrmUsersWarning() {
       return this.generateStrmFiles && Number(this.eligibleStrmUserCount || 0) <= 0;
     },
+    contentRuleOperatorOptions() {
+      return [
+        {label: 'Include', value: 'include'},
+        {label: 'Exclude', value: 'exclude'},
+      ];
+    },
+    contentRuleValueLabel() {
+      return this.contentType === 'series' ? 'Series Title Contains' : 'Movie Title Contains';
+    },
   },
   methods: {
     show({
@@ -291,6 +355,7 @@ export default {
       this.profileDefinitions = Array.isArray(profileDefinitions) ? structuredClone(profileDefinitions) : [];
       this.profileSettings = structuredClone(profileSettings || {});
       this.nextCategoryKey = 1;
+      this.nextContentRuleKey = 1;
 
       if (category) {
         this.editingCategoryId = category.id;
@@ -312,6 +377,11 @@ export default {
           strip_title_suffixes: this.formatStripRules(categoryItem.strip_title_suffixes),
           config_open: false,
         }));
+        this.contentTitleRules = (category.content_title_rules || []).map((rule) => this.withContentRuleKey({
+          operator: rule.operator || 'include',
+          rule_type: this.contentRuleType(),
+          value: rule.value || '',
+        }));
       } else {
         this.editingCategoryId = null;
         this.enabled = true;
@@ -322,6 +392,7 @@ export default {
         this.exposeHttpLibrary = false;
         this.strmBaseUrl = '';
         this.selectedCategories = [];
+        this.contentTitleRules = [];
       }
 
       this.captureInitialState();
@@ -376,8 +447,20 @@ export default {
       this.nextCategoryKey += 1;
       return {...category, local_key: key, config_open: !!category.config_open};
     },
+    withContentRuleKey(rule) {
+      const currentKey = rule.local_key || rule.id;
+      if (currentKey) {
+        return {...rule, local_key: String(currentKey)};
+      }
+      const key = `content-rule-${this.nextContentRuleKey}`;
+      this.nextContentRuleKey += 1;
+      return {...rule, local_key: key};
+    },
     captureInitialState() {
       this.initialStateSignature = this.currentStateSignature();
+    },
+    contentRuleType() {
+      return this.contentType === 'series' ? 'series_contains' : 'title_contains';
     },
     currentStateSignature() {
       return JSON.stringify({
@@ -388,6 +471,10 @@ export default {
         generateStrmFiles: this.generateStrmFiles,
         exposeHttpLibrary: this.exposeHttpLibrary,
         strmBaseUrl: this.strmBaseUrl,
+        contentTitleRules: (this.contentTitleRules || []).map((rule) => ({
+          operator: rule.operator || 'include',
+          value: rule.value || '',
+        })),
         selectedCategories: (this.selectedCategories || []).map((category) => ({
           id: category.id,
           priority: Number(category.priority || 0),
@@ -420,6 +507,16 @@ export default {
     splitStripRules(value) {
       return String(value || '').split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
     },
+    addContentTitleRule() {
+      this.contentTitleRules.push(this.withContentRuleKey({
+        operator: 'include',
+        rule_type: this.contentRuleType(),
+        value: '',
+      }));
+    },
+    removeContentTitleRule(index) {
+      this.contentTitleRules.splice(index, 1);
+    },
     hasDuplicateCategoryName() {
       const targetName = String(this.name || '').trim().toLowerCase();
       if (!targetName) {
@@ -444,6 +541,11 @@ export default {
         generate_strm_files: !!this.generateStrmFiles,
         expose_http_library: !!this.exposeHttpLibrary,
         strm_base_url: String(this.strmBaseUrl || '').trim(),
+        content_title_rules: (this.contentTitleRules || []).map((rule) => ({
+          operator: rule.operator || 'include',
+          rule_type: this.contentRuleType(),
+          value: String(rule.value || '').trim(),
+        })).filter((rule) => rule.value),
         category_ids: categoryIds,
         category_configs: (this.selectedCategories || []).map((category) => ({
           category_id: category.id,

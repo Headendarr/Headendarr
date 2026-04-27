@@ -394,6 +394,84 @@ def _store_strip_config(tokens: list[str] | None) -> str | None:
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _content_title_rule_kind(content_type: object) -> str:
+    return "series_contains" if clean_text(content_type).lower() == VOD_KIND_SERIES else "title_contains"
+
+
+def _clean_content_title_rule(rule: object, default_kind: str) -> dict[str, object] | None:
+    if not isinstance(rule, dict):
+        return None
+    value = clean_text(rule.get("value"))
+    if not value:
+        return None
+    operator = clean_text(rule.get("operator") or "include").lower() or "include"
+    if operator not in {"include", "exclude"}:
+        operator = "include"
+    rule_type = clean_text(rule.get("rule_type") or default_kind).lower() or default_kind
+    if rule_type != default_kind:
+        rule_type = default_kind
+    return {
+        "operator": operator,
+        "rule_type": rule_type,
+        "value": value,
+        "enabled": bool(rule.get("enabled", True)),
+    }
+
+
+def _read_content_title_rules(raw_value: object, content_type: object) -> list[dict[str, object]]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        parsed_rules = raw_value
+    else:
+        text = clean_text(raw_value)
+        if not text:
+            return []
+        try:
+            parsed_rules = json.loads(text)
+        except Exception:
+            parsed_rules = None
+    if not isinstance(parsed_rules, list):
+        return []
+    default_kind = _content_title_rule_kind(content_type)
+    cleaned_rules = []
+    for rule in parsed_rules:
+        cleaned_rule = _clean_content_title_rule(rule, default_kind)
+        if cleaned_rule is not None:
+            cleaned_rules.append(cleaned_rule)
+    return cleaned_rules
+
+
+def _store_content_title_rules(rules: list[dict[str, object]] | None, content_type: object) -> str | None:
+    cleaned_rules = _read_content_title_rules(rules or [], content_type)
+    if not cleaned_rules:
+        return None
+    return json.dumps(cleaned_rules, ensure_ascii=False)
+
+
+def _item_matches_content_title_rule(item: XcVodItem, rule: dict[str, object]) -> bool:
+    title = clean_text(getattr(item, "title", "")).casefold()
+    value = clean_text(rule.get("value")).casefold()
+    if not title or not value:
+        return False
+    return value in title
+
+
+def _source_item_matches_content_title_rules(item: XcVodItem, rules: list[dict[str, object]]) -> bool:
+    enabled_rules = [rule for rule in (rules or []) if rule.get("enabled")]
+    if not enabled_rules:
+        return True
+
+    include_rules = [rule for rule in enabled_rules if rule.get("operator") != "exclude"]
+    exclude_rules = [rule for rule in enabled_rules if rule.get("operator") == "exclude"]
+
+    if include_rules and not any(_item_matches_content_title_rule(item, rule) for rule in include_rules):
+        return False
+    if any(_item_matches_content_title_rule(item, rule) for rule in exclude_rules):
+        return False
+    return True
+
+
 def _group_category_strip_prefixes(group_category: VodCategoryXcCategory | None) -> list[str]:
     return _strip_config_tokens(getattr(group_category, "strip_title_prefixes", None))
 
@@ -2224,6 +2302,7 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True) -> boo
             category_ids = _ordered_vod_category_ids(ordered_links)
             if not category_ids:
                 return True
+            content_title_rules = _read_content_title_rules(group.content_title_rules, group.content_type)
             strip_rules_by_category_id = {
                 int(link.xc_category_id): (
                     _group_category_strip_prefixes(link),
@@ -2249,6 +2328,8 @@ async def rebuild_vod_group_cache(group_id: int, queue_sync: bool = True) -> boo
             )
             buckets = {}
             for source_item in source_items:
+                if not _source_item_matches_content_title_rules(source_item, content_title_rules):
+                    continue
                 strip_prefixes, strip_suffixes = strip_rules_by_category_id.get(
                     int(source_item.category_id or 0), ([], [])
                 )
@@ -2438,6 +2519,7 @@ async def list_vod_groups(content_type: str) -> list[dict[str, object]]:
                     "generate_strm_files": bool(group.generate_strm_files),
                     "expose_http_library": bool(group.expose_http_library),
                     "strm_base_url": group.strm_base_url or "",
+                    "content_title_rules": _read_content_title_rules(group.content_title_rules, group.content_type),
                     "item_count": int(count_result.scalar() or 0),
                     "categories": [
                         {
@@ -3287,6 +3369,7 @@ async def create_vod_group(payload: dict[str, object]) -> int:
     category_ids = [int(item) for item in (payload.get("category_ids") or []) if str(item).isdigit()]
     raw_category_configs = payload.get("category_configs") or []
     category_config_map = _build_category_config_map(raw_category_configs)
+    content_title_rules = _store_content_title_rules(payload.get("content_title_rules") or [], content_type)
     async with Session() as session:
         async with session.begin():
             group = VodCategory(
@@ -3298,6 +3381,7 @@ async def create_vod_group(payload: dict[str, object]) -> int:
                 generate_strm_files=bool(payload.get("generate_strm_files", False)),
                 expose_http_library=bool(payload.get("expose_http_library", False)),
                 strm_base_url=clean_text(payload.get("strm_base_url")) or None,
+                content_title_rules=content_title_rules,
             )
             session.add(group)
             await session.flush()
@@ -3340,6 +3424,11 @@ async def update_vod_group(group_id: int, payload: dict[str, object]) -> bool:
                 group.expose_http_library = bool(payload.get("expose_http_library"))
             if "strm_base_url" in payload:
                 group.strm_base_url = clean_text(payload.get("strm_base_url")) or None
+            if "content_title_rules" in payload:
+                group.content_title_rules = _store_content_title_rules(
+                    payload.get("content_title_rules") or [],
+                    group.content_type,
+                )
             if "category_ids" in payload:
                 await session.execute(
                     delete(VodCategoryXcCategory).where(VodCategoryXcCategory.category_id == int(group_id))

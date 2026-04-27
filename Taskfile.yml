@@ -65,6 +65,18 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} run --rm -e SKIP_MIGRATIONS=true -e PRINT_CURRENT_MIGRATION=true headendarr
 
+  backend:migrate:create:
+    desc: "Create a new Alembic migration from the running backend (tic) container. Usage: task backend:migrate:create -- add_descriptive_message"
+    cmds:
+      - |
+        migration_message="{{.CLI_ARGS}}"
+        if [ -z "$migration_message" ]; then
+          echo "Error: migration message is required."
+          echo "Usage: task backend:migrate:create -- add_descriptive_message"
+          exit 1
+        fi
+        docker compose -f {{.COMPOSE_FILE}} exec -w /app headendarr /var/venv-docker/bin/python -m alembic revision --autogenerate -m "$migration_message"
+
   backend:shell:
     desc: Start backend (tic) service in dev AIO stack (detached)
     cmds:

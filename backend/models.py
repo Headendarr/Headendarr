@@ -328,6 +328,7 @@ class VodCategory(Base):
     generate_strm_files = Column(Boolean, nullable=False, default=False)
     expose_http_library = Column(Boolean, nullable=False, default=False)
     strm_base_url = Column(String(1024), nullable=True)
+    content_title_rules = Column(Text, nullable=True)
 
     xc_category_links = relationship("VodCategoryXcCategory", back_populates="category", cascade="all, delete-orphan")
     item_cache = relationship("VodCategoryItem", back_populates="category", cascade="all, delete-orphan")
