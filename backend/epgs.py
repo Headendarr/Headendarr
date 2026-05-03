@@ -1265,13 +1265,14 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
 async def import_epg_data(config, epg_id):
     epg = await read_config_one_epg(epg_id, config=config)
     settings = config.read_settings()
+    source_url = epg.get("url")
     # Fetch a new local cached copy of the EPG from either HTTP(S) or a local executable.
-    logger.info("Fetching updated XMLTV file for EPG #%s from source - '%s'", epg_id, epg["url"])
+    logger.info("Fetching updated XMLTV file for EPG #%s from source - '%s'", epg_id, source_url)
     attempt_ts = int(time.time())
+    xmltv_file = os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml")
     try:
         start_time = time.time()
-        xmltv_file = os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml")
-        await download_xmltv_epg(settings, epg["url"], xmltv_file, epg.get("user_agent"))
+        await download_xmltv_epg(settings, source_url, xmltv_file, epg.get("user_agent"))
         execution_time = time.time() - start_time
         logger.info("Updated XMLTV file for EPG #%s was cached in '%s' seconds", epg_id, int(execution_time))
         # Read and save EPG data to DB (offloaded to worker thread)
@@ -1297,21 +1298,28 @@ async def import_epg_data(config, epg_id):
                 "http_status": None,
                 "last_attempt_at": attempt_ts,
                 "last_success_at": int(time.time()),
-                "source_url": epg.get("url"),
+                "source_url": source_url,
             },
         )
     except Exception as exc:
+        error_text = str(exc).strip() or repr(exc)
         _set_epg_health(
             config,
             epg_id,
             {
                 "status": "error",
-                "error": str(exc),
+                "error": error_text,
                 "http_status": getattr(exc, "status", None),
                 "last_attempt_at": attempt_ts,
                 "last_failure_at": int(time.time()),
-                "source_url": epg.get("url"),
+                "source_url": source_url,
             },
+        )
+        logger.exception(
+            "Failed to import EPG data for EPG ID %s from source '%s' into cache file '%s'",
+            epg_id,
+            source_url,
+            xmltv_file,
         )
         raise
 
@@ -1358,8 +1366,8 @@ async def import_epg_data_for_all_epgs(config):
         try:
             await import_epg_data(config, epg_id)
             updated_count += 1
-        except Exception as e:
-            logger.error(f"Failed to import EPG data for EPG ID {epg_id}, continuing to next. Error: {e}")
+        except Exception:
+            logger.warning("Failed to import EPG data for EPG ID %s, continuing to next", epg_id)
 
     logger.info(
         "EPG update check complete updated=%s skipped_not_due=%s skipped_off=%s",
