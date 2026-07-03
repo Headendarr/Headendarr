@@ -50,6 +50,75 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} build headendarr
 
+  backend:_quality:
+    internal: true
+    deps: [init]
+    requires:
+      vars: [RUFF_ACTION]
+    cmds:
+      - |
+        docker compose -f {{.COMPOSE_FILE}} run --rm --no-deps --entrypoint="" --user 1000:1000 \
+          -v ./temp/cache/venv-backend:/var/venv-temp -w /app headendarr \
+          bash -c '
+            set -e
+            if [ ! -f /var/venv-temp/bin/activate ]; then
+              python3 -m venv --without-pip /var/venv-temp
+              . /var/venv-temp/bin/activate
+              curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+            fi
+            . /var/venv-temp/bin/activate
+            pip install --disable-pip-version-check -r ./requirements-dev.txt
+            export RUFF_CACHE_DIR=/var/venv-temp/ruff-cache
+
+            action="$1"
+            shift
+            if [ "$#" -eq 0 ]; then
+              set -- .
+            fi
+            case "$action" in
+              lint)
+                ruff check "$@"
+                ;;
+              format-check)
+                ruff format --check "$@"
+                ;;
+              check)
+                status=0
+                ruff format --check "$@" || status=1
+                ruff check "$@" || status=1
+                exit "$status"
+                ;;
+              *)
+                echo "Unknown backend quality action: $action" >&2
+                exit 2
+                ;;
+            esac
+          ' -- "{{.RUFF_ACTION}}" {{.QUALITY_ARGS}}
+
+  backend:lint:
+    desc: "Run Ruff lint checks. Defaults to all files; pass paths after -- to limit the check."
+    cmds:
+      - task: backend:_quality
+        vars:
+          RUFF_ACTION: lint
+          QUALITY_ARGS: "{{.CLI_ARGS}}"
+
+  backend:format:check:
+    desc: "Check Ruff formatting. Defaults to all files; pass paths after -- to limit the check."
+    cmds:
+      - task: backend:_quality
+        vars:
+          RUFF_ACTION: format-check
+          QUALITY_ARGS: "{{.CLI_ARGS}}"
+
+  backend:check:
+    desc: "Run Ruff format and lint checks. Defaults to all files; pass paths after -- to limit the check."
+    cmds:
+      - task: backend:_quality
+        vars:
+          RUFF_ACTION: check
+          QUALITY_ARGS: "{{.CLI_ARGS}}"
+
   backend:upgrade:
     desc: Upgrade backend Python dependencies using pip-compile and pip-audit
     deps: [init]

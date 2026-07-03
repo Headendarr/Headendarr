@@ -14,6 +14,8 @@ from werkzeug.local import LocalProxy
 
 from .types import CsoStreamPlan
 
+logger = logging.getLogger("cso")
+
 
 def current_quart_app_object() -> Quart:
     from quart import current_app
@@ -138,6 +140,52 @@ class CsoRuntimeManager:
         await self.output.cleanup_idle_streams(idle_timeout=idle_timeout)
         await self.slate.cleanup_idle_streams(idle_timeout=idle_timeout)
         await self.ingest.cleanup_idle_streams(idle_timeout=idle_timeout)
+        metrics = await self.runtime_metrics()
+        logger.info(
+            "CSO lifecycle metrics ingest_sessions=%s slate_sessions=%s output_sessions=%s "
+            "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s",
+            metrics["ingest_sessions"],
+            metrics["slate_sessions"],
+            metrics["output_sessions"],
+            metrics["ingest_subscribers"],
+            metrics["slate_subscribers"],
+            metrics["output_clients"],
+            metrics["total_queued_bytes"],
+        )
+
+    async def runtime_metrics(self):
+        session_groups = {}
+        for name, session_map in (("ingest", self.ingest), ("slate", self.slate), ("output", self.output)):
+            async with session_map.lock:
+                session_groups[name] = list(session_map.sessions.values())
+
+        metrics = {
+            "ingest_sessions": len(session_groups["ingest"]),
+            "slate_sessions": len(session_groups["slate"]),
+            "output_sessions": len(session_groups["output"]),
+            "ingest_subscribers": 0,
+            "slate_subscribers": 0,
+            "output_clients": 0,
+            "total_queued_bytes": 0,
+        }
+        queues = []
+        for group_name, sessions in session_groups.items():
+            for session in sessions:
+                async with session.lock:
+                    subscribers = list((getattr(session, "subscribers", None) or {}).values())
+                    clients = list((getattr(session, "clients", None) or {}).values())
+                if group_name == "ingest":
+                    metrics["ingest_subscribers"] += len(subscribers)
+                elif group_name == "slate":
+                    metrics["slate_subscribers"] += len(subscribers)
+                elif group_name == "output":
+                    metrics["output_clients"] += len(clients)
+                queues.extend(subscribers)
+                queues.extend(client for client in clients if callable(getattr(client, "stats", None)))
+        for queue in queues:
+            queue_stats = await queue.stats()
+            metrics["total_queued_bytes"] += int(queue_stats.get("queued_bytes") or 0)
+        return metrics
 
     async def get_output_session(self, key):
         async with self.output.lock:
@@ -206,6 +254,7 @@ class ByteBudgetQueue:
         self.max_bytes = max(1, int(max_bytes or 1))
         self._items = deque()
         self._bytes = 0
+        self._closed = False
         self._cond = asyncio.Condition()
 
     @staticmethod
@@ -224,6 +273,16 @@ class ByteBudgetQueue:
         dropped_bytes = 0
         payload_too_large = False
         async with self._cond:
+            if self._closed:
+                return {
+                    "dropped_items": 0,
+                    "dropped_bytes": 0,
+                    "payload_too_large": False,
+                    "queued_bytes": int(self._bytes),
+                    "queued_items": len(self._items),
+                    "max_bytes": int(self.max_bytes),
+                    "closed": True,
+                }
             while payload is not None and self._items and (self._bytes + size) > self.max_bytes:
                 old_payload, old_size, _ = self._items.popleft()
                 if old_payload is not None:
@@ -251,6 +310,7 @@ class ByteBudgetQueue:
             "queued_bytes": queued_bytes,
             "queued_items": queued_items,
             "max_bytes": int(self.max_bytes),
+            "closed": False,
         }
 
     async def put_eof(self):
@@ -283,12 +343,35 @@ class ByteBudgetQueue:
                 "queued_bytes": int(self._bytes),
                 "max_bytes": int(self.max_bytes),
                 "oldest_age_seconds": oldest_age,
+                "closed": self._closed,
             }
 
     async def clear(self):
         async with self._cond:
             self._items.clear()
             self._bytes = 0
+            if self._closed:
+                self._items.append((None, 0, time.time()))
+                self._cond.notify_all()
+
+    async def close(self):
+        """Discard queued payload, wake consumers with EOF, and reject future payload."""
+        async with self._cond:
+            dropped_items = sum(1 for payload, _, _ in self._items if payload is not None)
+            dropped_bytes = int(self._bytes)
+            self._items.clear()
+            self._bytes = 0
+            self._closed = True
+            self._items.append((None, 0, time.time()))
+            self._cond.notify_all()
+            return {
+                "dropped_items": dropped_items,
+                "dropped_bytes": dropped_bytes,
+                "queued_bytes": 0,
+                "queued_items": 1,
+                "max_bytes": int(self.max_bytes),
+                "closed": True,
+            }
 
 
 def build_cso_stream_plan(

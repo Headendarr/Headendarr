@@ -1355,6 +1355,8 @@ class CsoIngestSession:
         if self.segmented_handoff_session is not None:
             raise RuntimeError("segmented_handoff_has_no_subscriber_queue")
         async with self.lock:
+            previous_queue = self.subscribers.pop(subscriber_id, None)
+            replaced_queue_stats = await previous_queue.close() if previous_queue is not None else None
             q = ByteBudgetQueue(max_bytes=CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES)
             if prebuffer_bytes > 0 and self.history:
                 total = 0
@@ -1370,6 +1372,17 @@ class CsoIngestSession:
             subscriber_count = len(self.subscribers)
             source_id = getattr(self.current_source, "id", None)
             source_url = self.current_source_url
+        if replaced_queue_stats is not None:
+            logger.warning(
+                "CSO ingest subscriber replaced channel=%s ingest_key=%s subscriber=%s "
+                "cleared_queued_bytes=%s source_id=%s source_url=%s",
+                self.channel_id,
+                self.key,
+                subscriber_id,
+                replaced_queue_stats["dropped_bytes"],
+                source_id,
+                source_url,
+            )
         logger.info(
             "CSO ingest subscriber added channel=%s ingest_key=%s subscriber=%s subscribers=%s source_id=%s source_url=%s",
             self.channel_id,
@@ -1383,18 +1396,21 @@ class CsoIngestSession:
 
     async def remove_subscriber(self, subscriber_id):
         async with self.lock:
-            self.subscribers.pop(subscriber_id, None)
+            queue = self.subscribers.pop(subscriber_id, None)
             remaining = len(self.subscribers)
             lifecycle_references = len(self.lifecycle_references)
             source_id = getattr(self.current_source, "id", None)
             source_url = self.current_source_url
+        queue_stats = await queue.close() if queue is not None else None
         logger.info(
-            "CSO ingest subscriber removed channel=%s ingest_key=%s subscriber=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
+            "CSO ingest subscriber removed channel=%s ingest_key=%s subscriber=%s subscribers=%s "
+            "lifecycle_references=%s cleared_queued_bytes=%s source_id=%s source_url=%s",
             self.channel_id,
             self.key,
             subscriber_id,
             remaining,
             lifecycle_references,
+            int(queue_stats["dropped_bytes"]) if queue_stats is not None else 0,
             source_id,
             source_url,
         )
@@ -1467,7 +1483,16 @@ class CsoIngestSession:
             self.pending_switch_success = None
             segmented_handoff_session = self.segmented_handoff_session
             self.segmented_handoff_session = None
-            subscriber_count = len(self.subscribers)
+            subscriber_queues = list(self.subscribers.values())
+            self.subscribers = {}
+            self.lifecycle_references.clear()
+            subscriber_count = len(subscriber_queues)
+            self.history.clear()
+            self.history_bytes = 0
+        cleared_queued_bytes = 0
+        for queue in subscriber_queues:
+            queue_stats = await queue.close()
+            cleared_queued_bytes += int(queue_stats["dropped_bytes"])
         # Release capacity immediately so other channels are not blocked while
         # this ingest session drains/tears down.
         if capacity_key:
@@ -1479,12 +1504,14 @@ class CsoIngestSession:
         await cso_capacity_registry.release_all(self.capacity_owner_key)
 
         logger.info(
-            "Stopping CSO ingest channel=%s ingest_key=%s source_id=%s source_url=%s subscribers=%s force=%s",
+            "Stopping CSO ingest channel=%s ingest_key=%s source_id=%s source_url=%s "
+            "subscribers=%s cleared_queued_bytes=%s force=%s",
             self.channel_id,
             self.key,
             source_id,
             source_url,
             subscriber_count,
+            cleared_queued_bytes,
             force,
         )
         return_code = None
@@ -1522,8 +1549,3 @@ class CsoIngestSession:
             source_id,
             return_code,
         )
-        async with self.lock:
-            self.history.clear()
-            self.history_bytes = 0
-            for q in self.subscribers.values():
-                await q.put_eof()

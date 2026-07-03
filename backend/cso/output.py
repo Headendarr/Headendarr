@@ -115,6 +115,48 @@ class CsoOutputSession:
                 task.cancel()
         await terminate_ffmpeg_process(process)
 
+    async def _detach_input_subscriptions(self):
+        ingest_queue = self.ingest_queue
+        self.ingest_queue = None
+        ingest_lifecycle_reference = self.ingest_lifecycle_reference
+        self.ingest_lifecycle_reference = False
+        slate_queue = self.slate_queue
+        self.slate_queue = None
+
+        if ingest_queue is not None:
+            try:
+                if self.ingest_session is not None:
+                    await self.ingest_session.remove_subscriber(self.key)
+                else:
+                    await ingest_queue.close()
+            except Exception:
+                await ingest_queue.close()
+                logger.exception(
+                    "CSO output failed to detach ingest subscriber channel=%s output_key=%s",
+                    self.channel_id,
+                    self.key,
+                )
+        if ingest_lifecycle_reference and self.ingest_session is not None:
+            try:
+                await self.ingest_session.remove_lifecycle_reference(self.key)
+            except Exception:
+                logger.exception(
+                    "CSO output failed to detach ingest lifecycle reference channel=%s output_key=%s",
+                    self.channel_id,
+                    self.key,
+                )
+        if slate_queue is not None:
+            await slate_queue.close()
+            if self.slate_session is not None:
+                try:
+                    await self.slate_session.remove_subscriber(self.key)
+                except Exception:
+                    logger.exception(
+                        "CSO output failed to detach slate subscriber channel=%s output_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
+
     def _recent_ingest_failover_active(self) -> bool:
         if self.ingest_session is None:
             return False
@@ -267,39 +309,49 @@ class CsoOutputSession:
                 self.first_ingest_chunk_logged = False
                 self._input_mode = "slate" if self.use_slate_as_input else "ingest"
                 segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
-                if self.ingest_session is not None:
-                    await self.ingest_session.start()
-                    if segmented_input_target:
-                        await self.ingest_session.add_lifecycle_reference(self.key)
-                        self.ingest_lifecycle_reference = True
-                    else:
-                        self.ingest_queue = await self.ingest_session.add_subscriber(
+                try:
+                    if self.ingest_session is not None:
+                        await self.ingest_session.start()
+                        if segmented_input_target:
+                            await self.ingest_session.add_lifecycle_reference(self.key)
+                            self.ingest_lifecycle_reference = True
+                        else:
+                            self.ingest_queue = await self.ingest_session.add_subscriber(
+                                self.key,
+                                prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                            )
+                    if self.use_slate_as_input and self.slate_session is not None:
+                        await self.slate_session.start()
+                        self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
+                        prime_deadline = time.time() + 3.0
+                        primed_bytes = 0
+                        while time.time() < prime_deadline and primed_bytes < 128 * 1024:
+                            timeout_seconds = max(0.1, prime_deadline - time.time())
+                            try:
+                                primed_chunk = await asyncio.wait_for(self.slate_queue.get(), timeout=timeout_seconds)
+                            except asyncio.TimeoutError:
+                                break
+                            if primed_chunk is None:
+                                break
+                            self._pending_input_chunks.append(("slate", primed_chunk))
+                            primed_bytes += len(primed_chunk)
+                        logger.info(
+                            "CSO output primed slate input channel=%s output_key=%s "
+                            "primed_bytes=%s pending_chunks=%s elapsed_ms=%s",
+                            self.channel_id,
                             self.key,
-                            prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                            primed_bytes,
+                            len(self._pending_input_chunks),
+                            int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000),
                         )
-                if self.use_slate_as_input and self.slate_session is not None:
-                    await self.slate_session.start()
-                    self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=0)
-                    prime_deadline = time.time() + 3.0
-                    primed_bytes = 0
-                    while time.time() < prime_deadline and primed_bytes < 128 * 1024:
-                        timeout_seconds = max(0.1, prime_deadline - time.time())
-                        try:
-                            primed_chunk = await asyncio.wait_for(self.slate_queue.get(), timeout=timeout_seconds)
-                        except asyncio.TimeoutError:
-                            break
-                        if primed_chunk is None:
-                            break
-                        self._pending_input_chunks.append(("slate", primed_chunk))
-                        primed_bytes += len(primed_chunk)
-                    logger.info(
-                        "CSO output primed slate input channel=%s output_key=%s primed_bytes=%s pending_chunks=%s elapsed_ms=%s",
-                        self.channel_id,
-                        self.key,
-                        primed_bytes,
-                        len(self._pending_input_chunks),
-                        int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000),
-                    )
+                except asyncio.CancelledError:
+                    self.last_error = "output_start_cancelled"
+                    await self._detach_input_subscriptions()
+                    raise
+                except Exception as exc:
+                    self.last_error = f"output_start_failed:{exc}"
+                    await self._detach_input_subscriptions()
+                    raise
                 self.running = True
                 try:
                     if self.use_slate_as_input or self.ingest_session is None:
@@ -351,10 +403,15 @@ class CsoOutputSession:
                         write_task = None if segmented_input_target else asyncio.create_task(self._write_loop())
                         stderr_task = asyncio.create_task(self._stderr_loop())
                         startup_timeout_seconds = 20.0 if segmented_input_target else 8.0
-                        started, failure_reason = await self._wait_for_startup_ready(
-                            process,
-                            timeout_seconds=startup_timeout_seconds,
-                        )
+                        try:
+                            started, failure_reason = await self._wait_for_startup_ready(
+                                process,
+                                timeout_seconds=startup_timeout_seconds,
+                            )
+                        except asyncio.CancelledError:
+                            await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
+                            self.process = None
+                            raise
                         if started:
                             return True, (process, read_task, write_task, stderr_task), ""
                         logger.warning(
@@ -376,19 +433,20 @@ class CsoOutputSession:
                         log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
                         self.running = False
                         self.last_error = failure_reason or "output_start_failed"
-                        if self.ingest_lifecycle_reference and self.ingest_session is not None:
-                            await self.ingest_session.remove_lifecycle_reference(self.key)
-                            self.ingest_lifecycle_reference = False
+                        await self._detach_input_subscriptions()
                         return
                     self.output_policy = dict(start_policy)
                     self.process, self.read_task, self.write_task, self.stderr_task = result
                     self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
+                except asyncio.CancelledError:
+                    self.running = False
+                    self.last_error = "output_start_cancelled"
+                    await self._detach_input_subscriptions()
+                    raise
                 except Exception as exc:
                     self.running = False
                     self.last_error = f"output_start_failed:{exc}"
-                    if self.ingest_lifecycle_reference and self.ingest_session is not None:
-                        await self.ingest_session.remove_lifecycle_reference(self.key)
-                        self.ingest_lifecycle_reference = False
+                    await self._detach_input_subscriptions()
                     raise
                 logger.info(
                     "CSO output started channel=%s output_key=%s policy=(%s) clients=%s",
@@ -871,19 +929,20 @@ class CsoOutputSession:
     async def stop(self, force: bool = False):
         async with self.lifecycle_lock:
             async with self.lock:
-                if not self.running and not self.process and not self.clients:
+                if (
+                    not self.running
+                    and not self.process
+                    and not self.clients
+                    and self.ingest_queue is None
+                    and not self.ingest_lifecycle_reference
+                    and self.slate_queue is None
+                ):
                     return
                 if not force and self.clients:
                     return
                 self.running = False
                 process = self.process
                 self.process = None
-                ingest_queue = self.ingest_queue
-                self.ingest_queue = None
-                ingest_lifecycle_reference = self.ingest_lifecycle_reference
-                self.ingest_lifecycle_reference = False
-                slate_queue = self.slate_queue
-                self.slate_queue = None
                 read_task = self.read_task
                 self.read_task = None
                 write_task = self.write_task
@@ -927,22 +986,7 @@ class CsoOutputSession:
                                     self.channel_id,
                                     self.key,
                                 )
-            try:
-                if ingest_queue is not None and self.ingest_session is not None:
-                    await self.ingest_session.remove_subscriber(self.key)
-            except Exception:
-                pass
-            try:
-                if ingest_lifecycle_reference and self.ingest_session is not None:
-                    await self.ingest_session.remove_lifecycle_reference(self.key)
-            except Exception:
-                pass
-            try:
-                if slate_queue is not None and self.slate_session is not None:
-                    await slate_queue.clear()
-                    await self.slate_session.remove_subscriber(self.key)
-            except Exception:
-                pass
+            await self._detach_input_subscriptions()
             for task in (read_task, write_task, ingest_recovery_task, stderr_task):
                 if not task or task.done():
                     continue
