@@ -24,22 +24,6 @@ def current_quart_app_object() -> Quart:
     return app_proxy._get_current_object()
 
 
-def process_is_running(pid):
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except Exception:
-        return True
-    return True
-
-
-async def wait_process_exit_with_timeout(process, timeout_seconds=2.0):
-    if not process:
-        return None
-    return await asyncio.wait_for(process.wait(), timeout=float(timeout_seconds))
-
-
 def _debug_archive_path(path: Path) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     base_path = path.with_name(f"{path.name}.debug-{stamp}-{os.getpid()}")
@@ -115,7 +99,32 @@ class _SessionMap:
                 running = bool(session.running)
             if running and has_subscribers:
                 continue
-            await session.stop(force=True)
+            teardown = await session.stop(force=True)
+            async with session.lock:
+                retained_process = getattr(session, "process", None)
+                retained_runtimes = tuple(getattr(session, "_retained_runtimes", ()))
+                retained_tasks = tuple(
+                    name
+                    for name, task in vars(session).items()
+                    if (name.endswith("_task") and task is not None)
+                    or (name.endswith("_tasks") and any(retained is not None for retained in task or ()))
+                )
+            if (
+                retained_process is not None
+                or retained_runtimes
+                or retained_tasks
+                or (teardown is not None and not bool(getattr(teardown, "confirmed", False)))
+            ):
+                logger.error(
+                    "CSO idle session retained after unconfirmed lifecycle cleanup "
+                    "key=%s pid=%s retained_tasks=%s retained_runtimes=%s failure=%s",
+                    key,
+                    getattr(retained_process, "pid", None),
+                    ",".join(retained_tasks) or "none",
+                    len(retained_runtimes),
+                    getattr(teardown, "failure", None),
+                )
+                continue
             async with self.lock:
                 if self.sessions.get(key) is session:
                     self.sessions.pop(key, None)
@@ -143,7 +152,8 @@ class CsoRuntimeManager:
         metrics = await self.runtime_metrics()
         logger.info(
             "CSO lifecycle metrics ingest_sessions=%s slate_sessions=%s output_sessions=%s "
-            "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s",
+            "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s "
+            "live_ffmpeg_processes=%s ffmpeg_teardown_failures=%s",
             metrics["ingest_sessions"],
             metrics["slate_sessions"],
             metrics["output_sessions"],
@@ -151,9 +161,13 @@ class CsoRuntimeManager:
             metrics["slate_subscribers"],
             metrics["output_clients"],
             metrics["total_queued_bytes"],
+            metrics["live_ffmpeg_processes"],
+            metrics["ffmpeg_teardown_failures"],
         )
 
     async def runtime_metrics(self):
+        from .processes import cso_ffmpeg_process_registry
+
         session_groups = {}
         for name, session_map in (("ingest", self.ingest), ("slate", self.slate), ("output", self.output)):
             async with session_map.lock:
@@ -185,6 +199,7 @@ class CsoRuntimeManager:
         for queue in queues:
             queue_stats = await queue.stats()
             metrics["total_queued_bytes"] += int(queue_stats.get("queued_bytes") or 0)
+        metrics.update(cso_ffmpeg_process_registry.snapshot())
         return metrics
 
     async def get_output_session(self, key):

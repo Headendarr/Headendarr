@@ -12,9 +12,7 @@ from backend.utils import clean_key, clean_text
 from .common import (
     ByteBudgetQueue,
     prepare_cso_cache_dir,
-    process_is_running,
     remove_cso_cache_dir,
-    wait_process_exit_with_timeout,
 )
 from .constants import (
     CSO_HLS_CLIENT_IDLE_SECONDS,
@@ -39,6 +37,12 @@ from .policy import (
     policy_log_label,
     resolve_cso_output_policy,
     resolve_vod_pipe_container,
+)
+from .processes import (
+    cancel_and_await_tasks,
+    cso_lifecycle_cleanup_result,
+    mark_cso_ffmpeg_process_exited,
+    spawn_cso_ffmpeg_process,
 )
 
 logger = logging.getLogger("cso")
@@ -72,6 +76,7 @@ class CsoOutputSession:
         self.write_task = None
         self.ingest_recovery_task = None
         self.stderr_task = None
+        self.startup_tasks = ()
         self.running = False
         self.lifecycle_lock = asyncio.Lock()
         self.lock = asyncio.Lock()
@@ -110,10 +115,17 @@ class CsoOutputSession:
         return bool(self._segmented_input_target())
 
     async def _cleanup_failed_start_attempt(self, process, read_task, write_task, stderr_task):
-        for task in (read_task, write_task, stderr_task):
-            if task is not None and not task.done():
-                task.cancel()
-        await terminate_ffmpeg_process(process)
+        teardown = await terminate_ffmpeg_process(process)
+        startup_tasks = self.startup_tasks
+        self.startup_tasks = ()
+        task_cleanup = await cancel_and_await_tasks((read_task, write_task, stderr_task, *startup_tasks))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            self.read_task = read_task if read_task in pending_tasks else None
+            self.write_task = write_task if write_task in pending_tasks else None
+            self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+            self.startup_tasks = tuple(task for task in startup_tasks if task in pending_tasks)
+        return teardown, task_cleanup
 
     async def _detach_input_subscriptions(self):
         ingest_queue = self.ingest_queue
@@ -196,34 +208,41 @@ class CsoOutputSession:
         self._first_output_event = asyncio.Event()
         wait_task = asyncio.create_task(process.wait())
         output_task = asyncio.create_task(self._first_output_event.wait())
-        done = set()
-        done, pending = await asyncio.wait(
-            {wait_task, output_task},
-            timeout=max(1.0, float(timeout_seconds)),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        if output_task in done and output_task.done() and not output_task.cancelled():
-            wait_task.cancel()
-            return True, ""
-        if wait_task in done and wait_task.done() and not wait_task.cancelled():
-            return False, self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
-        if process.returncode is not None:
-            return False, self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
-        if self._is_failover_remux_startup_failure():
-            return False, self._ffmpeg_error_summary() or "startup_failed_during_ingest_failover"
-        if self.first_ingest_chunk_logged and not self._ffmpeg_error_summary():
-            if self._recent_ingest_failover_active():
-                return False, "startup_timeout_during_ingest_failover"
-            logger.info(
-                "CSO output startup timed out before first client-visible chunk but ingest is flowing; "
-                "treating the output as started channel=%s output_key=%s",
-                self.channel_id,
-                self.key,
+        started = False
+        failure_reason = ""
+        try:
+            done, _ = await asyncio.wait(
+                {wait_task, output_task},
+                timeout=max(1.0, float(timeout_seconds)),
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            return True, ""
-        return False, self._ffmpeg_error_summary() or "startup_timeout_no_output"
+            if output_task in done and output_task.done() and not output_task.cancelled():
+                started = True
+            elif wait_task in done and wait_task.done() and not wait_task.cancelled():
+                failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
+            elif process.returncode is not None:
+                failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
+            elif self._is_failover_remux_startup_failure():
+                failure_reason = self._ffmpeg_error_summary() or "startup_failed_during_ingest_failover"
+            elif self.first_ingest_chunk_logged and not self._ffmpeg_error_summary():
+                if self._recent_ingest_failover_active():
+                    failure_reason = "startup_timeout_during_ingest_failover"
+                else:
+                    logger.info(
+                        "CSO output startup timed out before first client-visible chunk but ingest is flowing; "
+                        "treating the output as started channel=%s output_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
+                    started = True
+            else:
+                failure_reason = self._ffmpeg_error_summary() or "startup_timeout_no_output"
+        finally:
+            task_cleanup = await cancel_and_await_tasks((wait_task, output_task))
+            self.startup_tasks = task_cleanup.pending_tasks
+        if not task_cleanup.confirmed:
+            return False, f"{failure_reason or 'startup_probe_completed'}:task_cleanup_unconfirmed"
+        return started, failure_reason
 
     def _ffmpeg_error_summary(self):
         lines = [line for line in self._recent_ffmpeg_stderr if line]
@@ -300,6 +319,26 @@ class CsoOutputSession:
         async with self.lifecycle_lock:
             async with self.lock:
                 if self.running:
+                    return
+                retained_tasks = (
+                    self.read_task,
+                    self.write_task,
+                    self.ingest_recovery_task,
+                    self.stderr_task,
+                    *self.startup_tasks,
+                )
+                if self.process is not None or any(task is not None for task in retained_tasks):
+                    self.last_error = (
+                        "previous_process_teardown_unconfirmed"
+                        if self.process is not None
+                        else "previous_task_cleanup_unconfirmed"
+                    )
+                    logger.error(
+                        "CSO output start blocked by retained lifecycle output_key=%s pid=%s tasks=%s",
+                        self.key,
+                        getattr(self.process, "pid", None),
+                        sum(task is not None for task in retained_tasks),
+                    )
                     return
                 if self.ingest_session is None and self.slate_session is None:
                     self.last_error = "no_input_session"
@@ -392,8 +431,9 @@ class CsoOutputSession:
                             policy_log_label(effective_policy),
                             command,
                         )
-                        process = await asyncio.create_subprocess_exec(
+                        process = await spawn_cso_ffmpeg_process(
                             *command,
+                            label=f"output:{self.key}",
                             stdin=asyncio.subprocess.DEVNULL if segmented_input_target else asyncio.subprocess.PIPE,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
@@ -409,8 +449,14 @@ class CsoOutputSession:
                                 timeout_seconds=startup_timeout_seconds,
                             )
                         except asyncio.CancelledError:
-                            await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
-                            self.process = None
+                            teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                                process,
+                                read_task,
+                                write_task,
+                                stderr_task,
+                            )
+                            if teardown.confirmed:
+                                self.process = None
                             raise
                         if started:
                             return True, (process, read_task, write_task, stderr_task), ""
@@ -420,8 +466,18 @@ class CsoOutputSession:
                             self.key,
                             failure_reason or "unknown",
                         )
-                        await self._cleanup_failed_start_attempt(process, read_task, write_task, stderr_task)
-                        self.process = None
+                        teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                            process,
+                            read_task,
+                            write_task,
+                            stderr_task,
+                        )
+                        if teardown.confirmed:
+                            self.process = None
+                        if not teardown.confirmed:
+                            failure_reason = f"{failure_reason or 'output_start_failed'}:teardown_unconfirmed"
+                        elif not task_cleanup.confirmed:
+                            failure_reason = f"{failure_reason or 'output_start_failed'}:task_cleanup_unconfirmed"
                         return False, None, failure_reason
 
                     started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
@@ -661,10 +717,10 @@ class CsoOutputSession:
                 pass
 
     async def _read_loop(self):
-        return_code = None
+        process = self.process
         try:
-            while self.running and self.process and self.process.stdout:
-                chunk = await self.process.stdout.read(16384)
+            while self.running and process and process.stdout:
+                chunk = await process.stdout.read(16384)
                 if not chunk:
                     break
                 if not self.first_output_chunk_logged:
@@ -681,75 +737,76 @@ class CsoOutputSession:
                     self.first_output_chunk_logged = True
                 await self._broadcast(chunk)
         finally:
-            try:
-                if self.process:
-                    return_code = self.process.returncode
-                    if return_code is None:
-                        return_code = await self.process.wait()
-            except Exception:
-                return_code = None
+            current_task = asyncio.current_task()
+            if current_task is None or not current_task.cancelling():
+                await self._handle_reader_exit(process)
 
-            async with self.lock:
-                client_count = len(self.clients)
-                still_running = bool(self.running)
+    async def _handle_reader_exit(self, process):
+        return_code = process.returncode if process is not None else None
+        if process is not None:
+            mark_cso_ffmpeg_process_exited(process)
 
-            if still_running and client_count > 0:
-                if self._uses_direct_ingest_input():
-                    self.last_error = "output_reader_ended"
-                    await self.stop(force=True)
-                    return
-                intentional_failover = bool(self.ingest_session.health_failover_reason)
-                ingest_graceful_reader_end = bool(
-                    self.ingest_session is not None
-                    and self.ingest_session.last_reader_end_reason == "ingest_reader_ended"
-                    and bool(self.ingest_session.last_reader_end_saw_data)
-                    and self.ingest_session.last_reader_end_return_code == 0
-                    and (time.time() - float(self.ingest_session.last_reader_end_ts or 0.0)) <= 30.0
+        async with self.lock:
+            client_count = len(self.clients)
+            still_running = bool(self.running)
+
+        if still_running and client_count > 0:
+            if self._uses_direct_ingest_input():
+                self.last_error = "output_reader_ended"
+                await self.stop(force=True)
+                return
+            intentional_failover = bool(self.ingest_session.health_failover_reason)
+            ingest_graceful_reader_end = bool(
+                self.ingest_session is not None
+                and self.ingest_session.last_reader_end_reason == "ingest_reader_ended"
+                and bool(self.ingest_session.last_reader_end_saw_data)
+                and self.ingest_session.last_reader_end_return_code == 0
+                and (time.time() - float(self.ingest_session.last_reader_end_ts or 0.0)) <= 30.0
+            )
+            if (intentional_failover and return_code in (None, 0)) or ingest_graceful_reader_end:
+                logger.info(
+                    "CSO output reader ended gracefully channel=%s output_key=%s return_code=%s intentional_failover=%s ingest_graceful_reader_end=%s",
+                    self.channel_id,
+                    self.key,
+                    return_code,
+                    intentional_failover,
+                    ingest_graceful_reader_end,
                 )
-                if (intentional_failover and return_code in (None, 0)) or ingest_graceful_reader_end:
-                    logger.info(
-                        "CSO output reader ended gracefully channel=%s output_key=%s return_code=%s intentional_failover=%s ingest_graceful_reader_end=%s",
-                        self.channel_id,
-                        self.key,
-                        return_code,
-                        intentional_failover,
-                        ingest_graceful_reader_end,
-                    )
-                elif self._is_failover_remux_startup_failure():
-                    self.last_error = "output_reader_ended"
-                    logger.info(
-                        "CSO output reader ended during ingest failover handover; "
-                        "treating as playback-unavailable fallback channel=%s output_key=%s return_code=%s",
-                        self.channel_id,
-                        self.key,
-                        return_code,
-                    )
-                else:
-                    self.last_error = "output_reader_ended"
-                    ffmpeg_error = self._ffmpeg_error_summary()
-                    severity = "error" if return_code not in (None, 0) else "warning"
-                    await emit_channel_stream_event(
-                        channel_id=self.channel_id,
-                        source=(self.ingest_session.current_source or self.event_source),
-                        session_id=self.key,
-                        event_type="playback_unavailable",
-                        severity=severity,
-                        details={
-                            "reason": "output_reader_ended",
-                            "return_code": return_code,
-                            "ffmpeg_error": ffmpeg_error or None,
-                            "policy": self.policy,
-                            **source_event_context(
-                                self.ingest_session.current_source or self.event_source,
-                                source_url=(
-                                    self.ingest_session.current_source_url
-                                    or getattr(self.event_source, "playlist_stream_url", None)
-                                ),
+            elif self._is_failover_remux_startup_failure():
+                self.last_error = "output_reader_ended"
+                logger.info(
+                    "CSO output reader ended during ingest failover handover; "
+                    "treating as playback-unavailable fallback channel=%s output_key=%s return_code=%s",
+                    self.channel_id,
+                    self.key,
+                    return_code,
+                )
+            else:
+                self.last_error = "output_reader_ended"
+                ffmpeg_error = self._ffmpeg_error_summary()
+                severity = "error" if return_code not in (None, 0) else "warning"
+                await emit_channel_stream_event(
+                    channel_id=self.channel_id,
+                    source=(self.ingest_session.current_source or self.event_source),
+                    session_id=self.key,
+                    event_type="playback_unavailable",
+                    severity=severity,
+                    details={
+                        "reason": "output_reader_ended",
+                        "return_code": return_code,
+                        "ffmpeg_error": ffmpeg_error or None,
+                        "policy": self.policy,
+                        **source_event_context(
+                            self.ingest_session.current_source or self.event_source,
+                            source_url=(
+                                self.ingest_session.current_source_url
+                                or getattr(self.event_source, "playlist_stream_url", None)
                             ),
-                        },
-                    )
+                        ),
+                    },
+                )
 
-            await self.stop(force=True)
+        await self.stop(force=True)
 
     def _stale_seconds_for_connection(self, connection_id):
         connection_text = str(connection_id or "")
@@ -936,13 +993,17 @@ class CsoOutputSession:
                     and self.ingest_queue is None
                     and not self.ingest_lifecycle_reference
                     and self.slate_queue is None
+                    and self.read_task is None
+                    and self.write_task is None
+                    and self.ingest_recovery_task is None
+                    and self.stderr_task is None
+                    and not self.startup_tasks
                 ):
                     return
                 if not force and self.clients:
                     return
                 self.running = False
                 process = self.process
-                self.process = None
                 read_task = self.read_task
                 self.read_task = None
                 write_task = self.write_task
@@ -951,6 +1012,8 @@ class CsoOutputSession:
                 self.ingest_recovery_task = None
                 stderr_task = self.stderr_task
                 self.stderr_task = None
+                startup_tasks = self.startup_tasks
+                self.startup_tasks = ()
                 client_count = len(self.clients)
             logger.info(
                 "Stopping CSO output channel=%s output_key=%s clients=%s force=%s policy=(%s)",
@@ -961,42 +1024,30 @@ class CsoOutputSession:
                 policy_log_label(self.output_policy),
             )
             return_code = None
+            teardown = None
             if process:
-                try:
-                    if process.stdin:
-                        process.stdin.close()
-                except Exception:
-                    pass
-                try:
-                    return_code = await wait_process_exit_with_timeout(process, timeout_seconds=0.75)
-                except Exception:
-                    try:
-                        process.terminate()
-                        return_code = await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-                    except Exception:
-                        try:
-                            process.kill()
-                            return_code = await wait_process_exit_with_timeout(process, timeout_seconds=6.0)
-                        except Exception:
-                            if process.returncode is not None or not process_is_running(process.pid):
-                                return_code = process.returncode if process.returncode is not None else -9
-                            else:
-                                logger.warning(
-                                    "CSO output process did not exit after kill channel=%s output_key=%s",
-                                    self.channel_id,
-                                    self.key,
-                                )
+                teardown = await terminate_ffmpeg_process(
+                    process,
+                    terminate_timeout_seconds=2.0,
+                    kill_timeout_seconds=6.0,
+                )
+                return_code = teardown.return_code
             await self._detach_input_subscriptions()
-            for task in (read_task, write_task, ingest_recovery_task, stderr_task):
-                if not task or task.done():
-                    continue
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
+            task_cleanup = await cancel_and_await_tasks(
+                (read_task, write_task, ingest_recovery_task, stderr_task, *startup_tasks)
+            )
+            if not task_cleanup.confirmed:
+                pending_tasks = set(task_cleanup.pending_tasks)
+                async with self.lock:
+                    self.read_task = read_task if read_task in pending_tasks else None
+                    self.write_task = write_task if write_task in pending_tasks else None
+                    self.ingest_recovery_task = ingest_recovery_task if ingest_recovery_task in pending_tasks else None
+                    self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                    self.startup_tasks = tuple(task for task in startup_tasks if task in pending_tasks)
+            if process is not None and teardown is not None and teardown.confirmed:
+                async with self.lock:
+                    if self.process is process:
+                        self.process = None
             logger.info(
                 "CSO output stopped channel=%s output_key=%s return_code=%s policy=(%s)",
                 self.channel_id,
@@ -1009,6 +1060,7 @@ class CsoOutputSession:
                     await q.put_eof()
                 self.client_drop_state.clear()
                 self.client_last_touch.clear()
+            return cso_lifecycle_cleanup_result(teardown, task_cleanup)
 
 
 class CsoHlsOutputSession:
@@ -1076,10 +1128,14 @@ class CsoHlsOutputSession:
             return ""
 
     async def _cleanup_failed_start_attempt(self, process, write_task, stderr_task, wait_task):
-        for task in (write_task, stderr_task, wait_task):
-            if task is not None and not task.done():
-                task.cancel()
-        await terminate_ffmpeg_process(process)
+        teardown = await terminate_ffmpeg_process(process)
+        task_cleanup = await cancel_and_await_tasks((write_task, stderr_task, wait_task))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            self.write_task = write_task if write_task in pending_tasks else None
+            self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+            self.wait_task = wait_task if wait_task in pending_tasks else None
+        return teardown, task_cleanup
 
     def _startup_progress_marker(self) -> float:
         marker = float(self.last_activity or 0.0)
@@ -1186,6 +1242,20 @@ class CsoHlsOutputSession:
     async def start(self):
         async with self.lock:
             if self.running:
+                return
+            retained_tasks = (self.write_task, self.stderr_task, self.wait_task)
+            if self.process is not None or any(task is not None for task in retained_tasks):
+                self.last_error = (
+                    "previous_process_teardown_unconfirmed"
+                    if self.process is not None
+                    else "previous_task_cleanup_unconfirmed"
+                )
+                logger.error(
+                    "CSO HLS output start blocked by retained lifecycle output_key=%s pid=%s tasks=%s",
+                    self.key,
+                    getattr(self.process, "pid", None),
+                    sum(task is not None for task in retained_tasks),
+                )
                 return
             if self._retain_completed_output_until > time.time() and self._last_good_playlist_text:
                 self.running = True
@@ -1304,8 +1374,9 @@ class CsoHlsOutputSession:
                     policy_log_label(self.runtime_policy),
                     command,
                 )
-                self.process = await asyncio.create_subprocess_exec(
+                self.process = await spawn_cso_ffmpeg_process(
                     *command,
+                    label=f"hls-output:{self.key}",
                     stdin=asyncio.subprocess.DEVNULL if use_direct_input else asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
@@ -1320,10 +1391,21 @@ class CsoHlsOutputSession:
                 startup_timeout_seconds = 8.0
                 if use_direct_input:
                     startup_timeout_seconds = 20.0 if self.start_seconds > 0 else 12.0
-                started, failure_reason = await self._wait_for_startup_ready(
-                    self.process,
-                    timeout_seconds=startup_timeout_seconds,
-                )
+                try:
+                    started, failure_reason = await self._wait_for_startup_ready(
+                        self.process,
+                        timeout_seconds=startup_timeout_seconds,
+                    )
+                except asyncio.CancelledError:
+                    teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                        self.process,
+                        write_task,
+                        stderr_task,
+                        wait_task,
+                    )
+                    if teardown.confirmed:
+                        self.process = None
+                    raise
                 if started:
                     return True, (self.process, write_task, stderr_task, wait_task), ""
                 logger.warning(
@@ -1332,8 +1414,18 @@ class CsoHlsOutputSession:
                     self.key,
                     failure_reason or "unknown",
                 )
-                await self._cleanup_failed_start_attempt(self.process, write_task, stderr_task, wait_task)
-                self.process = None
+                teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                    self.process,
+                    write_task,
+                    stderr_task,
+                    wait_task,
+                )
+                if teardown.confirmed:
+                    self.process = None
+                if not teardown.confirmed:
+                    failure_reason = f"{failure_reason or 'output_start_failed'}:teardown_unconfirmed"
+                elif not task_cleanup.confirmed:
+                    failure_reason = f"{failure_reason or 'output_start_failed'}:task_cleanup_unconfirmed"
                 return False, None, failure_reason
 
             try:
@@ -1448,6 +1540,7 @@ class CsoHlsOutputSession:
                 return_code = await process.wait()
         except Exception:
             return_code = None
+        process_exited = mark_cso_ffmpeg_process_exited(process)
         if token != self.process_token:
             return
         if not self._last_good_playlist_text:
@@ -1459,7 +1552,7 @@ class CsoHlsOutputSession:
             client_count = len(self.clients)
             still_running = bool(self.running)
             has_completed_playlist = bool(self._last_good_playlist_text)
-            if process is self.process:
+            if process is self.process and process_exited:
                 self.process = None
         if (
             still_running
@@ -1643,15 +1736,27 @@ class CsoHlsOutputSession:
 
     async def stop(self, force=False):
         async with self.lock:
-            if not self.running and not self.process and not self.clients:
+            if (
+                not self.running
+                and not self.process
+                and not self.clients
+                and self.write_task is None
+                and self.stderr_task is None
+                and self.wait_task is None
+            ):
                 return
             if not force and self.clients:
                 return
             self.running = False
             process = self.process
-            self.process = None
             self.process_token += 1
             stop_token = self.process_token
+            write_task = self.write_task
+            self.write_task = None
+            stderr_task = self.stderr_task
+            self.stderr_task = None
+            wait_task = self.wait_task
+            self.wait_task = None
             ingest_queue = self.ingest_queue
             self.ingest_queue = None
             ingest_lifecycle_reference = self.ingest_lifecycle_reference
@@ -1691,24 +1796,25 @@ class CsoHlsOutputSession:
                 0,
                 policy_log_label(self.runtime_policy),
             )
+        teardown = None
         if process:
-            try:
-                if force and self._is_vod_hls_output():
-                    process.kill()
-                else:
-                    process.terminate()
-                await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-                except Exception:
-                    logger.warning(
-                        "CSO HLS output process did not exit after kill channel=%s output_key=%s",
-                        self.channel_id,
-                        self.key,
-                    )
-                    pass
+            terminate_timeout = 0.01 if force and self._is_vod_hls_output() else 2.0
+            teardown = await terminate_ffmpeg_process(
+                process,
+                terminate_timeout_seconds=terminate_timeout,
+                kill_timeout_seconds=2.0,
+            )
+        task_cleanup = await cancel_and_await_tasks((write_task, stderr_task, wait_task))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            async with self.lock:
+                self.write_task = write_task if write_task in pending_tasks else None
+                self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                self.wait_task = wait_task if wait_task in pending_tasks else None
+        if process is not None and teardown is not None and teardown.confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.process = None
         try:
             if ingest_queue is not None and self.ingest_session is not None:
                 await self.ingest_session.remove_subscriber(self.key)
@@ -1730,3 +1836,4 @@ class CsoHlsOutputSession:
             )
         if should_cleanup_output_dir:
             await remove_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
+        return cso_lifecycle_cleanup_result(teardown, task_cleanup)

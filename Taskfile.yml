@@ -50,6 +50,63 @@ tasks:
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} build headendarr
 
+  docker:build:staging:
+    desc: Build the local ghcr.io/headendarr/headendarr:staging image with release metadata
+    cmds:
+      - |
+        bash -c '
+        set -eu
+
+        image="ghcr.io/headendarr/headendarr:staging"
+        base_image="ghcr.io/tvheadend/tvheadend:edge-debian"
+        git_sha="$(git rev-parse HEAD)"
+        sha_short="$(git rev-parse --short=7 HEAD)"
+        branch_name="$(git branch --show-current)"
+        build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        version_file="./docker/overlay/version.txt"
+        version_file_backup="$(mktemp)"
+
+        if [ -z "$branch_name" ]; then
+          branch_name="detached"
+        fi
+
+        cp "$version_file" "$version_file_backup"
+        restore_version_file() {
+          if [ -f "$version_file_backup" ]; then
+            cp "$version_file_backup" "$version_file"
+            rm -f "$version_file_backup"
+          fi
+        }
+        trap restore_version_file EXIT INT TERM
+
+        echo "Build: [$(date +"%F %T")] [$branch_name] [$git_sha]" > "$version_file"
+
+        build_status=0
+        docker build \
+          --file docker/Dockerfile \
+          --tag "$image" \
+          --build-arg "VERSION=$git_sha" \
+          --build-arg "BUILD_DATE=$build_date" \
+          --build-arg "BASE_IMAGE=$base_image" \
+          --label "maintainer=Josh.5" \
+          --label "source.version=$sha_short" \
+          --label "source.project=Headendarr" \
+          --label "source.service=headendarr" \
+          --label "org.opencontainers.image.title=headendarr" \
+          --label "org.opencontainers.image.description=A tool for simplifying IPTV configuration in TVHeadend" \
+          --label "org.opencontainers.image.created=$build_date" \
+          --label "org.opencontainers.image.revision=$git_sha" \
+          --label "org.opencontainers.image.version=staging" \
+          --label "org.opencontainers.image.source=https://github.com/Headendarr/Headendarr" \
+          --label "org.opencontainers.image.url=https://github.com/Headendarr/Headendarr" \
+          --label "org.opencontainers.image.licenses=Apache-2.0" \
+          . || build_status=$?
+
+        restore_version_file
+        trap - EXIT INT TERM
+        exit "$build_status"
+        '
+
   backend:_quality:
     internal: true
     deps: [init]

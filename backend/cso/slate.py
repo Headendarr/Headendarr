@@ -6,14 +6,20 @@ from collections import deque
 from backend.config import enable_cso_slate_command_debug_logging
 from backend.utils import clean_key, clean_text
 
-from .common import ByteBudgetQueue, wait_process_exit_with_timeout
+from .common import ByteBudgetQueue
 from .constants import (
     CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES,
     MPEGTS_CHUNK_BYTES,
     CSO_UNAVAILABLE_REASON_DURATIONS_SECONDS,
     CSO_UNAVAILABLE_SLATE_MESSAGES,
 )
-from .ffmpeg import CsoFfmpegCommandBuilder
+from .ffmpeg import CsoFfmpegCommandBuilder, terminate_ffmpeg_process
+from .processes import (
+    cancel_and_await_tasks,
+    cso_lifecycle_cleanup_result,
+    mark_cso_ffmpeg_process_exited,
+    spawn_cso_ffmpeg_process,
+)
 from .types import CsoSource
 
 
@@ -30,6 +36,7 @@ def _cso_unavailable_slate_message(reason_key, detail_hint=""):
     if detail:
         subtitle = f"{subtitle} {detail}".strip()
     return title, subtitle
+
 
 async def iter_cso_slate_source(config_path, reason, detail_hint=""):
     reason_key = clean_key(reason, fallback="playback_unavailable")
@@ -118,8 +125,9 @@ class CsoSlateSession:
             media_hint=self.media_hint,
         )
         logger.info("Starting CSO slate session key=%s reason=%s command=%s", self.key, self.reason, command)
-        return await asyncio.create_subprocess_exec(
+        return await spawn_cso_ffmpeg_process(
             *command,
+            label=f"slate:{self.key}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -161,18 +169,20 @@ class CsoSlateSession:
                     break
                 await self._broadcast(chunk)
         finally:
-            return_code = None
-            try:
+            current_task = asyncio.current_task()
+            if current_task is None or not current_task.cancelling():
                 return_code = process.returncode
-                if return_code is None:
-                    return_code = await process.wait()
-            except Exception:
-                return_code = None
-            logger.info("CSO slate session ended key=%s reason=%s return_code=%s", self.key, self.reason, return_code)
-            async with self.lock:
-                self.running = False
-                if self.process is process:
-                    self.process = None
+                process_exited = mark_cso_ffmpeg_process_exited(process)
+                logger.info(
+                    "CSO slate session ended key=%s reason=%s return_code=%s",
+                    self.key,
+                    self.reason,
+                    return_code,
+                )
+                async with self.lock:
+                    self.running = False
+                    if self.process is process and process_exited:
+                        self.process = None
 
     async def _stderr_loop(self, process):
         text_buffer = ""
@@ -197,6 +207,15 @@ class CsoSlateSession:
     async def start(self):
         async with self.lock:
             if self.running:
+                return
+            retained_tasks = (self.read_task, self.stderr_task)
+            if self.process is not None or any(task is not None for task in retained_tasks):
+                logger.error(
+                    "CSO slate start blocked by retained lifecycle key=%s pid=%s tasks=%s",
+                    self.key,
+                    getattr(self.process, "pid", None),
+                    sum(task is not None for task in retained_tasks),
+                )
                 return
             self.history.clear()
             self.history_bytes = 0
@@ -236,37 +255,39 @@ class CsoSlateSession:
 
     async def stop(self, force=False):
         async with self.lock:
-            if not self.running and not self.subscribers:
+            if (
+                not self.running
+                and not self.process
+                and not self.subscribers
+                and self.read_task is None
+                and self.stderr_task is None
+            ):
                 return
             if not force and self.subscribers:
                 return
             self.running = False
             process = self.process
-            self.process = None
             read_task = self.read_task
             self.read_task = None
             stderr_task = self.stderr_task
             self.stderr_task = None
+        teardown = None
         if process:
-            try:
-                process.terminate()
-                await wait_process_exit_with_timeout(process, timeout_seconds=1.5)
-            except Exception:
-                try:
-                    process.kill()
-                    await wait_process_exit_with_timeout(process, timeout_seconds=1.5)
-                except Exception:
-                    pass
-        for task in (read_task, stderr_task):
-            if not task or task.done():
-                continue
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+            teardown = await terminate_ffmpeg_process(
+                process,
+                terminate_timeout_seconds=1.5,
+                kill_timeout_seconds=1.5,
+            )
+        task_cleanup = await cancel_and_await_tasks((read_task, stderr_task))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            async with self.lock:
+                self.read_task = read_task if read_task in pending_tasks else None
+                self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+        if process is not None and teardown is not None and teardown.confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.process = None
         async with self.lock:
             subscribers = list(self.subscribers.values())
             self.subscribers = {}
@@ -274,3 +295,4 @@ class CsoSlateSession:
             self.history_bytes = 0
         for queue in subscribers:
             await queue.put_eof()
+        return cso_lifecycle_cleanup_result(teardown, task_cleanup)

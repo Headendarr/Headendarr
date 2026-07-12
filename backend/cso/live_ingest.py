@@ -15,7 +15,7 @@ from backend.models import Channel, ChannelSource, Session
 from backend.source_media import load_source_media_shape, persist_source_media_shape
 from backend.utils import clean_key, clean_text, utc_now_naive
 
-from .common import ByteBudgetQueue, build_cso_stream_plan, wait_process_exit_with_timeout
+from .common import ByteBudgetQueue, build_cso_stream_plan
 from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
 from .constants import (
     CSO_HTTP_ERROR_THRESHOLD_DEFAULT,
@@ -37,6 +37,7 @@ from .events import emit_channel_stream_event, source_event_context
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
     redact_ingest_command_for_log,
+    terminate_ffmpeg_process,
 )
 from .hls import discover_hls_variants
 from .output import CsoOutputSession
@@ -46,6 +47,13 @@ from .policy import (
     resolve_vod_pipe_container,
     segmented_hls_segment_type,
     source_uses_segmented_handoff,
+)
+from .processes import (
+    cancel_and_await_tasks,
+    combine_cso_lifecycle_cleanup_results,
+    cso_lifecycle_cleanup_result,
+    mark_cso_ffmpeg_process_exited,
+    spawn_cso_ffmpeg_process,
 )
 from .segmented_handoff import SegmentedHandoffSession
 from .slate import cso_unavailable_duration_seconds, should_allow_unavailable_slate
@@ -319,6 +327,26 @@ class CsoIngestSession:
         async with self.lock:
             if self.running:
                 return
+            retained_tasks = (self.read_task, self.stderr_task, self.health_task)
+            retained_child = self.segmented_handoff_session
+            if (
+                self.process is not None
+                or retained_child is not None
+                or any(task is not None for task in retained_tasks)
+            ):
+                self.last_error = (
+                    "previous_process_teardown_unconfirmed"
+                    if self.process is not None
+                    else "previous_task_cleanup_unconfirmed"
+                )
+                logger.error(
+                    "CSO ingest start blocked by retained lifecycle ingest_key=%s pid=%s child=%s tasks=%s",
+                    self.key,
+                    getattr(self.process, "pid", None),
+                    retained_child is not None,
+                    sum(task is not None for task in retained_tasks),
+                )
+                return
             self.failover_failed_sources.clear()
             self.history.clear()
             self.history_bytes = 0
@@ -392,7 +420,7 @@ class CsoIngestSession:
                 "hls_list_size": 13,
             }
             self.ingest_policy = dict(segmented_policy)
-            self.segmented_handoff_session = SegmentedHandoffSession(
+            segmented_handoff_session = SegmentedHandoffSession(
                 key=f"{self.key}-segmented",
                 policy=segmented_policy,
                 input_target=source_url,
@@ -400,6 +428,7 @@ class CsoIngestSession:
                 user_agent=source_user_agent,
                 request_headers=source_headers,
             )
+            self.segmented_handoff_session = segmented_handoff_session
             logger.info(
                 "Starting segmented CSO ingest channel=%s source=%s policy=(%s) source_probe=%s input=%s",
                 self.channel_id,
@@ -408,12 +437,41 @@ class CsoIngestSession:
                 self.current_source_probe or {},
                 source_url,
             )
-            started = await self.segmented_handoff_session.start()
+            try:
+                started = await segmented_handoff_session.start()
+            except (asyncio.CancelledError, Exception):
+                try:
+                    cleanup = await segmented_handoff_session.stop(force=True, release_cache=False)
+                except Exception:
+                    logger.exception(
+                        "Failed to clean segmented CSO ingest after startup exception channel=%s ingest_key=%s",
+                        self.channel_id,
+                        self.key,
+                    )
+                else:
+                    self.process = segmented_handoff_session.process
+                    if cleanup.confirmed:
+                        if self.segmented_handoff_session is segmented_handoff_session:
+                            self.segmented_handoff_session = None
+                        self.process = None
+                        await segmented_handoff_session.release_cache()
+                    else:
+                        self.last_error = "segmented_handoff_start_exception:cleanup_unconfirmed"
+                raise
             if not started:
-                self.last_error = self.segmented_handoff_session.last_error or "segmented_handoff_start_failed"
+                cleanup = await segmented_handoff_session.stop(force=True, release_cache=False)
+                self.process = segmented_handoff_session.process
+                self.last_error = segmented_handoff_session.last_error or "segmented_handoff_start_failed"
+                if cleanup.confirmed:
+                    if self.segmented_handoff_session is segmented_handoff_session:
+                        self.segmented_handoff_session = None
+                    self.process = None
+                    await segmented_handoff_session.release_cache()
+                else:
+                    self.last_error = f"{self.last_error}:cleanup_unconfirmed"
                 return None
             self.running = True
-            self.process = self.segmented_handoff_session.process
+            self.process = segmented_handoff_session.process
             return self.process
         command = CsoFfmpegCommandBuilder(pipe_output_format=pipe_format).build_ingest_command(
             source_url,
@@ -429,8 +487,9 @@ class CsoIngestSession:
             self.current_source_probe or {},
             redact_ingest_command_for_log(command),
         )
-        return await asyncio.create_subprocess_exec(
+        return await spawn_cso_ffmpeg_process(
             *command,
+            label=f"ingest:{self.key}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -757,6 +816,8 @@ class CsoIngestSession:
                             **source_event_context(source, source_url=ingest_url),
                         },
                     )
+                    if self.segmented_handoff_session is not None:
+                        break
                     continue
 
             if not process:
@@ -774,8 +835,21 @@ class CsoIngestSession:
                 self.current_source_url = ""
                 self.current_capacity_key = None
                 self.running = False
-                self.process = None
                 await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source.id)
+                if self.segmented_handoff_session is not None:
+                    logger.error(
+                        "CSO ingest source fallback blocked by retained segmented lifecycle "
+                        "channel=%s ingest_key=%s source_id=%s pid=%s",
+                        self.channel_id,
+                        self.key,
+                        source.id,
+                        getattr(self.process, "pid", None),
+                    )
+                    return CsoStartResult(
+                        success=False,
+                        reason=source_failure_reason or "segmented_handoff_cleanup_unconfirmed",
+                    )
+                self.process = None
                 continue
             old_capacity_key = self.current_capacity_key
             old_source_id = getattr(self.current_source, "id", None)
@@ -994,14 +1068,32 @@ class CsoIngestSession:
                 **source_event_context(source, source_url=source_url),
             },
         )
-        try:
-            process.terminate()
-        except Exception:
-            pass
+        teardown = await terminate_ffmpeg_process(
+            process,
+            terminate_timeout_seconds=2.0,
+            kill_timeout_seconds=2.0,
+        )
+        if not teardown.confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.running = False
+                    self.last_error = f"health_failover_teardown_unconfirmed:{reason}"
+            logger.error(
+                "CSO ingest health failover teardown unconfirmed channel=%s ingest_key=%s "
+                "source_id=%s pid=%s reason=%s failure=%s",
+                self.channel_id,
+                self.key,
+                getattr(source, "id", None),
+                getattr(process, "pid", None),
+                reason,
+                teardown.failure,
+            )
+        return teardown
 
     async def _read_loop(self, token, process):
         saw_data = False
         return_code = None
+        process_exit_confirmed = process is None
         try:
             while self.running and token == self.process_token and process and process.stdout:
                 chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
@@ -1042,13 +1134,23 @@ class CsoIngestSession:
                 self.last_chunk_ts = time.time()
                 await self._broadcast(chunk)
         finally:
-            if process:
-                try:
-                    return_code = process.returncode
-                    if return_code is None:
-                        return_code = await process.wait()
-                except Exception:
-                    return_code = None
+            current_task = asyncio.current_task()
+            if process and not (current_task is not None and current_task.cancelling()):
+                return_code = process.returncode
+                process_exit_confirmed = mark_cso_ffmpeg_process_exited(process)
+
+        if process and not process_exit_confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.running = False
+                    self.last_error = "ingest_reader_exit_teardown_unconfirmed"
+            logger.error(
+                "CSO ingest reader exit left process group alive channel=%s ingest_key=%s pid=%s",
+                self.channel_id,
+                self.key,
+                getattr(process, "pid", None),
+            )
+            return
 
         if token != self.process_token:
             return
@@ -1460,13 +1562,28 @@ class CsoIngestSession:
 
     async def stop(self, force=False):
         async with self.lock:
-            if not self.running and not self.process and not self.subscribers and not self.lifecycle_references:
+            if (
+                not self.running
+                and not self.process
+                and not self.subscribers
+                and not self.lifecycle_references
+                and self.segmented_handoff_session is None
+                and self.read_task is None
+                and self.stderr_task is None
+                and self.health_task is None
+            ):
                 return
             if not force and (self.subscribers or self.lifecycle_references):
                 return
             self.running = False
+            self.process_token += 1
             process = self.process
-            self.process = None
+            read_task = self.read_task
+            self.read_task = None
+            stderr_task = self.stderr_task
+            self.stderr_task = None
+            health_task = self.health_task
+            self.health_task = None
             capacity_key = self.current_capacity_key
             self.current_capacity_key = None
             source_id = getattr(self.current_source, "id", None)
@@ -1515,33 +1632,31 @@ class CsoIngestSession:
             force,
         )
         return_code = None
+        process_teardown = None
+        child_cleanup = None
         if segmented_handoff_session is not None:
-            await segmented_handoff_session.stop(force=True)
-        if process:
-            try:
-                process.terminate()
-                return_code = await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-            except Exception:
-                try:
-                    process.kill()
-                    return_code = await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-                except Exception:
-                    logger.warning(
-                        "CSO ingest process did not exit after kill channel=%s ingest_key=%s",
-                        self.channel_id,
-                        self.key,
-                    )
-                    pass
-        health_task = self.health_task
-        self.health_task = None
-        if health_task and not health_task.done():
-            health_task.cancel()
-            try:
-                await health_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+            child_cleanup = await segmented_handoff_session.stop(force=True, release_cache=False)
+        elif process:
+            process_teardown = await terminate_ffmpeg_process(process)
+        task_cleanup = await cancel_and_await_tasks((read_task, stderr_task, health_task))
+        lifecycle_cleanup = combine_cso_lifecycle_cleanup_results(
+            child_cleanup,
+            cso_lifecycle_cleanup_result(process_teardown, task_cleanup),
+        )
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            async with self.lock:
+                self.read_task = read_task if read_task in pending_tasks else None
+                self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                self.health_task = health_task if health_task in pending_tasks else None
+        return_code = lifecycle_cleanup.return_code
+        async with self.lock:
+            if child_cleanup is not None and not lifecycle_cleanup.confirmed:
+                self.segmented_handoff_session = segmented_handoff_session
+            if lifecycle_cleanup.process_cleanup_confirmed and self.process is process:
+                self.process = None
+        if lifecycle_cleanup.confirmed and segmented_handoff_session is not None:
+            await segmented_handoff_session.release_cache()
         logger.info(
             "CSO ingest upstream disconnected channel=%s ingest_key=%s source_id=%s return_code=%s",
             self.channel_id,
@@ -1549,3 +1664,4 @@ class CsoIngestSession:
             source_id,
             return_code,
         )
+        return lifecycle_cleanup

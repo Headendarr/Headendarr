@@ -13,7 +13,7 @@ from backend.hls_multiplexer import get_header_value
 from backend.http_headers import sanitise_headers
 from backend.utils import clean_key, clean_text, convert_to_int, utc_now_naive
 
-from .common import resolve_cso_unavailable_logo_path, wait_process_exit_with_timeout, wrap_slate_words
+from .common import resolve_cso_unavailable_logo_path, wrap_slate_words
 from .constants import (
     CONTAINER_TO_FFMPEG_FORMAT,
     CSO_HLS_LIST_SIZE,
@@ -30,6 +30,7 @@ from .constants import (
     MPEGTS_CHUNK_BYTES,
 )
 from .policy import policy_ffmpeg_format
+from .processes import CsoTaskCleanupResult, cancel_and_await_tasks, terminate_cso_ffmpeg_process
 from .types import HwaccelFailureStateEntry
 
 
@@ -207,6 +208,11 @@ async def start_ffmpeg_with_hw_decode_fallback(
         success, result, failure_reason = await attempt_start(start_policy)
         if success:
             return True, dict(start_policy), result, ""
+        if any(
+            marker in clean_text(failure_reason).lower()
+            for marker in ("teardown_unconfirmed", "task_cleanup_unconfirmed")
+        ):
+            return False, dict(start_policy), None, failure_reason
         failure_is_hwaccel = _is_cacheable_hwaccel_failure(failure_reason)
         if attempted_hw_decode and bool(start_policy.get("hardware_decode", True)):
             if hwaccel_failure_key and failure_is_hwaccel:
@@ -227,60 +233,60 @@ async def start_ffmpeg_with_hw_decode_fallback(
         return False, dict(start_policy), None, failure_reason or "output_start_failed"
 
 
-async def terminate_ffmpeg_process(process: Any):
-    if process is None:
-        return
-    try:
-        if process.returncode is None:
-            process.terminate()
-            await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-    except Exception:
-        try:
-            if process.returncode is None:
-                process.kill()
-                await wait_process_exit_with_timeout(process, timeout_seconds=2.0)
-        except Exception:
-            pass
+async def terminate_ffmpeg_process(
+    process: Any,
+    *,
+    terminate_timeout_seconds: float = 2.0,
+    kill_timeout_seconds: float = 2.0,
+):
+    return await terminate_cso_ffmpeg_process(
+        process,
+        terminate_timeout_seconds=terminate_timeout_seconds,
+        kill_timeout_seconds=kill_timeout_seconds,
+    )
 
 
 async def wait_for_process_output_start(
     process: Any,
     stream: Any,
     timeout_seconds: float = 8.0,
-) -> tuple[bool, str, bytes]:
+    cleanup_results: list[CsoTaskCleanupResult] | None = None,
+) -> tuple[bool, str, bytes, CsoTaskCleanupResult]:
     first_chunk = b""
     read_task = asyncio.create_task(stream.read(MPEGTS_CHUNK_BYTES))
     wait_task = asyncio.create_task(process.wait())
+    started = False
+    failure_reason = "startup_timeout_no_output"
     try:
-        done, pending = await asyncio.wait(
+        done, _ = await asyncio.wait(
             {read_task, wait_task},
             timeout=max(1.0, float(timeout_seconds)),
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for task in pending:
-            task.cancel()
         if read_task in done and not read_task.cancelled():
             try:
                 first_chunk = read_task.result() or b""
             except Exception:
                 first_chunk = b""
             if first_chunk:
-                wait_task.cancel()
-                return True, "", first_chunk
-        if wait_task in done and not wait_task.cancelled():
+                started = True
+                failure_reason = ""
+        if not started and wait_task in done and not wait_task.cancelled():
             try:
                 return_code = wait_task.result()
             except Exception:
                 return_code = process.returncode
-            return False, f"ffmpeg_exit:{return_code}", b""
+            failure_reason = f"ffmpeg_exit:{return_code}"
     finally:
-        if not read_task.done():
-            read_task.cancel()
-        if not wait_task.done():
-            wait_task.cancel()
-    if process.returncode is not None:
-        return False, f"ffmpeg_exit:{process.returncode}", b""
-    return False, "startup_timeout_no_output", b""
+        task_cleanup = await cancel_and_await_tasks((read_task, wait_task))
+        if cleanup_results is not None:
+            cleanup_results.append(task_cleanup)
+    if not task_cleanup.confirmed:
+        started = False
+        failure_reason = f"{failure_reason or 'startup_probe_completed'}:task_cleanup_unconfirmed"
+    elif not started and process.returncode is not None:
+        failure_reason = f"ffmpeg_exit:{process.returncode}"
+    return started, failure_reason, first_chunk if started else b"", task_cleanup
 
 
 def log_hwaccel_failure(policy: dict[str, Any] | None, context: str, reason: str):

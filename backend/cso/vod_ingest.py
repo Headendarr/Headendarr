@@ -13,7 +13,6 @@ from .common import (
     ByteBudgetQueue,
     prepare_cso_cache_dir,
     remove_cso_cache_dir,
-    wait_process_exit_with_timeout,
 )
 from .constants import (
     CSO_HLS_LIST_SIZE,
@@ -30,11 +29,20 @@ from .ffmpeg import (
     CsoFfmpegCommandBuilder,
     redact_ingest_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
+    terminate_ffmpeg_process,
     wait_for_process_output_start,
 )
 from .live_ingest import resolve_cso_ingest_headers, resolve_cso_ingest_user_agent
 from .output import CsoOutputSession, policy_log_label
 from .policy import generate_vod_channel_ingest_policy, should_prefer_direct_vod_url_input
+from .processes import (
+    cancel_and_await_tasks,
+    combine_cso_lifecycle_cleanup_results,
+    cso_lifecycle_cleanup_result,
+    mark_cso_ffmpeg_process_exited,
+    retained_cso_ffmpeg_process,
+    spawn_cso_ffmpeg_process,
+)
 from .segmented_handoff import SegmentedHandoffSession
 from .sources import cso_source_from_vod_source
 from .vod_cache import vod_cache_manager, warm_vod_cache
@@ -74,6 +82,7 @@ class VodIngestSession:
         self.process = None
         self.stderr_task = None
         self.stdout_task = None
+        self.startup_tasks = ()
         self.running = False
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
@@ -123,6 +132,13 @@ class VodIngestSession:
                 self.last_activity = time.time()
                 await self._output_queue.put(chunk)
         finally:
+            current_task = asyncio.current_task()
+            if current_task is None or not current_task.cancelling():
+                process_exited = mark_cso_ffmpeg_process_exited(process)
+                async with self.lock:
+                    self.running = False
+                    if self.process is process and process_exited:
+                        self.process = None
             try:
                 self._output_queue.put_nowait(None)
             except Exception:
@@ -132,6 +148,54 @@ class VodIngestSession:
         async with self.lock:
             if self.running:
                 return True
+            previous_process = self.process
+            if previous_process is None:
+                previous_process = retained_cso_ffmpeg_process(f"vod-ingest:{self.key}")
+            previous_stderr_task = self.stderr_task
+            previous_stdout_task = self.stdout_task
+            previous_warm_task = self._warm_task
+            previous_startup_tasks = self.startup_tasks
+            if previous_process is not None:
+                self.process = previous_process
+                teardown = await terminate_ffmpeg_process(
+                    previous_process,
+                    terminate_timeout_seconds=1.0,
+                    kill_timeout_seconds=1.0,
+                )
+                if not teardown.confirmed:
+                    self.last_error = "previous_process_teardown_unconfirmed"
+                    logger.error(
+                        "VOD ingest start blocked by retained process key=%s pid=%s failure=%s",
+                        self.key,
+                        getattr(previous_process, "pid", None),
+                        teardown.failure,
+                    )
+                    return False
+            retained_tasks = (
+                previous_stderr_task,
+                previous_stdout_task,
+                previous_warm_task,
+                *previous_startup_tasks,
+            )
+            if any(task is not None for task in retained_tasks):
+                task_cleanup = await cancel_and_await_tasks(retained_tasks)
+                if not task_cleanup.confirmed:
+                    pending_tasks = set(task_cleanup.pending_tasks)
+                    self.stderr_task = previous_stderr_task if previous_stderr_task in pending_tasks else None
+                    self.stdout_task = previous_stdout_task if previous_stdout_task in pending_tasks else None
+                    self._warm_task = previous_warm_task if previous_warm_task in pending_tasks else None
+                    self.startup_tasks = tuple(task for task in previous_startup_tasks if task in pending_tasks)
+                    self.last_error = "previous_task_cleanup_unconfirmed"
+                    return False
+            if self.process is previous_process:
+                self.process = None
+            if self.stderr_task is previous_stderr_task:
+                self.stderr_task = None
+            if self.stdout_task is previous_stdout_task:
+                self.stdout_task = None
+            if self._warm_task is previous_warm_task:
+                self._warm_task = None
+            self.startup_tasks = ()
             self.running = True
             self._output_queue = asyncio.Queue(maxsize=16)
             self.last_error = None
@@ -192,21 +256,59 @@ class VodIngestSession:
                     policy_log_label(effective_policy),
                     redact_ingest_command_for_log(command) if input_is_url else command,
                 )
-                process = await asyncio.create_subprocess_exec(
+                process = await spawn_cso_ffmpeg_process(
                     *command,
+                    label=f"vod-ingest:{self.key}",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
+                self.process = process
                 stderr_task = asyncio.create_task(
                     self._read_stderr(process),
                     name=f"vod-ingest-stderr-{self.key}",
                 )
+                self.stderr_task = stderr_task
                 startup_timeout_seconds = 20.0 if use_direct_upstream_input else 10.0
-                started, startup_failure_reason, startup_chunk = await wait_for_process_output_start(
-                    process,
-                    process.stdout,
-                    timeout_seconds=startup_timeout_seconds,
-                )
+                startup_cleanup_results = []
+                try:
+                    startup_result = await wait_for_process_output_start(
+                        process,
+                        process.stdout,
+                        timeout_seconds=startup_timeout_seconds,
+                        cleanup_results=startup_cleanup_results,
+                    )
+                    started, startup_failure_reason, startup_chunk = startup_result[:3]
+                    if len(startup_result) > 3 and not startup_cleanup_results:
+                        startup_cleanup_results.append(startup_result[3])
+                    self.startup_tasks = startup_cleanup_results[-1].pending_tasks if startup_cleanup_results else ()
+                except asyncio.CancelledError:
+                    self.startup_tasks = startup_cleanup_results[-1].pending_tasks if startup_cleanup_results else ()
+                    teardown = await terminate_ffmpeg_process(
+                        process,
+                        terminate_timeout_seconds=1.0,
+                        kill_timeout_seconds=1.0,
+                    )
+                    startup_tasks = self.startup_tasks
+                    self.startup_tasks = ()
+                    task_cleanup = await cancel_and_await_tasks((stderr_task, *startup_tasks))
+                    if teardown.confirmed:
+                        if self.process is process:
+                            self.process = None
+                    if teardown.confirmed and task_cleanup.confirmed:
+                        if self.stderr_task is stderr_task:
+                            self.stderr_task = None
+                        self.startup_tasks = ()
+                    else:
+                        if not task_cleanup.confirmed:
+                            self.stderr_task = stderr_task if stderr_task in task_cleanup.pending_tasks else None
+                            self.startup_tasks = tuple(
+                                task for task in startup_tasks if task in task_cleanup.pending_tasks
+                            )
+                        cleanup_reason = (
+                            "teardown_unconfirmed" if not teardown.confirmed else "task_cleanup_unconfirmed"
+                        )
+                        self.last_error = f"ingest_start_cancelled:{cleanup_reason}"
+                    raise
                 if started:
                     return True, (process, stderr_task, startup_chunk), ""
 
@@ -215,14 +317,29 @@ class VodIngestSession:
                     self.source_id,
                     startup_failure_reason or "unknown",
                 )
-                if stderr_task is not None and not stderr_task.done():
-                    stderr_task.cancel()
-                if process.returncode is None:
-                    try:
-                        process.terminate()
-                        await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-                    except Exception:
-                        pass
+                teardown = await terminate_ffmpeg_process(
+                    process,
+                    terminate_timeout_seconds=1.0,
+                    kill_timeout_seconds=1.0,
+                )
+                startup_tasks = self.startup_tasks
+                self.startup_tasks = ()
+                task_cleanup = await cancel_and_await_tasks((stderr_task, *startup_tasks))
+                if teardown.confirmed:
+                    if self.process is process:
+                        self.process = None
+                if teardown.confirmed and task_cleanup.confirmed:
+                    if self.stderr_task is stderr_task:
+                        self.stderr_task = None
+                    self.startup_tasks = ()
+                elif not teardown.confirmed:
+                    startup_failure_reason = f"{startup_failure_reason or 'ingest_start_failed'}:teardown_unconfirmed"
+                else:
+                    self.stderr_task = stderr_task if stderr_task in task_cleanup.pending_tasks else None
+                    self.startup_tasks = tuple(task for task in startup_tasks if task in task_cleanup.pending_tasks)
+                    startup_failure_reason = (
+                        f"{startup_failure_reason or 'ingest_start_failed'}:task_cleanup_unconfirmed"
+                    )
                 return False, None, startup_failure_reason
 
             # Respect global HW decode policy
@@ -277,28 +394,36 @@ class VodIngestSession:
     async def stop(self, force: bool = False):
         async with self.lock:
             self.running = False
-            for task in (self.stderr_task, self.stdout_task, self._warm_task):
-                if task is not None and not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except BaseException:
-                        pass
-            if self.process is not None and self.process.returncode is None:
-                try:
-                    self.process.terminate()
-                    await wait_process_exit_with_timeout(self.process, timeout_seconds=1.0)
-                except Exception:
-                    try:
-                        self.process.kill()
-                        await wait_process_exit_with_timeout(self.process, timeout_seconds=1.0)
-                    except Exception:
-                        pass
-            self.process = None
+            process = self.process
+            stderr_task = self.stderr_task
+            stdout_task = self.stdout_task
+            warm_task = self._warm_task
+            startup_tasks = self.startup_tasks
             self.stderr_task = None
             self.stdout_task = None
             self._warm_task = None
+            self.startup_tasks = ()
             self.last_reader_end_ts = time.time()
+        teardown = None
+        if process is not None:
+            teardown = await terminate_ffmpeg_process(
+                process,
+                terminate_timeout_seconds=1.0,
+                kill_timeout_seconds=1.0,
+            )
+        task_cleanup = await cancel_and_await_tasks((stderr_task, stdout_task, warm_task, *startup_tasks))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            async with self.lock:
+                self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                self.stdout_task = stdout_task if stdout_task in pending_tasks else None
+                self._warm_task = warm_task if warm_task in pending_tasks else None
+                self.startup_tasks = tuple(task for task in startup_tasks if task in pending_tasks)
+        if process is not None and teardown is not None and teardown.confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.process = None
+        return cso_lifecycle_cleanup_result(teardown, task_cleanup)
 
 
 class Vod247ChannelManager:
@@ -354,6 +479,7 @@ class Vod247ChannelManager:
         self._startup_succeeded = False
         self._warm_task = None
         self._active_ingest = None
+        self._retained_runtimes = []
         self.segment_stitch_task = None
         self.canonical_output_shape = {}
         self.segment_cache_root = Path(CSO_SEGMENT_CACHE_ROOT) / self.key
@@ -809,7 +935,36 @@ class Vod247ChannelManager:
     async def start(self):
         async with self.lifecycle_lock:
             async with self.lock:
+                if self.segment_task is not None and self.segment_task.done():
+                    self.segment_task = None
                 if self.running and self.segment_task is not None and not self.segment_task.done():
+                    return
+                if (
+                    self.process is not None
+                    or self._active_ingest is not None
+                    or self._retained_runtimes
+                    or self.segment_task is not None
+                    or self._warm_task is not None
+                    or self.segment_stitch_task is not None
+                ):
+                    self.last_error = "previous_lifecycle_cleanup_unconfirmed"
+                    logger.error(
+                        "VOD channel start blocked by retained lifecycle channel=%s ingest_key=%s pid=%s "
+                        "active_ingest=%s retained_runtimes=%s tasks=%s",
+                        self.channel_id,
+                        self.key,
+                        getattr(self.process, "pid", None),
+                        self._active_ingest is not None,
+                        len(self._retained_runtimes),
+                        sum(
+                            task is not None
+                            for task in (
+                                self.segment_task,
+                                self._warm_task,
+                                self.segment_stitch_task,
+                            )
+                        ),
+                    )
                     return
                 self.running = True
                 self.last_error = None
@@ -890,39 +1045,71 @@ class Vod247ChannelManager:
             or "aac",
         }
 
-    async def _close_runtime(self, runtime):
+    async def _close_runtime(self, runtime, *, retain_on_failure=True):
         if not runtime:
-            return
-        for task_name in ("prefetch_reader_task", "warm_task", "stitch_task"):
-            task = runtime.get(task_name)
-            if task is None or task.done():
-                continue
-            task.cancel()
+            return None
+        ingest = runtime.get("segment_session")
+        runtime_tasks = tuple(
+            runtime.get(task_name)
+            for task_name in (
+                "prefetch_reader_task",
+                "warm_task",
+                "stitch_task",
+                "prepared_task",
+            )
+        )
+        if ingest is None:
+            runtime_tasks += (runtime.get("stderr_task"),)
+        task_cleanup = await cancel_and_await_tasks(runtime_tasks)
+        prepared_runtime_cleanup = None
+        prepared_task = runtime.get("prepared_task")
+        if prepared_task is not None and prepared_task.done() and not prepared_task.cancelled():
             try:
-                await task
+                prepared_runtime = prepared_task.result()
             except BaseException:
-                pass
+                prepared_runtime = None
+            if prepared_runtime is not None:
+                runtime["prepared_runtime"] = prepared_runtime
+                prepared_runtime_cleanup = await self._close_runtime(
+                    prepared_runtime,
+                    retain_on_failure=False,
+                )
         queue = runtime.get("prefetch_queue")
         if queue is not None:
             try:
                 await queue.put_eof()
             except Exception:
                 pass
-        ingest = runtime.get("segment_session")
         if ingest is not None:
-            await ingest.stop(force=True)
-            return
-        process = runtime.get("process")
-        if process is not None and process.returncode is None:
-            try:
-                process.terminate()
-                await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await wait_process_exit_with_timeout(process, timeout_seconds=1.0)
-                except Exception:
-                    pass
+            if isinstance(ingest, SegmentedHandoffSession):
+                ingest_cleanup = await ingest.stop(force=True, release_cache=False)
+            else:
+                ingest_cleanup = await ingest.stop(force=True)
+        else:
+            process = runtime.get("process")
+            process_teardown = None
+            if process is not None:
+                process_teardown = await terminate_ffmpeg_process(
+                    process,
+                    terminate_timeout_seconds=1.0,
+                    kill_timeout_seconds=1.0,
+                )
+                if process_teardown.confirmed and runtime.get("process") is process:
+                    runtime["process"] = None
+            ingest_cleanup = cso_lifecycle_cleanup_result(process_teardown)
+        lifecycle_cleanup = combine_cso_lifecycle_cleanup_results(
+            ingest_cleanup,
+            prepared_runtime_cleanup,
+            task_cleanup=task_cleanup,
+        )
+        if lifecycle_cleanup.confirmed and isinstance(ingest, SegmentedHandoffSession):
+            await ingest.release_cache()
+        if not lifecycle_cleanup.confirmed and retain_on_failure:
+            if runtime not in self._retained_runtimes:
+                self._retained_runtimes.append(runtime)
+        elif runtime in self._retained_runtimes:
+            self._retained_runtimes.remove(runtime)
+        return lifecycle_cleanup
 
     async def _buffer_prefetched_runtime(self, runtime):
         ingest = runtime.get("segment_session")
@@ -1020,7 +1207,7 @@ class Vod247ChannelManager:
         owner_key = f"vod-channel-current-{self.channel_id}-{int(entry.get('start_ts') or 0)}"
         source = await cso_source_from_vod_source(candidate, upstream_url)
         if source is None:
-            return None, None
+            return None, None, None
         cache_entry = await vod_cache_manager.get_or_create(source, source.url)
         warm_task = asyncio.create_task(
             warm_vod_cache(candidate, upstream_url, owner_key=owner_key),
@@ -1041,7 +1228,7 @@ class Vod247ChannelManager:
                 await warm_task
             except Exception:
                 pass
-        return source, cache_entry
+        return source, cache_entry, warm_task
 
     async def _build_segment_runtime(self, playback, segment_index, activate_session_state=True):
         candidate = playback.get("candidate")
@@ -1056,12 +1243,14 @@ class Vod247ChannelManager:
         if candidate is None or not upstream_url or source_item is None:
             return None
 
-        source, cache_entry = await self._start_current_cache_download(
+        source, cache_entry, warm_task = await self._start_current_cache_download(
             candidate,
             upstream_url,
             entry,
             wait_for_ready=offset_seconds <= 0,
         )
+        if source is None or cache_entry is None:
+            return None
         input_target = source.url
         if cache_entry.complete and cache_entry.final_path.exists():
             input_target = str(cache_entry.final_path)
@@ -1079,31 +1268,6 @@ class Vod247ChannelManager:
             max_duration_seconds=remaining_seconds,
             realtime=True,
         )
-        started = await segment_session.start()
-        if not started:
-            return None
-        output_probe = await segment_session.detect_output_probe()
-        source_probe = dict(source.probe_details or {})
-        if float(output_probe.get("fps") or 0.0) <= 0.0:
-            fallback_fps = float(source_probe.get("fps") or 0.0)
-            if fallback_fps > 0.0:
-                output_probe["fps"] = fallback_fps
-                avg_frame_rate = clean_text(source_probe.get("avg_frame_rate"))
-                if avg_frame_rate:
-                    output_probe["avg_frame_rate"] = avg_frame_rate
-        if not self.canonical_output_shape:
-            self.canonical_output_shape = dict(output_probe or {})
-        elif not self._canonical_shape_matches(output_probe):
-            logger.warning(
-                "VOD channel prepared runtime shape mismatch channel=%s start_ts=%s expected=%s observed=%s",
-                self.channel_id,
-                entry_start_ts,
-                self.canonical_output_shape,
-                output_probe,
-            )
-            await segment_session.stop(force=True)
-            return None
-
         runtime = {
             "segment_session": segment_session,
             "entry": entry,
@@ -1111,15 +1275,70 @@ class Vod247ChannelManager:
             "source": source,
             "input_target": input_target,
             "pipe_container": "hls",
-            "source_probe": dict(output_probe or source_probe or {}),
+            "source_probe": dict(source.probe_details or {}),
+            "warm_task": warm_task,
         }
-        runtime["stitch_task"] = asyncio.create_task(
-            self._append_runtime_segments(runtime, discontinuity=segment_index > 0),
-            name=f"vod-channel-stitch-{self.channel_id}-{segment_index}",
-        )
-        if activate_session_state:
-            self._activate_runtime(runtime)
-        return runtime
+        self._retained_runtimes.append(runtime)
+        try:
+            started = await segment_session.start()
+            if not started:
+                cleanup = await self._close_runtime(runtime)
+                if cleanup is not None and not cleanup.confirmed:
+                    self.last_error = "vod_segment_start_failed:cleanup_unconfirmed"
+                    self.running = False
+                return None
+            output_probe = await segment_session.detect_output_probe()
+            source_probe = dict(source.probe_details or {})
+            if float(output_probe.get("fps") or 0.0) <= 0.0:
+                fallback_fps = float(source_probe.get("fps") or 0.0)
+                if fallback_fps > 0.0:
+                    output_probe["fps"] = fallback_fps
+                    avg_frame_rate = clean_text(source_probe.get("avg_frame_rate"))
+                    if avg_frame_rate:
+                        output_probe["avg_frame_rate"] = avg_frame_rate
+            if not self.canonical_output_shape:
+                self.canonical_output_shape = dict(output_probe or {})
+            elif not self._canonical_shape_matches(output_probe):
+                logger.warning(
+                    "VOD channel prepared runtime shape mismatch channel=%s start_ts=%s expected=%s observed=%s",
+                    self.channel_id,
+                    entry_start_ts,
+                    self.canonical_output_shape,
+                    output_probe,
+                )
+                cleanup = await self._close_runtime(runtime)
+                if cleanup is not None and not cleanup.confirmed:
+                    self.last_error = "vod_segment_shape_mismatch:cleanup_unconfirmed"
+                    self.running = False
+                return None
+
+            runtime["source_probe"] = dict(output_probe or source_probe or {})
+            runtime["stitch_task"] = asyncio.create_task(
+                self._append_runtime_segments(runtime, discontinuity=segment_index > 0),
+                name=f"vod-channel-stitch-{self.channel_id}-{segment_index}",
+            )
+            if activate_session_state:
+                self._activate_runtime(runtime)
+            self._retained_runtimes.remove(runtime)
+            return runtime
+        except (asyncio.CancelledError, Exception):
+            try:
+                cleanup = await self._close_runtime(runtime)
+            except Exception:
+                logger.exception(
+                    "Failed to clean VOD segment runtime after construction exception "
+                    "channel=%s ingest_key=%s segment_index=%s",
+                    self.channel_id,
+                    self.key,
+                    segment_index,
+                )
+                self.running = False
+                self.last_error = "vod_segment_construction_exception:cleanup_failed"
+            else:
+                if cleanup is not None and not cleanup.confirmed:
+                    self.running = False
+                    self.last_error = "vod_segment_construction_exception:cleanup_unconfirmed"
+            raise
 
     async def _skip_near_boundary_start(self, playback):
         entry = (playback or {}).get("entry") or {}
@@ -1245,11 +1464,11 @@ class Vod247ChannelManager:
                     return prepared_task.result()
                 except BaseException:
                     return None
-            prepared_task.cancel()
-            try:
-                await prepared_task
-            except BaseException:
-                pass
+            task_cleanup = await cancel_and_await_tasks((prepared_task,))
+            if not task_cleanup.confirmed:
+                retained_runtime = {"prepared_task": prepared_task}
+                if retained_runtime not in self._retained_runtimes:
+                    self._retained_runtimes.append(retained_runtime)
             return None
         try:
             return prepared_task.result()
@@ -1315,12 +1534,41 @@ class Vod247ChannelManager:
             "stderr_task": self.stderr_task,
             "stitch_task": self.segment_stitch_task,
         }
+        lifecycle_cleanup = await self._close_runtime(runtime, retain_on_failure=False)
+        ingest = runtime.get("segment_session")
+        retained_process = ingest.process if ingest is not None else runtime.get("process")
+        if lifecycle_cleanup is not None and not lifecycle_cleanup.confirmed:
+            self.last_error = (
+                "vod_segment_teardown_unconfirmed"
+                if any(not result.confirmed for result in lifecycle_cleanup.process_teardowns)
+                else "vod_segment_task_cleanup_unconfirmed"
+            )
+            self.running = False
+            self._active_ingest = ingest
+            self.process = retained_process
+            self._warm_task = runtime.get("warm_task")
+            self.stderr_task = ingest.stderr_task if ingest is not None else runtime.get("stderr_task")
+            self.segment_stitch_task = runtime.get("stitch_task")
+            logger.error(
+                "VOD channel segment lifecycle cleanup unconfirmed channel=%s ingest_key=%s pid=%s failure=%s",
+                self.channel_id,
+                self.key,
+                getattr(retained_process, "pid", None),
+                lifecycle_cleanup.failure,
+            )
+            return lifecycle_cleanup
         self._active_ingest = None
         self.process = None
         self._warm_task = None
         self.stderr_task = None
         self.segment_stitch_task = None
-        await self._close_runtime(runtime)
+        return lifecycle_cleanup
+
+    async def _release_completed_segment_task_owner(self):
+        current_task = asyncio.current_task()
+        async with self.lock:
+            if self.segment_task is current_task:
+                self.segment_task = None
 
     async def _run_loop(self):
         from backend.vod_channels import resolve_vod_channel_playback_target
@@ -1334,6 +1582,7 @@ class Vod247ChannelManager:
             if startup_event is not None:
                 startup_event.set()
             await self._finish_session()
+            await self._release_completed_segment_task_owner()
             return
         playback = await self._skip_near_boundary_start(playback)
         if not playback:
@@ -1342,10 +1591,12 @@ class Vod247ChannelManager:
             if startup_event is not None:
                 startup_event.set()
             await self._finish_session()
+            await self._release_completed_segment_task_owner()
             return
 
         segment_index = 0
         prepared_task = None
+        next_warm_task = None
         try:
             prepared_runtime = None
             while self.running and playback:
@@ -1358,7 +1609,8 @@ class Vod247ChannelManager:
                         self._activate_runtime(runtime)
                     prepared_runtime = None
                     if runtime is None:
-                        self.last_error = "vod_channel_segment_unavailable"
+                        if not self.last_error:
+                            self.last_error = "vod_channel_segment_unavailable"
                         self.running = False
                         if startup_event is not None:
                             startup_event.set()
@@ -1416,13 +1668,10 @@ class Vod247ChannelManager:
                     )
 
                     if not self.running:
-                        if next_warm_task is not None and not next_warm_task.done():
-                            next_warm_task.cancel()
-                            try:
-                                await next_warm_task
-                            except BaseException:
-                                pass
+                        await self._close_runtime({"warm_task": next_warm_task})
+                        next_warm_task = None
                         await self._close_runtime(await self._take_prepared_runtime(prepared_task))
+                        prepared_task = None
                         break
                     wait_timeout_seconds = 8.0 if current_playback.get("next_entry") else 0.0
                     prepared_runtime = await self._take_prepared_runtime(
@@ -1430,12 +1679,8 @@ class Vod247ChannelManager:
                         wait_timeout_seconds=wait_timeout_seconds,
                     )
                     prepared_task = None
-                    if next_warm_task is not None and not next_warm_task.done():
-                        next_warm_task.cancel()
-                        try:
-                            await next_warm_task
-                        except BaseException:
-                            pass
+                    await self._close_runtime({"warm_task": next_warm_task})
+                    next_warm_task = None
                     if prepared_runtime is not None:
                         next_entry = prepared_runtime.get("entry") or {}
                         boundary_delta_seconds = 0
@@ -1450,13 +1695,22 @@ class Vod247ChannelManager:
                             int(next_entry.get("source_item_id") or 0),
                             boundary_delta_seconds,
                         )
-                        await self._close_active_segment()
+                        teardown = await self._close_active_segment()
+                        if teardown is not None and not teardown.confirmed:
+                            await self._close_runtime(prepared_runtime)
+                            prepared_runtime = None
+                            break
                         playback = prepared_runtime.get("playback")
                         segment_index += 1
                         continue
 
                     next_playback = await self._wait_for_next_playback(current_entry)
-                    await self._close_active_segment()
+                    teardown = await self._close_active_segment()
+                    if teardown is not None and not teardown.confirmed:
+                        if prepared_runtime is not None:
+                            await self._close_runtime(prepared_runtime)
+                            prepared_runtime = None
+                        break
                     if prepared_runtime is not None and (
                         next_playback is None
                         or self._entry_identity(prepared_runtime.get("entry"))
@@ -1475,8 +1729,9 @@ class Vod247ChannelManager:
                 startup_event.set()
         finally:
             self.running = False
-            if prepared_task is not None and not prepared_task.done():
-                prepared_task.cancel()
+            if next_warm_task is not None:
+                await self._close_runtime({"warm_task": next_warm_task})
+            if prepared_task is not None:
                 try:
                     await self._close_runtime(await self._take_prepared_runtime(prepared_task))
                 except BaseException:
@@ -1484,38 +1739,66 @@ class Vod247ChannelManager:
             async with self.playlist_lock:
                 await self._write_stitched_playlist(endlist=True)
             await self._finish_session()
+            await self._release_completed_segment_task_owner()
 
     async def _finish_session(self):
-        await self._close_active_segment()
+        lifecycle_cleanup = await self._close_active_segment()
         async with self.lock:
+            cleanup_confirmed = (
+                lifecycle_cleanup is None or lifecycle_cleanup.confirmed
+            ) and not self._retained_runtimes
             subscribers = list(self.subscribers.values())
             self.subscribers = {}
             self.lifecycle_references = set()
-            self.current_source = None
-            self.current_source_url = ""
-            self.current_source_probe = {}
             self.history.clear()
             self.history_bytes = 0
             self.failover_exhausted = bool(self.last_error)
-            self.canonical_output_shape = {}
+            if cleanup_confirmed:
+                self.current_source = None
+                self.current_source_url = ""
+                self.current_source_probe = {}
+                self.canonical_output_shape = {}
         for queue in subscribers:
             await queue.put_eof()
-        await remove_cso_cache_dir(self.segment_cache_root, logger, f"vod-247:{self.key}")
+        if cleanup_confirmed:
+            await remove_cso_cache_dir(self.segment_cache_root, logger, f"vod-247:{self.key}")
+        return lifecycle_cleanup
 
     async def stop(self, force: bool = False):
         async with self.lifecycle_lock:
             async with self.lock:
-                if not self.running and self.segment_task is None and not self.subscribers:
+                if (
+                    not self.running
+                    and self.segment_task is None
+                    and not self.process
+                    and not self._active_ingest
+                    and not self._retained_runtimes
+                    and not self.subscribers
+                    and self._warm_task is None
+                    and self.segment_stitch_task is None
+                ):
                     return
                 if not force and self.subscribers:
                     return
                 self.running = False
                 segment_task = self.segment_task
                 self.segment_task = None
-            await self._close_active_segment()
-            if segment_task is not None and not segment_task.done():
-                segment_task.cancel()
-                try:
-                    await segment_task
-                except BaseException:
-                    pass
+            lifecycle_results = [await self._close_active_segment()]
+            for runtime in list(self._retained_runtimes):
+                lifecycle_results.append(await self._close_runtime(runtime))
+            segment_task_cleanup = await cancel_and_await_tasks((segment_task,))
+            if not segment_task_cleanup.confirmed:
+                async with self.lock:
+                    self.segment_task = segment_task if segment_task in segment_task_cleanup.pending_tasks else None
+            lifecycle_cleanup = combine_cso_lifecycle_cleanup_results(
+                *lifecycle_results,
+                task_cleanup=segment_task_cleanup,
+            )
+            if lifecycle_cleanup.confirmed:
+                async with self.lock:
+                    self.current_source = None
+                    self.current_source_url = ""
+                    self.current_source_probe = {}
+                    self.canonical_output_shape = {}
+                await remove_cso_cache_dir(self.segment_cache_root, logger, f"vod-247:{self.key}")
+            return lifecycle_cleanup

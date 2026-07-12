@@ -21,6 +21,13 @@ from .ffmpeg import (
     log_hwaccel_failure,
     redact_ingest_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
+    terminate_ffmpeg_process,
+)
+from .processes import (
+    cancel_and_await_tasks,
+    cso_lifecycle_cleanup_result,
+    mark_cso_ffmpeg_process_exited,
+    spawn_cso_ffmpeg_process,
 )
 
 
@@ -127,19 +134,13 @@ class SegmentedHandoffSession:
         raise RuntimeError(self.last_error)
 
     async def _cleanup_failed_start_attempt(self, process, stderr_task, wait_task):
-        for task in (stderr_task, wait_task):
-            if task is not None and not task.done():
-                task.cancel()
-        if process is not None and process.returncode is None:
-            try:
-                process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=2.0)
-                except Exception:
-                    pass
+        teardown = await terminate_ffmpeg_process(process)
+        task_cleanup = await cancel_and_await_tasks((stderr_task, wait_task))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+            self.wait_task = wait_task if wait_task in pending_tasks else None
+        return teardown, task_cleanup
 
     async def _wait_for_startup_ready(self, process, timeout_seconds: float = 10.0) -> tuple[bool, str]:
         startup_idle_timeout = max(1.0, float(timeout_seconds))
@@ -213,6 +214,7 @@ class SegmentedHandoffSession:
             return_code = await process.wait()
         except Exception:
             return_code = None
+        process_exited = mark_cso_ffmpeg_process_exited(process)
         if token != self.process_token:
             return
         if self.running and int(return_code or 0) != 0:
@@ -223,12 +225,29 @@ class SegmentedHandoffSession:
                 return_code,
                 self._ffmpeg_error_summary() or "n/a",
             )
-        self.running = False
+        async with self.lock:
+            self.running = False
+            if self.process is process and process_exited:
+                self.process = None
 
     async def start(self):
         async with self.lock:
             if self.running:
                 return True
+            retained_tasks = (self.stderr_task, self.wait_task)
+            if self.process is not None or any(task is not None for task in retained_tasks):
+                self.last_error = (
+                    "previous_process_teardown_unconfirmed"
+                    if self.process is not None
+                    else "previous_task_cleanup_unconfirmed"
+                )
+                logger.error(
+                    "Segmented handoff start blocked by retained lifecycle key=%s pid=%s tasks=%s",
+                    self.key,
+                    getattr(self.process, "pid", None),
+                    sum(task is not None for task in retained_tasks),
+                )
+                return False
             if not self.input_target:
                 self.last_error = "missing_input_target"
                 return False
@@ -259,8 +278,9 @@ class SegmentedHandoffSession:
                     self.output_dir,
                     redact_ingest_command_for_log(command) if self.input_is_url else command,
                 )
-                process = await asyncio.create_subprocess_exec(
+                process = await spawn_cso_ffmpeg_process(
                     *command,
+                    label=f"segmented-handoff:{self.key}",
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
@@ -273,13 +293,38 @@ class SegmentedHandoffSession:
                 )
                 wait_task = asyncio.create_task(self._wait_loop(token, process), name=f"segmented-wait-{self.key}")
                 startup_timeout_seconds = 30.0 if self.input_is_url else 10.0
-                started, failure_reason = await self._wait_for_startup_ready(
-                    process,
-                    timeout_seconds=startup_timeout_seconds,
-                )
+                try:
+                    started, failure_reason = await self._wait_for_startup_ready(
+                        process,
+                        timeout_seconds=startup_timeout_seconds,
+                    )
+                except asyncio.CancelledError:
+                    teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                        process,
+                        stderr_task,
+                        wait_task,
+                    )
+                    if teardown.confirmed:
+                        if self.process is process:
+                            self.process = None
+                    else:
+                        self.process = process
+                    raise
                 if started:
                     return True, (process, stderr_task, wait_task), ""
-                await self._cleanup_failed_start_attempt(process, stderr_task, wait_task)
+                teardown, task_cleanup = await self._cleanup_failed_start_attempt(
+                    process,
+                    stderr_task,
+                    wait_task,
+                )
+                if teardown.confirmed:
+                    if self.process is process:
+                        self.process = None
+                else:
+                    self.process = process
+                if not teardown.confirmed or not task_cleanup.confirmed:
+                    cleanup_reason = "teardown_unconfirmed" if not teardown.confirmed else "task_cleanup_unconfirmed"
+                    failure_reason = f"{failure_reason or 'segmented_handoff_start_failed'}:{cleanup_reason}"
                 return False, None, failure_reason
 
             (
@@ -372,29 +417,30 @@ class SegmentedHandoffSession:
         self.output_probe = probe
         return dict(probe)
 
-    async def stop(self, force: bool = False):
+    async def release_cache(self):
+        await remove_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
+
+    async def stop(self, force: bool = False, release_cache: bool = True):
         async with self.lock:
             process = self.process
-            self.process = None
             self.running = False
             self.process_token += 1
-        for task in (self.stderr_task, self.wait_task):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except BaseException:
-                    pass
+            stderr_task = self.stderr_task
+            wait_task = self.wait_task
         self.stderr_task = None
         self.wait_task = None
-        if process is not None and process.returncode is None:
-            try:
-                process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=2.0)
-                except Exception:
-                    pass
-        await remove_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
+        teardown = await terminate_ffmpeg_process(process) if process is not None else None
+        task_cleanup = await cancel_and_await_tasks((stderr_task, wait_task))
+        if not task_cleanup.confirmed:
+            pending_tasks = set(task_cleanup.pending_tasks)
+            async with self.lock:
+                self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                self.wait_task = wait_task if wait_task in pending_tasks else None
+        if process is not None and teardown is not None and teardown.confirmed:
+            async with self.lock:
+                if self.process is process:
+                    self.process = None
+        result = cso_lifecycle_cleanup_result(teardown, task_cleanup)
+        if result.confirmed and release_cache:
+            await self.release_cache()
+        return result
