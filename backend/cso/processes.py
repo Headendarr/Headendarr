@@ -93,13 +93,11 @@ def _pid_is_running(pid: int | None) -> bool:
 def _process_group_is_running(process_group_id: int | None) -> bool:
     if process_group_id is None or int(process_group_id) <= 0:
         return False
-    # Linux keeps a killed descendant as a zombie until its parent/init reaps
-    # it. A zombie has exited and owns no running FFmpeg resources, even though
-    # killpg(..., 0) still reports the process-group identity. Inspect /proc so
-    # teardown confirmation does not turn delayed zombie reaping into a false
-    # orphan report.
+    # Confirmation means that no process-group member remains in /proc,
+    # including zombies. Zombies no longer own FFmpeg RSS, but reporting the
+    # group gone before they are reaped violates the teardown result contract
+    # and can hide descendant PID-table retention.
     try:
-        saw_group_member = False
         with os.scandir("/proc") as entries:
             for entry in entries:
                 if not entry.name.isdigit():
@@ -113,15 +111,11 @@ def _process_group_is_running(process_group_id: int | None) -> bool:
                     fields = remainder.split()
                     if len(fields) < 3 or int(fields[2]) != int(process_group_id):
                         continue
-                    saw_group_member = True
-                    if fields[0] != "Z":
-                        return True
+                    return True
                 except (FileNotFoundError, ProcessLookupError):
                     continue
                 except (PermissionError, ValueError):
                     raise
-        if saw_group_member:
-            return False
         return False
     except Exception:
         pass

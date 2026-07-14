@@ -1135,9 +1135,12 @@ class CsoIngestSession:
                 await self._broadcast(chunk)
         finally:
             current_task = asyncio.current_task()
-            if process and not (current_task is not None and current_task.cancelling()):
+            if process and token == self.process_token and not (current_task is not None and current_task.cancelling()):
                 return_code = process.returncode
                 process_exit_confirmed = mark_cso_ffmpeg_process_exited(process)
+
+        if token != self.process_token:
+            return
 
         if process and not process_exit_confirmed:
             async with self.lock:
@@ -1150,9 +1153,6 @@ class CsoIngestSession:
                 self.key,
                 getattr(process, "pid", None),
             )
-            return
-
-        if token != self.process_token:
             return
 
         self.last_reader_end_reason = "ingest_reader_ended"

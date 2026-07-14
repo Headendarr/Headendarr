@@ -50,6 +50,54 @@ logger = logging.getLogger("cso")
 SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
+async def _detach_output_input_subscriptions(session):
+    ingest_queue = session.ingest_queue
+    ingest_lifecycle_reference = session.ingest_lifecycle_reference
+    slate_queue = session.slate_queue
+
+    if ingest_queue is not None:
+        try:
+            if session.ingest_session is not None:
+                await session.ingest_session.remove_subscriber(session.key)
+            else:
+                await ingest_queue.close()
+        except Exception:
+            await ingest_queue.close()
+            logger.exception(
+                "CSO output failed to detach ingest subscriber channel=%s output_key=%s",
+                session.channel_id,
+                session.key,
+            )
+        else:
+            session.ingest_queue = None
+    if ingest_lifecycle_reference and session.ingest_session is not None:
+        try:
+            await session.ingest_session.remove_lifecycle_reference(session.key)
+        except Exception:
+            logger.exception(
+                "CSO output failed to detach ingest lifecycle reference channel=%s output_key=%s",
+                session.channel_id,
+                session.key,
+            )
+        else:
+            session.ingest_lifecycle_reference = False
+    if slate_queue is not None:
+        await slate_queue.close()
+        if session.slate_session is not None:
+            try:
+                await session.slate_session.remove_subscriber(session.key)
+            except Exception:
+                logger.exception(
+                    "CSO output failed to detach slate subscriber channel=%s output_key=%s",
+                    session.channel_id,
+                    session.key,
+                )
+            else:
+                session.slate_queue = None
+        else:
+            session.slate_queue = None
+
+
 class CsoOutputSession:
     def __init__(
         self,
@@ -126,48 +174,6 @@ class CsoOutputSession:
             self.stderr_task = stderr_task if stderr_task in pending_tasks else None
             self.startup_tasks = tuple(task for task in startup_tasks if task in pending_tasks)
         return teardown, task_cleanup
-
-    async def _detach_input_subscriptions(self):
-        ingest_queue = self.ingest_queue
-        self.ingest_queue = None
-        ingest_lifecycle_reference = self.ingest_lifecycle_reference
-        self.ingest_lifecycle_reference = False
-        slate_queue = self.slate_queue
-        self.slate_queue = None
-
-        if ingest_queue is not None:
-            try:
-                if self.ingest_session is not None:
-                    await self.ingest_session.remove_subscriber(self.key)
-                else:
-                    await ingest_queue.close()
-            except Exception:
-                await ingest_queue.close()
-                logger.exception(
-                    "CSO output failed to detach ingest subscriber channel=%s output_key=%s",
-                    self.channel_id,
-                    self.key,
-                )
-        if ingest_lifecycle_reference and self.ingest_session is not None:
-            try:
-                await self.ingest_session.remove_lifecycle_reference(self.key)
-            except Exception:
-                logger.exception(
-                    "CSO output failed to detach ingest lifecycle reference channel=%s output_key=%s",
-                    self.channel_id,
-                    self.key,
-                )
-        if slate_queue is not None:
-            await slate_queue.close()
-            if self.slate_session is not None:
-                try:
-                    await self.slate_session.remove_subscriber(self.key)
-                except Exception:
-                    logger.exception(
-                        "CSO output failed to detach slate subscriber channel=%s output_key=%s",
-                        self.channel_id,
-                        self.key,
-                    )
 
     def _recent_ingest_failover_active(self) -> bool:
         if self.ingest_session is None:
@@ -385,11 +391,11 @@ class CsoOutputSession:
                         )
                 except asyncio.CancelledError:
                     self.last_error = "output_start_cancelled"
-                    await self._detach_input_subscriptions()
+                    await _detach_output_input_subscriptions(self)
                     raise
                 except Exception as exc:
                     self.last_error = f"output_start_failed:{exc}"
-                    await self._detach_input_subscriptions()
+                    await _detach_output_input_subscriptions(self)
                     raise
                 self.running = True
                 try:
@@ -489,7 +495,7 @@ class CsoOutputSession:
                         log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
                         self.running = False
                         self.last_error = failure_reason or "output_start_failed"
-                        await self._detach_input_subscriptions()
+                        await _detach_output_input_subscriptions(self)
                         return
                     self.output_policy = dict(start_policy)
                     self.process, self.read_task, self.write_task, self.stderr_task = result
@@ -497,12 +503,12 @@ class CsoOutputSession:
                 except asyncio.CancelledError:
                     self.running = False
                     self.last_error = "output_start_cancelled"
-                    await self._detach_input_subscriptions()
+                    await _detach_output_input_subscriptions(self)
                     raise
                 except Exception as exc:
                     self.running = False
                     self.last_error = f"output_start_failed:{exc}"
-                    await self._detach_input_subscriptions()
+                    await _detach_output_input_subscriptions(self)
                     raise
                 logger.info(
                     "CSO output started channel=%s output_key=%s policy=(%s) clients=%s",
@@ -1032,7 +1038,7 @@ class CsoOutputSession:
                     kill_timeout_seconds=6.0,
                 )
                 return_code = teardown.return_code
-            await self._detach_input_subscriptions()
+            await _detach_output_input_subscriptions(self)
             task_cleanup = await cancel_and_await_tasks(
                 (read_task, write_task, ingest_recovery_task, stderr_task, *startup_tasks)
             )
@@ -1100,6 +1106,7 @@ class CsoHlsOutputSession:
         self.stderr_task = None
         self.wait_task = None
         self.running = False
+        self.lifecycle_lock = asyncio.Lock()
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
         self.last_error = None
@@ -1240,6 +1247,23 @@ class CsoHlsOutputSession:
         self._last_good_playlist_ts = 0.0
 
     async def start(self):
+        async with self.lifecycle_lock:
+            try:
+                await self._start_locked()
+            except asyncio.CancelledError:
+                self.running = False
+                self.last_error = "output_start_cancelled"
+                await _detach_output_input_subscriptions(self)
+                raise
+            except Exception as exc:
+                self.running = False
+                self.last_error = f"output_start_failed:{exc}"
+                await _detach_output_input_subscriptions(self)
+                raise
+            if not self.running:
+                await _detach_output_input_subscriptions(self)
+
+    async def _start_locked(self):
         async with self.lock:
             if self.running:
                 return
@@ -1277,12 +1301,18 @@ class CsoHlsOutputSession:
             self.ingest_queue = None
             self.slate_queue = None
             if self.use_slate_as_input:
-                self.slate_queue = await self.slate_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
+                self.slate_queue = await self.slate_session.add_subscriber(
+                    self.key,
+                    prebuffer_bytes=256 * 1024,
+                )
             elif segmented_input_target:
                 await self.ingest_session.add_lifecycle_reference(self.key)
                 self.ingest_lifecycle_reference = True
             elif not use_direct_input:
-                self.ingest_queue = await self.ingest_session.add_subscriber(self.key, prebuffer_bytes=256 * 1024)
+                self.ingest_queue = await self.ingest_session.add_subscriber(
+                    self.key,
+                    prebuffer_bytes=256 * 1024,
+                )
             self._pending_input_chunks.clear()
             primed_bytes = 0
             if use_direct_input:
@@ -1428,18 +1458,11 @@ class CsoHlsOutputSession:
                     failure_reason = f"{failure_reason or 'output_start_failed'}:task_cleanup_unconfirmed"
                 return False, None, failure_reason
 
-            try:
-                started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
-                    base_runtime_policy,
-                    source_identity,
-                    _attempt_start,
-                )
-            except Exception:
-                if self.ingest_lifecycle_reference and self.ingest_session is not None:
-                    await self.ingest_session.remove_lifecycle_reference(self.key)
-                    self.ingest_lifecycle_reference = False
-                self.running = False
-                raise
+            started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+                base_runtime_policy,
+                source_identity,
+                _attempt_start,
+            )
             if started:
                 self.runtime_policy = dict(start_policy)
                 self.process, self.write_task, self.stderr_task, self.wait_task = result
@@ -1448,9 +1471,6 @@ class CsoHlsOutputSession:
             log_hwaccel_failure(self.runtime_policy, f"hls:{self.key}", failure_reason)
             self.running = False
             self.last_error = failure_reason or "output_start_failed"
-            if self.ingest_lifecycle_reference and self.ingest_session is not None:
-                await self.ingest_session.remove_lifecycle_reference(self.key)
-                self.ingest_lifecycle_reference = False
 
     async def _write_loop(self, token, process):
         exit_reason = "loop_exit"
@@ -1735,6 +1755,10 @@ class CsoHlsOutputSession:
         return await asyncio.to_thread(segment_path.read_bytes)
 
     async def stop(self, force=False):
+        async with self.lifecycle_lock:
+            return await self._stop_locked(force=force)
+
+    async def _stop_locked(self, force=False):
         async with self.lock:
             if (
                 not self.running
@@ -1743,6 +1767,9 @@ class CsoHlsOutputSession:
                 and self.write_task is None
                 and self.stderr_task is None
                 and self.wait_task is None
+                and self.ingest_queue is None
+                and not self.ingest_lifecycle_reference
+                and self.slate_queue is None
             ):
                 return
             if not force and self.clients:
@@ -1757,12 +1784,6 @@ class CsoHlsOutputSession:
             self.stderr_task = None
             wait_task = self.wait_task
             self.wait_task = None
-            ingest_queue = self.ingest_queue
-            self.ingest_queue = None
-            ingest_lifecycle_reference = self.ingest_lifecycle_reference
-            self.ingest_lifecycle_reference = False
-            slate_queue = self.slate_queue
-            self.slate_queue = None
             self._retain_completed_output_until = 0.0
             idle_cleanup_task = self._idle_cleanup_task
             self._idle_cleanup_task = None
@@ -1815,21 +1836,7 @@ class CsoHlsOutputSession:
             async with self.lock:
                 if self.process is process:
                     self.process = None
-        try:
-            if ingest_queue is not None and self.ingest_session is not None:
-                await self.ingest_session.remove_subscriber(self.key)
-        except Exception:
-            pass
-        try:
-            if ingest_lifecycle_reference and self.ingest_session is not None:
-                await self.ingest_session.remove_lifecycle_reference(self.key)
-        except Exception:
-            pass
-        try:
-            if slate_queue is not None and self.slate_session is not None:
-                await self.slate_session.remove_subscriber(self.key)
-        except Exception:
-            pass
+        await _detach_output_input_subscriptions(self)
         async with self.lock:
             should_cleanup_output_dir = (
                 self.process_token == stop_token and not self.running and not self.process and not self.clients

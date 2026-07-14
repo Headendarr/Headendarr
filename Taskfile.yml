@@ -51,13 +51,13 @@ tasks:
       - docker compose -f {{.COMPOSE_FILE}} build headendarr
 
   docker:build:staging:
-    desc: Build the local ghcr.io/headendarr/headendarr:staging image with release metadata
+    desc: Build the local josh5/headendarr:staging image with release metadata
     cmds:
       - |
         bash -c '
         set -eu
 
-        image="ghcr.io/headendarr/headendarr:staging"
+        image="josh5/headendarr:staging"
         base_image="ghcr.io/tvheadend/tvheadend:edge-debian"
         git_sha="$(git rev-parse HEAD)"
         sha_short="$(git rev-parse --short=7 HEAD)"

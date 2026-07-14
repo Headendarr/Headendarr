@@ -66,6 +66,18 @@ async def remove_cso_cache_dir(path: Path | str, logger: logging.Logger, label: 
     await asyncio.to_thread(shutil.rmtree, cache_path, True)
 
 
+def _retained_lifecycle_state_unlocked(session):
+    retained_process = getattr(session, "process", None)
+    retained_runtimes = tuple(getattr(session, "_retained_runtimes", ()))
+    retained_tasks = tuple(
+        name
+        for name, task in vars(session).items()
+        if (name.endswith("_task") and task is not None)
+        or (name.endswith("_tasks") and any(retained is not None for retained in task or ()))
+    )
+    return retained_process, retained_runtimes, retained_tasks
+
+
 class _SessionMap:
     def __init__(self):
         self.sessions = {}
@@ -79,6 +91,31 @@ class _SessionMap:
             session = factory()
             self.sessions[key] = session
             return session
+
+    async def register_unique(self, key, session):
+        async with self.lock:
+            if key in self.sessions:
+                raise RuntimeError(f"session_key_already_registered:{key}")
+            self.sessions[key] = session
+        return session
+
+    async def discard_if_clean(self, key, session, cleanup=None):
+        async with self.lock:
+            if self.sessions.get(key) is not session:
+                return False
+            async with session.lock:
+                retained_process, retained_runtimes, retained_tasks = _retained_lifecycle_state_unlocked(session)
+                running = bool(getattr(session, "running", False))
+            if (
+                running
+                or retained_process is not None
+                or retained_runtimes
+                or retained_tasks
+                or (cleanup is not None and not bool(getattr(cleanup, "confirmed", False)))
+            ):
+                return False
+            self.sessions.pop(key, None)
+        return True
 
     async def cleanup_idle_streams(self, idle_timeout=300):
         now = time.time()
@@ -101,14 +138,7 @@ class _SessionMap:
                 continue
             teardown = await session.stop(force=True)
             async with session.lock:
-                retained_process = getattr(session, "process", None)
-                retained_runtimes = tuple(getattr(session, "_retained_runtimes", ()))
-                retained_tasks = tuple(
-                    name
-                    for name, task in vars(session).items()
-                    if (name.endswith("_task") and task is not None)
-                    or (name.endswith("_tasks") and any(retained is not None for retained in task or ()))
-                )
+                retained_process, retained_runtimes, retained_tasks = _retained_lifecycle_state_unlocked(session)
             if (
                 retained_process is not None
                 or retained_runtimes
@@ -135,6 +165,7 @@ class CsoRuntimeManager:
         self.ingest = _SessionMap()
         self.slate = _SessionMap()
         self.output = _SessionMap()
+        self.vod_ingest = _SessionMap()
 
     async def get_or_create_ingest(self, key, factory):
         return await self.ingest.get_or_create(key, factory)
@@ -145,18 +176,26 @@ class CsoRuntimeManager:
     async def get_or_create_output(self, key, factory):
         return await self.output.get_or_create(key, factory)
 
+    async def register_vod_ingest(self, key, session):
+        return await self.vod_ingest.register_unique(key, session)
+
+    async def release_vod_ingest(self, key, session, cleanup=None):
+        return await self.vod_ingest.discard_if_clean(key, session, cleanup=cleanup)
+
     async def cleanup_idle_streams(self, idle_timeout=300):
         await self.output.cleanup_idle_streams(idle_timeout=idle_timeout)
+        await self.vod_ingest.cleanup_idle_streams(idle_timeout=idle_timeout)
         await self.slate.cleanup_idle_streams(idle_timeout=idle_timeout)
         await self.ingest.cleanup_idle_streams(idle_timeout=idle_timeout)
         metrics = await self.runtime_metrics()
         logger.info(
-            "CSO lifecycle metrics ingest_sessions=%s slate_sessions=%s output_sessions=%s "
+            "CSO lifecycle metrics ingest_sessions=%s slate_sessions=%s output_sessions=%s vod_ingest_sessions=%s "
             "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s "
             "live_ffmpeg_processes=%s ffmpeg_teardown_failures=%s",
             metrics["ingest_sessions"],
             metrics["slate_sessions"],
             metrics["output_sessions"],
+            metrics["vod_ingest_sessions"],
             metrics["ingest_subscribers"],
             metrics["slate_subscribers"],
             metrics["output_clients"],
@@ -169,7 +208,12 @@ class CsoRuntimeManager:
         from .processes import cso_ffmpeg_process_registry
 
         session_groups = {}
-        for name, session_map in (("ingest", self.ingest), ("slate", self.slate), ("output", self.output)):
+        for name, session_map in (
+            ("ingest", self.ingest),
+            ("slate", self.slate),
+            ("output", self.output),
+            ("vod_ingest", self.vod_ingest),
+        ):
             async with session_map.lock:
                 session_groups[name] = list(session_map.sessions.values())
 
@@ -177,6 +221,7 @@ class CsoRuntimeManager:
             "ingest_sessions": len(session_groups["ingest"]),
             "slate_sessions": len(session_groups["slate"]),
             "output_sessions": len(session_groups["output"]),
+            "vod_ingest_sessions": len(session_groups["vod_ingest"]),
             "ingest_subscribers": 0,
             "slate_subscribers": 0,
             "output_clients": 0,

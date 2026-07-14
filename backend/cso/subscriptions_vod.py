@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from quart import request
@@ -509,7 +510,7 @@ async def subscribe_vod_ingest_stream(
             return build_cso_stream_plan(None, None, "No available stream source", 503)
 
     policy = generate_cso_policy_from_profile(config, profile)
-    ingest_key = f"vod-ingest-{source.id}-{connection_id}"
+    ingest_key = f"vod-ingest-{source.id}-owner-{uuid.uuid4().hex}"
 
     vod_category_id = None
     vod_item_id = None
@@ -520,7 +521,8 @@ async def subscribe_vod_ingest_stream(
     if episode is not None:
         vod_episode_id = episode.id
 
-    # Init ingest pipeline
+    # This map owns cleanup/quarantine only. Every request gets a unique
+    # VodIngestSession because its output queue has a single consumer.
     ingest_session = VodIngestSession(
         ingest_key,
         config,
@@ -533,10 +535,12 @@ async def subscribe_vod_ingest_stream(
         output_policy=policy,
         realtime=False,
     )
+    await cso_session_manager.register_vod_ingest(ingest_key, ingest_session)
 
     started = await ingest_session.start()
     if not started:
         reason = ingest_session.last_error or "ingest_start_failed"
+        await cso_session_manager.release_vod_ingest(ingest_key, ingest_session)
         await emit_channel_stream_event(
             vod_category_id=vod_category_id,
             vod_item_id=vod_item_id,
@@ -573,7 +577,12 @@ async def subscribe_vod_ingest_stream(
             async for chunk in ingest_session.iter_bytes():
                 yield chunk
         finally:
-            await ingest_session.stop()
+            cleanup = await ingest_session.stop()
+            await cso_session_manager.release_vod_ingest(
+                ingest_key,
+                ingest_session,
+                cleanup=cleanup,
+            )
             await emit_channel_stream_event(
                 vod_category_id=vod_category_id,
                 vod_item_id=vod_item_id,
