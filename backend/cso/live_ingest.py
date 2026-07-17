@@ -202,6 +202,10 @@ class CsoIngestSession:
         self.pending_switch_success = None
         self.current_attempt_start_ts = 0.0
         self.current_attempt_first_chunk_logged = False
+        self.current_attempt_bytes_produced = 0
+        self.current_attempt_bytes_added_to_history = 0
+        self.current_attempt_bytes_dispatched = 0
+        self.current_attempt_subscriber_bytes_dispatched = {}
         self.current_source_probe = {}
         self._current_source_probe_persisted = False
         self._current_source_probe_input_section_closed = False
@@ -636,6 +640,10 @@ class CsoIngestSession:
             self.last_source_start_ts = time.time()
             self.current_attempt_start_ts = self.last_source_start_ts
             self.current_attempt_first_chunk_logged = False
+            self.current_attempt_bytes_produced = 0
+            self.current_attempt_bytes_added_to_history = 0
+            self.current_attempt_bytes_dispatched = 0
+            self.current_attempt_subscriber_bytes_dispatched = {}
             self.last_chunk_ts = self.last_source_start_ts
             self.low_speed_since = None
             self.last_ffmpeg_speed = None
@@ -658,6 +666,10 @@ class CsoIngestSession:
         self.last_source_start_ts = time.time()
         self.current_attempt_start_ts = self.last_source_start_ts
         self.current_attempt_first_chunk_logged = False
+        self.current_attempt_bytes_produced = 0
+        self.current_attempt_bytes_added_to_history = 0
+        self.current_attempt_bytes_dispatched = 0
+        self.current_attempt_subscriber_bytes_dispatched = {}
         self.last_chunk_ts = self.last_source_start_ts
         self.low_speed_since = None
         self.last_ffmpeg_speed = None
@@ -1099,6 +1111,7 @@ class CsoIngestSession:
                 chunk = await process.stdout.read(MPEGTS_CHUNK_BYTES)
                 if not chunk:
                     break
+                self.current_attempt_bytes_produced += len(chunk)
                 if not saw_data and not self.current_attempt_first_chunk_logged:
                     now_value = time.time()
                     logger.info(
@@ -1438,7 +1451,7 @@ class CsoIngestSession:
         self.running = False
         return False
 
-    async def _broadcast(self, chunk):
+    async def _broadcast(self, chunk: bytes):
         if not chunk:
             return
         self.last_activity = time.time()
@@ -1446,20 +1459,32 @@ class CsoIngestSession:
         async with self.lock:
             self.history.append(chunk)
             self.history_bytes += len(chunk)
+            self.current_attempt_bytes_added_to_history += len(chunk)
             while self.history_bytes > self.max_history_bytes and self.history:
                 old = self.history.popleft()
                 self.history_bytes -= len(old)
-            subscriber_queues = list(self.subscribers.values())
-        for q in subscriber_queues:
-            await q.put_drop_oldest(chunk)
+            subscriber_queues = list(self.subscribers.items())
+        for subscriber_id, q in subscriber_queues:
+            queue_result = await q.put_drop_oldest(chunk)
+            if queue_result["closed"]:
+                continue
+            self.current_attempt_bytes_dispatched += len(chunk)
+            self.current_attempt_subscriber_bytes_dispatched[subscriber_id] = (
+                self.current_attempt_subscriber_bytes_dispatched.get(subscriber_id, 0) + len(chunk)
+            )
 
-    async def add_subscriber(self, subscriber_id, prebuffer_bytes=0):
+    async def add_subscriber(
+        self,
+        subscriber_id: str,
+        prebuffer_bytes: int = 0,
+    ) -> ByteBudgetQueue:
         if self.segmented_handoff_session is not None:
             raise RuntimeError("segmented_handoff_has_no_subscriber_queue")
         async with self.lock:
             previous_queue = self.subscribers.pop(subscriber_id, None)
             replaced_queue_stats = await previous_queue.close() if previous_queue is not None else None
             q = ByteBudgetQueue(max_bytes=CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES)
+            self.current_attempt_subscriber_bytes_dispatched[subscriber_id] = 0
             if prebuffer_bytes > 0 and self.history:
                 total = 0
                 items = []
@@ -1470,6 +1495,8 @@ class CsoIngestSession:
                         break
                 for chunk in reversed(items):
                     await q.put_drop_oldest(chunk)
+                    self.current_attempt_bytes_dispatched += len(chunk)
+                    self.current_attempt_subscriber_bytes_dispatched[subscriber_id] += len(chunk)
             self.subscribers[subscriber_id] = q
             subscriber_count = len(self.subscribers)
             source_id = getattr(self.current_source, "id", None)
@@ -1496,9 +1523,10 @@ class CsoIngestSession:
         )
         return q
 
-    async def remove_subscriber(self, subscriber_id):
+    async def remove_subscriber(self, subscriber_id: str) -> int:
         async with self.lock:
             queue = self.subscribers.pop(subscriber_id, None)
+            self.current_attempt_subscriber_bytes_dispatched.pop(subscriber_id, None)
             remaining = len(self.subscribers)
             lifecycle_references = len(self.lifecycle_references)
             source_id = getattr(self.current_source, "id", None)

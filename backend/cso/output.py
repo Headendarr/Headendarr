@@ -3,7 +3,9 @@ import logging
 import re
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from backend.config import enable_cso_output_command_debug_logging
 from backend.http_headers import sanitise_headers
@@ -27,7 +29,9 @@ from .events import emit_channel_stream_event, source_event_context
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
     event_source_probe,
-    log_hwaccel_failure,
+    ffmpeg_failure_classification,
+    hwaccel_failure_stage,
+    log_ffmpeg_start_result_failures,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
 )
@@ -44,10 +48,23 @@ from .processes import (
     mark_cso_ffmpeg_process_exited,
     spawn_cso_ffmpeg_process,
 )
+from .types import (
+    CsoFfmpegAttemptResult,
+    CsoFfmpegStartResult,
+    CsoStartupEvidence,
+)
 
 logger = logging.getLogger("cso")
 
 SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+@dataclass
+class CsoOutputStartupProbeResult:
+    started: bool
+    classification: str
+    failure_reason: str
+    stderr_summary: str
 
 
 async def _detach_output_input_subscriptions(session):
@@ -142,6 +159,10 @@ class CsoOutputSession:
         self.client_last_touch = {}
         self._input_mode = "slate" if self.use_slate_as_input else "ingest"
         self.start_ts = 0.0
+        self.attempt_start_ts = 0.0
+        self.first_ingest_chunk_ts = 0.0
+        self.input_bytes_received = 0
+        self.startup_process_pid = None
         self.first_output_chunk_logged = False
         self.first_ingest_chunk_logged = False
         self._last_ingest_recovery_attempt_ts = 0.0
@@ -210,7 +231,29 @@ class CsoOutputSession:
             )
         )
 
-    async def _wait_for_startup_ready(self, process, timeout_seconds: float = 8.0) -> tuple[bool, str]:
+    def _classify_startup_failure(
+        self,
+        process: asyncio.subprocess.Process,
+        failure_reason: str,
+    ) -> tuple[str, str]:
+        reason = clean_text(failure_reason)
+        reason_lower = reason.lower()
+        input_mode = "direct_url" if self._uses_direct_ingest_input() else self._input_mode
+        classification = ffmpeg_failure_classification(reason)
+        if classification == "first_output_timeout" and process.returncode is not None:
+            classification = "process_exit"
+        elif classification == "first_output_timeout" and input_mode == "ingest" and self.input_bytes_received <= 0:
+            classification = "no_ingest_bytes"
+        if reason and reason_lower != classification and not reason_lower.startswith(f"{classification}:"):
+            return classification, f"{classification}:{reason}"
+        return classification, reason or classification
+
+    async def _wait_for_startup_ready(
+        self,
+        process: asyncio.subprocess.Process,
+        stderr_task: asyncio.Task,
+        timeout_seconds: float = 8.0,
+    ) -> CsoOutputStartupProbeResult:
         self._first_output_event = asyncio.Event()
         wait_task = asyncio.create_task(process.wait())
         output_task = asyncio.create_task(self._first_output_event.wait())
@@ -225,8 +268,10 @@ class CsoOutputSession:
             if output_task in done and output_task.done() and not output_task.cancelled():
                 started = True
             elif wait_task in done and wait_task.done() and not wait_task.cancelled():
+                await asyncio.wait({stderr_task}, timeout=0.25)
                 failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
             elif process.returncode is not None:
+                await asyncio.wait({stderr_task}, timeout=0.25)
                 failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
             elif self._is_failover_remux_startup_failure():
                 failure_reason = self._ffmpeg_error_summary() or "startup_failed_during_ingest_failover"
@@ -234,23 +279,23 @@ class CsoOutputSession:
                 if self._recent_ingest_failover_active():
                     failure_reason = "startup_timeout_during_ingest_failover"
                 else:
-                    logger.info(
-                        "CSO output startup timed out before first client-visible chunk but ingest is flowing; "
-                        "treating the output as started channel=%s output_key=%s",
-                        self.channel_id,
-                        self.key,
-                    )
-                    started = True
+                    failure_reason = "first_output_timeout"
             else:
                 failure_reason = self._ffmpeg_error_summary() or "startup_timeout_no_output"
         finally:
             task_cleanup = await cancel_and_await_tasks((wait_task, output_task))
             self.startup_tasks = task_cleanup.pending_tasks
+        stderr_summary = self._ffmpeg_error_summary()
         if not task_cleanup.confirmed:
-            return False, f"{failure_reason or 'startup_probe_completed'}:task_cleanup_unconfirmed"
-        return started, failure_reason
+            failure_reason = f"{failure_reason or 'startup_probe_completed'}:task_cleanup_unconfirmed"
+            classification, failure_reason = self._classify_startup_failure(process, failure_reason)
+            return CsoOutputStartupProbeResult(False, classification, failure_reason, stderr_summary)
+        if started:
+            return CsoOutputStartupProbeResult(True, "", "", stderr_summary)
+        classification, failure_reason = self._classify_startup_failure(process, failure_reason)
+        return CsoOutputStartupProbeResult(False, classification, failure_reason, stderr_summary)
 
-    def _ffmpeg_error_summary(self):
+    def _ffmpeg_error_summary(self) -> str:
         lines = [line for line in self._recent_ffmpeg_stderr if line]
         if not lines:
             return ""
@@ -261,6 +306,67 @@ class CsoOutputSession:
         ]
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
+
+    def _record_input_chunk(self, chunk_mode: str, chunk: bytes):
+        chunk_size = len(chunk or b"")
+        if chunk_size <= 0:
+            return
+        self.input_bytes_received += chunk_size
+        if chunk_mode == "ingest" and not self.first_ingest_chunk_logged:
+            now_value = time.time()
+            self.first_ingest_chunk_ts = now_value
+            logger.info(
+                "CSO output first ingest chunk channel=%s output_key=%s bytes=%s "
+                "input_bytes=%s elapsed_ms=%s attempt_elapsed_ms=%s failover_elapsed_ms=%s",
+                self.channel_id,
+                self.key,
+                chunk_size,
+                self.input_bytes_received,
+                int(max(0.0, now_value - float(self.start_ts or now_value)) * 1000),
+                int(max(0.0, now_value - float(self.attempt_start_ts or now_value)) * 1000),
+                int(
+                    max(
+                        0.0,
+                        now_value - float(self.ingest_session.failover_start_ts or now_value),
+                    )
+                    * 1000
+                ),
+            )
+            self.first_ingest_chunk_logged = True
+
+    def _build_startup_evidence(
+        self,
+        process: asyncio.subprocess.Process,
+        input_mode: str,
+    ) -> CsoStartupEvidence:
+        now_value = time.time()
+        evidence = CsoStartupEvidence(
+            first_ingest_chunk=self.first_ingest_chunk_ts or None,
+            input_bytes=self.input_bytes_received,
+            input_mode=input_mode,
+            output_process_pid=process.pid,
+            attempt_elapsed_ms=int(max(0.0, now_value - self.attempt_start_ts) * 1000),
+        )
+        if self.ingest_session is None:
+            return evidence
+        ingest_process = self.ingest_session.process
+        evidence.ingest_process_pid = ingest_process.pid if ingest_process is not None else None
+        evidence.ingest_running = self.ingest_session.running
+        if self.ingest_session.last_chunk_ts:
+            evidence.ingest_last_chunk_age_seconds = round(
+                max(0.0, now_value - self.ingest_session.last_chunk_ts),
+                3,
+            )
+        evidence.ingest_attempt_start = self.ingest_session.current_attempt_start_ts or None
+        evidence.ingest_reader_end_reason = self.ingest_session.last_reader_end_reason
+        evidence.ingest_reader_end_return_code = self.ingest_session.last_reader_end_return_code
+        evidence.ingest_bytes_produced = self.ingest_session.current_attempt_bytes_produced
+        evidence.ingest_bytes_added_to_history = self.ingest_session.current_attempt_bytes_added_to_history
+        evidence.ingest_bytes_dispatched = self.ingest_session.current_attempt_bytes_dispatched
+        evidence.ingest_subscriber_bytes_dispatched = (
+            self.ingest_session.current_attempt_subscriber_bytes_dispatched.get(self.key, 0)
+        )
+        return evidence
 
     @staticmethod
     def _is_expected_handover_log(line):
@@ -350,6 +456,10 @@ class CsoOutputSession:
                     self.last_error = "no_input_session"
                     return
                 self.start_ts = time.time()
+                self.attempt_start_ts = 0.0
+                self.first_ingest_chunk_ts = 0.0
+                self.input_bytes_received = 0
+                self.startup_process_pid = None
                 self.first_output_chunk_logged = False
                 self.first_ingest_chunk_logged = False
                 self._input_mode = "slate" if self.use_slate_as_input else "ingest"
@@ -419,7 +529,13 @@ class CsoOutputSession:
                             getattr(self.ingest_session.current_source, "url", "")
                         )
 
-                    async def _attempt_start(effective_policy):
+                    async def _attempt_start(
+                        effective_policy: dict[str, Any],
+                    ) -> CsoFfmpegAttemptResult:
+                        self.attempt_start_ts = time.time()
+                        self.first_ingest_chunk_ts = 0.0
+                        self.input_bytes_received = 0
+                        self.first_ingest_chunk_logged = False
                         command = CsoFfmpegCommandBuilder(
                             effective_policy,
                             pipe_input_format=pipe_input_format,
@@ -445,13 +561,15 @@ class CsoOutputSession:
                             stderr=asyncio.subprocess.PIPE,
                         )
                         self.process = process
+                        self.startup_process_pid = process.pid
                         read_task = asyncio.create_task(self._read_loop())
                         write_task = None if segmented_input_target else asyncio.create_task(self._write_loop())
-                        stderr_task = asyncio.create_task(self._stderr_loop())
+                        stderr_task = asyncio.create_task(self._stderr_loop(process))
                         startup_timeout_seconds = 20.0 if segmented_input_target else 8.0
                         try:
-                            started, failure_reason = await self._wait_for_startup_ready(
+                            probe_result = await self._wait_for_startup_ready(
                                 process,
+                                stderr_task,
                                 timeout_seconds=startup_timeout_seconds,
                             )
                         except asyncio.CancelledError:
@@ -464,13 +582,25 @@ class CsoOutputSession:
                             if teardown.confirmed:
                                 self.process = None
                             raise
-                        if started:
-                            return True, (process, read_task, write_task, stderr_task), ""
+                        input_mode = "direct_url" if segmented_input_target else self._input_mode
+                        evidence = self._build_startup_evidence(process, input_mode)
+                        hardware_stage = hwaccel_failure_stage(probe_result.failure_reason)
+                        if probe_result.started:
+                            return CsoFfmpegAttemptResult(
+                                dict(effective_policy),
+                                True,
+                                (process, read_task, write_task, stderr_task),
+                                "",
+                                "",
+                                probe_result.stderr_summary,
+                                "",
+                                evidence,
+                            )
                         logger.warning(
                             "CSO output start failed channel=%s output_key=%s reason=%s",
                             self.channel_id,
                             self.key,
-                            failure_reason or "unknown",
+                            probe_result.failure_reason or "unknown",
                         )
                         teardown, task_cleanup = await self._cleanup_failed_start_attempt(
                             process,
@@ -480,25 +610,49 @@ class CsoOutputSession:
                         )
                         if teardown.confirmed:
                             self.process = None
+                        failure_reason = probe_result.failure_reason
                         if not teardown.confirmed:
                             failure_reason = f"{failure_reason or 'output_start_failed'}:teardown_unconfirmed"
                         elif not task_cleanup.confirmed:
                             failure_reason = f"{failure_reason or 'output_start_failed'}:task_cleanup_unconfirmed"
-                        return False, None, failure_reason
+                        return CsoFfmpegAttemptResult(
+                            dict(effective_policy),
+                            False,
+                            None,
+                            probe_result.classification,
+                            failure_reason,
+                            probe_result.stderr_summary,
+                            hardware_stage,
+                            evidence,
+                        )
 
-                    started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+                    start_result = await start_ffmpeg_with_hw_decode_fallback(
                         self.output_policy,
                         source_identity,
                         _attempt_start,
                     )
-                    if not started:
-                        log_hwaccel_failure(start_policy, f"output:{self.key}", failure_reason)
+                    if not start_result.success:
+                        log_ffmpeg_start_result_failures(
+                            f"output:{self.key}:channel={self.channel_id}",
+                            start_result,
+                        )
                         self.running = False
-                        self.last_error = failure_reason or "output_start_failed"
+                        self.last_error = start_result.failure_reason or "output_start_failed"
                         await _detach_output_input_subscriptions(self)
                         return
-                    self.output_policy = dict(start_policy)
-                    self.process, self.read_task, self.write_task, self.stderr_task = result
+                    hardware_failures = start_result.hardware_failures()
+                    if hardware_failures:
+                        logger.warning(
+                            "CSO output hardware fallback recovered startup channel=%s output_key=%s "
+                            "reason=%s fallback_policy=%s attempts=%s",
+                            self.channel_id,
+                            self.key,
+                            hardware_failures[-1].failure_reason,
+                            start_result.fallback_policy,
+                            start_result.attempts,
+                        )
+                    self.output_policy = dict(start_result.policy)
+                    self.process, self.read_task, self.write_task, self.stderr_task = start_result.runtime
                     self.ingest_recovery_task = asyncio.create_task(self._ingest_recovery_loop())
                 except asyncio.CancelledError:
                     self.running = False
@@ -554,13 +708,13 @@ class CsoOutputSession:
                     exc,
                 )
 
-    async def _stderr_loop(self):
-        if not self.process:
+    async def _stderr_loop(self, process: asyncio.subprocess.Process):
+        if process.stderr is None:
             return
         text_buffer = ""
         while True:
             try:
-                chunk = await self.process.stderr.read(4096)
+                chunk = await process.stderr.read(4096)
             except Exception:
                 break
             if not chunk:
@@ -588,26 +742,10 @@ class CsoOutputSession:
                 try:
                     self.process.stdin.write(chunk)
                     await self.process.stdin.drain()
+                    self._record_input_chunk(chunk_mode, chunk)
                     await self.touch_all_clients()
                 except Exception:
                     return
-                if chunk_mode == "ingest" and not self.first_ingest_chunk_logged:
-                    now_value = time.time()
-                    logger.info(
-                        "CSO output first ingest chunk channel=%s output_key=%s bytes=%s elapsed_ms=%s failover_elapsed_ms=%s",
-                        self.channel_id,
-                        self.key,
-                        len(chunk),
-                        int(max(0.0, now_value - float(self.start_ts or now_value)) * 1000),
-                        int(
-                            max(
-                                0.0,
-                                now_value - float(self.ingest_session.failover_start_ts or now_value),
-                            )
-                            * 1000
-                        ),
-                    )
-                    self.first_ingest_chunk_logged = True
                 if self._input_mode != chunk_mode:
                     elapsed_ms = int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000)
                     failover_elapsed_ms = int(
@@ -648,23 +786,6 @@ class CsoOutputSession:
                         self.ingest_queue = None
                 if chunk is not None:
                     chunk_mode = "ingest"
-                    if not self.first_ingest_chunk_logged:
-                        now_value = time.time()
-                        logger.info(
-                            "CSO output first ingest chunk channel=%s output_key=%s bytes=%s elapsed_ms=%s failover_elapsed_ms=%s",
-                            self.channel_id,
-                            self.key,
-                            len(chunk),
-                            int(max(0.0, now_value - float(self.start_ts or now_value)) * 1000),
-                            int(
-                                max(
-                                    0.0,
-                                    now_value - float(self.ingest_session.failover_start_ts or now_value),
-                                )
-                                * 1000
-                            ),
-                        )
-                        self.first_ingest_chunk_logged = True
                 if chunk is None and self.slate_queue is not None:
                     slate_timed_out = False
                     try:
@@ -712,6 +833,7 @@ class CsoOutputSession:
                 try:
                     self.process.stdin.write(chunk)
                     await self.process.stdin.drain()
+                    self._record_input_chunk(chunk_mode, chunk)
                     await self.touch_all_clients()
                 except Exception:
                     break
@@ -1381,7 +1503,9 @@ class CsoHlsOutputSession:
             self.last_activity = time.time()
             await self._prepare_output_dir()
 
-            async def _attempt_start(effective_policy):
+            async def _attempt_start(
+                effective_policy: dict[str, Any],
+            ) -> CsoFfmpegAttemptResult:
                 self.runtime_policy = dict(effective_policy)
                 builder = CsoFfmpegCommandBuilder(
                     self.runtime_policy,
@@ -1437,7 +1561,15 @@ class CsoHlsOutputSession:
                         self.process = None
                     raise
                 if started:
-                    return True, (self.process, write_task, stderr_task, wait_task), ""
+                    return CsoFfmpegAttemptResult(
+                        dict(effective_policy),
+                        True,
+                        (self.process, write_task, stderr_task, wait_task),
+                        "",
+                        "",
+                        self._ffmpeg_error_summary(),
+                        "",
+                    )
                 logger.warning(
                     "CSO HLS output start failed channel=%s output_key=%s reason=%s",
                     self.channel_id,
@@ -1456,21 +1588,29 @@ class CsoHlsOutputSession:
                     failure_reason = f"{failure_reason or 'output_start_failed'}:teardown_unconfirmed"
                 elif not task_cleanup.confirmed:
                     failure_reason = f"{failure_reason or 'output_start_failed'}:task_cleanup_unconfirmed"
-                return False, None, failure_reason
+                return CsoFfmpegAttemptResult(
+                    dict(effective_policy),
+                    False,
+                    None,
+                    ffmpeg_failure_classification(failure_reason),
+                    failure_reason,
+                    self._ffmpeg_error_summary(),
+                    hwaccel_failure_stage(failure_reason),
+                )
 
-            started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+            start_result = await start_ffmpeg_with_hw_decode_fallback(
                 base_runtime_policy,
                 source_identity,
                 _attempt_start,
             )
-            if started:
-                self.runtime_policy = dict(start_policy)
-                self.process, self.write_task, self.stderr_task, self.wait_task = result
+            if start_result.success:
+                self.runtime_policy = dict(start_result.policy)
+                self.process, self.write_task, self.stderr_task, self.wait_task = start_result.runtime
                 return
-            self.runtime_policy = dict(start_policy)
-            log_hwaccel_failure(self.runtime_policy, f"hls:{self.key}", failure_reason)
+            self.runtime_policy = dict(start_result.policy)
+            log_ffmpeg_start_result_failures(f"hls:{self.key}", start_result)
             self.running = False
-            self.last_error = failure_reason or "output_start_failed"
+            self.last_error = start_result.failure_reason or "output_start_failed"
 
     async def _write_loop(self, token, process):
         exit_reason = "loop_exit"

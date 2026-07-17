@@ -18,7 +18,9 @@ from .constants import (
 )
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
-    log_hwaccel_failure,
+    ffmpeg_failure_classification,
+    hwaccel_failure_stage,
+    log_ffmpeg_start_result_failures,
     redact_ingest_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
@@ -29,6 +31,7 @@ from .processes import (
     mark_cso_ffmpeg_process_exited,
     spawn_cso_ffmpeg_process,
 )
+from .types import CsoFfmpegAttemptResult
 
 
 logger = logging.getLogger("cso")
@@ -257,7 +260,9 @@ class SegmentedHandoffSession:
                 return False
             await self._prepare_output_dir()
 
-            async def _attempt_start(effective_policy):
+            async def _attempt_start(
+                effective_policy: dict[str, Any],
+            ) -> CsoFfmpegAttemptResult:
                 builder = CsoFfmpegCommandBuilder(effective_policy)
                 command = builder.build_hls_output_command(
                     self.output_dir,
@@ -311,7 +316,15 @@ class SegmentedHandoffSession:
                         self.process = process
                     raise
                 if started:
-                    return True, (process, stderr_task, wait_task), ""
+                    return CsoFfmpegAttemptResult(
+                        dict(effective_policy),
+                        True,
+                        (process, stderr_task, wait_task),
+                        "",
+                        "",
+                        self._ffmpeg_error_summary(),
+                        "",
+                    )
                 teardown, task_cleanup = await self._cleanup_failed_start_attempt(
                     process,
                     stderr_task,
@@ -325,26 +338,29 @@ class SegmentedHandoffSession:
                 if not teardown.confirmed or not task_cleanup.confirmed:
                     cleanup_reason = "teardown_unconfirmed" if not teardown.confirmed else "task_cleanup_unconfirmed"
                     failure_reason = f"{failure_reason or 'segmented_handoff_start_failed'}:{cleanup_reason}"
-                return False, None, failure_reason
+                return CsoFfmpegAttemptResult(
+                    dict(effective_policy),
+                    False,
+                    None,
+                    ffmpeg_failure_classification(failure_reason),
+                    failure_reason,
+                    self._ffmpeg_error_summary(),
+                    hwaccel_failure_stage(failure_reason),
+                )
 
-            (
-                started,
-                start_policy,
-                result,
-                failure_reason,
-            ) = await start_ffmpeg_with_hw_decode_fallback(
+            start_result = await start_ffmpeg_with_hw_decode_fallback(
                 self.policy,
                 self.input_target,
                 _attempt_start,
             )
-            self.policy = dict(start_policy or self.policy)
-            if not started:
-                log_hwaccel_failure(self.policy, self.key, failure_reason)
-                self.last_error = failure_reason or "segmented_handoff_start_failed"
+            self.policy = dict(start_result.policy)
+            if not start_result.success:
+                log_ffmpeg_start_result_failures(self.key, start_result)
+                self.last_error = start_result.failure_reason or "segmented_handoff_start_failed"
                 self.running = False
                 return False
 
-            self.process, self.stderr_task, self.wait_task = result
+            self.process, self.stderr_task, self.wait_task = start_result.runtime
             self.running = True
             self.last_error = None
             self.last_activity = time.time()

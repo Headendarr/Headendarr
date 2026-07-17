@@ -27,6 +27,8 @@ from .constants import (
 )
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
+    ffmpeg_failure_classification,
+    hwaccel_failure_stage,
     redact_ingest_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
@@ -43,6 +45,7 @@ from .processes import (
     retained_cso_ffmpeg_process,
     spawn_cso_ffmpeg_process,
 )
+from .types import CsoFfmpegAttemptResult
 from .segmented_handoff import SegmentedHandoffSession
 from .sources import cso_source_from_vod_source
 from .vod_cache import vod_cache_manager, warm_vod_cache
@@ -229,7 +232,9 @@ class VodIngestSession:
             source_identity = input_target or self.upstream_url
             base_policy = dict(self.ingest_policy)
 
-            async def _attempt_start(effective_policy):
+            async def _attempt_start(
+                effective_policy: dict[str, Any],
+            ) -> CsoFfmpegAttemptResult:
                 command = CsoFfmpegCommandBuilder(
                     effective_policy,
                     pipe_output_format=effective_policy.get("container", "mpegts"),
@@ -310,7 +315,15 @@ class VodIngestSession:
                         self.last_error = f"ingest_start_cancelled:{cleanup_reason}"
                     raise
                 if started:
-                    return True, (process, stderr_task, startup_chunk), ""
+                    return CsoFfmpegAttemptResult(
+                        dict(effective_policy),
+                        True,
+                        (process, stderr_task, startup_chunk),
+                        "",
+                        "",
+                        " | ".join(list(self._recent_ffmpeg_stderr)[-3:]),
+                        "",
+                    )
 
                 logger.warning(
                     "VOD ingest start failed source_id=%s reason=%s",
@@ -340,7 +353,15 @@ class VodIngestSession:
                     startup_failure_reason = (
                         f"{startup_failure_reason or 'ingest_start_failed'}:task_cleanup_unconfirmed"
                     )
-                return False, None, startup_failure_reason
+                return CsoFfmpegAttemptResult(
+                    dict(effective_policy),
+                    False,
+                    None,
+                    ffmpeg_failure_classification(startup_failure_reason),
+                    startup_failure_reason,
+                    " | ".join(list(self._recent_ffmpeg_stderr)[-3:]),
+                    hwaccel_failure_stage(startup_failure_reason),
+                )
 
             # Respect global HW decode policy
             settings = self.config.read_settings()
@@ -353,18 +374,18 @@ class VodIngestSession:
             if not global_enable_hw_decode:
                 base_policy["hardware_decode"] = False
 
-            started, start_policy, result, failure_reason = await start_ffmpeg_with_hw_decode_fallback(
+            start_result = await start_ffmpeg_with_hw_decode_fallback(
                 base_policy,
                 source_identity,
                 _attempt_start,
             )
-            if not started:
+            if not start_result.success:
                 self.running = False
-                self.last_error = failure_reason or "ingest_start_failed"
+                self.last_error = start_result.failure_reason or "ingest_start_failed"
                 return False
 
-            self.ingest_policy = dict(start_policy)
-            self.process, self.stderr_task, startup_chunk = result
+            self.ingest_policy = dict(start_result.policy)
+            self.process, self.stderr_task, startup_chunk = start_result.runtime
 
             if startup_chunk:
                 await self._output_queue.put(startup_chunk)

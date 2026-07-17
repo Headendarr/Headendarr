@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import asyncio
 
@@ -50,6 +50,50 @@ class CsoSource:
 class CsoStartResult:
     success: bool
     reason: str | None = None
+
+
+@dataclass
+class CsoStartupEvidence:
+    first_ingest_chunk: float | None = None
+    input_bytes: int = 0
+    input_mode: str = "unknown"
+    output_process_pid: int | None = None
+    attempt_elapsed_ms: int = 0
+    ingest_process_pid: int | None = None
+    ingest_running: bool | None = None
+    ingest_last_chunk_age_seconds: float | None = None
+    ingest_attempt_start: float | None = None
+    ingest_reader_end_reason: str | None = None
+    ingest_reader_end_return_code: int | None = None
+    ingest_bytes_produced: int = 0
+    ingest_bytes_added_to_history: int = 0
+    ingest_bytes_dispatched: int = 0
+    ingest_subscriber_bytes_dispatched: int = 0
+
+
+@dataclass
+class CsoFfmpegAttemptResult:
+    policy: dict[str, Any]
+    success: bool
+    runtime: Any = field(repr=False)
+    classification: str
+    failure_reason: str
+    stderr_summary: str
+    hardware_failure_stage: str
+    evidence: CsoStartupEvidence = field(default_factory=CsoStartupEvidence)
+
+
+@dataclass
+class CsoFfmpegStartResult:
+    success: bool
+    policy: dict[str, Any]
+    runtime: Any
+    failure_reason: str
+    attempts: tuple[CsoFfmpegAttemptResult, ...]
+    fallback_policy: str
+
+    def hardware_failures(self) -> tuple[CsoFfmpegAttemptResult, ...]:
+        return tuple(attempt for attempt in self.attempts if attempt.hardware_failure_stage)
 
 
 @dataclass

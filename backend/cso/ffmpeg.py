@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,11 @@ from .constants import (
 )
 from .policy import policy_ffmpeg_format
 from .processes import CsoTaskCleanupResult, cancel_and_await_tasks, terminate_cso_ffmpeg_process
-from .types import HwaccelFailureStateEntry
+from .types import (
+    CsoFfmpegAttemptResult,
+    CsoFfmpegStartResult,
+    HwaccelFailureStateEntry,
+)
 
 
 logger = logging.getLogger("cso")
@@ -134,8 +139,34 @@ def _build_hwaccel_failure_source_identity(source_identity: str | None) -> str:
     return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-def _build_hwaccel_failure_cache_key(policy: dict[str, Any] | None, source_identity: str | None) -> str:
+def _encoder_policy_fingerprint(policy: dict[str, Any] | None) -> str:
+    data = dict(policy or {})
+    profile_fields = (
+        "video_codec",
+        "target_width",
+        "target_height",
+        "output_fps",
+        "output_pixel_format",
+        "deinterlace",
+        "target_video_bitrate",
+        "target_video_maxrate",
+        "target_video_bufsize",
+        "container",
+    )
+    payload = {field: data.get(field) for field in profile_fields if field in data}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.md5(encoded.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _build_hwaccel_failure_cache_key(
+    policy: dict[str, Any] | None,
+    source_identity: str | None,
+    failure_stage: str,
+) -> str:
     if not _policy_uses_hw_video_pipeline(policy):
+        return ""
+    stage = clean_key(failure_stage)
+    if stage not in {"decoder", "encoder"}:
         return ""
     gpu_fingerprint = detect_vaapi_device_fingerprint()
     if not gpu_fingerprint:
@@ -143,52 +174,155 @@ def _build_hwaccel_failure_cache_key(policy: dict[str, Any] | None, source_ident
     hashed_source_identity = _build_hwaccel_failure_source_identity(source_identity)
     if not hashed_source_identity:
         return ""
-    data = dict(policy or {})
-    return (
-        f"hwaccel-failure:{gpu_fingerprint}:source={hashed_source_identity}:"
-        f"deint={1 if bool(data.get('deinterlace')) else 0}:scale={1 if int(data.get('target_width') or 0) > 0 else 0}"
-    )
+    key = f"hwaccel-failure:{stage}:{gpu_fingerprint}:source={hashed_source_identity}"
+    if stage == "encoder":
+        key = f"{key}:policy={_encoder_policy_fingerprint(policy)}"
+    return key
 
 
-def _is_cacheable_hwaccel_failure(failure_reason: str) -> bool:
+def hwaccel_failure_stage(failure_reason: str) -> str:
     text = clean_text(failure_reason).lower()
     if not text:
-        return False
-    return any(
+        return ""
+    failure_tokens = (
+        "error",
+        "failed",
+        "failure",
+        "cannot",
+        "can't",
+        "could not",
+        "unable",
+        "unsupported",
+        "not supported",
+        "impossible",
+        "invalid",
+        "no device available",
+        "no support",
+    )
+    if not any(token in text for token in failure_tokens):
+        return ""
+    hardware_tokens = (
+        "vaapi",
+        "hwaccel",
+        "hwupload",
+        "deinterlace_vaapi",
+        "scale_vaapi",
+        "failed setup for format vaapi",
+        "invalid output format vaapi",
+        "hardware decoder",
+        "hardware encoder",
+        "hardware device",
+        "renderd",
+        "/dev/dri",
+        "h264_vaapi",
+        "hevc_vaapi",
+        "vp9_vaapi",
+        "av1_vaapi",
+    )
+    if not any(token in text for token in hardware_tokens):
+        return ""
+    decoder_tokens = (
+        "hardware decoder",
+        "no device available for decoder",
+        "device setup failed for decoder",
+        "decoder device",
+        "decoder initialization",
+        "decoder initialisation",
+        "failed setup for format vaapi",
+        "failed to initialise vaapi connection",
+        "failed to initialize vaapi connection",
+        "hwaccel",
+    )
+    encoder_tokens = (
+        "hardware encoder",
+        "error while opening encoder",
+        "failed to open encoder",
+        "encoder setup",
+        "encoder initialization",
+        "encoder initialisation",
+        "h264_vaapi",
+        "hevc_vaapi",
+        "vp9_vaapi",
+        "av1_vaapi",
+        "hwupload",
+        "deinterlace_vaapi",
+        "scale_vaapi",
+        "invalid output format vaapi",
+    )
+    decoder_match = any(token in text for token in decoder_tokens)
+    encoder_match = any(token in text for token in encoder_tokens)
+    if decoder_match and not encoder_match:
+        return "decoder"
+    if encoder_match and not decoder_match:
+        return "encoder"
+    if decoder_match and encoder_match:
+        if "decoder" in text and "encoder" not in text:
+            return "decoder"
+        if "encoder" in text and "decoder" not in text:
+            return "encoder"
+    return "unknown"
+
+
+def ffmpeg_failure_classification(failure_reason: str) -> str:
+    text = clean_text(failure_reason).lower()
+    hardware_stage = hwaccel_failure_stage(text)
+    hardware_classification = {
+        "decoder": "decoder_initialization",
+        "encoder": "encoder_initialization",
+        "unknown": "hardware_initialization",
+    }.get(hardware_stage, "")
+    if hardware_classification:
+        return hardware_classification
+    if any(
         token in text
         for token in (
-            "vaapi",
-            "hwaccel",
-            "hwupload",
-            "deinterlace_vaapi",
-            "scale_vaapi",
-            "failed setup for format vaapi",
-            "device setup failed",
-            "function not implemented",
-            "unsupported",
-            "impossible to convert between the formats",
-            "invalid output format vaapi",
-            "no support for codec",
-            "cannot allocate memory",
+            "error initializing output stream",
+            "error while opening encoder",
+            "failed to open encoder",
+            "encoder setup failed",
+            "could not write header",
+            "incorrect codec parameters",
         )
-    )
+    ):
+        return "encoder_initialization"
+    if any(
+        token in text
+        for token in (
+            "could not find codec parameters",
+            "could not detect ts packet size",
+            "error opening input",
+            "invalid data found when processing input",
+        )
+    ):
+        return "ffmpeg_input_probe"
+    if "ffmpeg_exit:" in text:
+        return "process_exit"
+    return "first_output_timeout"
 
 
 async def _prepare_hw_decode_policy(
     policy: dict[str, Any] | None,
     source_identity: str | None,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], dict[str, str]]:
     resolved_policy = dict(policy or {})
-    cache_key = _build_hwaccel_failure_cache_key(resolved_policy, source_identity)
+    cache_keys = {
+        stage: _build_hwaccel_failure_cache_key(resolved_policy, source_identity, stage)
+        for stage in ("decoder", "encoder")
+    }
     if "hardware_decode" not in resolved_policy:
         resolved_policy["hardware_decode"] = True
-    if (
-        resolved_policy.get("hardware_decode")
-        and cache_key
-        and await hwaccel_failure_state_store.has_failure(cache_key)
-    ):
+    decoder_failure = (
+        await hwaccel_failure_state_store.failure_reason(cache_keys["decoder"]) if cache_keys["decoder"] else ""
+    )
+    encoder_failure = (
+        await hwaccel_failure_state_store.failure_reason(cache_keys["encoder"]) if cache_keys["encoder"] else ""
+    )
+    if decoder_failure:
         resolved_policy["hardware_decode"] = False
-    return resolved_policy, cache_key
+    if encoder_failure:
+        resolved_policy["hwaccel"] = False
+        resolved_policy["hardware_decode"] = False
+    return resolved_policy, cache_keys
 
 
 def event_source_probe(source: Any) -> dict[str, Any]:
@@ -199,38 +333,84 @@ def event_source_probe(source: Any) -> dict[str, Any]:
 async def start_ffmpeg_with_hw_decode_fallback(
     base_policy: dict[str, Any] | None,
     source_identity: str | None,
-    attempt_start: Any,
-) -> tuple[bool, dict[str, Any], Any, str]:
-    start_policy, hwaccel_failure_key = await _prepare_hw_decode_policy(base_policy, source_identity)
+    attempt_start: Callable[[dict[str, Any]], Awaitable[CsoFfmpegAttemptResult]],
+) -> CsoFfmpegStartResult:
+    start_policy, hwaccel_failure_keys = await _prepare_hw_decode_policy(base_policy, source_identity)
     attempted_hw_decode = bool(start_policy.get("hardware_decode", True))
     attempted_hw_encode = bool(start_policy.get("hwaccel", False))
+    attempts: list[CsoFfmpegAttemptResult] = []
+    fallback_policy = "none"
     while True:
-        success, result, failure_reason = await attempt_start(start_policy)
-        if success:
-            return True, dict(start_policy), result, ""
+        attempt = await attempt_start(start_policy)
+        attempts.append(attempt)
+        if attempt.success:
+            return CsoFfmpegStartResult(
+                True,
+                start_policy,
+                attempt.runtime,
+                "",
+                tuple(attempts),
+                fallback_policy,
+            )
         if any(
-            marker in clean_text(failure_reason).lower()
-            for marker in ("teardown_unconfirmed", "task_cleanup_unconfirmed")
+            marker in attempt.failure_reason.lower() for marker in ("teardown_unconfirmed", "task_cleanup_unconfirmed")
         ):
-            return False, dict(start_policy), None, failure_reason
-        failure_is_hwaccel = _is_cacheable_hwaccel_failure(failure_reason)
-        if attempted_hw_decode and bool(start_policy.get("hardware_decode", True)):
-            if hwaccel_failure_key and failure_is_hwaccel:
-                await hwaccel_failure_state_store.mark_failed(hwaccel_failure_key, failure_reason)
+            return CsoFfmpegStartResult(
+                False,
+                start_policy,
+                None,
+                attempt.failure_reason,
+                tuple(attempts),
+                fallback_policy,
+            )
+        if (
+            attempt.hardware_failure_stage == "decoder"
+            and attempted_hw_decode
+            and bool(start_policy.get("hardware_decode", True))
+        ):
+            decoder_failure_key = hwaccel_failure_keys.get("decoder", "")
+            if decoder_failure_key:
+                await hwaccel_failure_state_store.mark_failed(decoder_failure_key, attempt.failure_reason)
             start_policy = dict(base_policy or {})
             start_policy["hardware_decode"] = False
             attempted_hw_decode = False
+            fallback_policy = "disable_hardware_decode"
             continue
-        if attempted_hw_encode and bool(start_policy.get("hwaccel", False)) and failure_is_hwaccel:
-            if hwaccel_failure_key:
-                await hwaccel_failure_state_store.mark_failed(hwaccel_failure_key, failure_reason)
+        if (
+            attempt.hardware_failure_stage == "encoder"
+            and attempted_hw_encode
+            and bool(start_policy.get("hwaccel", False))
+        ):
+            encoder_failure_key = hwaccel_failure_keys.get("encoder", "")
+            if encoder_failure_key:
+                await hwaccel_failure_state_store.mark_failed(encoder_failure_key, attempt.failure_reason)
             start_policy = dict(base_policy or {})
             start_policy["hwaccel"] = False
             start_policy["hardware_decode"] = False
             attempted_hw_encode = False
             attempted_hw_decode = False
+            fallback_policy = "software_encode"
             continue
-        return False, dict(start_policy), None, failure_reason or "output_start_failed"
+        if (
+            attempt.hardware_failure_stage == "unknown"
+            and attempted_hw_encode
+            and bool(start_policy.get("hwaccel", False))
+        ):
+            start_policy = dict(base_policy or {})
+            start_policy["hwaccel"] = False
+            start_policy["hardware_decode"] = False
+            attempted_hw_encode = False
+            attempted_hw_decode = False
+            fallback_policy = "software_encode_unknown_hardware_stage"
+            continue
+        return CsoFfmpegStartResult(
+            False,
+            start_policy,
+            None,
+            attempt.failure_reason or "output_start_failed",
+            tuple(attempts),
+            fallback_policy,
+        )
 
 
 async def terminate_ffmpeg_process(
@@ -289,17 +469,88 @@ async def wait_for_process_output_start(
     return started, failure_reason, first_chunk if started else b"", task_cleanup
 
 
-def log_hwaccel_failure(policy: dict[str, Any] | None, context: str, reason: str):
-    if not bool((policy or {}).get("hwaccel", False)):
-        return
+def log_hwaccel_failure(
+    context: str,
+    attempt: CsoFfmpegAttemptResult,
+    start_result: CsoFfmpegStartResult,
+) -> bool:
+    stage = attempt.hardware_failure_stage
+    if stage not in {"decoder", "encoder", "unknown"} or not bool(attempt.policy.get("hwaccel", False)):
+        return False
+    if stage == "decoder" and not bool(attempt.policy.get("hardware_decode", True)):
+        return False
+    title = {
+        "decoder": "CSO hardware-accelerated decode failed",
+        "encoder": "CSO hardware-accelerated encode failed",
+        "unknown": "CSO hardware acceleration failed",
+    }[stage]
+    advice = {
+        "decoder": "The VAAPI decode path failed; the retry policy disables hardware decoding for this source.",
+        "encoder": "The VAAPI encode path failed; disable hardware acceleration for this codec/profile if it persists.",
+        "unknown": "VAAPI failure evidence was present, but the failing hardware stage could not be established.",
+    }[stage]
     logger.error(
-        "CSO hardware-accelerated encode failed context=%s video_codec=%s reason=%s. "
-        "Hardware acceleration is enabled for this profile but the VAAPI encode path failed. "
-        "Disable hardware acceleration for this codec/profile if the issue persists.",
+        f"{title} context=%s video_codec=%s reason=%s diagnostics=%s. {advice}",
         context,
-        clean_key((policy or {}).get("video_codec")) or "",
-        reason or "unknown",
+        clean_key(attempt.policy.get("video_codec")) or "",
+        attempt.failure_reason or "unknown",
+        startup_failure_diagnostics(attempt, start_result),
     )
+    return True
+
+
+def startup_failure_diagnostics(
+    attempt: CsoFfmpegAttemptResult,
+    start_result: CsoFfmpegStartResult,
+) -> dict[str, Any]:
+    evidence = attempt.evidence
+    return {
+        "classification": attempt.classification,
+        "hardware_failure_stage": attempt.hardware_failure_stage or None,
+        "first_ingest_chunk": evidence.first_ingest_chunk,
+        "input_bytes": evidence.input_bytes,
+        "input_mode": evidence.input_mode,
+        "output_process_pid": evidence.output_process_pid,
+        "ingest_process_pid": evidence.ingest_process_pid,
+        "ingest_running": evidence.ingest_running,
+        "ingest_last_chunk_age_seconds": evidence.ingest_last_chunk_age_seconds,
+        "ingest_attempt_start": evidence.ingest_attempt_start,
+        "ingest_reader_end_reason": evidence.ingest_reader_end_reason,
+        "ingest_reader_end_return_code": evidence.ingest_reader_end_return_code,
+        "ingest_bytes_produced": evidence.ingest_bytes_produced,
+        "ingest_bytes_added_to_history": evidence.ingest_bytes_added_to_history,
+        "ingest_bytes_dispatched": evidence.ingest_bytes_dispatched,
+        "ingest_subscriber_bytes_dispatched": evidence.ingest_subscriber_bytes_dispatched,
+        "fallback_policy": start_result.fallback_policy,
+        "attempts": start_result.attempts,
+    }
+
+
+def log_ffmpeg_start_failure(
+    context: str,
+    attempt: CsoFfmpegAttemptResult,
+    start_result: CsoFfmpegStartResult,
+):
+    logger.error(
+        "CSO FFmpeg startup failed context=%s reason=%s diagnostics=%s",
+        context,
+        attempt.failure_reason or start_result.failure_reason or "output_start_failed",
+        startup_failure_diagnostics(attempt, start_result),
+    )
+
+
+def log_ffmpeg_start_result_failures(
+    context: str,
+    start_result: CsoFfmpegStartResult,
+):
+    final_attempt = start_result.attempts[-1]
+    final_hardware_reported = False
+    for hardware_attempt in start_result.hardware_failures():
+        hardware_reported = log_hwaccel_failure(context, hardware_attempt, start_result)
+        if hardware_attempt is final_attempt and hardware_reported:
+            final_hardware_reported = True
+    if not final_hardware_reported:
+        log_ffmpeg_start_failure(context, final_attempt, start_result)
 
 
 class HwaccelFailureStateStore:
@@ -336,10 +587,11 @@ class HwaccelFailureStateStore:
         payload = json.dumps(state, indent=2, sort_keys=True)
         await asyncio.to_thread(self._path.write_text, payload, encoding="utf-8")
 
-    async def has_failure(self, cache_key: str) -> bool:
+    async def failure_reason(self, cache_key: str) -> str:
         async with self._lock:
             state = await self._load_state()
-            return clean_text(cache_key) in state
+            entry = state.get(clean_text(cache_key))
+            return entry["failure_reason"] if entry is not None else ""
 
     async def mark_failed(self, cache_key: str, failure_reason: str):
         key = clean_text(cache_key)
