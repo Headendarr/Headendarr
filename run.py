@@ -103,6 +103,23 @@ def _load_sentry_json_config() -> dict[str, object]:
     return parsed_sentry_config
 
 
+def _get_build_commit_sha() -> str:
+    version_file = "/version.txt"
+    if os.path.exists(version_file):
+        try:
+            with open(version_file, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+            if raw:
+                line = raw.splitlines()[0].strip()
+                import re
+                matches = re.findall(r'\[([^\]]+)\]', line)
+                if matches:
+                    return matches[-1].strip()
+        except Exception:
+            pass
+    return "unknown"
+
+
 def _load_sentry_config() -> SentryRuntimeConfig | None:
     parsed_sentry_config = _load_sentry_json_config()
     if parsed_sentry_config:
@@ -149,7 +166,7 @@ def _load_sentry_config() -> SentryRuntimeConfig | None:
         "SENTRY_ENVIRONMENT": str(_config_value("SENTRY_ENVIRONMENT", "production") or "production"),
         "SENTRY_HOSTNAME": str(_config_value("SENTRY_HOSTNAME", "") or "") or None,
         "SENTRY_PROFILES_SAMPLE_RATE": sentry_profiles_sample_rate,
-        "SENTRY_RELEASE": str(_config_value("SENTRY_RELEASE", "unknown") or "unknown"),
+        "SENTRY_RELEASE": str(_config_value("SENTRY_RELEASE", _get_build_commit_sha()) or _get_build_commit_sha()),
         "SENTRY_SERVICE_NAME": str(_config_value("SENTRY_SERVICE_NAME", "headendarr") or "headendarr"),
         "SENTRY_TRANSPORT_TIMEOUT": _parse_sentry_float(_config_value("SENTRY_TRANSPORT_TIMEOUT"), 30.0) or 30.0,
         "SENTRY_TRACES_SAMPLE_RATE": sentry_traces_sample_rate,
