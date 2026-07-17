@@ -90,48 +90,32 @@
         <div class="col-12 col-lg-4">
           <q-card flat class="dashboard-card q-mb-md">
             <q-card-section>
-              <div class="row items-center justify-between no-wrap">
-                <div class="text-subtitle1 text-primary">Channels</div>
-                <q-btn
-                  flat
-                  dense
-                  no-caps
-                  color="primary"
-                  icon-right="arrow_forward"
-                  label="View all"
-                  @click="goTo('/channels')"
-                />
-              </div>
-
-              <div class="channels-summary q-mt-sm">
-                <div class="text-body2">Configured: {{ summary.channels?.channel_count || 0 }}</div>
-                <div class="text-body2">Needs attention: {{ summary.channels?.warning_channel_count || 0 }}</div>
-
-                <div class="channels-issues q-mt-sm">
-                  <q-list dense>
-                    <q-item
-                      v-for="(issue, idx) in combinedIssues"
-                      :key="`${issue.issue_key}-${idx}`"
-                      clickable
-                      @click="goTo(issue.route)"
-                    >
-                      <q-item-section avatar>
-                        <q-icon name="warning" color="warning" />
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label>{{ issue.label }}</q-item-label>
-                        <q-item-label caption>{{ issue.count }} item(s)</q-item-label>
-                      </q-item-section>
-                    </q-item>
-                    <q-item v-if="!combinedIssues.length">
-                      <q-item-section>
-                        <q-item-label class="text-grey-7">No issues currently detected.</q-item-label>
-                      </q-item-section>
-                    </q-item>
-                  </q-list>
-                </div>
-              </div>
+              <div class="text-h6 text-primary">Config Issues</div>
+              <div class="text-caption text-grey-7">{{ configIssuesSubtitle }}</div>
             </q-card-section>
+            <q-separator />
+            <q-list dense separator>
+              <q-item
+                v-for="issue in combinedIssues"
+                :key="issue.issue_key"
+                class="config-issue-item"
+                clickable
+                @click="goTo(issue.route)"
+              >
+                <q-item-section avatar>
+                  <q-icon name="warning" color="warning" />
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ issue.label }}</q-item-label>
+                  <q-item-label caption>{{ issue.count }} item(s)</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item v-if="!combinedIssues.length" class="config-issue-item">
+                <q-item-section>
+                  <q-item-label class="text-grey-7">No issues currently detected.</q-item-label>
+                </q-item-section>
+              </q-item>
+            </q-list>
           </q-card>
         </div>
 
@@ -295,6 +279,16 @@ export default defineComponent({
         list.push(this.epgIssue);
       }
       return list;
+    },
+    configIssueCount() {
+      return this.combinedIssues.reduce((total, issue) => total + Math.max(0, Number(issue?.count || 0)), 0);
+    },
+    configIssuesSubtitle() {
+      if (!this.configIssueCount) {
+        return 'Nothing needs attention right now.';
+      }
+      const noun = this.configIssueCount === 1 ? 'item needs' : 'items need';
+      return `${this.configIssueCount} ${noun} attention. Click an issue to open the relevant settings page.`;
     },
     visibleRecentAudit() {
       const rows = Array.isArray(this.summary.recent_audit) ? this.summary.recent_audit : [];
@@ -478,20 +472,71 @@ export default defineComponent({
       const minutes = Math.floor(value / 60);
       return `${minutes}m`;
     },
-    async loadSummary(options = {}) {
-      const silent = !!options.silent;
-      if (!silent) {
+    async fetchSummary() {
+      const response = await axios.get('/tic-api/dashboard/summary');
+      return response.data.data || this.summary;
+    },
+    async fetchActivity() {
+      const response = await axios.get('/tic-api/dashboard/activity');
+      return response.data.data || [];
+    },
+    async fetchEpgIssueSummary() {
+      const roles = this.authStore.user?.roles || [];
+      if (!roles.includes('admin')) {
+        return null;
+      }
+      const response = await axios.get('/tic-api/epgs/get');
+      const epgs = response.data.data || [];
+      const failing = epgs.filter(
+        (epg) => epg?.enabled && ['degraded', 'error'].includes(epg?.health?.status)
+      );
+      if (!failing.length) {
+        return null;
+      }
+      return {
+        issue_key: 'epg_download_failed',
+        label: 'EPG URL downloads have issues',
+        count: failing.length,
+        route: '/epgs',
+      };
+    },
+    async loadDashboardSnapshot(options = {}) {
+      const showLoading = !!options.showLoading;
+      if (showLoading) {
         this.loadingSummary = true;
+        this.activityLoading = true;
       }
       try {
-        const response = await axios.get('/tic-api/dashboard/summary');
-        this.summary = response.data.data || this.summary;
-      } catch (error) {
-        console.error('Failed to load dashboard summary:', error);
-        this.$q.notify({color: 'negative', message: 'Failed to load dashboard summary'});
+        const results = await Promise.allSettled([
+          this.fetchSummary(),
+          this.fetchActivity(),
+          this.fetchEpgIssueSummary(),
+        ]);
+
+        const [summaryResult, activityResult, epgIssueResult] = results;
+        if (summaryResult.status === 'fulfilled') {
+          this.summary = summaryResult.value;
+        } else {
+          console.error('Failed to load dashboard summary:', summaryResult.reason);
+        }
+        if (activityResult.status === 'fulfilled') {
+          this.activity = activityResult.value;
+        } else {
+          console.error('Failed to load dashboard activity:', activityResult.reason);
+        }
+        if (epgIssueResult.status === 'fulfilled') {
+          this.epgIssue = epgIssueResult.value;
+        } else {
+          console.error('Failed to load EPG health:', epgIssueResult.reason);
+        }
+
+        if (showLoading && results.some((result) => result.status === 'rejected')) {
+          this.$q.notify({color: 'negative', message: 'Failed to load dashboard'});
+        }
       } finally {
-        if (!silent) {
+        if (showLoading) {
           this.loadingSummary = false;
+          this.activityLoading = false;
         }
       }
     },
@@ -501,36 +546,13 @@ export default defineComponent({
         this.activityLoading = true;
       }
       try {
-        const response = await axios.get('/tic-api/dashboard/activity');
-        this.activity = response.data.data || [];
+        this.activity = await this.fetchActivity();
       } catch (error) {
         console.error('Failed to load dashboard activity:', error);
       } finally {
         if (!silent) {
           this.activityLoading = false;
         }
-      }
-    },
-    async loadEpgIssueSummary() {
-      this.epgIssue = null;
-      const roles = this.authStore.user?.roles || [];
-      if (!roles.includes('admin')) {
-        return;
-      }
-      try {
-        const response = await axios.get('/tic-api/epgs/get');
-        const epgs = response.data.data || [];
-        const failing = epgs.filter((epg) => epg?.health?.status === 'error');
-        if (failing.length) {
-          this.epgIssue = {
-            issue_key: 'epg_download_failed',
-            label: 'EPG URL downloads have issues',
-            count: failing.length,
-            route: '/epgs',
-          };
-        }
-      } catch (error) {
-        console.error('Failed to load EPG health:', error);
       }
     },
     async runDashboardPoll() {
@@ -542,11 +564,7 @@ export default defineComponent({
       }
       this.pollInFlight = true;
       try {
-        await Promise.all([
-          this.loadSummary({silent: true}),
-          this.loadActivity({silent: true}),
-          this.loadEpgIssueSummary(),
-        ]);
+        await this.loadDashboardSnapshot();
       } finally {
         this.pollInFlight = false;
         if (!this.pollCancelled) {
@@ -564,7 +582,7 @@ export default defineComponent({
     startDashboardPoll() {
       this.stopDashboardPoll();
       this.pollCancelled = false;
-      this.runDashboardPoll();
+      this.pollTimer = setTimeout(() => this.runDashboardPoll(), 5000);
     },
     goTo(path) {
       this.$router.push(path);
@@ -576,11 +594,7 @@ export default defineComponent({
     } catch (error) {
       console.error('Failed to load application settings:', error);
     }
-    await Promise.all([
-      this.loadSummary(),
-      this.loadEpgIssueSummary(),
-      this.loadActivity(),
-    ]);
+    await this.loadDashboardSnapshot({showLoading: true});
     this.startDashboardPoll();
   },
   beforeUnmount() {
@@ -779,12 +793,8 @@ export default defineComponent({
   background: rgba(243, 156, 18, 0.55);
 }
 
-.channels-summary {
-  padding-left: 12px;
-}
-
-.channels-issues {
-  padding-left: 12px;
+.config-issue-item {
+  padding: 12px 6px;
 }
 
 @media (max-width: 599px) {

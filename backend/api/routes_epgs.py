@@ -52,11 +52,12 @@ async def api_get_epg_config(epg_id):
 @admin_auth_required
 async def api_set_epg_config(epg_id):
     json_data = await request.get_json()
+    config = current_app.config["APP_CONFIG"]
     try:
         epg_id = int(epg_id)
     except (TypeError, ValueError):
         return jsonify({"success": False, "message": "Invalid epg id"}), 400
-    await update_epg(epg_id, json_data)
+    await update_epg(config, epg_id, json_data)
     # TODO: Trigger an update of the cached EPG config
     return jsonify({"success": True})
 

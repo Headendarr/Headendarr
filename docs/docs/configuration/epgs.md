@@ -42,6 +42,23 @@ Headendarr will periodically refresh your EPG sources in the background. However
 
 After a successful refresh, the "Available Channels" and "Available Programmes" counts for the EPG will update, and the EPG data will be ready to be assigned to your mapped channels on the [Channels page](./channels.md).
 
+## Download Size Limit
+
+Headendarr limits the amount of data accepted from each HTTP/HTTPS or `file://` EPG source. The default maximum raw download size is **3 GiB** (`3221225472` bytes).
+
+Advanced users can change this limit with the `EPG_DOWNLOAD_MAX_BYTES` environment variable on the Headendarr container. The value must be a positive integer expressed in bytes:
+
+```yaml
+services:
+  headendarr:
+    environment:
+      EPG_DOWNLOAD_MAX_BYTES: "3221225472"
+```
+
+Restart the Headendarr container after changing the value. This setting applies to the downloaded response before gzip decompression and to XMLTV output produced by a local executable source. Gzip-expanded XMLTV data has a separate fixed safety limit of **2 GiB**.
+
+If a source exceeds the configured limit, the refresh fails without retrying, its partial download is removed, and any previously imported cache remains untouched. Headendarr marks the EPG as needing attention and tries it again at its next configured update interval.
+
 ## Additional EPG Metadata
 
 The **EPGs** page also includes optional guide-enrichment settings that run after an EPG refresh.

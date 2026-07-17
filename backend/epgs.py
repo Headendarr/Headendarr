@@ -6,12 +6,13 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
+import tempfile
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, unquote
+from typing import Protocol
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
@@ -129,6 +130,29 @@ EPG_UPDATE_SCHEDULE_SECONDS = {
     "14d": 1209600,
     "off": None,
 }
+EPG_DOWNLOAD_CONNECT_TIMEOUT_SECONDS = 15
+EPG_DOWNLOAD_SOCKET_READ_TIMEOUT_SECONDS = 30
+EPG_DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 15 * 60
+EPG_DOWNLOAD_RETRY_DELAYS_SECONDS = (1, 2, 4)
+EPG_DOWNLOAD_MAX_BYTES = 3 * 1024 * 1024 * 1024
+EPG_EXPANDED_MAX_BYTES = 2 * 1024 * 1024 * 1024
+EPG_FILE_SOURCE_STDERR_MAX_BYTES = 64 * 1024
+EPG_FILE_SOURCE_TERMINATE_TIMEOUT_SECONDS = 5
+EPG_FILE_SOURCE_KILL_TIMEOUT_SECONDS = 5
+EPG_FAILURE_REPORT_INTERVAL_SECONDS = 6 * 60 * 60
+EPG_RETRIABLE_HTTP_STATUSES = {408, 425, 429}
+
+
+class EpgDownloadError(RuntimeError):
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class EpgRuntimeConfig(Protocol):
+    config_path: str
+
+    def read_settings(self) -> dict: ...
 
 
 def _programme_stop_ts_expr():
@@ -351,6 +375,27 @@ def _clear_epg_health(config, epg_id):
     _write_epg_health_map(config, epg_map)
 
 
+def _clear_epg_failure_health(config: EpgRuntimeConfig, epg_id: int):
+    epg_map = _read_epg_health_map(config)
+    epg_key = str(epg_id)
+    health = epg_map.get(epg_key)
+    if not isinstance(health, dict):
+        return
+    health.update(
+        {
+            "status": "disabled",
+            "error": None,
+            "http_status": None,
+            "last_failure_at": None,
+            "last_reported_failure_at": None,
+            "last_reported_failure_key": None,
+            "cache_preserved": False,
+        }
+    )
+    epg_map[epg_key] = health
+    _write_epg_health_map(config, epg_map)
+
+
 async def read_config_all_epgs(output_for_export=False, config=None):
     return_list = []
     epg_health_map = _read_epg_health_map(config) if config else {}
@@ -361,6 +406,7 @@ async def read_config_all_epgs(output_for_export=False, config=None):
             epg_ids = [result.id for result in results]
             review_stats_map = await _read_epg_review_stats_map(epg_ids)
             for result in results:
+                health = epg_health_map.get(str(result.id), {}) if result.enabled else {}
                 if output_for_export:
                     return_list.append(
                         {
@@ -380,10 +426,10 @@ async def read_config_all_epgs(output_for_export=False, config=None):
                         "url": result.url,
                         "user_agent": result.user_agent,
                         "update_schedule": _parsed_epg_update_schedule(result.update_schedule),
-                        "health": epg_health_map.get(str(result.id), {}),
+                        "health": health,
                         "review": _build_epg_review_payload(
                             review_stats_map.get(result.id, {}),
-                            epg_health_map.get(str(result.id), {}),
+                            health,
                         ),
                     }
                 )
@@ -400,6 +446,7 @@ async def read_config_one_epg(epg_id, config=None):
             query = await session.execute(select(Epg).where(Epg.id == epg_id))
             results = query.scalar_one_or_none()
             if results:
+                health = epg_health_map.get(str(results.id), {}) if results.enabled else {}
                 return_item = {
                     "id": results.id,
                     "enabled": results.enabled,
@@ -407,10 +454,10 @@ async def read_config_one_epg(epg_id, config=None):
                     "url": results.url,
                     "user_agent": results.user_agent,
                     "update_schedule": _parsed_epg_update_schedule(results.update_schedule),
-                    "health": epg_health_map.get(str(results.id), {}),
+                    "health": health,
                     "review": _build_epg_review_payload(
                         review_stats_map.get(results.id, {}),
-                        epg_health_map.get(str(results.id), {}),
+                        health,
                     ),
                 }
     return return_item
@@ -480,17 +527,20 @@ async def add_new_epg(data):
             session.add(epg)
 
 
-async def update_epg(epg_id, data):
+async def update_epg(config: EpgRuntimeConfig, epg_id: int, data: dict):
     epg_id = parse_entity_id(epg_id, "epg")
+    enabled = bool(data.get("enabled"))
     async with Session() as session:
         async with session.begin():
             result = await session.execute(select(Epg).where(Epg.id == epg_id))
             epg = result.scalar_one()
-            epg.enabled = data.get("enabled")
+            epg.enabled = enabled
             epg.name = data.get("name")
             epg.url = data.get("url")
             epg.user_agent = data.get("user_agent", epg.user_agent)
             epg.update_schedule = _parsed_epg_update_schedule(data.get("update_schedule", epg.update_schedule))
+    if not enabled:
+        _clear_epg_failure_health(config, epg_id)
 
 
 async def delete_epg(config, epg_id):
@@ -533,7 +583,7 @@ async def delete_epg(config, epg_id):
     _clear_epg_health(config, epg_id)
 
 
-def _resolve_user_agent(settings, user_agent):
+def _resolve_user_agent(settings: dict, user_agent: str | None) -> str:
     if user_agent:
         return user_agent
     defaults = settings.get("settings", {}).get("user_agents", [])
@@ -542,11 +592,11 @@ def _resolve_user_agent(settings, user_agent):
     return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
 
 
-def _is_file_epg_source(url):
+def _is_file_epg_source(url: str | None) -> bool:
     return str(url or "").strip().lower().startswith("file://")
 
 
-def _resolve_file_epg_command(url):
+def _resolve_file_epg_command(url: str) -> str:
     raw_value = str(url or "").strip()
     if not _is_file_epg_source(raw_value):
         raise ValueError("EPG source is not a file:// source")
@@ -558,16 +608,54 @@ def _resolve_file_epg_command(url):
     return os.path.expanduser(command_path)
 
 
-async def _write_process_stdout_to_file(stream, output):
-    async with aiofiles.open(output, "wb") as file_handle:
+async def _write_process_stdout_to_file(stream: asyncio.StreamReader, output: str, max_bytes: int):
+    bytes_written = 0
+    file_handle = await aiofiles.open(output, "wb")
+    try:
         while True:
             chunk = await stream.read(8192)
             if not chunk:
                 break
+            bytes_written += len(chunk)
+            if bytes_written > max_bytes:
+                raise ValueError(f"EPG file source exceeded the {max_bytes}-byte download-size limit")
             await file_handle.write(chunk)
+    finally:
+        close_task = asyncio.create_task(file_handle.close(), name="epg-file-source-output-close")
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await close_task
+            raise
 
 
-async def _run_file_epg_source(url, output):
+async def _read_process_stream_bounded(stream: asyncio.StreamReader, max_bytes: int) -> bytes:
+    chunks = []
+    retained_bytes = 0
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        if retained_bytes < max_bytes:
+            retained = chunk[: max_bytes - retained_bytes]
+            chunks.append(retained)
+            retained_bytes += len(retained)
+    return b"".join(chunks)
+
+
+async def _stop_file_epg_process(process: asyncio.subprocess.Process):
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=EPG_FILE_SOURCE_TERMINATE_TIMEOUT_SECONDS)
+        return
+    except asyncio.TimeoutError:
+        process.kill()
+    await asyncio.wait_for(process.wait(), timeout=EPG_FILE_SOURCE_KILL_TIMEOUT_SECONDS)
+
+
+async def _run_file_epg_source(url: str, output: str, max_download_bytes: int):
     command_path = _resolve_file_epg_command(url)
     logger.info("Running EPG file source - '%s'", command_path)
 
@@ -588,11 +676,32 @@ async def _run_file_epg_source(url, output):
         stderr=asyncio.subprocess.PIPE,
     )
 
-    stdout_task = asyncio.create_task(_write_process_stdout_to_file(process.stdout, output))
-    stderr_task = asyncio.create_task(process.stderr.read())
-    await process.wait()
-    await stdout_task
-    stderr = await stderr_task
+    stdout_task = asyncio.create_task(
+        _write_process_stdout_to_file(process.stdout, output, max_download_bytes),
+        name="epg-file-source-stdout",
+    )
+    stderr_task = asyncio.create_task(
+        _read_process_stream_bounded(process.stderr, EPG_FILE_SOURCE_STDERR_MAX_BYTES),
+        name="epg-file-source-stderr",
+    )
+    wait_task = asyncio.create_task(process.wait(), name="epg-file-source-wait")
+    tasks = (stdout_task, stderr_task, wait_task)
+    completion = asyncio.gather(*tasks)
+    try:
+        async with asyncio.timeout(EPG_DOWNLOAD_TOTAL_TIMEOUT_SECONDS):
+            await asyncio.shield(completion)
+    except BaseException:
+        try:
+            await _stop_file_epg_process(process)
+        except Exception:
+            logger.warning("Failed to stop EPG file source process pid=%s", process.pid, exc_info=True)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    stderr = stderr_task.result()
 
     if process.returncode != 0:
         stderr_text = (stderr or b"").decode("utf-8", errors="replace").strip()
@@ -611,44 +720,259 @@ async def _run_file_epg_source(url, output):
         raise RuntimeError(f"EPG file source produced no output: '{command_path}'")
 
 
-async def download_xmltv_epg(settings, url, output, user_agent=None):
-    if not os.path.exists(os.path.dirname(output)):
-        os.makedirs(os.path.dirname(output))
+def _create_epg_part_path(output: str) -> str:
+    output_dir = os.path.dirname(output)
+    output_name = os.path.basename(output)
+    file_descriptor, part_path = tempfile.mkstemp(prefix=f".{output_name}.", suffix=".part", dir=output_dir)
+    os.close(file_descriptor)
+    return part_path
+
+
+def _remove_epg_part_file(path: str):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Failed to remove partial EPG download '%s'", path, exc_info=True)
+
+
+def _is_retriable_epg_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
+        return True
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status in EPG_RETRIABLE_HTTP_STATUSES or exc.status >= 500
+    return False
+
+
+def _validate_xmltv_file_sync(path: str):
+    if os.path.getsize(path) <= 0:
+        raise ValueError("EPG source produced an empty response")
+
+    root = None
+    for event, element in ET.iterparse(path, events=("start", "end")):
+        if root is None and event == "start":
+            root = element
+            root_name = str(element.tag).rsplit("}", 1)[-1].lower()
+            if root_name != "tv":
+                raise ValueError(f"EPG source returned XML with unexpected root element '{root_name}'")
+        if event == "end" and element is not root:
+            element.clear()
+
+    if root is None:
+        raise ValueError("EPG source produced an empty XML document")
+
+
+def _prepare_xmltv_file_sync(path: str, max_download_bytes: int):
+    source_size = os.path.getsize(path)
+    if source_size <= 0:
+        raise ValueError("EPG source produced an empty response")
+    if source_size > max_download_bytes:
+        raise ValueError(f"EPG source exceeded the {max_download_bytes}-byte download-size limit")
+
+    with open(path, "rb") as source:
+        gzip_magic = source.read(2)
+
+    if gzip_magic == b"\x1f\x8b":
+        unpacked_path = _create_epg_part_path(path)
+        try:
+            with gzip.open(path, "rb") as source, open(unpacked_path, "wb") as destination:
+                expanded_bytes = 0
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    expanded_bytes += len(chunk)
+                    if expanded_bytes > EPG_EXPANDED_MAX_BYTES:
+                        raise ValueError(
+                            f"EPG gzip expanded beyond the {EPG_EXPANDED_MAX_BYTES}-byte expanded-size limit"
+                        )
+                    destination.write(chunk)
+            if os.path.getsize(unpacked_path) <= 0:
+                raise ValueError("EPG source produced an empty gzip archive")
+            os.replace(unpacked_path, path)
+        finally:
+            _remove_epg_part_file(unpacked_path)
+
+    _validate_xmltv_file_sync(path)
+
+
+async def _prepare_xmltv_file(path: str, max_download_bytes: int):
+    prepare_task = asyncio.create_task(asyncio.to_thread(_prepare_xmltv_file_sync, path, max_download_bytes))
+    try:
+        await asyncio.shield(prepare_task)
+    except asyncio.CancelledError:
+        try:
+            await prepare_task
+        except Exception:
+            pass
+        raise
+
+
+def _sanitise_epg_source(url: str | None) -> str:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return ""
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        netloc = hostname
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    except (TypeError, ValueError):
+        safe_url = raw_url.split("?", 1)[0].split("#", 1)[0]
+        if "://" in safe_url:
+            scheme, remainder = safe_url.split("://", 1)
+            authority, separator, path = remainder.partition("/")
+            authority = authority.rsplit("@", 1)[-1]
+            return f"{scheme}://{authority}{separator}{path}"
+        return safe_url
+
+
+def _safe_epg_error_text(exc: BaseException, source_url: str | None = None) -> str:
+    if isinstance(exc, aiohttp.ClientResponseError):
+        safe_url = _sanitise_epg_source(str(exc.request_info.real_url))
+        return f"{exc.status}, message={exc.message!r}, url={safe_url!r}"
+    error_text = str(exc).strip() or repr(exc)
+    raw_source = str(source_url or "").strip()
+    if raw_source:
+        error_text = error_text.replace(raw_source, _sanitise_epg_source(raw_source))
+    return error_text
+
+
+def _epg_download_max_bytes() -> int:
+    configured_value = os.environ.get("EPG_DOWNLOAD_MAX_BYTES", str(EPG_DOWNLOAD_MAX_BYTES))
+    try:
+        max_bytes = int(configured_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid EPG_DOWNLOAD_MAX_BYTES environment value %r; using default %s",
+            configured_value,
+            EPG_DOWNLOAD_MAX_BYTES,
+        )
+        return EPG_DOWNLOAD_MAX_BYTES
+    if max_bytes <= 0:
+        logger.warning(
+            "EPG_DOWNLOAD_MAX_BYTES environment value must be positive; using default %s",
+            EPG_DOWNLOAD_MAX_BYTES,
+        )
+        return EPG_DOWNLOAD_MAX_BYTES
+    return max_bytes
+
+
+async def _download_http_epg(url: str, headers: dict[str, str], output: str, max_download_bytes: int):
+    timeout = aiohttp.ClientTimeout(
+        total=EPG_DOWNLOAD_TOTAL_TIMEOUT_SECONDS,
+        connect=EPG_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+        sock_connect=EPG_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+        sock_read=EPG_DOWNLOAD_SOCKET_READ_TIMEOUT_SECONDS,
+    )
+    async with aiohttp.ClientSession(timeout=timeout, auto_decompress=False) as session:
+        async with session.get(url, headers=headers) as response:
+            response.raise_for_status()
+            content_length = response.content_length
+            if content_length is not None and content_length > max_download_bytes:
+                raise ValueError(
+                    f"EPG response Content-Length {content_length} exceeds the "
+                    f"{max_download_bytes}-byte download-size limit"
+                )
+            downloaded_bytes = 0
+            async with aiofiles.open(output, "wb") as file_handle:
+                async for chunk in response.content.iter_chunked(8192):
+                    downloaded_bytes += len(chunk)
+                    if downloaded_bytes > max_download_bytes:
+                        raise ValueError(f"EPG response exceeded the {max_download_bytes}-byte download-size limit")
+                    await file_handle.write(chunk)
+
+
+async def download_xmltv_epg(
+    settings: dict,
+    url: str,
+    output: str,
+    user_agent: str | None = None,
+):
+    output_dir = os.path.dirname(output)
+    os.makedirs(output_dir, exist_ok=True)
+    max_download_bytes = _epg_download_max_bytes()
 
     if _is_file_epg_source(url):
-        await _run_file_epg_source(url, output)
+        attempts = 1
+        headers = None
     else:
-        logger.info("Downloading EPG from url - '%s'", url)
+        attempts = len(EPG_DOWNLOAD_RETRY_DELAYS_SECONDS) + 1
         headers = {"User-Agent": _resolve_user_agent(settings, user_agent)}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                response.raise_for_status()
-                async with aiofiles.open(output, "wb") as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await f.write(chunk)
-    await try_unzip(output)
+        logger.info("Downloading EPG from source '%s'", _sanitise_epg_source(url))
 
-
-async def try_unzip(output: str) -> None:
-    def _maybe_unzip(path: str) -> bool:
-        temp_path = f"{path}.tmp_unzip"
+    for attempt in range(1, attempts + 1):
+        part_path = _create_epg_part_path(output)
         try:
-            with gzip.open(path, "rb") as src, open(temp_path, "wb") as dst:
-                shutil.copyfileobj(src, dst, length=1024 * 1024)
-            os.replace(temp_path, path)
-            return True
-        except Exception:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
-            return False
+            async with asyncio.timeout(EPG_DOWNLOAD_TOTAL_TIMEOUT_SECONDS):
+                if _is_file_epg_source(url):
+                    await _run_file_epg_source(url, part_path, max_download_bytes)
+                else:
+                    await _download_http_epg(url, headers, part_path, max_download_bytes)
 
-    loop = asyncio.get_running_loop()
-    did_unzip = await loop.run_in_executor(None, _maybe_unzip, output)
-    if did_unzip:
-        logger.info("Downloaded file is gzipped. Unzipping")
+            await _prepare_xmltv_file(part_path, max_download_bytes)
+            os.replace(part_path, output)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if attempt >= attempts or not _is_retriable_epg_download_error(exc):
+                if not _is_file_epg_source(url) and isinstance(
+                    exc,
+                    (asyncio.TimeoutError, aiohttp.ClientError),
+                ):
+                    raise EpgDownloadError(
+                        _safe_epg_error_text(exc, url),
+                        status=getattr(exc, "status", None),
+                    ) from None
+                raise
+            delay = EPG_DOWNLOAD_RETRY_DELAYS_SECONDS[attempt - 1]
+            logger.warning(
+                "Transient EPG download failure for '%s'; retrying in %ss (attempt %s/%s): %s",
+                _sanitise_epg_source(url),
+                delay,
+                attempt,
+                attempts,
+                _safe_epg_error_text(exc, url),
+            )
+            await asyncio.sleep(delay)
+        finally:
+            _remove_epg_part_file(part_path)
+
+
+def _epg_failure_report_key(exc: BaseException) -> str:
+    status = getattr(exc, "status", None)
+    error_text = str(exc).strip()
+    return hashlib.sha256(f"{type(exc).__name__}:{status}:{error_text}".encode("utf-8")).hexdigest()
+
+
+def _should_report_epg_failure(health: dict, failure_key: str, now_ts: int) -> bool:
+    if not isinstance(health, dict):
+        return True
+    if health.get("last_reported_failure_key") != failure_key:
+        return True
+    try:
+        last_reported_at = int(health.get("last_reported_failure_at"))
+    except (TypeError, ValueError):
+        return True
+    return (now_ts - last_reported_at) >= EPG_FAILURE_REPORT_INTERVAL_SECONDS
+
+
+def _epg_schedule_reference_ts(health: dict) -> int | None:
+    timestamps = []
+    for key in ("last_success_at", "last_attempt_at"):
+        try:
+            value = int(health.get(key))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if value > 0:
+            timestamps.append(value)
+    return max(timestamps) if timestamps else None
 
 
 def _derive_timestamp(raw_value):
@@ -1262,12 +1586,13 @@ def _import_epg_xml_sync(epg_id, xmltv_file, programme_batch_size=5000):
     }
 
 
-async def import_epg_data(config, epg_id):
+async def import_epg_data(config: EpgRuntimeConfig, epg_id: int):
     epg = await read_config_one_epg(epg_id, config=config)
     settings = config.read_settings()
     source_url = epg.get("url")
+    safe_source = _sanitise_epg_source(source_url)
     # Fetch a new local cached copy of the EPG from either HTTP(S) or a local executable.
-    logger.info("Fetching updated XMLTV file for EPG #%s from source - '%s'", epg_id, source_url)
+    logger.info("Fetching updated XMLTV file for EPG #%s from source '%s'", epg_id, safe_source)
     attempt_ts = int(time.time())
     xmltv_file = os.path.join(config.config_path, "cache", "epgs", f"{epg_id}.xml")
     try:
@@ -1298,33 +1623,62 @@ async def import_epg_data(config, epg_id):
                 "http_status": None,
                 "last_attempt_at": attempt_ts,
                 "last_success_at": int(time.time()),
-                "source_url": source_url,
+                "last_reported_failure_at": None,
+                "last_reported_failure_key": None,
+                "source_url": safe_source,
+                "cache_preserved": False,
             },
         )
     except Exception as exc:
-        error_text = str(exc).strip() or repr(exc)
+        failure_ts = int(time.time())
+        error_text = _safe_epg_error_text(exc, source_url)
+        previous_health = _read_epg_health_map(config).get(str(epg_id), {})
+        failure_key = _epg_failure_report_key(exc)
+        report_failure = _should_report_epg_failure(previous_health, failure_key, failure_ts)
+        cache_preserved = os.path.isfile(xmltv_file) and os.path.getsize(xmltv_file) > 0
+        health_update = {
+            "status": "degraded" if cache_preserved else "error",
+            "error": error_text,
+            "http_status": getattr(exc, "status", None),
+            "last_attempt_at": attempt_ts,
+            "last_failure_at": failure_ts,
+            "source_url": safe_source,
+            "cache_preserved": cache_preserved,
+        }
+        if report_failure:
+            health_update.update(
+                {
+                    "last_reported_failure_at": failure_ts,
+                    "last_reported_failure_key": failure_key,
+                }
+            )
         _set_epg_health(
             config,
             epg_id,
-            {
-                "status": "error",
-                "error": error_text,
-                "http_status": getattr(exc, "status", None),
-                "last_attempt_at": attempt_ts,
-                "last_failure_at": int(time.time()),
-                "source_url": source_url,
-            },
+            health_update,
         )
-        logger.exception(
-            "Failed to import EPG data for EPG ID %s from source '%s' into cache file '%s'",
-            epg_id,
-            source_url,
-            xmltv_file,
-        )
+        if report_failure:
+            logger.error(
+                "Failed to refresh EPG ID %s from source '%s'; cache_preserved=%s cache_file='%s' error=%s",
+                epg_id,
+                safe_source,
+                cache_preserved,
+                xmltv_file,
+                error_text,
+            )
+        else:
+            logger.warning(
+                "Repeated EPG refresh failure suppressed from operational error reporting for EPG ID %s "
+                "from source '%s'; cache_preserved=%s error=%s",
+                epg_id,
+                safe_source,
+                cache_preserved,
+                error_text,
+            )
         raise
 
 
-async def import_epg_data_for_all_epgs(config):
+async def import_epg_data_for_all_epgs(config: EpgRuntimeConfig) -> int:
     epg_health_map = _read_epg_health_map(config)
     now_ts = int(time.time())
     updated_count = 0
@@ -1343,23 +1697,19 @@ async def import_epg_data_for_all_epgs(config):
             continue
 
         health = epg_health_map.get(str(epg_id), {})
-        last_success_at = health.get("last_success_at") if isinstance(health, dict) else None
-        try:
-            last_success_at = int(last_success_at) if last_success_at is not None else None
-        except (TypeError, ValueError):
-            last_success_at = None
+        schedule_reference_at = _epg_schedule_reference_ts(health)
 
         schedule_seconds = EPG_UPDATE_SCHEDULE_SECONDS.get(schedule)
-        is_due = last_success_at is None
+        is_due = schedule_reference_at is None
         if not is_due and schedule_seconds is not None:
-            is_due = (now_ts - last_success_at) >= schedule_seconds
+            is_due = (now_ts - schedule_reference_at) >= schedule_seconds
         if not is_due:
             skipped_not_due += 1
             logger.debug(
-                "Skipping EPG #%s update because it is not due yet (schedule=%s, last_success_at=%s)",
+                "Skipping EPG #%s update because it is not due yet (schedule=%s, schedule_reference_at=%s)",
                 epg_id,
                 schedule,
-                last_success_at,
+                schedule_reference_at,
             )
             continue
 

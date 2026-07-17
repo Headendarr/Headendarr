@@ -311,7 +311,7 @@ export default defineComponent({
   },
   methods: {
     epgHasIssue(epg) {
-      return epg?.health?.status === 'error';
+      return Boolean(epg?.enabled && ['degraded', 'error'].includes(epg?.health?.status));
     },
     epgErrorMessage(epg) {
       const error = epg?.health?.error || 'Unknown download/import error';
