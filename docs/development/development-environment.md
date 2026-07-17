@@ -49,23 +49,3 @@ Then run the local development environment script:
 ```bash
 ./devops/run_local_dev_env.sh
 ```
-
-## Updating packages
-
-Activate your venv, then install the dev requirements:
-
-```bash
-python3 -m pip install -r ./requirements.txt -r ./requirements-dev.txt
-```
-
-Run `pip-audit` to identify outdated or vulnerable packages:
-
-```bash
-pip-audit -r ./requirements.txt -r ./requirements-dev.txt
-```
-
-After upgrading dependencies, refresh pinned requirements:
-
-```bash
-pip-compile ./requirements.in --upgrade
-```

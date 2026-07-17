@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import aiohttp
-from authlib.jose import JsonWebKey, jwt
+from joserfc import jwt
+from joserfc.errors import JoseError
+from joserfc.jwk import KeySet
+from joserfc.jwt import JWTClaimsRegistry
 
 
 class OidcError(Exception):
@@ -103,6 +106,20 @@ def load_oidc_config() -> OidcConfig:
 _metadata_cache = {"payload": None, "expires_at": 0.0}
 _jwks_cache = {}
 _oidc_lock = asyncio.Lock()
+_APPROVED_ID_TOKEN_SIGNING_ALGORITHMS = frozenset(
+    {
+        "RS256",
+        "RS384",
+        "RS512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "ES256",
+        "ES384",
+        "ES512",
+        "EdDSA",
+    }
+)
 
 
 async def _fetch_json(url: str, verify_tls: bool) -> dict:
@@ -267,6 +284,26 @@ def resolve_username_from_claims(claims: dict, config: OidcConfig) -> str:
     return "oidc-user"
 
 
+def _id_token_signing_algorithms(metadata: dict) -> list[str]:
+    provider_algorithms = metadata.get("id_token_signing_alg_values_supported")
+    if provider_algorithms is None:
+        return ["RS256"]
+    if not isinstance(provider_algorithms, list):
+        raise OidcConfigurationError("OIDC provider metadata has invalid id_token signing algorithms")
+
+    allowed_algorithms = []
+    for algorithm in provider_algorithms:
+        if (
+            isinstance(algorithm, str)
+            and algorithm in _APPROVED_ID_TOKEN_SIGNING_ALGORITHMS
+            and algorithm not in allowed_algorithms
+        ):
+            allowed_algorithms.append(algorithm)
+    if not allowed_algorithms:
+        raise OidcConfigurationError("OIDC provider does not advertise an approved id_token signing algorithm")
+    return allowed_algorithms
+
+
 async def fetch_userinfo_claims(config: OidcConfig, metadata: dict, access_token: str) -> dict:
     userinfo_endpoint = str(metadata.get("userinfo_endpoint") or "").strip()
     if not userinfo_endpoint or not access_token:
@@ -295,10 +332,15 @@ async def validate_and_build_claims(config: OidcConfig, metadata: dict, tokens: 
     if not id_token:
         raise OidcValidationError("Missing id_token")
 
+    allowed_algorithms = _id_token_signing_algorithms(metadata)
     jwks = await get_provider_jwks(config, metadata)
-    key_set = JsonWebKey.import_key_set(jwks)
-    claims = jwt.decode(id_token, key_set)
-    claims.validate(leeway=config.clock_skew_seconds)
+    try:
+        key_set = KeySet.import_key_set(jwks)
+        token = jwt.decode(id_token, key_set, algorithms=allowed_algorithms)
+        claims = token.claims
+        JWTClaimsRegistry(leeway=config.clock_skew_seconds).validate(claims)
+    except (JoseError, TypeError, ValueError) as exc:
+        raise OidcValidationError("Invalid id_token") from exc
 
     payload = dict(claims)
     issuer = _clean_issuer(payload.get("iss"))

@@ -57,6 +57,8 @@ VOD_UPSTREAM_METADATA_RETRY_ATTEMPTS = 3
 VOD_UPSTREAM_METADATA_RETRY_BASE_DELAY_SECONDS = 1.5
 VOD_SYNC_BATCH_FAILURE_MIN_COUNT = 12
 VOD_SYNC_BATCH_FAILURE_RATIO = 0.35
+VOD_SYNC_STDERR_TAIL_MAX_BYTES = 64 * 1024
+VOD_SYNC_STDERR_SUMMARY_MAX_CHARS = 8 * 1024
 
 _CONTAINER_PROFILE_MAP = {
     "ts": "mpegts",
@@ -1485,6 +1487,61 @@ def _vod_sync_subprocess_log_level(line: str, fallback_level: int) -> int:
     return fallback_level
 
 
+_PYTHON_WARNING_START_RE = re.compile(r"^.+:\d+:\s*(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*Warning:\s*.*$")
+
+
+async def _pipe_vod_sync_stderr(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
+    stderr_tail = bytearray()
+    tail_truncated = False
+    warning_lines = []
+
+    def _flush_warning():
+        if not warning_lines:
+            return
+        message = " ".join(part.strip() for part in warning_lines if part.strip())
+        if message:
+            logger.log(logging.WARNING, "[vod-sync] %s", message)
+        warning_lines.clear()
+
+    while True:
+        raw_line = await stream.readline()
+        if not raw_line:
+            break
+
+        stderr_tail.extend(raw_line)
+        if len(stderr_tail) > VOD_SYNC_STDERR_TAIL_MAX_BYTES:
+            del stderr_tail[: len(stderr_tail) - VOD_SYNC_STDERR_TAIL_MAX_BYTES]
+            tail_truncated = True
+
+        line = raw_line.decode(errors="replace").rstrip()
+        if _PYTHON_WARNING_START_RE.match(line):
+            _flush_warning()
+            warning_lines.append(line)
+            continue
+
+        explicit_level = _vod_sync_subprocess_log_level(line, -1)
+        if warning_lines and explicit_level < 0:
+            warning_lines.append(line)
+            continue
+
+        _flush_warning()
+        if line:
+            logger.log(explicit_level if explicit_level >= 0 else logging.WARNING, "[vod-sync] %s", line)
+
+    _flush_warning()
+    return bytes(stderr_tail), tail_truncated
+
+
+def _vod_sync_stderr_summary(stderr_tail: bytes, tail_truncated: bool) -> str:
+    stderr_text = stderr_tail.decode(errors="replace")
+    summary = " | ".join(line.strip() for line in stderr_text.splitlines() if line.strip())
+    if tail_truncated:
+        summary = f"[earlier stderr omitted] | {summary}"
+    if len(summary) <= VOD_SYNC_STDERR_SUMMARY_MAX_CHARS:
+        return summary
+    return f"...{summary[-(VOD_SYNC_STDERR_SUMMARY_MAX_CHARS - 3) :].lstrip()}"
+
+
 async def sync_vod_library_subprocess(category_id: int | None = None) -> bool:
     project_root = Path(__file__).resolve().parents[1]
     args = [sys.executable, "-m", "backend.scripts.sync_vod_library"]
@@ -1498,7 +1555,7 @@ async def sync_vod_library_subprocess(category_id: int | None = None) -> bool:
         cwd=str(project_root),
     )
 
-    async def _pipe(stream, level):
+    async def _pipe(stream: asyncio.StreamReader, level: int):
         while True:
             line = await stream.readline()
             if not line:
@@ -1506,14 +1563,19 @@ async def sync_vod_library_subprocess(category_id: int | None = None) -> bool:
             text = line.decode().rstrip()
             logger.log(_vod_sync_subprocess_log_level(text, level), "[vod-sync] %s", text)
 
-    await asyncio.gather(
+    _, stderr_result, rc = await asyncio.gather(
         _pipe(proc.stdout, logging.INFO),
-        _pipe(proc.stderr, logging.ERROR),
+        _pipe_vod_sync_stderr(proc.stderr),
+        proc.wait(),
     )
-    rc = await proc.wait()
     if rc != 0:
         label = f"category {category_id}" if category_id else "full library"
-        raise RuntimeError(f"VOD sync subprocess for {label} failed with code {rc}")
+        stderr_tail, tail_truncated = stderr_result
+        summary = _vod_sync_stderr_summary(stderr_tail, tail_truncated)
+        detail = f"; stderr: {summary}" if summary else ""
+        raise RuntimeError(f"VOD sync subprocess for {label} failed with code {rc}{detail}")
+
+    return True
 
 
 async def _refresh_series_items(item_ids, concurrency: int = VOD_SYNC_SERIES_REFRESH_CONCURRENCY):
