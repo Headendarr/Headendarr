@@ -44,6 +44,7 @@ services:
     tmpfs:
       - /tmp/cache:size=536870912
 ```
+
 Use image tags as follows:
 
 - `ghcr.io/headendarr/headendarr:latest` for stable releases.
@@ -85,3 +86,53 @@ To use all features of the application, ensure the following ports are accessibl
 - **9985 (TCP)**: The main web interface for Headendarr where you will manage all your settings.
 - **9982 (TCP Optional/Recommended)**: The TVHeadend HTSP (Home TV Streaming Protocol) port. You only need to expose this if you wish to configure TVHeadend HTSP Client to connect and stream channels.
 - **9981 (TCP Optional/Not Recommended)**: The web interface and API for the integrated TVHeadend instance. You only need to expose this if you wish to configure a TVHeadend client with HTTP connection.
+
+## Using an External PostgreSQL Database
+
+By default, Headendarr runs an embedded PostgreSQL database inside the container. If you want to use an external PostgreSQL server, you can configure it by providing the connection details via environment variables. When an external database host is configured, the container will automatically skip launching the integrated PostgreSQL server.
+
+### 1. Database Setup
+
+Before configuring Headendarr, you must prepare the database and user on your external PostgreSQL server. Connect to your PostgreSQL server and execute the following SQL commands:
+
+```sql
+-- Create a database user role
+CREATE USER headendarr WITH PASSWORD 'your_secure_password_here';
+
+-- Create the database and assign ownership to the user
+CREATE DATABASE headendarr OWNER headendarr;
+```
+
+### 2. Configure Docker Compose
+
+To point Headendarr to your external database, add the database environment variables to your `docker-compose.yml` file:
+
+```yaml
+services:
+  headendarr:
+    image: ghcr.io/headendarr/headendarr:latest
+    restart: unless-stopped
+    ports:
+      - "9985:9985"
+      - "9981:9981"
+      - "9982:9982"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Pacific/Auckland
+      # External PostgreSQL Configuration
+      - POSTGRES_HOST=192.168.1.50 # IP or hostname of your external DB server (triggers external mode)
+      - POSTGRES_PORT=5432 # Optional: Database port (defaults to 5432)
+      - POSTGRES_DB=headendarr # Optional: Database name (defaults to 'tic')
+      - POSTGRES_USER=headendarr # Optional: Database user (defaults to 'tic')
+      - POSTGRES_PASSWORD=your_secure_password_here # Optional: Database password (defaults to 'tic')
+    volumes:
+      - "/path/to/your/config_dir:/config"
+      - "/path/to/your/recordings_dir:/recordings"
+      - "/path/to/your/timeshift_temp_dir:/timeshift"
+    tmpfs:
+      - /tmp/cache:size=536870912
+```
+
+> [!NOTE]
+> Setting the `POSTGRES_HOST` variable is the trigger that tells the container to use external mode and disable the internal PostgreSQL service.

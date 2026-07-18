@@ -37,7 +37,7 @@ These standards define how backend work should be executed to keep the Quart eve
 - Backend operational scripts belong under:
   - `backend/scripts/`
 - Historical one-off migration helpers may live under:
-  - `migrations/` (example: `migrations/sqlite_to_pg.py`)
+  - `migrations/`
 
 ## Change Checklist
 

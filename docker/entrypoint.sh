@@ -145,8 +145,10 @@ prepare_dirs_root() {
     mkdir -p /config/.tvh_iptv_config
     chown "${runtime_uid}:${runtime_gid}" /config/.tvh_iptv_config
 
-    mkdir -p /config/.postgres
-    chown -R "${runtime_uid}:${runtime_gid}" /config/.postgres
+    if [ -z "${POSTGRES_HOST:-}" ]; then
+        mkdir -p /config/.postgres
+        chown -R "${runtime_uid}:${runtime_gid}" /config/.postgres
+    fi
 
     mkdir -p /tmp/nginx
     chown "${runtime_uid}:${runtime_gid}" /tmp/nginx
@@ -222,23 +224,35 @@ sync_packages() {
 }
 
 setup_postgres() {
+    # Check if external PostgreSQL server is configured.
+    # An external host is defined as a non-empty POSTGRES_HOST.
+    local is_external=false
+    if [ -n "${POSTGRES_HOST:-}" ]; then
+        is_external=true
+    fi
+
     export POSTGRES_DB="${POSTGRES_DB:-tic}"
     export POSTGRES_USER="${POSTGRES_USER:-tic}"
     export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-tic}"
     export POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
     export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+
+    if [ "${is_external}" = "true" ]; then
+        print_log info "Using external PostgreSQL server at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+        return 0
+    fi
+
+    # Export PG* variables for internal PostgreSQL administration tools (psql, createdb, pg_ctl)
+    export PGHOST="${POSTGRES_HOST}"
+    export PGPORT="${POSTGRES_PORT}"
+    export PGUSER="${POSTGRES_USER}"
+
     export POSTGRES_DIR="/config/.postgres/db"
     export POSTGRES_SOCKET_DIR="/config/.postgres/var"
 
     export PG_VERSION
     PG_VERSION="$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)"
     export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
-
-    if [ -f "/config/.tvh_iptv_config/db.sqlite3" ] && [ -s "${POSTGRES_DIR}/PG_VERSION" ]; then
-        print_log warn "SQLite database detected; recreating Postgres data directory for clean migration"
-        "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" stop -m fast || true
-        rm -rf "/config/.postgres"
-    fi
 
     if [ ! -s "${POSTGRES_DIR}/PG_VERSION" ]; then
         print_log info "Initializing Postgres data directory at ${POSTGRES_DIR}"
@@ -313,15 +327,6 @@ stop_postgres_for_migration_mode() {
     if [ -n "${PG_BINDIR:-}" ] && [ -n "${POSTGRES_DIR:-}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
         print_log info "Stopping Postgres via pg_ctl (${mode_label})"
         "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" stop -m fast || true
-    fi
-}
-
-migrate_sqlite_to_postgres() {
-    if [ -f "/config/.tvh_iptv_config/db.sqlite3" ]; then
-        print_log info "Running SQLite -> Postgres migration"
-        python3 /app/migrations/sqlite_to_pg.py
-    else
-        print_log info "SQLite DB not found; skipping migration"
     fi
 }
 
@@ -425,20 +430,6 @@ start_tvh() {
     fi
 }
 
-vacuum_sqlite_if_exists() {
-    if [[ -f "/config/.tvh_iptv_config/db.sqlite3" ]]; then
-        print_log info "Starting VACUUM on /config/.tvh_iptv_config/db.sqlite3"
-        sqlite3 "/config/.tvh_iptv_config/db.sqlite3" "VACUUM;"
-        print_log info "VACUUM completed for /config/.tvh_iptv_config/db.sqlite3"
-    fi
-}
-
-cleanup_migrated_sqlite() {
-    if [ -d "/config/.tvh_iptv_config" ]; then
-        find /config/.tvh_iptv_config -maxdepth 1 -type f -name "db.sqlite3.migrated-*" -mtime +30 -print -delete || true
-    fi
-}
-
 start_tic() {
     if [ "${ENABLE_APP_HOT_RELOAD}" = "true" ]; then
         print_log info "Starting TIC server with watchgod hot reload (watching /app/backend)"
@@ -526,9 +517,6 @@ if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ] || [ "${PRINT_CURRENT_MIGRATION}" =
     exit 0
 fi
 run_migrations
-cleanup_migrated_sqlite
-vacuum_sqlite_if_exists
-migrate_sqlite_to_postgres
 reset_admin_password
 start_nginx
 if ! start_tvh; then

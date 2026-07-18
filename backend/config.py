@@ -540,7 +540,6 @@ if not os.path.exists(config_path):
     os.makedirs(config_path)
 
 # Configure Postgres DB
-sqlalchemy_database_path = os.path.join(config_path, "db.sqlite3")
 postgres_host = _env_str("POSTGRES_HOST", "127.0.0.1")
 postgres_port = _env_str("POSTGRES_PORT", "5432")
 postgres_db = _env_str("POSTGRES_DB", "tic")

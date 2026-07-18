@@ -5,7 +5,6 @@ description = "A tool for simplifying IPTV configuration in TVHeadend"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.14.1",
-    "aiosqlite>=0.22",
     "alembic~=1.13",
     "apscheduler~=3.11",
     "argon2-cffi>=25.1",

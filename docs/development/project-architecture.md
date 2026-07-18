@@ -28,7 +28,6 @@ This page is the contributor-facing overview of Headendarr application structure
 
 - `docker/`: Dockerfiles and compose files.
 - `Taskfile.yml`: local task shortcuts for dev lifecycle commands.
-- `migrations/sqlite_to_pg.py`: historical migration helper path.
 - `docs/`: Docusaurus documentation source.
 
 ## Data + Build Notes

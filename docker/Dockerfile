@@ -105,7 +105,6 @@ RUN set -eux; \
         postgresql-17 \
         postgresql-contrib-17 \
         procps \
-        sqlite3 \
         tini \
         tzdata; \
     echo "**** conditional tvheadend dependency libraries (only if tvheadend missing) ****"; \
@@ -162,11 +161,6 @@ ENV ENABLE_APP_DEBUGGING="false"
 ENV ENABLE_SQLALCHEMY_DEBUGGING="false"
 ENV SKIP_MIGRATIONS="false"
 ENV HLS_PROXY_PREFIX="tic-hls-proxy"
-ENV POSTGRES_DB="tic"
-ENV POSTGRES_USER="tic"
-ENV POSTGRES_PASSWORD="tic"
-ENV POSTGRES_HOST="127.0.0.1"
-ENV POSTGRES_PORT="5432"
 
 # Set working directory
 WORKDIR /app/
