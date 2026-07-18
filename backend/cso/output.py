@@ -43,6 +43,7 @@ from .policy import (
     resolve_vod_pipe_container,
 )
 from .processes import (
+    CsoLifecycleCleanupResult,
     cancel_and_await_tasks,
     cso_lifecycle_cleanup_result,
     mark_cso_ffmpeg_process_exited,
@@ -1207,6 +1208,7 @@ class CsoHlsOutputSession:
         input_user_agent=None,
         input_request_headers=None,
         start_seconds=0,
+        finite_event_output: bool = False,
     ):
         self.key = key
         self.channel_id = channel_id
@@ -1223,6 +1225,7 @@ class CsoHlsOutputSession:
         self.input_user_agent = str(input_user_agent or "").strip()
         self.input_request_headers = sanitise_headers(input_request_headers)
         self.start_seconds = max(0, int(start_seconds or 0))
+        self.finite_event_output = bool(finite_event_output)
         self.process = None
         self.write_task = None
         self.stderr_task = None
@@ -1242,6 +1245,14 @@ class CsoHlsOutputSession:
         self._last_good_playlist_text = None
         self._last_good_playlist_ts = 0.0
         self._retain_completed_output_until = 0.0
+        self.completed = False
+        self.completion_state = "idle"
+        self._active_readers = 0
+        self._active_readers_by_connection: dict[str, int] = {}
+        self._accepting_readers = False
+        self._readers_drained = asyncio.Event()
+        self._readers_drained.set()
+        self._reader_state_changed = asyncio.Event()
         self.runtime_policy = dict(policy or {})
         self._idle_cleanup_task = None
 
@@ -1333,26 +1344,101 @@ class CsoHlsOutputSession:
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
 
-    def _is_vod_hls_output(self) -> bool:
-        return str(self.key or "").startswith("cso-vod-hls-output-")
+    def _output_mode(self) -> str:
+        if self.use_slate_as_input:
+            return "slate"
+        if self.finite_event_output:
+            return "finite"
+        return "live"
+
+    async def _acquire_reader(self, connection_id: str | None = None) -> bool:
+        async with self.lock:
+            if not self._accepting_readers:
+                return False
+            connection_key = str(connection_id) if connection_id is not None else None
+            if connection_key is not None and connection_key not in self.clients:
+                return False
+            self._active_readers += 1
+            if connection_key is not None:
+                self._active_readers_by_connection[connection_key] = (
+                    self._active_readers_by_connection.get(connection_key, 0) + 1
+                )
+            self._readers_drained.clear()
+            return True
+
+    async def _release_reader(self, connection_id: str | None = None):
+        async with self.lock:
+            connection_key = str(connection_id) if connection_id is not None else None
+            if connection_key is not None:
+                connection_readers = self._active_readers_by_connection.get(connection_key, 0)
+                if connection_readers <= 1:
+                    self._active_readers_by_connection.pop(connection_key, None)
+                else:
+                    self._active_readers_by_connection[connection_key] = connection_readers - 1
+            self._active_readers = max(0, self._active_readers - 1)
+            if self._active_readers == 0:
+                self._readers_drained.set()
+            reader_state_changed = self._reader_state_changed
+            self._reader_state_changed = asyncio.Event()
+            reader_state_changed.set()
+
+    def _refresh_client_activity_locked(self, connection_id: str, now_value: float) -> bool:
+        key = str(connection_id)
+        entry = self.clients.get(key)
+        if not isinstance(entry, dict):
+            if self.finite_event_output and not self._accepting_readers:
+                return False
+            entry = {"last_touch": now_value, "on_disconnect": None}
+            self.clients[key] = entry
+        entry["last_touch"] = now_value
+        self.last_activity = now_value
+        if self.finite_event_output and self.completed:
+            self._retain_completed_output_until = now_value + self._client_idle_seconds()
+        return True
+
+    async def _record_successful_read(self, connection_id: str | None = None):
+        now_value = time.time()
+        async with self.lock:
+            if connection_id is None:
+                self.last_activity = now_value
+                if self.finite_event_output and self.completed:
+                    self._retain_completed_output_until = now_value + self._client_idle_seconds()
+            else:
+                entry = self.clients.get(str(connection_id))
+                if isinstance(entry, dict):
+                    self._refresh_client_activity_locked(str(connection_id), now_value)
+        self._schedule_idle_cleanup()
 
     def _client_idle_seconds(self) -> float:
-        if self._is_vod_hls_output():
+        if self.finite_event_output:
             return max(5.0, float(CSO_HLS_CLIENT_IDLE_SECONDS) / 2.0)
         return float(CSO_HLS_CLIENT_IDLE_SECONDS)
 
     def _schedule_idle_cleanup(self):
-        if not self._is_vod_hls_output():
+        if not self.finite_event_output:
             return
         existing_task = self._idle_cleanup_task
         if existing_task is not None and not existing_task.done():
-            existing_task.cancel()
-        self._idle_cleanup_task = asyncio.create_task(self._delayed_idle_cleanup())
+            return
+        self._idle_cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
 
-    async def _delayed_idle_cleanup(self):
+    async def _idle_cleanup_loop(self):
         try:
-            await asyncio.sleep(self._client_idle_seconds())
-            await self.prune_idle_clients()
+            while True:
+                async with self.lock:
+                    if not self.clients:
+                        return
+                    idle_seconds = self._client_idle_seconds()
+                    next_deadline = min(
+                        float(entry.get("last_touch") or 0.0) + idle_seconds
+                        if isinstance(entry, dict)
+                        else idle_seconds
+                        for entry in self.clients.values()
+                    )
+                delay_seconds = max(0.0, next_deadline - time.time())
+                if delay_seconds > 0:
+                    await asyncio.sleep(delay_seconds)
+                await self.prune_idle_clients()
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -1362,32 +1448,65 @@ class CsoHlsOutputSession:
                 self.key,
                 exc,
             )
+        finally:
+            if self._idle_cleanup_task is asyncio.current_task():
+                self._idle_cleanup_task = None
 
     async def _prepare_output_dir(self):
         await prepare_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
         self._last_good_playlist_text = None
         self._last_good_playlist_ts = 0.0
+        self._retain_completed_output_until = 0.0
+        self.completed = False
+        self.completion_state = "starting"
+        self._accepting_readers = True
 
     async def start(self):
         async with self.lifecycle_lock:
-            try:
-                await self._start_locked()
-            except asyncio.CancelledError:
-                self.running = False
-                self.last_error = "output_start_cancelled"
-                await _detach_output_input_subscriptions(self)
-                raise
-            except Exception as exc:
-                self.running = False
-                self.last_error = f"output_start_failed:{exc}"
-                await _detach_output_input_subscriptions(self)
-                raise
-            if not self.running:
-                await _detach_output_input_subscriptions(self)
+            await self._start_with_lifecycle_locked()
+
+    async def start_and_add_client(
+        self,
+        connection_id: str,
+        on_disconnect: Any = None,
+    ) -> bool:
+        async with self.lifecycle_lock:
+            if not await self._start_with_lifecycle_locked():
+                return False
+            is_new_client = await self._add_client(connection_id, on_disconnect=on_disconnect)
+        self._schedule_idle_cleanup()
+        return is_new_client
+
+    async def _start_with_lifecycle_locked(self) -> bool:
+        try:
+            await self._start_locked()
+        except asyncio.CancelledError:
+            self.running = False
+            self.last_error = "output_start_cancelled"
+            await _detach_output_input_subscriptions(self)
+            raise
+        except Exception as exc:
+            self.running = False
+            self.last_error = f"output_start_failed:{exc}"
+            await _detach_output_input_subscriptions(self)
+            raise
+        if self.running:
+            return True
+        await _detach_output_input_subscriptions(self)
+        return False
 
     async def _start_locked(self):
         async with self.lock:
             if self.running:
+                logger.info(
+                    "Reusing CSO HLS output output_key=%s mode=%s completion_state=%s clients=%s readers=%s retention_deadline=%s",
+                    self.key,
+                    self._output_mode(),
+                    self.completion_state,
+                    len(self.clients),
+                    self._active_readers,
+                    int(self._retain_completed_output_until or 0),
+                )
                 return
             retained_tasks = (self.write_task, self.stderr_task, self.wait_task)
             if self.process is not None or any(task is not None for task in retained_tasks):
@@ -1403,7 +1522,12 @@ class CsoHlsOutputSession:
                     sum(task is not None for task in retained_tasks),
                 )
                 return
-            if self._retain_completed_output_until > time.time() and self._last_good_playlist_text:
+            if (
+                self.finite_event_output
+                and self.completed
+                and self._retain_completed_output_until > time.time()
+                and self._last_good_playlist_text
+            ):
                 self.running = True
                 return
             segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
@@ -1501,7 +1625,6 @@ class CsoHlsOutputSession:
             self.running = True
             self.last_error = None
             self.last_activity = time.time()
-            await self._prepare_output_dir()
 
             async def _attempt_start(
                 effective_policy: dict[str, Any],
@@ -1522,9 +1645,10 @@ class CsoHlsOutputSession:
                 )
                 self._recent_ffmpeg_stderr.clear()
                 logger.info(
-                    "Starting CSO HLS output channel=%s output_key=%s policy=(%s) command=%s",
+                    "Starting CSO HLS output channel=%s output_key=%s mode=%s policy=(%s) command=%s",
                     self.channel_id,
                     self.key,
+                    self._output_mode(),
                     policy_log_label(self.runtime_policy),
                     command,
                 )
@@ -1693,6 +1817,91 @@ class CsoHlsOutputSession:
             if enable_cso_output_command_debug_logging:
                 logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
 
+    async def _read_valid_playlist_from_disk(self) -> str | None:
+        if not self.playlist_path.exists():
+            return None
+        try:
+            playlist_text = await asyncio.to_thread(self.playlist_path.read_text, "utf-8")
+        except Exception:
+            return None
+        first_nonempty_line = next((line.strip() for line in playlist_text.splitlines() if line.strip()), "")
+        if first_nonempty_line != "#EXTM3U":
+            return None
+        segment_names = self._playlist_segment_names(playlist_text)
+        if not segment_names:
+            return None
+        output_dir = self.output_dir.resolve()
+        for segment_name in segment_names:
+            segment_path = (self.output_dir / segment_name).resolve()
+            try:
+                segment_path.relative_to(output_dir)
+            except ValueError:
+                return None
+            if not segment_path.exists() or not segment_path.is_file():
+                return None
+            try:
+                if int(segment_path.stat().st_size or 0) <= 0:
+                    return None
+            except Exception:
+                return None
+        return playlist_text
+
+    async def _capture_finite_completed_playlist(self) -> bool:
+        if not await self._acquire_reader():
+            logger.error(
+                "CSO HLS finite completion reader admission closed output_key=%s mode=%s completion_state=%s",
+                self.key,
+                self._output_mode(),
+                self.completion_state,
+            )
+            return False
+        try:
+            playlist_text = await self._read_valid_playlist_from_disk()
+            if not playlist_text:
+                logger.error(
+                    "CSO HLS finite completion missing valid playlist output_key=%s mode=%s expected_path=%s clients=%s readers=%s",
+                    self.key,
+                    self._output_mode(),
+                    self.playlist_path,
+                    len(self.clients),
+                    self._active_readers,
+                )
+                return False
+            source_lines = str(playlist_text).splitlines()
+            lines = [line for line in source_lines if line.strip() != "#EXT-X-ENDLIST"]
+            endlist_count = sum(1 for line in source_lines if line.strip() == "#EXT-X-ENDLIST")
+            final_nonempty_line = next((line.strip() for line in reversed(source_lines) if line.strip()), "")
+            endlist_already_terminal = endlist_count == 1 and final_nonempty_line == "#EXT-X-ENDLIST"
+            completed_playlist = f"{chr(10).join(lines).rstrip()}\n#EXT-X-ENDLIST\n"
+            temporary_playlist_path = self.playlist_path.with_name(f".{self.playlist_path.name}.completed.tmp")
+            try:
+                await asyncio.to_thread(temporary_playlist_path.write_text, completed_playlist, "utf-8")
+                await asyncio.to_thread(temporary_playlist_path.replace, self.playlist_path)
+            except Exception as exc:
+                logger.error(
+                    "CSO HLS finite completion playlist publish failed output_key=%s mode=%s expected_path=%s clients=%s readers=%s error=%s",
+                    self.key,
+                    self._output_mode(),
+                    self.playlist_path,
+                    len(self.clients),
+                    self._active_readers,
+                    exc,
+                )
+                return False
+            self._last_good_playlist_text = completed_playlist
+            self._last_good_playlist_ts = time.time()
+            logger.info(
+                "CSO HLS finite completion playlist finalized output_key=%s mode=%s endlist=%s clients=%s readers=%s",
+                self.key,
+                self._output_mode(),
+                "already_present" if endlist_already_terminal else "added_or_normalized",
+                len(self.clients),
+                self._active_readers,
+            )
+            return True
+        finally:
+            await self._release_reader()
+
     async def _wait_loop(self, token, process):
         return_code = None
         try:
@@ -1703,6 +1912,23 @@ class CsoHlsOutputSession:
         process_exited = mark_cso_ffmpeg_process_exited(process)
         if token != self.process_token:
             return
+        if return_code == 0 and self.finite_event_output and not process_exited:
+            self.running = False
+            self.completed = False
+            self.completion_state = "teardown_unconfirmed"
+            self.last_error = "output_process_exit_unconfirmed"
+            self._accepting_readers = False
+            logger.error(
+                "CSO HLS finite completion blocked by unconfirmed process exit output_key=%s mode=%s pid=%s return_code=%s clients=%s readers=%s",
+                self.key,
+                self._output_mode(),
+                getattr(process, "pid", None),
+                return_code,
+                len(self.clients),
+                self._active_readers,
+            )
+            await self.stop(force=True)
+            return
         if not self._last_good_playlist_text:
             try:
                 await self.read_playlist_text()
@@ -1712,18 +1938,70 @@ class CsoHlsOutputSession:
             client_count = len(self.clients)
             still_running = bool(self.running)
             has_completed_playlist = bool(self._last_good_playlist_text)
+            reader_count = self._active_readers
             if process is self.process and process_exited:
                 self.process = None
+        logger.info(
+            "CSO HLS process exited output_key=%s mode=%s pid=%s return_code=%s clients=%s readers=%s completion_state=%s",
+            self.key,
+            self._output_mode(),
+            getattr(process, "pid", None),
+            return_code,
+            client_count,
+            reader_count,
+            self.completion_state,
+        )
+        if still_running and process_exited and return_code == 0 and self.finite_event_output:
+            playlist_completed = await self._capture_finite_completed_playlist()
+            if playlist_completed:
+                retention_deadline = time.time() + self._client_idle_seconds()
+                async with self.lock:
+                    self.completed = True
+                    self.completion_state = "completed"
+                    self.running = True
+                    self.last_error = None
+                    self._retain_completed_output_until = retention_deadline
+                    client_count = len(self.clients)
+                    reader_count = self._active_readers
+                logger.info(
+                    "CSO HLS finite output completed and retained output_key=%s mode=%s pid=%s return_code=%s clients=%s readers=%s retention_deadline=%s",
+                    self.key,
+                    self._output_mode(),
+                    getattr(process, "pid", None),
+                    return_code,
+                    client_count,
+                    reader_count,
+                    int(retention_deadline),
+                )
+                if client_count > 0 or reader_count > 0:
+                    return
+                await self.stop()
+                return
+            async with self.lock:
+                self.completion_state = "completion_invalid"
+                self.last_error = "output_completion_invalid_playlist"
+            logger.error(
+                "CSO HLS finite output completion rejected output_key=%s mode=%s pid=%s return_code=%s clients=%s readers=%s",
+                self.key,
+                self._output_mode(),
+                getattr(process, "pid", None),
+                return_code,
+                client_count,
+                reader_count,
+            )
+            await self.stop(force=True)
+            return
         if (
             still_running
             and client_count > 0
             and has_completed_playlist
-            and int(return_code or 0) == 0
+            and return_code == 0
             and self.use_slate_as_input
         ):
             if "#EXT-X-ENDLIST" not in str(self._last_good_playlist_text):
                 self._last_good_playlist_text = f"{str(self._last_good_playlist_text).rstrip()}\n#EXT-X-ENDLIST\n"
             self._retain_completed_output_until = time.time() + max(15.0, float(CSO_HLS_CLIENT_IDLE_SECONDS))
+            self.completion_state = "completed"
             logger.info(
                 "CSO HLS output completed and retained channel=%s output_key=%s return_code=%s clients=%s retain_seconds=%s",
                 self.channel_id,
@@ -1733,9 +2011,10 @@ class CsoHlsOutputSession:
                 int(max(15.0, float(CSO_HLS_CLIENT_IDLE_SECONDS))),
             )
             return
-        if still_running and client_count > 0 and int(return_code or 0) == 0 and not self.use_slate_as_input:
+        if still_running and client_count > 0 and return_code == 0 and not self.use_slate_as_input:
             async with self.lock:
                 self.running = False
+                self.completion_state = "restart_pending"
                 self.last_error = "output_completed_restart_pending"
             logger.warning(
                 "CSO HLS live output completed unexpectedly and will restart on next request channel=%s output_key=%s clients=%s",
@@ -1756,17 +2035,20 @@ class CsoHlsOutputSession:
             )
         await self.stop(force=True)
 
-    async def add_client(self, connection_id, on_disconnect=None):
+    async def _add_client(self, connection_id: str, on_disconnect: Any = None) -> bool:
         async with self.lock:
             key = str(connection_id)
             existed = key in self.clients
             previous = self.clients.get(key) or {}
+            now_value = time.time()
             self.clients[key] = {
-                "last_touch": time.time(),
+                "last_touch": now_value,
                 "on_disconnect": on_disconnect if on_disconnect is not None else previous.get("on_disconnect"),
             }
             client_count = len(self.clients)
-            self.last_activity = time.time()
+            self.last_activity = now_value
+            if self.finite_event_output and self.completed:
+                self._retain_completed_output_until = now_value + self._client_idle_seconds()
         if not existed:
             logger.info(
                 "CSO HLS output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
@@ -1776,14 +2058,18 @@ class CsoHlsOutputSession:
                 client_count,
                 policy_log_label(self.runtime_policy),
             )
-        self._schedule_idle_cleanup()
         return not existed
 
-    async def has_client(self, connection_id):
+    async def add_client(self, connection_id: str, on_disconnect: Any = None) -> bool:
+        is_new_client = await self._add_client(connection_id, on_disconnect=on_disconnect)
+        self._schedule_idle_cleanup()
+        return is_new_client
+
+    async def has_client(self, connection_id: str) -> bool:
         async with self.lock:
             return str(connection_id) in self.clients
 
-    async def _invoke_disconnect_hook(self, connection_id, disconnect_hook):
+    async def _invoke_disconnect_hook(self, connection_id: str, disconnect_hook: Any):
         if not callable(disconnect_hook):
             return
         try:
@@ -1797,24 +2083,31 @@ class CsoHlsOutputSession:
                 exc,
             )
 
-    async def touch_client(self, connection_id):
+    async def touch_client(self, connection_id: str):
+        now_value = time.time()
         async with self.lock:
-            key = str(connection_id)
-            entry = self.clients.get(key)
-            if not isinstance(entry, dict):
-                entry = {"last_touch": time.time(), "on_disconnect": None}
-                self.clients[key] = entry
-            entry["last_touch"] = time.time()
-            self.last_activity = time.time()
+            refreshed = self._refresh_client_activity_locked(str(connection_id), now_value)
+        if not refreshed:
+            return
         self._schedule_idle_cleanup()
 
-    async def remove_client(self, connection_id):
-        disconnect_hook = None
+    async def _finish_client_removal(
+        self,
+        connection_id: str,
+        removed: dict[str, Any] | None,
+        remaining: int,
+    ) -> int:
+        key = str(connection_id)
         async with self.lock:
-            removed = self.clients.pop(str(connection_id), None)
-            if isinstance(removed, dict):
-                disconnect_hook = removed.get("on_disconnect")
-            remaining = len(self.clients)
+            if key in self.clients:
+                restored = self.clients.get(key)
+                if isinstance(restored, dict) and isinstance(removed, dict):
+                    if restored.get("on_disconnect") is None:
+                        restored["on_disconnect"] = removed.get("on_disconnect")
+                return len(self.clients)
+        disconnect_hook = None
+        if isinstance(removed, dict):
+            disconnect_hook = removed.get("on_disconnect")
         await self._invoke_disconnect_hook(connection_id, disconnect_hook)
         logger.info(
             "CSO HLS output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
@@ -1825,85 +2118,148 @@ class CsoHlsOutputSession:
             policy_log_label(self.runtime_policy),
         )
         if remaining == 0:
-            await asyncio.shield(self.stop(force=True))
+            await asyncio.shield(self.stop())
         return remaining
 
-    async def prune_idle_clients(self, now_ts=None):
+    async def remove_client(self, connection_id: str) -> int:
+        async with self.lock:
+            removed = self.clients.pop(str(connection_id), None)
+            remaining = len(self.clients)
+        return await self._finish_client_removal(connection_id, removed, remaining)
+
+    async def prune_idle_clients(self, now_ts: float | None = None):
         now_value = float(now_ts if now_ts is not None else time.time())
         idle_seconds = self._client_idle_seconds()
-        stale_ids = []
-        async with self.lock:
-            for connection_id, entry in list(self.clients.items()):
-                last_touch = 0.0
-                if isinstance(entry, dict):
-                    last_touch = float(entry.get("last_touch") or 0.0)
-                if (now_value - last_touch) >= idle_seconds:
+        while True:
+            stale_ids = []
+            wait_for_readers = False
+            async with self.lock:
+                reader_state_changed = self._reader_state_changed
+                for connection_id, entry in list(self.clients.items()):
+                    last_touch = float(entry.get("last_touch") or 0.0) if isinstance(entry, dict) else 0.0
+                    if (now_value - last_touch) < idle_seconds:
+                        continue
+                    if self._active_readers_by_connection.get(connection_id, 0) > 0:
+                        wait_for_readers = True
+                        continue
                     stale_ids.append(connection_id)
-        for connection_id in stale_ids:
-            logger.info(
-                "CSO HLS output dropping idle client channel=%s output_key=%s connection_id=%s idle_seconds=%s",
-                self.channel_id,
-                self.key,
-                connection_id,
-                int(idle_seconds),
-            )
-            await self.remove_client(connection_id)
+            for connection_id in stale_ids:
+                async with self.lock:
+                    entry = self.clients.get(connection_id)
+                    last_touch = float(entry.get("last_touch") or 0.0) if isinstance(entry, dict) else 0.0
+                    if (now_value - last_touch) < idle_seconds:
+                        continue
+                    if self._active_readers_by_connection.get(connection_id, 0) > 0:
+                        wait_for_readers = True
+                        continue
+                    removed = self.clients.pop(connection_id, None)
+                    remaining = len(self.clients)
+                logger.info(
+                    "CSO HLS output dropping idle client channel=%s output_key=%s connection_id=%s idle_seconds=%s",
+                    self.channel_id,
+                    self.key,
+                    connection_id,
+                    int(idle_seconds),
+                )
+                await self._finish_client_removal(connection_id, removed, remaining)
+            if not wait_for_readers:
+                return
+            await reader_state_changed.wait()
 
-    async def read_playlist_text(self):
-        if not self.playlist_path.exists():
-            return self._last_good_playlist_text
+    async def read_playlist_text(self, connection_id: str | None = None) -> str | None:
+        if not await self._acquire_reader(connection_id):
+            return None
         try:
-            playlist_text = await asyncio.to_thread(self.playlist_path.read_text, "utf-8")
-        except Exception:
-            return self._last_good_playlist_text
-        segment_names = self._playlist_segment_names(playlist_text)
-        if not segment_names:
-            return self._last_good_playlist_text
-        for segment_name in segment_names:
-            segment_path = (self.output_dir / segment_name).resolve()
-            if not str(segment_path).startswith(str(self.output_dir.resolve())):
+            if self.completed and self._last_good_playlist_text:
+                if not self.playlist_path.exists():
+                    logger.error(
+                        "CSO HLS retained playlist missing output_key=%s mode=%s expected_path=%s clients=%s readers=%s retention_deadline=%s",
+                        self.key,
+                        self._output_mode(),
+                        self.playlist_path,
+                        len(self.clients),
+                        self._active_readers,
+                        int(self._retain_completed_output_until or 0),
+                    )
+                await self._record_successful_read(connection_id)
                 return self._last_good_playlist_text
-            if not segment_path.exists() or not segment_path.is_file():
+            playlist_text = await self._read_valid_playlist_from_disk()
+            if not playlist_text:
                 return self._last_good_playlist_text
+            self._last_good_playlist_text = playlist_text
+            self._last_good_playlist_ts = time.time()
+            await self._record_successful_read(connection_id)
+            return playlist_text
+        finally:
+            await self._release_reader(connection_id)
+
+    async def read_segment_bytes(
+        self,
+        segment_name: str,
+        connection_id: str | None = None,
+    ) -> bytes | None:
+        if not await self._acquire_reader(connection_id):
+            return None
+        try:
+            name = clean_text(segment_name)
+            if not name or not SAFE_HLS_SEGMENT_RE.match(name):
+                return None
+            output_dir = self.output_dir.resolve()
+            segment_path = (self.output_dir / name).resolve()
             try:
-                if int(segment_path.stat().st_size or 0) <= 0:
-                    return self._last_good_playlist_text
-            except Exception:
-                return self._last_good_playlist_text
-        self._last_good_playlist_text = playlist_text
-        self._last_good_playlist_ts = time.time()
-        return playlist_text
+                segment_path.relative_to(output_dir)
+            except ValueError:
+                return None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if segment_path.exists() and segment_path.is_file():
+                    try:
+                        if int(segment_path.stat().st_size or 0) > 0:
+                            break
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.05)
+            if not segment_path.exists() or not segment_path.is_file():
+                if self.completed:
+                    logger.error(
+                        "CSO HLS retained segment missing output_key=%s mode=%s expected_path=%s clients=%s readers=%s retention_deadline=%s",
+                        self.key,
+                        self._output_mode(),
+                        segment_path,
+                        len(self.clients),
+                        self._active_readers,
+                        int(self._retain_completed_output_until or 0),
+                    )
+                return None
+            payload = await asyncio.to_thread(segment_path.read_bytes)
+            if not payload:
+                if self.completed:
+                    logger.error(
+                        "CSO HLS retained segment empty output_key=%s mode=%s expected_path=%s clients=%s readers=%s retention_deadline=%s",
+                        self.key,
+                        self._output_mode(),
+                        segment_path,
+                        len(self.clients),
+                        self._active_readers,
+                        int(self._retain_completed_output_until or 0),
+                    )
+                return None
+            await self._record_successful_read(connection_id)
+            return payload
+        finally:
+            await self._release_reader(connection_id)
 
-    async def read_segment_bytes(self, segment_name):
-        name = clean_text(segment_name)
-        if not name or not SAFE_HLS_SEGMENT_RE.match(name):
-            return None
-        segment_path = (self.output_dir / name).resolve()
-        if not str(segment_path).startswith(str(self.output_dir.resolve())):
-            return None
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if segment_path.exists() and segment_path.is_file():
-                try:
-                    if int(segment_path.stat().st_size or 0) > 0:
-                        break
-                except Exception:
-                    pass
-            await asyncio.sleep(0.05)
-        if not segment_path.exists() or not segment_path.is_file():
-            return None
-        return await asyncio.to_thread(segment_path.read_bytes)
-
-    async def stop(self, force=False):
+    async def stop(self, force: bool = False) -> CsoLifecycleCleanupResult | None:
         async with self.lifecycle_lock:
             return await self._stop_locked(force=force)
 
-    async def _stop_locked(self, force=False):
+    async def _stop_locked(self, force: bool = False) -> CsoLifecycleCleanupResult | None:
         async with self.lock:
             if (
                 not self.running
                 and not self.process
                 and not self.clients
+                and not self.completed
                 and self.write_task is None
                 and self.stderr_task is None
                 and self.wait_task is None
@@ -1914,7 +2270,9 @@ class CsoHlsOutputSession:
                 return
             if not force and self.clients:
                 return
+            self._accepting_readers = False
             self.running = False
+            self.completion_state = "stopping"
             process = self.process
             self.process_token += 1
             stop_token = self.process_token
@@ -1928,13 +2286,16 @@ class CsoHlsOutputSession:
             idle_cleanup_task = self._idle_cleanup_task
             self._idle_cleanup_task = None
             client_count = len(self.clients)
+            reader_count = self._active_readers
             disconnected_clients = list(self.clients.items())
             self.clients = {}
         logger.info(
-            "Stopping CSO HLS output channel=%s output_key=%s clients=%s force=%s policy=(%s)",
+            "Stopping CSO HLS output channel=%s output_key=%s mode=%s clients=%s readers=%s force=%s policy=(%s)",
             self.channel_id,
             self.key,
+            self._output_mode(),
             client_count,
+            reader_count,
             force,
             policy_log_label(self.runtime_policy),
         )
@@ -1959,7 +2320,7 @@ class CsoHlsOutputSession:
             )
         teardown = None
         if process:
-            terminate_timeout = 0.01 if force and self._is_vod_hls_output() else 2.0
+            terminate_timeout = 0.01 if force and self.finite_event_output else 2.0
             teardown = await terminate_ffmpeg_process(
                 process,
                 terminate_timeout_seconds=terminate_timeout,
@@ -1977,10 +2338,51 @@ class CsoHlsOutputSession:
                 if self.process is process:
                     self.process = None
         await _detach_output_input_subscriptions(self)
+        if not self._readers_drained.is_set():
+            logger.info(
+                "CSO HLS output cleanup waiting for readers output_key=%s mode=%s clients=%s readers=%s reason=active_readers",
+                self.key,
+                self._output_mode(),
+                len(self.clients),
+                self._active_readers,
+            )
+            await self._readers_drained.wait()
         async with self.lock:
             should_cleanup_output_dir = (
-                self.process_token == stop_token and not self.running and not self.process and not self.clients
+                self.process_token == stop_token
+                and not self.running
+                and not self.process
+                and not self.clients
+                and not self._active_readers
+                and task_cleanup.confirmed
+                and (teardown is None or teardown.confirmed)
             )
+            cleanup_reason = "eligible" if should_cleanup_output_dir else "lifecycle_not_confirmed"
+            if should_cleanup_output_dir:
+                self.completed = False
+                self.completion_state = "stopped"
+                self._retain_completed_output_until = 0.0
+        logger.info(
+            "CSO HLS output cleanup eligibility output_key=%s mode=%s eligible=%s reason=%s clients=%s readers=%s process_retained=%s tasks_confirmed=%s teardown_confirmed=%s",
+            self.key,
+            self._output_mode(),
+            should_cleanup_output_dir,
+            cleanup_reason,
+            len(self.clients),
+            self._active_readers,
+            self.process is not None,
+            task_cleanup.confirmed,
+            teardown is None or teardown.confirmed,
+        )
         if should_cleanup_output_dir:
             await remove_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
+            self._last_good_playlist_text = None
+            self._last_good_playlist_ts = 0.0
+            logger.info(
+                "CSO HLS output directory cleanup complete output_key=%s mode=%s path=%s teardown_confirmed=%s",
+                self.key,
+                self._output_mode(),
+                self.output_dir,
+                teardown is None or teardown.confirmed,
+            )
         return cso_lifecycle_cleanup_result(teardown, task_cleanup)

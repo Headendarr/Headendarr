@@ -559,7 +559,7 @@ async def _render_hls_playlist(output_session, connection_id: str):
     deadline = time.time() + 40.0
     while time.time() < deadline:
         await output_session.touch_client(connection_id)
-        playlist_text = await output_session.read_playlist_text()
+        playlist_text = await output_session.read_playlist_text(connection_id=connection_id)
         if playlist_text and "#EXTM3U" in str(playlist_text):
             return playlist_text
         await asyncio.sleep(0.2)
@@ -1244,7 +1244,7 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
     if not output_session:
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
-    payload = await output_session.read_segment_bytes(segment_name)
+    payload = await output_session.read_segment_bytes(segment_name, connection_id=connection_id)
     return Response(payload or b"", content_type=content_type_for_media_path(segment_name))
 
 
@@ -1325,5 +1325,5 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
     if not output_session:
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
     await output_session.touch_client(connection_id)
-    payload = await output_session.read_segment_bytes(segment_name)
+    payload = await output_session.read_segment_bytes(segment_name, connection_id=connection_id)
     return Response(payload or b"", content_type=content_type_for_media_path(segment_name))

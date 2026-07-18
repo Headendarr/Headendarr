@@ -303,10 +303,14 @@ async def subscribe_vod_hls(
             input_user_agent=ingest_user_agent,
             input_request_headers=request_headers,
             start_seconds=start_value,
+            finite_event_output=True,
         )
 
     output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
-    await output_session.start()
+    is_new_client = await output_session.start_and_add_client(
+        connection_id,
+        on_disconnect=on_disconnect,
+    )
     if not output_session.running:
         reason = output_session.last_error or "output_not_running"
         await emit_channel_stream_event(
@@ -320,7 +324,6 @@ async def subscribe_vod_hls(
         )
         return None, "VOD unavailable because output pipeline could not be started", 503
 
-    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
     if is_new_client:
         await emit_channel_stream_event(
             vod_category_id=vod_category_id,

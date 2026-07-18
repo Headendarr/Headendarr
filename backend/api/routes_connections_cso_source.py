@@ -849,7 +849,7 @@ async def _wait_for_hls_playlist(output_session, connection_id=None, timeout_sec
     while time.time() < deadline:
         if connection_id is not None:
             await output_session.touch_client(connection_id)
-        playlist_text = await output_session.read_playlist_text()
+        playlist_text = await output_session.read_playlist_text(connection_id=connection_id)
         if playlist_text:
             return playlist_text
         await asyncio.sleep(0.25)
@@ -1747,7 +1747,7 @@ async def _stream_cso_vod_hls_segment(resolver):
         return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
 
     await output_session.touch_client(str(connection_id))
-    payload = await output_session.read_segment_bytes(str(segment_name))
+    payload = await output_session.read_segment_bytes(str(segment_name), connection_id=str(connection_id))
     if payload is None:
         return Response("HLS segment not found", status=404)
     return Response(payload, content_type=content_type_for_media_path(str(segment_name)))
