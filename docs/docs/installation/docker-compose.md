@@ -41,20 +41,22 @@ services:
       - "/path/to/your/config_dir:/config"
       - "/path/to/your/recordings_dir:/recordings"
       - "/path/to/your/timeshift_temp_dir:/timeshift"
+    tmpfs:
+      - /tmp/cache:size=536870912
 ```
-
 Use image tags as follows:
 
 - `ghcr.io/headendarr/headendarr:latest` for stable releases.
 - `ghcr.io/headendarr/headendarr:staging` for pre-release/testing builds.
 
-### 2. Configure Volumes
+### 2. Configure Volumes and Cache
 
 You **must** change the volume paths to match your system's directory structure:
 
 - `- "/path/to/your/config_dir:/config"`: This is the most important volume. It stores all of your Headendarr configuration, database, and the TVHeadend settings. **Choose a permanent location for this data.**
 - `- "/path/to/your/recordings_dir:/recordings"`: This is where any DVR recordings will be saved.
 - `- "/path/to/your/timeshift_temp_dir:/timeshift"`: This is where temporary timeshift data is written while streams are being played. It is also used for temporary VOD caching, including VOD 24/7 channel cache handoff and pre-warming. Fast local storage is strongly recommended here.
+- `tmpfs /tmp/cache`: **(Highly Recommended)** A memory-backed storage area (512MB by default) used by the Channel Stream Orchestrator (CSO) for local segmented ingest and output handoff. Running this in RAM avoids unnecessary host disk wear and improves stream buffering performance.
 
 ### 3. Start the Container
 

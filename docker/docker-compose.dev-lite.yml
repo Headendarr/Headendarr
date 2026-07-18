@@ -39,6 +39,8 @@ services:
       - ENABLE_SQLALCHEMY_DEBUGGING=false
       # Preserves CSO segment cache files for post-failure inspection
       - ENABLE_CSO_PRESERVE_SEGMENT_CACHE=false
+      # How long inactive cached VOD files are kept in /timeshift/vod before automatic cleanup (in minutes)
+      # - TIC_VOD_CACHE_RETENTION_MINUTES=10
 
     # VOLUMES:
     volumes:
