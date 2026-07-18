@@ -1,4 +1,6 @@
+ARG UV_VERSION=0.11.16
 ARG BASE_IMAGE=python:3.13-trixie
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 FROM ${BASE_IMAGE} AS base_image
 
 #  _____ ____   ___  _   _ _____ _____ _   _ ____    ____ _____  _    ____ _____
@@ -23,11 +25,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
             libffi-dev \
             libssl-dev \
             pkg-config \
-            python3-dev \
-            python3-pip \
-            python3-setuptools \
-            python3-venv \
-            python3-wheel
+            python3-dev
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     echo "** Install node dependencies **" \
@@ -64,26 +62,23 @@ RUN \
             libssl-dev \
             pkg-config \
             python3-dev \
-            python3-pip \
-            python3-setuptools \
-            python3-venv \
-            python3-wheel \
     && \
     echo
 
-# Reduce pip noise & ensure deterministic, faster installs
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Ensure deterministic installs and prevent uv from downloading a different Python.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/var/venv-docker \
+    UV_PYTHON_DOWNLOADS=never
 
 # Install python dependencies
-COPY requirements.txt /requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
+COPY --from=uv /uv /uvx /usr/local/bin/
+COPY pyproject.toml uv.lock /app/
+WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache/uv \
     echo "**** Install python dependencies ****" \
-        && python3 -m venv --symlinks /var/venv-docker \
-        && . /var/venv-docker/bin/activate \
-        && python3 -m pip install --upgrade pip \
-        && python3 -m pip install -r /requirements.txt \
+        && python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version' \
+        && uv sync --frozen --no-dev --no-install-project --compile-bytecode \
     && \
     echo
 
@@ -142,6 +137,7 @@ RUN set -eux; \
 
 # Install gosu
 COPY --from=tianon/gosu:trixie /gosu /usr/local/bin/
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Install project
 COPY --from=backend_build_stage /var/venv-docker /var/venv-docker
@@ -150,12 +146,15 @@ COPY docker/overlay /
 COPY backend /app/backend
 COPY migrations /app/migrations
 COPY alembic.ini /app/alembic.ini
+COPY pyproject.toml uv.lock /app/
 COPY run.py /app/run.py
 COPY db-migrate.sh /app/db-migrate.sh
 
 # Set environment variables (add venv bin to PATH for implicit execution)
 ENV HOME="/config" \
-    PATH="/var/venv-docker/bin:${PATH}"
+    PATH="/var/venv-docker/bin:${PATH}" \
+    UV_PROJECT_ENVIRONMENT="/var/venv-docker" \
+    UV_PYTHON_DOWNLOADS="never"
 ENV FLASK_APP="/app/run.py"
 ENV FLASK_RUN_PORT="9985"
 ENV FLASK_RUN_HOST="0.0.0.0"

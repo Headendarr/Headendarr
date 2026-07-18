@@ -213,14 +213,12 @@ configure_video_device_access() {
     fi
 }
 
-install_packages() {
-    if [ "${RUN_PIP_INSTALL}" = "true" ]; then
-        python3 -m venv --symlinks --clear /var/venv-docker
-        source /var/venv-docker/bin/activate
-        python3 -m pip install --no-cache-dir -r /app/requirements.txt
-    else
-        source /var/venv-docker/bin/activate
+sync_packages() {
+    if [ "${RUN_UV_SYNC}" = "true" ] && [ "${UV_SYNC_COMPLETED:-false}" != "true" ]; then
+        uv sync --frozen --no-dev --no-install-project
+        export UV_SYNC_COMPLETED=true
     fi
+    source /var/venv-docker/bin/activate
 }
 
 setup_postgres() {
@@ -490,6 +488,7 @@ if [ "$(id -u)" = "0" ]; then
     configure_runtime_user_identity
     prepare_dirs_root
     configure_video_device_access
+    sync_packages
     if [ -n "${RUNTIME_APP_USER:-}" ]; then
         print_log info "Dropping privileges to '${RUNTIME_APP_USER}'"
         exec gosu "${RUNTIME_APP_USER}" env HOME="/config" "$0" "$@"
@@ -501,7 +500,7 @@ fi
 print_log info "ENABLE_APP_DEBUGGING: ${ENABLE_APP_DEBUGGING:-ENABLE_APP_DEBUGGING variable has not been set}"
 print_log info "ENABLE_SQLALCHEMY_DEBUGGING: ${ENABLE_SQLALCHEMY_DEBUGGING:-ENABLE_SQLALCHEMY_DEBUGGING variable has not been set}"
 print_log info "SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-SKIP_MIGRATIONS variable has not been set}"
-print_log info "RUN_PIP_INSTALL: ${RUN_PIP_INSTALL:-RUN_PIP_INSTALL variable has not been set}"
+print_log info "RUN_UV_SYNC: ${RUN_UV_SYNC:-RUN_UV_SYNC variable has not been set}"
 
 mkdir -p /config/.tvh_iptv_config
 
@@ -514,7 +513,7 @@ if [ $# -gt 0 ]; then
     exec "$@"
 fi
 
-install_packages
+sync_packages
 setup_postgres
 if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ] || [ "${PRINT_CURRENT_MIGRATION}" = "true" ]; then
     if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ]; then

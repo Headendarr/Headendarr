@@ -37,8 +37,8 @@ services:
       - PLEX_SERVERS_JSON=${PLEX_SERVERS_JSON:-}
       # Skips the DB migrate command execution on container startup
       - SKIP_MIGRATIONS=false
-      # Executes a pip install on container startup (might be required to generate the venv)
-      - RUN_PIP_INSTALL=false
+      # Syncs the locked Python dependencies on container startup
+      - RUN_UV_SYNC=false
       # Enables debug logging for main application
       - ENABLE_APP_DEBUGGING=true
       # Enables debug logging for DB queries

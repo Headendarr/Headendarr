@@ -8,7 +8,7 @@ tasks:
   init:
     desc: Initialize local cache directories
     cmds:
-      - mkdir -p temp/cache/.npm-frontend temp/cache/.npm-frontend-global temp/cache/.npm-docs temp/cache/.npm-docs-global temp/cache/venv-backend
+      - mkdir -p temp/cache/.npm-frontend temp/cache/.npm-frontend-global temp/cache/.npm-docs temp/cache/.npm-docs-global temp/cache/uv
 
   dev:
     desc: Run a dev env
@@ -115,17 +115,13 @@ tasks:
     cmds:
       - |
         docker compose -f {{.COMPOSE_FILE}} run --rm --no-deps --entrypoint="" --user 1000:1000 \
-          -v ./temp/cache/venv-backend:/var/venv-temp -w /app headendarr \
+          -v ./temp/cache/uv:/tmp/uv-cache -w /app headendarr \
           bash -c '
             set -e
-            if [ ! -f /var/venv-temp/bin/activate ]; then
-              python3 -m venv --without-pip /var/venv-temp
-              . /var/venv-temp/bin/activate
-              curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-            fi
-            . /var/venv-temp/bin/activate
-            pip install --disable-pip-version-check -r ./requirements-dev.txt
-            export RUFF_CACHE_DIR=/var/venv-temp/ruff-cache
+            export UV_CACHE_DIR=/tmp/uv-cache
+            export UV_PROJECT_ENVIRONMENT=/app/.venv
+            export RUFF_CACHE_DIR=/tmp/uv-cache/ruff
+            uv sync --frozen --python 3.13
 
             action="$1"
             shift
@@ -134,15 +130,15 @@ tasks:
             fi
             case "$action" in
               lint)
-                ruff check "$@"
+                uv run --frozen ruff check "$@"
                 ;;
               format-check)
-                ruff format --check "$@"
+                uv run --frozen ruff format --check "$@"
                 ;;
               check)
                 status=0
-                ruff format --check "$@" || status=1
-                ruff check "$@" || status=1
+                uv run --frozen ruff format --check "$@" || status=1
+                uv run --frozen ruff check "$@" || status=1
                 exit "$status"
                 ;;
               *)
@@ -176,11 +172,33 @@ tasks:
           RUFF_ACTION: check
           QUALITY_ARGS: "{{.CLI_ARGS}}"
 
-  backend:upgrade:
-    desc: Upgrade backend Python dependencies using pip-compile and pip-audit
+  backend:sync:
+    desc: Sync the Python 3.13 development environment from uv.lock
     deps: [init]
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} run --rm --entrypoint="" --user 1000:1000 -v ./temp/cache/venv-backend:/var/venv-temp headendarr bash -c "[ -f /var/venv-temp/bin/activate ] || (python3 -m venv --without-pip /var/venv-temp && . /var/venv-temp/bin/activate && curl -sS https://bootstrap.pypa.io/get-pip.py | python3) && . /var/venv-temp/bin/activate && pip install --upgrade pip pip-tools pip-audit && pip-compile ./requirements.in --upgrade && pip install -r ./requirements.txt -r ./requirements-dev.txt && pip-audit"
+      - docker compose -f {{.COMPOSE_FILE}} run --rm --no-deps --entrypoint="" --user 1000:1000 -v ./temp/cache/uv:/tmp/uv-cache -w /app -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/app/.venv headendarr uv sync --frozen --python 3.13
+
+  backend:audit:
+    desc: Audit locked Python dependencies for known vulnerabilities
+    deps: [init]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} run --rm --no-deps --entrypoint="" --user 1000:1000 -v ./temp/cache/uv:/tmp/uv-cache -w /app -e UV_CACHE_DIR=/tmp/uv-cache headendarr uv audit --frozen --python-version 3.13
+
+  backend:upgrade:
+    desc: Upgrade, sync, and audit backend Python dependencies with uv
+    deps: [init]
+    cmds:
+      - |
+        docker compose -f {{.COMPOSE_FILE}} run --rm --no-deps --entrypoint="" --user 1000:1000 \
+          -v ./temp/cache/uv:/tmp/uv-cache -w /app headendarr \
+          bash -c '
+            set -e
+            export UV_CACHE_DIR=/tmp/uv-cache
+            export UV_PROJECT_ENVIRONMENT=/app/.venv
+            uv lock --upgrade --python 3.13
+            uv sync --frozen --python 3.13
+            uv audit --frozen --python-version 3.13
+          '
 
   backend:migrate:rollback-last:
     desc: Roll back the most recent Alembic migration using a one-off backend (tic) container
@@ -326,8 +344,9 @@ tasks:
 
         npm --prefix frontend version "$bump_type" --no-git-tag-version
         new_version=$(node -p "require('./frontend/package.json').version")
-        git add frontend/package.json frontend/package-lock.json
-        echo "Version bumped with '$bump_type' in frontend/package.json and package-lock.json"
-        echo "Staged: frontend/package.json frontend/package-lock.json"
+        uv version "$new_version" --no-sync
+        git add frontend/package.json frontend/package-lock.json pyproject.toml uv.lock
+        echo "Version bumped with '$bump_type' in frontend/package.json, package-lock.json, and pyproject.toml"
+        echo "Staged: frontend/package.json frontend/package-lock.json pyproject.toml uv.lock"
         echo "Next run:"
         echo "> git commit -m 'Bump version $new_version'"

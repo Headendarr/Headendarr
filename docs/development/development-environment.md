@@ -35,10 +35,17 @@ task backend:format:check
 task backend:lint
 ```
 
-These tasks install the development requirements into the cached `temp/cache/venv-backend` environment and run Ruff
-inside a disposable backend container. They do not depend on tooling from a parent workspace.
+These tasks run `uv sync --frozen` for the project `.venv` and use the cached `temp/cache/uv` package cache before
+running Ruff inside a disposable backend container. They do not depend on tooling from a parent workspace.
 
-## Run from source with a Python venv
+To sync or audit the locked Python dependencies separately, run:
+
+```bash
+task backend:sync
+task backend:audit
+```
+
+## Run from source with uv
 
 First complete the normal source setup from the docs site:
 

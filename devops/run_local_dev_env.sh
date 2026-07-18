@@ -10,16 +10,12 @@
 ###
 
 script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-project_root=$(readlink -e ${script_path}/..)
+project_root=$(readlink -e "${script_path}/..")
 
 pushd "${project_root}" || exit 1
 
-# Ensure we have created a venv
-if [[ ! -e venv-local/bin/activate ]]; then
-    python3 -m venv venv-local
-fi
-# Active the venv
-source venv-local/bin/activate
+# Ensure the Python 3.13 environment matches the lockfile.
+uv sync --frozen --python 3.13
 
 # Configure env
 export PYTHONUNBUFFERED=1;
@@ -29,9 +25,9 @@ export HOME_DIR="${PWD}/dev_env/config/"
 mkdir -p "${HOME_DIR}"
 
 # Setup database
-alembic upgrade head
+uv run --frozen alembic upgrade head
 
 # Run main process
-python3 "${FLASK_APP:?}"
+uv run --frozen python "${FLASK_APP:?}"
 
 popd || exit 1

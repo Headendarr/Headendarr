@@ -10,24 +10,16 @@
 ###
 
 script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-project_root=$(readlink -e ${script_path}/..)
+project_root=$(readlink -e "${script_path}/..")
 
 
 pushd "${project_root}" || exit 1
 
 
-# Ensure we have created a venv
-if [[ ! -e venv-local/bin/activate ]]; then
-    python3 -m venv venv-local
-fi
+# Create or update the Python 3.13 environment from the lockfile.
+uv sync --frozen --python 3.13
 
-# Active the venv
-source venv-local/bin/activate
-
-# Install all requirements
-python3 -m pip install -r requirements.txt
-
-# Install the project to the venv
+# Build the frontend.
 ./devops/frontend_install.sh
 
 

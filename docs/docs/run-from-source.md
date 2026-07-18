@@ -13,23 +13,24 @@ cd Headendarr
 
 ## Run the build scripts
 
-1) Run the setup script. This will create a local environment, installing a Python virtual environment and all dependencies listed in the requirements.txt file, along with the building the frontend. You should re-run this script whenever you pull updates from GitHub.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and ensure Python 3.13 is available.
+
+1) Run the setup script. This creates a `.venv` using Python 3.13, syncs the exact dependencies in `uv.lock`, and builds
+the frontend. Re-run this script whenever you pull updates from GitHub.
 ```
 ./devops/setup_local_dev_env.sh
 ```
 2) Run the project.
 ```
-source venv-local/bin/activate
-
 # Create a directory for your config files and export it to HOME_DIR
 export HOME_DIR="${PWD}/dev_env/config/"
 mkdir -p "${HOME_DIR}"
 
 # Migrate database
-alembic upgrade head
+uv run --frozen alembic upgrade head
 
 # Run app
-python3 ./run.py
+uv run --frozen python ./run.py
 ```
 
 > [!NOTE]  

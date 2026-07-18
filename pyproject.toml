@@ -1,3 +1,40 @@
+[project]
+name = "headendarr"
+version = "2.0.1"
+description = "A tool for simplifying IPTV configuration in TVHeadend"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.14.1",
+    "aiosqlite>=0.22",
+    "alembic~=1.13",
+    "apscheduler~=3.11",
+    "argon2-cffi>=25.1",
+    "asyncpg",
+    "beautifulsoup4>=4.14",
+    "flask-sqlalchemy~=3.1",
+    "joserfc>=1.6.8",
+    "m3u-ipytv~=1.0",
+    "mergedeep>=1.3.4",
+    "psutil>=7.2",
+    "psycopg[binary]",
+    "pyyaml~=6.0",
+    "quart~=0.20",
+    "quart-flask-patch~=0.3",
+    "requests>=2.32",
+    "sentry-sdk[quart]~=2.58",
+    "sqlalchemy>=2.0.32,<3.0",
+    "watchgod~=0.8",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.0",
+]
+
+[tool.uv]
+package = false
+required-version = ">=0.11.0,<0.12"
+
 [tool.pyright]
 typeCheckingMode = "basic"
 reportMissingTypeStubs = "none"
@@ -8,7 +45,7 @@ reportGeneralTypeIssues = "warning"
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 # TODO: Add stricter rules over time

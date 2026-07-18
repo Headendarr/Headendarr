@@ -19,7 +19,7 @@ services:
       - PGID=1000
       - TZ=Pacific/Auckland
       - SKIP_MIGRATIONS=false
-      - RUN_PIP_INSTALL=false
+      - RUN_UV_SYNC=false
       - ENABLE_APP_DEBUGGING=false
       - ENABLE_SQLALCHEMY_DEBUGGING=false
       - ENABLE_APP_HOT_RELOAD=false
