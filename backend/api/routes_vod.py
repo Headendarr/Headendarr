@@ -45,6 +45,14 @@ from backend.vod import (
 )
 from backend.users import user_has_admin_role
 from backend.utils import convert_to_int, int_or_none
+from backend.cso.vod_errors import (
+    UPSTREAM_CAPACITY_ERROR_CODE,
+    UPSTREAM_CAPACITY_MESSAGE,
+    UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+    UPSTREAM_INVALID_MEDIA_MESSAGE,
+    vod_error_payload,
+)
+from backend.cso.vod_proxy import vod_proxy_session_manager
 
 ignored_library_probe_suffixes = (
     "/.nomedia",
@@ -90,6 +98,18 @@ def _build_preview_candidate(
 
 def _build_preview_response(candidates: list[dict[str, object]]) -> dict[str, object]:
     return {"success": True, "candidates": candidates}
+
+
+def _vod_playback_error_response(payload: dict[str, object], fallback: str = "Playback unavailable"):
+    response = {
+        "success": False,
+        "message": payload.get("message") or fallback,
+    }
+    error_code = str(payload.get("error_code") or "").strip()
+    if error_code:
+        response["error_code"] = error_code
+        response["retryable"] = bool(payload.get("retryable"))
+    return jsonify(response), int(payload.get("status_code") or 404)
 
 
 def _resolved_preview_profile(default_profile: str = "") -> str:
@@ -138,6 +158,7 @@ def _parse_vod_preview_reference(preview_url: str) -> dict[str, object] | None:
             "content_type": match.group("content_type"),
             "item_id": int(match.group("item_id")),
             "container_extension": str((query.get("container_extension") or [""])[0] or "").strip(),
+            "connection_id": str((query.get("connection_id") or query.get("cid") or [""])[0] or "").strip(),
         }
 
     match = _UPSTREAM_CSO_VOD_PREVIEW_RE.match(path)
@@ -149,6 +170,7 @@ def _parse_vod_preview_reference(preview_url: str) -> dict[str, object] | None:
             "item_id": int(match.group("item_id")),
             "upstream_episode_id": unquote(str(match.group("upstream_episode_id") or "").strip()),
             "container_extension": str((query.get("container_extension") or [""])[0] or "").strip(),
+            "connection_id": str((query.get("connection_id") or query.get("cid") or [""])[0] or "").strip(),
         }
 
     return None
@@ -264,9 +286,7 @@ async def curated_movie_preview(item_id: int):
     if payload is None:
         return jsonify({"success": False, "message": "VOD item not found"}), 404
     if not payload.get("success"):
-        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
-            payload.get("status_code") or 404
-        )
+        return _vod_playback_error_response(payload)
     profile = _resolved_preview_profile()
     preview_url = _build_cso_vod_preview_url(
         get_request_base_url(request),
@@ -299,9 +319,7 @@ async def curated_series_preview(item_id: int):
     if payload is None:
         return jsonify({"success": False, "message": "Episode not found"}), 404
     if not payload.get("success"):
-        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
-            payload.get("status_code") or 404
-        )
+        return _vod_playback_error_response(payload)
     profile = _resolved_preview_profile()
     preview_url = _build_cso_vod_preview_url(
         get_request_base_url(request),
@@ -334,9 +352,7 @@ async def upstream_movie_preview(item_id: int):
         int(item_id), VOD_KIND_MOVIE, allow_probe=False, background_probe=True
     )
     if not payload.get("success"):
-        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
-            payload.get("status_code") or 404
-        )
+        return _vod_playback_error_response(payload)
     profile = _resolved_preview_profile()
     source_id = int(payload.get("source_id") or 0)
     source_item_id = int(payload.get("source_item_id") or 0)
@@ -383,9 +399,7 @@ async def upstream_series_preview(item_id: int, upstream_episode_id: str):
         background_probe=True,
     )
     if not payload.get("success"):
-        return jsonify({"success": False, "message": payload.get("message") or "Playback unavailable"}), int(
-            payload.get("status_code") or 404
-        )
+        return _vod_playback_error_response(payload)
     source_id = int(payload.get("source_id") or 0)
     source_item_id = int(payload.get("source_item_id") or 0)
     if source_id <= 0 or source_item_id <= 0:
@@ -429,6 +443,17 @@ async def vod_preview_metadata():
     if preview_ref is None:
         return jsonify({"success": False, "message": "Unsupported preview URL"}), 400
 
+    connection_id = str(preview_ref.get("connection_id") or "").strip()
+    if connection_id:
+        terminal_reason = await vod_proxy_session_manager.get_terminal_error(f"connection:{connection_id}")
+        if terminal_reason == "upstream_invalid_media_response":
+            return (
+                jsonify(vod_error_payload(UPSTREAM_INVALID_MEDIA_ERROR_CODE, UPSTREAM_INVALID_MEDIA_MESSAGE)),
+                502,
+            )
+        if terminal_reason == "capacity_blocked":
+            return jsonify(vod_error_payload(UPSTREAM_CAPACITY_ERROR_CODE, UPSTREAM_CAPACITY_MESSAGE)), 503
+
     mode = str(preview_ref.get("mode") or "")
     content_type = str(preview_ref.get("content_type") or "")
     item_id = int(preview_ref.get("item_id") or 0)
@@ -465,9 +490,7 @@ async def vod_preview_metadata():
     if not result:
         return jsonify({"success": False, "message": "Preview metadata unavailable"}), 404
     if not result.get("success"):
-        return jsonify({"success": False, "message": result.get("message") or "Preview metadata unavailable"}), int(
-            result.get("status_code") or 404
-        )
+        return _vod_playback_error_response(result, fallback="Preview metadata unavailable")
 
     metadata_pending = bool(result.get("metadata_pending"))
     has_duration = bool(result.get("duration_seconds"))

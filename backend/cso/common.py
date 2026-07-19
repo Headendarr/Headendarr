@@ -223,7 +223,9 @@ class CsoRuntimeManager:
         logger.info(
             "CSO lifecycle metrics ingest_sessions=%s slate_sessions=%s output_sessions=%s vod_ingest_sessions=%s "
             "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s "
-            "live_ffmpeg_processes=%s ffmpeg_teardown_failures=%s",
+            "live_ffmpeg_processes=%s ffmpeg_teardown_failures=%s vod_cache_preemptions_total=%s "
+            "vod_cache_preemption_failures_total=%s vod_cache_resumes_total=%s "
+            "vod_upstream_invalid_responses_total=%s vod_provider_capacity_rejections_total=%s",
             metrics["ingest_sessions"],
             metrics["slate_sessions"],
             metrics["output_sessions"],
@@ -234,10 +236,16 @@ class CsoRuntimeManager:
             metrics["total_queued_bytes"],
             metrics["live_ffmpeg_processes"],
             metrics["ffmpeg_teardown_failures"],
+            metrics["vod_cache_preemptions_total"],
+            metrics["vod_cache_preemption_failures_total"],
+            metrics["vod_cache_resumes_total"],
+            metrics["vod_upstream_invalid_responses_total"],
+            metrics["vod_provider_capacity_rejections_total"],
         )
 
-    async def runtime_metrics(self):
+    async def runtime_metrics(self) -> dict[str, int]:
         from .processes import cso_ffmpeg_process_registry
+        from .vod_cache import vod_cache_manager
 
         session_groups = {}
         for name, session_map in (
@@ -277,6 +285,7 @@ class CsoRuntimeManager:
             queue_stats = await queue.stats()
             metrics["total_queued_bytes"] += int(queue_stats.get("queued_bytes") or 0)
         metrics.update(cso_ffmpeg_process_registry.snapshot())
+        metrics.update(await vod_cache_manager.runtime_metrics())
         return metrics
 
     async def get_output_session(self, key):
@@ -474,6 +483,7 @@ def build_cso_stream_plan(
     headers=None,
     cutoff_seconds=None,
     final_status_code=None,
+    error_code=None,
 ):
     return CsoStreamPlan(
         generator=generator,
@@ -483,6 +493,7 @@ def build_cso_stream_plan(
         headers=headers,
         cutoff_seconds=cutoff_seconds,
         final_status_code=final_status_code,
+        error_code=error_code,
     )
 
 

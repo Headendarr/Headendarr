@@ -18,6 +18,7 @@ from backend.stream_profiles import content_type_for_media_path
 from backend.utils import clean_key, clean_text, convert_to_int
 
 from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
+from .common import bounded_log_value, redacted_url_for_log
 from .constants import (
     VOD_CACHE_CHUNK_BYTES,
     VOD_CACHE_METADATA_TIMEOUT_SECONDS,
@@ -27,6 +28,7 @@ from .constants import (
 )
 from .sources import cso_source_from_vod_source
 from .types import CsoSource, VodCacheEntry, VodHeadProbeStateEntry
+from .vod_upstream import validate_vod_upstream_response
 
 
 logger = logging.getLogger("cso")
@@ -44,7 +46,12 @@ def _vod_head_probe_cache_key(source: CsoSource, upstream_url: str) -> str:
     return f"{source.source_type}:{source.playlist_id}:{source_id}:{source_host}"
 
 
-async def _probe_vod_cache_metadata(source: CsoSource, upstream_url: str, request_headers=None):
+async def _probe_vod_cache_metadata(
+    source: CsoSource,
+    upstream_url: str,
+    request_headers=None,
+    require_body_validation: bool = False,
+) -> dict[str, object]:
     from .vod_proxy import filter_vod_proxy_request_headers
 
     headers = filter_vod_proxy_request_headers(request_headers, source)
@@ -56,28 +63,35 @@ async def _probe_vod_cache_metadata(source: CsoSource, upstream_url: str, reques
             logger.debug(
                 "Skipping VOD cache metadata HEAD probe source_id=%s upstream_url=%s due to cached unsupported state",
                 source.id,
-                upstream_url,
+                redacted_url_for_log(upstream_url),
             )
         else:
             try:
                 response = await session.request("HEAD", upstream_url, headers=headers, allow_redirects=True)
                 try:
-                    if int(response.status or 0) == 200:
+                    validation = validate_vod_upstream_response(
+                        int(response.status or 0),
+                        response.headers,
+                        request_method="HEAD",
+                    )
+                    if validation.accepted:
                         size_header = clean_text(response.headers.get("Content-Length"))
                         if size_header.isdigit():
                             await vod_head_probe_state_store.mark_head_supported(source, upstream_url)
-                            return {
-                                "size": int(size_header),
-                                "headers": dict(response.headers),
-                                "status": int(response.status or 200),
-                            }
+                            if not require_body_validation:
+                                return {
+                                    "size": int(size_header),
+                                    "headers": dict(response.headers),
+                                    "status": int(response.status or 200),
+                                    "valid": True,
+                                }
                 finally:
                     await response.release()
             except Exception as exc:
                 logger.info(
                     "VOD cache metadata HEAD probe failed source_id=%s upstream_url=%s error=%s",
                     source.id,
-                    upstream_url,
+                    redacted_url_for_log(upstream_url),
                     exc,
                 )
                 await vod_head_probe_state_store.mark_head_failed(source, upstream_url, str(exc))
@@ -87,24 +101,77 @@ async def _probe_vod_cache_metadata(source: CsoSource, upstream_url: str, reques
             allow_redirects=True,
         )
         try:
-            content_range = clean_text(response.headers.get("Content-Range"))
-            total_size = None
-            if "/" in content_range:
-                tail = content_range.rsplit("/", 1)[-1].strip()
-                if tail.isdigit():
-                    total_size = int(tail)
-            if total_size:
+            prefix = await response.content.read(1024)
+            validation = validate_vod_upstream_response(
+                int(response.status or 0),
+                response.headers,
+                requested_offset=0,
+                body_prefix=prefix,
+            )
+            total_size = validation.total_size
+            if validation.accepted and not total_size and int(response.status or 0) == 200:
+                content_length = clean_text(response.headers.get("Content-Length"))
+                if content_length.isdigit():
+                    total_size = int(content_length)
+            if validation.accepted and total_size:
                 return {
                     "size": int(total_size),
                     "headers": dict(response.headers),
                     "status": int(response.status or 206),
+                    "valid": True,
                 }
+            if not validation.accepted:
+                logger.warning(
+                    "VOD upstream metadata response rejected source_id=%s status=%s content_type=%s "
+                    "range_present=%s classification=%s upstream_url=%s",
+                    source.id,
+                    int(response.status or 0),
+                    bounded_log_value(validation.content_type),
+                    bool(clean_text(response.headers.get("Content-Range"))),
+                    validation.classification,
+                    redacted_url_for_log(upstream_url),
+                )
+                reason = (
+                    "upstream_invalid_media_response"
+                    if validation.classification != "upstream_status"
+                    else f"upstream_status_{int(response.status or 0)}"
+                )
+                return {
+                    "size": None,
+                    "headers": dict(response.headers),
+                    "status": int(response.status or 0),
+                    "valid": False,
+                    "reason": reason,
+                }
+            return {
+                "size": None,
+                "headers": dict(response.headers),
+                "status": int(response.status or 0),
+                "valid": True,
+            }
         finally:
             await response.release()
-    return {"size": None, "headers": {}, "status": 0}
+    return {"size": None, "headers": {}, "status": 0, "valid": False}
 
 
-async def _vod_cache_has_space(required_bytes: int):
+async def probe_vod_upstream_response(
+    source: CsoSource,
+    upstream_url: str,
+    request_headers=None,
+) -> str | None:
+    result = await _probe_vod_cache_metadata(
+        source,
+        upstream_url,
+        request_headers=request_headers,
+        require_body_validation=True,
+    )
+    reason = clean_text(result.get("reason"))
+    if reason == "upstream_invalid_media_response":
+        await vod_cache_manager.increment_runtime_counter("vod_upstream_invalid_responses_total")
+    return reason or None
+
+
+async def _vod_cache_has_space(required_bytes: int) -> bool:
     if required_bytes <= 0:
         return False
     usage = await asyncio.to_thread(shutil.disk_usage, str(VOD_CACHE_ROOT.parent))
@@ -115,7 +182,8 @@ async def ensure_vod_cache_ready(
     entry: VodCacheEntry,
     request_headers=None,
     require_size=False,
-):
+    purpose: str = "background_warm",
+) -> dict[str, object]:
     from .vod_proxy import proxy_response_headers
 
     async with entry.probe_lock:
@@ -134,22 +202,49 @@ async def ensure_vod_cache_ready(
                 "expected_size": int(entry.expected_size),
                 "complete": False,
             }
-        probe = await _probe_vod_cache_metadata(entry.source, entry.upstream_url, request_headers=request_headers)
+        capacity_key = source_capacity_key(entry.source)
+        probe_owner = f"vod-cache-probe:{entry.key}:{id(asyncio.current_task())}"
+        reserved = await vod_cache_manager.reserve_capacity(
+            capacity_key,
+            source_capacity_limit(entry.source),
+            probe_owner,
+            probe_owner,
+            purpose=purpose,
+        )
+        if not reserved:
+            entry.failed_reason = "capacity_blocked"
+            return {
+                "cacheable": False,
+                "size_known": False,
+                "expected_size": None,
+                "reason": "capacity_blocked",
+            }
+        try:
+            probe = await _probe_vod_cache_metadata(
+                entry.source,
+                entry.upstream_url,
+                request_headers=request_headers,
+            )
+        finally:
+            await cso_capacity_registry.release(capacity_key, probe_owner, slot_id=probe_owner)
         expected_size = int(probe.get("size") or 0)
         if expected_size <= 0:
-            entry.failed_reason = "size_unknown"
+            probe_reason = clean_text(probe.get("reason"))
+            if probe_reason == "upstream_invalid_media_response":
+                await vod_cache_manager.increment_runtime_counter("vod_upstream_invalid_responses_total")
+            entry.failed_reason = probe_reason or "size_unknown"
             if require_size:
                 return {
                     "cacheable": False,
                     "size_known": False,
                     "expected_size": None,
-                    "reason": "size_unknown",
+                    "reason": entry.failed_reason,
                 }
             return {
                 "cacheable": False,
                 "size_known": False,
                 "expected_size": None,
-                "reason": "size_unknown",
+                "reason": entry.failed_reason,
             }
         has_space = await _vod_cache_has_space(expected_size * 2)
         if not has_space:
@@ -174,31 +269,48 @@ async def ensure_vod_cache_ready(
         }
 
 
-async def start_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_headers=None):
-    async with entry.state_lock:
-        if entry.complete:
-            return True
-        if entry.downloader_running:
-            return True
-        if not entry.expected_size:
-            return False
-        reserved = await cso_capacity_registry.try_reserve(
-            source_capacity_key(entry.source),
-            owner_key,
+async def start_vod_cache_download(
+    entry: VodCacheEntry,
+    owner_key: str,
+    request_headers=None,
+    purpose: str = "background_warm",
+) -> bool:
+    capacity_key = source_capacity_key(entry.source)
+    arbitration_lock = await vod_cache_manager.capacity_arbitration_lock(capacity_key)
+    async with arbitration_lock:
+        async with entry.state_lock:
+            if entry.complete:
+                return True
+            if entry.downloader_running:
+                return True
+            if not entry.expected_size:
+                return False
+        reserved = await vod_cache_manager._reserve_or_preempt_locked(
+            capacity_key,
             source_capacity_limit(entry.source),
-            slot_id=owner_key,
+            owner_key,
+            owner_key,
+            purpose,
         )
         if not reserved:
-            entry.failed_reason = "capacity_blocked"
+            async with entry.state_lock:
+                entry.failed_reason = "capacity_blocked"
             return False
-        entry.downloader_owner_key = owner_key
-        entry.failed_reason = None
-        entry.ready_event.clear()
-        entry.progress_event.clear()
-        entry.download_task = asyncio.create_task(
-            _run_vod_cache_download(entry, owner_key, request_headers=request_headers),
-            name=f"vod-cache-{entry.key}",
-        )
+        async with entry.state_lock:
+            entry.downloader_owner_key = owner_key
+            entry.downloader_capacity_key = capacity_key
+            entry.downloader_slot_id = owner_key
+            entry.downloader_started_ts = time.time()
+            entry.downloader_purpose = clean_text(purpose) or "background_warm"
+            entry.preemption_requested = False
+            entry.preemption_reason = None
+            entry.failed_reason = None
+            entry.ready_event.clear()
+            entry.progress_event.clear()
+            entry.download_task = asyncio.create_task(
+                _run_vod_cache_download(entry, owner_key, request_headers=request_headers),
+                name=f"vod-cache-{entry.key}",
+            )
         return True
 
 
@@ -242,10 +354,34 @@ async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_
                 status_code = int(response.status_code or 502)
                 if status_code >= 400:
                     entry.failed_reason = f"download_status_{status_code}"
-                    entry.ready_event.set()
                     return
 
-                if range_start > 0 and status_code == 200:
+                prefix = await asyncio.to_thread(response.raw.read, 1024, decode_content=True)
+                validation = validate_vod_upstream_response(
+                    status_code,
+                    response.headers,
+                    requested_offset=range_start,
+                    body_prefix=prefix,
+                    allow_restart_from_zero=True,
+                )
+                if not validation.accepted:
+                    entry.failed_reason = "upstream_invalid_media_response"
+                    await vod_cache_manager.increment_runtime_counter("vod_upstream_invalid_responses_total")
+                    logger.warning(
+                        "VOD cache upstream response rejected asset=%s source_id=%s status=%s content_type=%s "
+                        "requested_offset=%s range_present=%s classification=%s upstream_url=%s",
+                        entry.key,
+                        entry.source.id,
+                        status_code,
+                        bounded_log_value(validation.content_type),
+                        range_start,
+                        bool(clean_text(response.headers.get("Content-Range"))),
+                        validation.classification,
+                        redacted_url_for_log(entry.upstream_url),
+                    )
+                    return
+
+                if validation.restart_from_zero:
                     logger.warning(
                         "VOD cache resume was ignored by upstream; restarting download asset=%s source_id=%s offset=%s",
                         entry.key,
@@ -257,6 +393,8 @@ async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_
                     entry.bytes_written = 0
                     range_start = 0
                     continue
+                if range_start > 0:
+                    await vod_cache_manager.increment_runtime_counter("vod_cache_resumes_total")
 
                 entry.metadata_headers = proxy_response_headers(status_code, response.headers)
                 entry.content_type = clean_text(response.headers.get("Content-Type")) or entry.content_type
@@ -276,6 +414,11 @@ async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_
                 open_mode = "ab" if range_start > 0 else "wb"
                 iterator = response.iter_content(chunk_size=VOD_CACHE_CHUNK_BYTES)
                 async with aiofiles.open(entry.part_path, open_mode) as handle:
+                    if prefix:
+                        await handle.write(prefix)
+                        entry.bytes_written += len(prefix)
+                        entry.progress_event.set()
+                        entry.progress_event = asyncio.Event()
                     while True:
                         try:
                             chunk = await asyncio.to_thread(next, iterator, None)
@@ -344,36 +487,56 @@ async def _run_vod_cache_download(entry: VodCacheEntry, owner_key: str, request_
             entry.failed_reason = "download_incomplete"
         entry.touch()
     except asyncio.CancelledError:
-        entry.failed_reason = "cancelled"
+        entry.failed_reason = "preempted" if entry.preemption_requested else "cancelled"
         raise
     except Exception as exc:
         entry.failed_reason = f"download_failed:{exc}"
         logger.warning("VOD cache download failed asset=%s error=%s", entry.key, exc)
     finally:
-        entry.ready_event.set()
-        entry.progress_event.set()
-        await cso_capacity_registry.release(source_capacity_key(entry.source), owner_key, slot_id=owner_key)
+        capacity_key = entry.downloader_capacity_key or source_capacity_key(entry.source)
+        slot_id = entry.downloader_slot_id or owner_key
+        await cso_capacity_registry.release(capacity_key, owner_key, slot_id=slot_id)
         async with entry.state_lock:
             entry.downloader_owner_key = None
+            entry.downloader_capacity_key = None
+            entry.downloader_slot_id = None
+            entry.downloader_purpose = None
             entry.download_task = None
+        entry.ready_event.set()
+        entry.progress_event.set()
 
 
-async def cleanup_vod_proxy_cache():
+async def cleanup_vod_proxy_cache() -> int:
     return await vod_cache_manager.cleanup()
 
 
-async def warm_vod_cache(candidate, upstream_url, episode=None, owner_key=None, request_headers=None):
+async def warm_vod_cache(
+    candidate,
+    upstream_url: str,
+    episode=None,
+    owner_key: str | None = None,
+    request_headers=None,
+) -> bool:
     if not candidate:
         return False
     source = await cso_source_from_vod_source(candidate, upstream_url)
     if not source or not source.url:
         return False
     entry = await vod_cache_manager.get_or_create(source, source.url)
-    cache_meta = await ensure_vod_cache_ready(entry, request_headers=request_headers)
+    cache_meta = await ensure_vod_cache_ready(
+        entry,
+        request_headers=request_headers,
+        purpose="background_warm",
+    )
     if not cache_meta.get("cacheable"):
         return False
     owner = clean_text(owner_key) or f"vod-cache-warm-{source.id}"
-    return await start_vod_cache_download(entry, owner, request_headers=request_headers)
+    return await start_vod_cache_download(
+        entry,
+        owner,
+        request_headers=request_headers,
+        purpose="background_warm",
+    )
 
 
 def _vod_cache_asset_parts(source: CsoSource):
@@ -475,11 +638,315 @@ def _vod_content_type_for_source(source: CsoSource):
 
 
 class VodCacheManager:
+    """Coordinate cache entries and source-capacity arbitration.
+
+    Lock ordering is always the capacity-arbitration lock followed by an entry
+    lock. The metadata-probe registry lock may be acquired while holding the
+    arbitration lock, but probe cleanup never reacquires the arbitration lock.
+    Downloader tasks are cancelled and awaited only after releasing the entry
+    lock.
+    """
+
     def __init__(self):
         self.entries = {}
         self.lock = asyncio.Lock()
+        self._capacity_arbitration_locks = {}
+        self._capacity_arbitration_locks_lock = asyncio.Lock()
+        self._runtime_counters = {
+            "vod_cache_preemptions_total": 0,
+            "vod_cache_preemption_failures_total": 0,
+            "vod_cache_resumes_total": 0,
+            "vod_upstream_invalid_responses_total": 0,
+            "vod_provider_capacity_rejections_total": 0,
+        }
+        self._runtime_counters_lock = asyncio.Lock()
+        self._metadata_probes: dict[str, dict[str, tuple[asyncio.Task, str | int, float]]] = {}
+        self._metadata_probes_lock = asyncio.Lock()
 
-    async def get(self, source: CsoSource):
+    async def increment_runtime_counter(self, name: str) -> int:
+        async with self._runtime_counters_lock:
+            if name not in self._runtime_counters:
+                raise ValueError(f"Unknown VOD runtime counter: {name}")
+            self._runtime_counters[name] += 1
+            return self._runtime_counters[name]
+
+    async def runtime_metrics(self) -> dict[str, int]:
+        async with self._runtime_counters_lock:
+            return dict(self._runtime_counters)
+
+    async def reserve_metadata_probe(
+        self,
+        capacity_key: str,
+        limit: int,
+        owner_key: str,
+        slot_id: str | int,
+        task: asyncio.Task,
+    ) -> bool:
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        reserved = False
+        try:
+            async with arbitration_lock:
+                reserved = await cso_capacity_registry.try_reserve(
+                    capacity_key,
+                    owner_key,
+                    limit,
+                    slot_id=slot_id,
+                )
+                if not reserved:
+                    await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+                    return False
+                async with self._metadata_probes_lock:
+                    probes = self._metadata_probes.setdefault(capacity_key, {})
+                    probes[owner_key] = (task, slot_id, time.time())
+                return True
+        except BaseException:
+            if reserved:
+                await self.release_metadata_probe(capacity_key, owner_key, slot_id)
+            raise
+
+    async def release_metadata_probe(
+        self,
+        capacity_key: str,
+        owner_key: str,
+        slot_id: str | int,
+    ):
+        await cso_capacity_registry.release(capacity_key, owner_key, slot_id=slot_id)
+        async with self._metadata_probes_lock:
+            probes = self._metadata_probes.get(capacity_key)
+            if probes is None:
+                return
+            probes.pop(owner_key, None)
+            if not probes:
+                self._metadata_probes.pop(capacity_key, None)
+
+    async def _oldest_metadata_probe(
+        self,
+        capacity_key: str,
+    ) -> tuple[str, asyncio.Task, str | int] | None:
+        async with self._metadata_probes_lock:
+            probes = self._metadata_probes.get(capacity_key, {})
+            candidates = [
+                (started_at, owner_key, task, slot_id)
+                for owner_key, (task, slot_id, started_at) in probes.items()
+                if not task.done()
+            ]
+        if not candidates:
+            return None
+        _, owner_key, task, slot_id = min(candidates, key=lambda item: (item[0], item[1]))
+        return owner_key, task, slot_id
+
+    async def capacity_arbitration_lock(self, capacity_key: str) -> asyncio.Lock:
+        key = clean_text(capacity_key)
+        async with self._capacity_arbitration_locks_lock:
+            lock = self._capacity_arbitration_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._capacity_arbitration_locks[key] = lock
+            return lock
+
+    async def _eligible_preemption_victims(self, capacity_key: str) -> list[VodCacheEntry]:
+        async with self.lock:
+            entries = list(self.entries.values())
+        eligible = []
+        for entry in entries:
+            async with entry.state_lock:
+                if (
+                    entry.complete
+                    or not entry.downloader_running
+                    or entry.downloader_capacity_key != capacity_key
+                    or entry.active_sessions > 0
+                    or entry.active_readers > 0
+                    or entry.waiting_consumers > 0
+                    or entry.preemption_requested
+                ):
+                    continue
+                eligible.append(entry)
+        return sorted(
+            eligible,
+            key=lambda entry: (
+                float(entry.last_consumer_detach_ts or 0),
+                float(entry.downloader_started_ts or 0),
+                entry.key,
+            ),
+        )
+
+    async def has_preemptible_capacity(self, capacity_key: str) -> bool:
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            if await self._oldest_metadata_probe(capacity_key) is not None:
+                return True
+            return bool(await self._eligible_preemption_victims(capacity_key))
+
+    async def _reserve_or_preempt_locked(
+        self,
+        capacity_key: str,
+        limit: int,
+        owner_key: str,
+        slot_id: str | int,
+        purpose: str,
+    ) -> bool:
+        usage_before = await cso_capacity_registry.get_usage(capacity_key)
+        reserved = await cso_capacity_registry.try_reserve(capacity_key, owner_key, limit, slot_id=slot_id)
+        if reserved or clean_key(purpose) != "interactive_playback":
+            if not reserved:
+                await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+                logger.info(
+                    "VOD provider capacity rejected capacity_key=%s limit=%s allocations=%s external=%s "
+                    "requester_purpose=%s",
+                    bounded_log_value(capacity_key),
+                    int(limit or 0),
+                    int(usage_before.get("allocations") or 0),
+                    int(usage_before.get("external") or 0),
+                    bounded_log_value(purpose),
+                )
+            return reserved
+        if max(0, int(usage_before.get("total") or 0) - 1) < max(0, int(limit or 0)):
+            metadata_probe = await self._oldest_metadata_probe(capacity_key)
+            if metadata_probe is not None:
+                probe_owner, probe_task, probe_slot = metadata_probe
+                logger.info(
+                    "VOD metadata probe yielding capacity to interactive playback capacity_key=%s",
+                    bounded_log_value(capacity_key),
+                )
+                probe_task.cancel()
+                try:
+                    await probe_task
+                except BaseException:
+                    pass
+                if await cso_capacity_registry.has_reservation(
+                    capacity_key,
+                    probe_owner,
+                    slot_id=probe_slot,
+                ):
+                    await self.release_metadata_probe(capacity_key, probe_owner, probe_slot)
+                reserved = await cso_capacity_registry.try_reserve(
+                    capacity_key,
+                    owner_key,
+                    limit,
+                    slot_id=slot_id,
+                )
+                if not reserved:
+                    await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+                return reserved
+        if max(0, int(usage_before.get("total") or 0) - 1) >= max(0, int(limit or 0)):
+            logger.info(
+                "VOD cache preemption skipped because one release cannot satisfy capacity "
+                "capacity_key=%s limit=%s allocations=%s external=%s requester_purpose=%s",
+                bounded_log_value(capacity_key),
+                int(limit or 0),
+                int(usage_before.get("allocations") or 0),
+                int(usage_before.get("external") or 0),
+                bounded_log_value(purpose),
+            )
+            await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+            return False
+
+        victims = await self._eligible_preemption_victims(capacity_key)
+        if not victims:
+            await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+            return False
+        victim = victims[0]
+        async with victim.state_lock:
+            task = victim.download_task
+            victim_still_eligible = (
+                not victim.complete
+                and task is not None
+                and not task.done()
+                and victim.downloader_capacity_key == capacity_key
+                and victim.active_sessions == 0
+                and victim.active_readers == 0
+                and victim.waiting_consumers == 0
+                and not victim.preemption_requested
+            )
+            if victim_still_eligible:
+                victim.preemption_requested = True
+                victim.preemption_reason = "interactive_playback"
+                victim.failed_reason = "preempting"
+                victim.progress_event.set()
+            retained_bytes = int(victim.bytes_written or 0)
+            victim_sessions = int(victim.active_sessions or 0)
+            victim_readers = int(victim.active_readers or 0)
+            victim_waiters = int(victim.waiting_consumers or 0)
+            victim_owner = victim.downloader_owner_key
+            victim_slot = victim.downloader_slot_id
+        if not victim_still_eligible:
+            reserved = await cso_capacity_registry.try_reserve(capacity_key, owner_key, limit, slot_id=slot_id)
+            if not reserved:
+                await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+            return reserved
+        logger.info(
+            "VOD cache preemption requested capacity_key=%s requester_purpose=%s victim=%s "
+            "active_sessions=%s active_readers=%s waiting_consumers=%s retained_bytes=%s",
+            bounded_log_value(capacity_key),
+            bounded_log_value(purpose),
+            bounded_log_value(victim.key),
+            victim_sessions,
+            victim_readers,
+            victim_waiters,
+            retained_bytes,
+        )
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+        if victim_owner and await cso_capacity_registry.has_reservation(
+            capacity_key, victim_owner, slot_id=victim_slot
+        ):
+            await cso_capacity_registry.release(capacity_key, victim_owner, slot_id=victim_slot)
+        async with victim.state_lock:
+            if victim.download_task is task:
+                victim.download_task = None
+                victim.downloader_owner_key = None
+                victim.downloader_capacity_key = None
+                victim.downloader_slot_id = None
+                victim.downloader_purpose = None
+                victim.failed_reason = "preempted"
+        if victim_owner and await cso_capacity_registry.has_reservation(
+            capacity_key, victim_owner, slot_id=victim_slot
+        ):
+            logger.warning(
+                "VOD cache preemption release unconfirmed capacity_key=%s victim=%s",
+                bounded_log_value(capacity_key),
+                bounded_log_value(victim.key),
+            )
+            await self.increment_runtime_counter("vod_cache_preemption_failures_total")
+            await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+            return False
+        reserved = await cso_capacity_registry.try_reserve(capacity_key, owner_key, limit, slot_id=slot_id)
+        await self.increment_runtime_counter(
+            "vod_cache_preemptions_total" if reserved else "vod_cache_preemption_failures_total"
+        )
+        if not reserved:
+            await self.increment_runtime_counter("vod_provider_capacity_rejections_total")
+        logger.info(
+            "VOD cache preemption completed capacity_key=%s victim=%s retained_bytes=%s replacement_reserved=%s",
+            bounded_log_value(capacity_key),
+            bounded_log_value(victim.key),
+            retained_bytes,
+            reserved,
+        )
+        return reserved
+
+    async def reserve_capacity(
+        self,
+        capacity_key: str,
+        limit: int,
+        owner_key: str,
+        slot_id: str | int,
+        purpose: str = "interactive_playback",
+    ) -> bool:
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            return await self._reserve_or_preempt_locked(
+                capacity_key,
+                limit,
+                owner_key,
+                slot_id,
+                purpose,
+            )
+
+    async def get(self, source: CsoSource) -> VodCacheEntry | None:
         key = _vod_cache_asset_key(source)
         async with self.lock:
             entry = self.entries.get(key)
@@ -487,7 +954,7 @@ class VodCacheManager:
                 entry.touch()
             return entry
 
-    async def get_or_create(self, source: CsoSource, upstream_url: str):
+    async def get_or_create(self, source: CsoSource, upstream_url: str) -> VodCacheEntry:
         key = _vod_cache_asset_key(source)
         async with self.lock:
             entry = self.entries.get(key)
@@ -514,10 +981,10 @@ class VodCacheManager:
             entry.touch()
             return entry
 
-    async def import_existing_files(self):
+    async def import_existing_files(self) -> dict[str, int]:
         now_ts = time.time()
         imported = 0
-        removed_parts = 0
+        retained_parts = 0
         async with self.lock:
             for asset_kind in ("movie", "episode"):
                 asset_dir = VOD_CACHE_ROOT / asset_kind
@@ -527,11 +994,45 @@ class VodCacheManager:
                     if not path.is_file():
                         continue
                     if path.suffix == ".part":
+                        retained_parts += 1
+                        file_name = clean_text(path.stem)
+                        if not file_name.isdigit():
+                            continue
+                        internal_id = int(file_name)
+                        key = f"{asset_kind}:{internal_id}"
+                        final_path = path.with_name(file_name)
+                        if final_path.exists():
+                            continue
                         try:
-                            path.unlink(missing_ok=True)
-                            removed_parts += 1
+                            partial_size = int(path.stat().st_size or 0)
+                            last_access_ts = float(path.stat().st_mtime or now_ts)
                         except Exception:
-                            logger.warning("Failed to remove orphaned VOD cache part file path=%s", path)
+                            partial_size = 0
+                            last_access_ts = now_ts
+                        if partial_size <= 0:
+                            continue
+                        source_type = "vod_movie" if asset_kind == "movie" else "vod_episode"
+                        source = CsoSource(
+                            id=internal_id,
+                            source_type=source_type,
+                            url="",
+                            playlist_id=0,
+                            internal_id=internal_id,
+                        )
+                        entry = self.entries.get(key)
+                        if entry is None:
+                            entry = VodCacheEntry(
+                                key=key,
+                                source=source,
+                                upstream_url="",
+                                final_path=final_path,
+                                part_path=path,
+                            )
+                            self.entries[key] = entry
+                        entry.bytes_written = partial_size
+                        entry.complete = False
+                        entry.failed_reason = "paused"
+                        entry.last_access_ts = last_access_ts
                         continue
                     file_name = clean_text(path.name)
                     if not file_name.isdigit():
@@ -575,27 +1076,55 @@ class VodCacheManager:
                     entry.content_type = entry.content_type or _vod_content_type_for_source(source)
                     entry.last_access_ts = now_ts
                     imported += 1
-        if imported or removed_parts:
+        if imported or retained_parts:
             logger.info(
-                "Imported existing VOD cache files imported=%s removed_orphan_parts=%s root=%s",
+                "Imported existing VOD cache files imported=%s retained_partial_files=%s root=%s",
                 imported,
-                removed_parts,
+                retained_parts,
                 VOD_CACHE_ROOT,
             )
-        return {"imported": imported, "removed_orphan_parts": removed_parts}
+        return {"imported": imported, "retained_partial_files": retained_parts}
 
     async def attach_session(self, entry: VodCacheEntry):
-        async with entry.state_lock:
-            entry.active_sessions = int(entry.active_sessions or 0) + 1
-            entry.touch()
+        capacity_key = source_capacity_key(entry.source)
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            async with entry.state_lock:
+                entry.active_sessions = int(entry.active_sessions or 0) + 1
+                entry.last_consumer_attach_ts = time.time()
+                entry.touch()
 
     async def detach_session(self, entry: VodCacheEntry):
-        async with entry.state_lock:
-            entry.active_sessions = max(0, int(entry.active_sessions or 0) - 1)
-            entry.touch()
-            return
+        capacity_key = source_capacity_key(entry.source)
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            async with entry.state_lock:
+                entry.active_sessions = max(0, int(entry.active_sessions or 0) - 1)
+                entry.last_consumer_detach_ts = time.time()
+                entry.touch()
 
-    async def cleanup(self, idle_seconds=VOD_CACHE_TTL_SECONDS):
+    async def set_waiting(self, entry: VodCacheEntry, waiting: bool):
+        capacity_key = source_capacity_key(entry.source)
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            async with entry.state_lock:
+                if waiting:
+                    entry.waiting_consumers = int(entry.waiting_consumers or 0) + 1
+                else:
+                    entry.waiting_consumers = max(0, int(entry.waiting_consumers or 0) - 1)
+
+    async def set_reader_active(self, entry: VodCacheEntry, active: bool):
+        capacity_key = source_capacity_key(entry.source)
+        arbitration_lock = await self.capacity_arbitration_lock(capacity_key)
+        async with arbitration_lock:
+            async with entry.state_lock:
+                if active:
+                    entry.active_readers = int(entry.active_readers or 0) + 1
+                else:
+                    entry.active_readers = max(0, int(entry.active_readers or 0) - 1)
+                entry.touch()
+
+    async def cleanup(self, idle_seconds: int = VOD_CACHE_TTL_SECONDS) -> int:
         now_ts = time.time()
         async with self.lock:
             entries = list(self.entries.values())

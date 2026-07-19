@@ -30,6 +30,11 @@ from backend.cso import (
     subscribe_vod_proxy_stream,
     subscribe_vod_stream,
 )
+from backend.cso.vod_errors import (
+    UPSTREAM_CAPACITY_ERROR_CODE,
+    UPSTREAM_CAPACITY_MESSAGE,
+    vod_error_payload,
+)
 from backend.playlists import (
     XC_ACCOUNT_TYPE,
     build_m3u_playlist_content,
@@ -497,6 +502,11 @@ def _get_connection_id():
 
 def _response_from_plan(plan, fallback_message, fallback_status=503):
     if plan.generator is None:
+        if plan.error_code:
+            return (
+                jsonify(vod_error_payload(plan.error_code, plan.error_message or fallback_message)),
+                int(plan.status_code or fallback_status),
+            )
         return Response(fallback_message, status=int(plan.status_code or fallback_status))
     response = Response(
         plan.generator,
@@ -974,7 +984,7 @@ async def xc_movie_stream(username: str, password: str, item_id: str, ext: str |
 
     # Check for any errors and return if we cannot playback a candidate
     if selection_error == "capacity_blocked" and not upstream_url:
-        return jsonify({"error": "Source capacity limit reached"}), 503
+        return jsonify(vod_error_payload(UPSTREAM_CAPACITY_ERROR_CODE, UPSTREAM_CAPACITY_MESSAGE)), 503
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url and selection_error not in {None, "capacity_blocked"}:
@@ -1084,7 +1094,7 @@ async def xc_series_episode_stream(username: str, password: str, episode_id: str
 
     # Check for any errors and return if we cannot playback a candidate
     if selection_error == "capacity_blocked" and not upstream_url:
-        return jsonify({"error": "Source capacity limit reached"}), 503
+        return jsonify(vod_error_payload(UPSTREAM_CAPACITY_ERROR_CODE, UPSTREAM_CAPACITY_MESSAGE)), 503
     if not candidate:
         return jsonify({"error": "Not found"}), 404
     if not upstream_url and selection_error not in {None, "capacity_blocked"}:

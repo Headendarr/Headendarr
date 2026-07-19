@@ -72,7 +72,9 @@ def extract_media_shape_from_ffprobe_payload(payload):
 
     return {
         "container": _clean_key((format_info.get("format_name") or "").split(",", 1)[0]),
-        "duration_seconds": float(format_info.get("duration") or 0.0) if format_info.get("duration") is not None else 0.0,
+        "duration_seconds": float(format_info.get("duration") or 0.0)
+        if format_info.get("duration") is not None
+        else 0.0,
         "video_codec": _clean_key(video_stream.get("codec_name")) if video_stream else "",
         "video_profile": _clean_text(video_stream.get("profile")) if video_stream else "",
         "audio_codec": _clean_key(audio_stream.get("codec_name")) if audio_stream else "",
@@ -89,7 +91,41 @@ def extract_media_shape_from_ffprobe_payload(payload):
     }
 
 
-async def probe_stream_media_shape(source_url, user_agent=None, request_headers=None, timeout_seconds=8.0):
+async def _stop_ffprobe_process(
+    process: asyncio.subprocess.Process,
+    communicate_task: asyncio.Task,
+    grace_seconds: float = 1.0,
+):
+    if process.returncode is None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(asyncio.shield(communicate_task), timeout=grace_seconds)
+        return
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        return
+
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.shield(communicate_task)
+    except Exception:
+        pass
+
+
+async def probe_stream_media_shape(
+    source_url: str,
+    user_agent: str | None = None,
+    request_headers=None,
+    timeout_seconds: float = 8.0,
+) -> dict:
     header_values = sanitise_headers(request_headers)
     command = [
         "ffprobe",
@@ -114,9 +150,28 @@ async def probe_stream_media_shape(source_url, user_agent=None, request_headers=
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_data, _stderr_data = await asyncio.wait_for(process.communicate(), timeout=float(timeout_seconds or 8.0))
-        if process.returncode not in (0, None):
-            return {}
+    except Exception:
+        return {}
+
+    communicate_task = asyncio.create_task(process.communicate())
+    try:
+        stdout_data, _stderr_data = await asyncio.wait_for(
+            asyncio.shield(communicate_task),
+            timeout=float(timeout_seconds or 8.0),
+        )
+    except asyncio.CancelledError:
+        await _stop_ffprobe_process(process, communicate_task)
+        raise
+    except asyncio.TimeoutError:
+        await _stop_ffprobe_process(process, communicate_task)
+        return {}
+    except Exception:
+        await _stop_ffprobe_process(process, communicate_task)
+        return {}
+
+    if process.returncode not in (0, None):
+        return {}
+    try:
         payload = json.loads((stdout_data or b"{}").decode("utf-8", errors="replace") or "{}")
     except Exception:
         return {}

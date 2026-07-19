@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any
 
 import aiofiles
@@ -11,10 +12,12 @@ from backend.hls_multiplexer import get_header_value
 from backend.utils import clean_key, clean_text
 
 from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
+from .common import bounded_log_value, redacted_url_for_log
 from .constants import VOD_CACHE_CHUNK_BYTES
 from .live_ingest import resolve_cso_ingest_headers, resolve_cso_ingest_user_agent
 from .types import CsoSource
 from .vod_cache import ensure_vod_cache_ready, start_vod_cache_download, vod_cache_manager
+from .vod_upstream import validate_vod_upstream_response
 
 
 logger = logging.getLogger("cso")
@@ -182,6 +185,7 @@ class VodProxySession:
         self.blocking_session = None
         self.blocking_response = None
         self.blocking_iterator = None
+        self.blocking_prefix = b""
         self.running = False
         self.capacity_key = source_capacity_key(source)
         self.capacity_limit = source_capacity_limit(source)
@@ -205,7 +209,7 @@ class VodProxySession:
         self.direct_retry_attempts = 0
         self.max_direct_retry_attempts = 1
 
-    async def start(self):
+    async def start(self) -> bool:
         startup_failed = False
         async with self.lock:
             if self.running:
@@ -216,7 +220,11 @@ class VodProxySession:
                 await vod_cache_manager.attach_session(self.cache_entry)
                 self.cache_session_attached = True
                 self.cache_entry.touch()
-                cache_meta = await ensure_vod_cache_ready(self.cache_entry, request_headers=self.request_headers)
+                cache_meta = await ensure_vod_cache_ready(
+                    self.cache_entry,
+                    request_headers=self.request_headers,
+                    purpose="interactive_playback",
+                )
                 from_start = _is_from_start_request(self.request_headers)
                 parsed_range = _parse_range_request(range_header, total_size=self.cache_entry.expected_size)
                 self.direct_next_offset = int(parsed_range.get("start") or 0) if parsed_range else 0
@@ -284,9 +292,14 @@ class VodProxySession:
                         self.cache_entry,
                         self.cache_owner_key,
                         request_headers=self.request_headers,
+                        purpose="interactive_playback",
                     )
                     if started_cache:
-                        await asyncio.wait_for(self.cache_entry.ready_event.wait(), timeout=15)
+                        await vod_cache_manager.set_waiting(self.cache_entry, True)
+                        try:
+                            await asyncio.wait_for(self.cache_entry.ready_event.wait(), timeout=15)
+                        finally:
+                            await vod_cache_manager.set_waiting(self.cache_entry, False)
                         if self.cache_entry.failed_reason and not self.cache_entry.complete:
                             logger.warning(
                                 "VOD cache start failed; falling back to direct proxy key=%s source_id=%s reason=%s",
@@ -314,7 +327,7 @@ class VodProxySession:
                                 getattr(self.source, "id", None),
                                 self.status_code,
                                 self.content_type,
-                                self.upstream_url,
+                                redacted_url_for_log(self.upstream_url),
                             )
                             return True
                     else:
@@ -325,14 +338,19 @@ class VodProxySession:
                             self.cache_entry.failed_reason,
                         )
 
-                reserved = await cso_capacity_registry.try_reserve(
+                reserved = await vod_cache_manager.reserve_capacity(
                     self.capacity_key,
-                    self.owner_key,
                     self.capacity_limit,
-                    slot_id=self.direct_owner_key,
+                    self.owner_key,
+                    self.direct_owner_key,
+                    purpose="interactive_playback",
                 )
                 if not reserved:
                     self.last_error = "capacity_blocked"
+                    await vod_proxy_session_manager.record_terminal_error(self.key, self.last_error)
+                    await vod_cache_manager.detach_session(self.cache_entry)
+                    self.cache_session_attached = False
+                    await vod_proxy_session_manager.remove(self.key)
                     return False
 
                 proxy_headers = filter_vod_proxy_request_headers(self.request_headers, self.source)
@@ -348,8 +366,41 @@ class VodProxySession:
                         timeout=(15, 30),
                     )
                 )
-                self.blocking_iterator = self.blocking_response.iter_content(chunk_size=64 * 1024)
                 self.status_code = int(self.blocking_response.status_code or 502)
+                self.blocking_prefix = await asyncio.to_thread(
+                    self.blocking_response.raw.read,
+                    1024,
+                    decode_content=True,
+                )
+                validation = validate_vod_upstream_response(
+                    self.status_code,
+                    self.blocking_response.headers,
+                    requested_offset=self.direct_next_offset,
+                    body_prefix=self.blocking_prefix,
+                )
+                if not validation.accepted:
+                    if validation.classification != "upstream_status":
+                        await vod_cache_manager.increment_runtime_counter("vod_upstream_invalid_responses_total")
+                    self.last_error = (
+                        "upstream_invalid_media_response"
+                        if validation.classification != "upstream_status"
+                        else f"proxy_upstream_status_{self.status_code}"
+                    )
+                    logger.warning(
+                        "VOD proxy upstream response rejected key=%s source_id=%s status=%s content_type=%s "
+                        "requested_offset=%s range_present=%s classification=%s upstream_url=%s",
+                        self.key,
+                        getattr(self.source, "id", None),
+                        self.status_code,
+                        bounded_log_value(validation.content_type),
+                        self.direct_next_offset,
+                        bool(clean_text(self.blocking_response.headers.get("Content-Range"))),
+                        validation.classification,
+                        redacted_url_for_log(self.upstream_url),
+                    )
+                    await self._cleanup_failed_start()
+                    return False
+                self.blocking_iterator = self.blocking_response.iter_content(chunk_size=64 * 1024)
                 self.content_type = clean_text(self.blocking_response.headers.get("Content-Type")) or None
                 self.response_headers = proxy_response_headers(
                     self.status_code,
@@ -358,7 +409,8 @@ class VodProxySession:
                 )
                 self.running = True
                 logger.info(
-                    "VOD proxy session started key=%s source_id=%s status=%s client_range=%s content_type=%s content_range=%s accept_ranges=%s upstream_url=%s",
+                    "VOD proxy session started key=%s source_id=%s status=%s client_range=%s content_type=%s "
+                    "content_range=%s accept_ranges=%s upstream_url=%s",
                     self.key,
                     getattr(self.source, "id", None),
                     self.status_code,
@@ -366,7 +418,7 @@ class VodProxySession:
                     self.content_type,
                     clean_text(self.blocking_response.headers.get("Content-Range")) or None,
                     clean_text(self.blocking_response.headers.get("Accept-Ranges")) or None,
-                    self.upstream_url,
+                    redacted_url_for_log(self.upstream_url),
                 )
                 if (
                     not from_start
@@ -399,6 +451,7 @@ class VodProxySession:
         blocking_session = self.blocking_session
         self.blocking_session = None
         self.blocking_iterator = None
+        self.blocking_prefix = b""
         try:
             if blocking_response is not None:
                 await asyncio.to_thread(blocking_response.close)
@@ -410,7 +463,17 @@ class VodProxySession:
         except Exception:
             pass
 
-    async def _switch_to_local_from_offset(self, offset: int):
+    async def _cleanup_failed_start(self):
+        await self._close_direct_upstream()
+        await cso_capacity_registry.release(self.capacity_key, self.owner_key, slot_id=self.direct_owner_key)
+        if self.last_error:
+            await vod_proxy_session_manager.record_terminal_error(self.key, self.last_error)
+        if self.cache_entry is not None and self.cache_session_attached:
+            await vod_cache_manager.detach_session(self.cache_entry)
+            self.cache_session_attached = False
+        await vod_proxy_session_manager.remove(self.key)
+
+    async def _switch_to_local_from_offset(self, offset: int) -> bool:
         entry = self.cache_entry
         if entry is None:
             return False
@@ -432,7 +495,7 @@ class VodProxySession:
         )
         return True
 
-    async def _retry_direct_upstream_from_offset(self, offset: int):
+    async def _retry_direct_upstream_from_offset(self, offset: int) -> bool:
         if self.direct_retry_attempts >= self.max_direct_retry_attempts:
             return False
         proxy_headers = filter_vod_proxy_request_headers(self.request_headers, self.source)
@@ -456,7 +519,14 @@ class VodProxySession:
                 pass
             raise
         status_code = int(response.status_code or 502)
-        if status_code >= 400:
+        prefix = await asyncio.to_thread(response.raw.read, 1024, decode_content=True)
+        validation = validate_vod_upstream_response(
+            status_code,
+            response.headers,
+            requested_offset=max(0, int(offset)),
+            body_prefix=prefix,
+        )
+        if not validation.accepted:
             try:
                 await asyncio.to_thread(response.close)
             except Exception:
@@ -465,10 +535,29 @@ class VodProxySession:
                 await asyncio.to_thread(session.close)
             except Exception:
                 pass
-            self.last_error = f"proxy_retry_status_{status_code}"
+            self.last_error = (
+                "upstream_invalid_media_response"
+                if validation.classification != "upstream_status"
+                else f"proxy_retry_status_{status_code}"
+            )
+            if self.last_error == "upstream_invalid_media_response":
+                await vod_cache_manager.increment_runtime_counter("vod_upstream_invalid_responses_total")
+            logger.warning(
+                "VOD proxy retry response rejected key=%s source_id=%s status=%s content_type=%s "
+                "requested_offset=%s range_present=%s classification=%s upstream_url=%s",
+                self.key,
+                getattr(self.source, "id", None),
+                status_code,
+                bounded_log_value(validation.content_type),
+                int(offset),
+                bool(clean_text(response.headers.get("Content-Range"))),
+                validation.classification,
+                redacted_url_for_log(self.upstream_url),
+            )
             return False
         self.blocking_session = session
         self.blocking_response = response
+        self.blocking_prefix = prefix
         self.blocking_iterator = response.iter_content(chunk_size=64 * 1024)
         self.direct_retry_attempts += 1
         logger.warning(
@@ -492,6 +581,12 @@ class VodProxySession:
             while True:
                 if not self.running:
                     break
+                if self.blocking_prefix:
+                    chunk = self.blocking_prefix
+                    self.blocking_prefix = b""
+                    self.direct_next_offset += len(chunk)
+                    yield chunk
+                    continue
                 try:
                     chunk = await asyncio.to_thread(next, self.blocking_iterator, None)
                 except (
@@ -516,7 +611,10 @@ class VodProxySession:
                     retried = await self._retry_direct_upstream_from_offset(self.direct_next_offset)
                     if retried:
                         continue
-                    self.last_error = f"proxy_read_failed:{exc}"
+                    if self.last_error == "upstream_invalid_media_response":
+                        await vod_proxy_session_manager.record_terminal_error(self.key, self.last_error)
+                    else:
+                        self.last_error = f"proxy_read_failed:{exc}"
                     break
                 if chunk:
                     if not self.first_chunk_logged:
@@ -541,9 +639,7 @@ class VodProxySession:
             return
         if self.status_code == 416:
             return
-        async with entry.state_lock:
-            entry.active_readers += 1
-            entry.touch()
+        await vod_cache_manager.set_reader_active(entry, True)
         target_path = entry.final_path if entry.complete and entry.final_path.exists() else entry.part_path
         offset = int(self.local_start or 0)
         final_end = int(self.local_end) if self.local_end is not None else None
@@ -555,7 +651,11 @@ class VodProxySession:
                 if offset >= current_written and not entry.complete:
                     if entry.failed_reason and not entry.downloader_running:
                         break
-                    await entry.progress_event.wait()
+                    await vod_cache_manager.set_waiting(entry, True)
+                    try:
+                        await entry.progress_event.wait()
+                    finally:
+                        await vod_cache_manager.set_waiting(entry, False)
                     continue
                 available_end = current_written - 1
                 if final_end is not None:
@@ -565,7 +665,11 @@ class VodProxySession:
                         break
                     if entry.failed_reason and not entry.downloader_running:
                         break
-                    await entry.progress_event.wait()
+                    await vod_cache_manager.set_waiting(entry, True)
+                    try:
+                        await entry.progress_event.wait()
+                    finally:
+                        await vod_cache_manager.set_waiting(entry, False)
                     continue
                 if not target_path.exists():
                     target_path = entry.final_path if entry.complete and entry.final_path.exists() else entry.part_path
@@ -603,9 +707,7 @@ class VodProxySession:
                 if entry.complete and offset >= int(entry.expected_size or 0):
                     break
         finally:
-            async with entry.state_lock:
-                entry.active_readers = max(0, int(entry.active_readers or 0) - 1)
-                entry.touch()
+            await vod_cache_manager.set_reader_active(entry, False)
 
     async def stop(self, force=False):
         async with self.lock:
@@ -627,6 +729,7 @@ class VodProxySession:
             blocking_session = self.blocking_session
             self.blocking_session = None
             self.blocking_iterator = None
+            self.blocking_prefix = b""
         try:
             if response is not None:
                 response.close()
@@ -664,16 +767,56 @@ class VodProxySessionManager:
     def __init__(self):
         self.sessions = {}
         self.lock = asyncio.Lock()
+        self.terminal_errors = {}
 
-    async def create(self, key, source: CsoSource, upstream_url: str, request_headers=None):
+    async def create(
+        self,
+        key: str,
+        source: CsoSource,
+        upstream_url: str,
+        request_headers=None,
+    ) -> VodProxySession:
         session = VodProxySession(key, source, upstream_url, request_headers=request_headers)
+        key_text = str(key)
+        connection_id = key_text.split("-", 3)[-1] if key_text.startswith("vod-proxy-") else ""
         async with self.lock:
-            self.sessions[str(key)] = session
+            self.sessions[key_text] = session
+            if connection_id:
+                self.terminal_errors.pop(f"connection:{connection_id}", None)
         return session
 
     async def remove(self, key):
         async with self.lock:
             self.sessions.pop(str(key), None)
+
+    async def record_terminal_error(self, key: str, reason: str):
+        now_ts = time.time()
+        key_text = str(key)
+        connection_id = key_text.split("-", 3)[-1] if key_text.startswith("vod-proxy-") else ""
+        async with self.lock:
+            item = {
+                "reason": clean_text(reason),
+                "expires_at": now_ts + 120,
+            }
+            self.terminal_errors[key_text] = item
+            if connection_id:
+                self.terminal_errors[f"connection:{connection_id}"] = dict(item)
+            self.terminal_errors = {
+                item_key: item
+                for item_key, item in self.terminal_errors.items()
+                if float(item.get("expires_at") or 0) > now_ts
+            }
+
+    async def get_terminal_error(self, key: str) -> str | None:
+        now_ts = time.time()
+        async with self.lock:
+            item = self.terminal_errors.get(str(key))
+            if item is None:
+                return None
+            if float(item.get("expires_at") or 0) <= now_ts:
+                self.terminal_errors.pop(str(key), None)
+                return None
+            return clean_text(item.get("reason")) or None
 
 
 vod_proxy_session_manager = VodProxySessionManager()

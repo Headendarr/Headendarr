@@ -151,6 +151,7 @@ import {
   resolveVodPlayerStreamType,
 } from 'src/utils/vodPlaybackProfiles';
 import {parsePreviewCandidatesList, primaryPreviewCandidate} from 'src/utils/previewCandidates';
+import {apiErrorNotification} from 'src/utils/apiErrors';
 
 const BROWSER_PAGE_SIZE = 40;
 
@@ -751,7 +752,7 @@ export default {
           : await this.resolveCuratedMoviePreview(item);
         this.startBrowserPlayback(playback, item.title || 'Movie');
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to start playback'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to start playback'));
       }
     },
     async previewUpstreamMovie(item) {
@@ -759,7 +760,7 @@ export default {
         const playback = await this.resolveUpstreamMoviePreview(item);
         this.startBrowserPlayback(playback, item.title || 'Movie');
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to load preview'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to load preview'));
       }
     },
     async copyMovieUrl(item) {
@@ -774,7 +775,7 @@ export default {
         await copyToClipboard(primaryCandidate.url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to copy stream URL'));
       }
     },
     async watchEpisode(episode) {
@@ -784,7 +785,7 @@ export default {
           : await this.resolveCuratedEpisodePreview(episode);
         this.startBrowserPlayback(playback, this.episodeLabel(episode));
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to start playback'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to start playback'));
       }
     },
     async previewUpstreamEpisode(episode) {
@@ -792,7 +793,7 @@ export default {
         const playback = await this.resolveUpstreamEpisodePreview(this.detailItem, episode);
         this.startBrowserPlayback(playback, this.episodeLabel(episode));
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to load preview'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to load preview'));
       }
     },
     async copyEpisodeUrl(episode) {
@@ -807,7 +808,7 @@ export default {
         await copyToClipboard(primaryCandidate.url);
         this.$q.notify({color: 'positive', message: 'Stream URL copied'});
       } catch (error) {
-        this.$q.notify({color: 'negative', message: error?.message || 'Failed to copy stream URL'});
+        this.$q.notify(apiErrorNotification(error, 'Failed to copy stream URL'));
       }
     },
     handleDetailAction(action) {

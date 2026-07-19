@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from flask import request
-from quart import Response, current_app, redirect, stream_with_context
+from quart import Response, current_app, jsonify, redirect, stream_with_context
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -46,6 +46,7 @@ from backend.cso import (
     source_capacity_limit,
     should_use_vod_proxy_session,
 )
+from backend.cso.common import redacted_url_for_log
 from backend.models import ChannelSource, Session, XcVodItem
 from backend.hls_multiplexer import parse_size
 from backend.stream_activity import (
@@ -79,6 +80,11 @@ from backend.vod import (
     select_vod_playback_target,
 )
 from backend.vod_channels import is_vod_channel_type, subscribe_vod_channel_stream
+from backend.cso.vod_errors import (
+    UPSTREAM_CAPACITY_ERROR_CODE,
+    UPSTREAM_CAPACITY_MESSAGE,
+    vod_error_payload,
+)
 from backend.channel_stream_health import (
     cancel_background_health_checks_for_capacity_key,
     has_background_health_check_for_capacity_key,
@@ -373,7 +379,11 @@ async def _resolve_curated_vod_request(config, stream_type: str, item_id: int) -
         return {"error": "Not found", "status": 404}
     use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
     if not upstream_url and selection_error == "capacity_blocked":
-        return {"error": "Source capacity limit reached", "status": 503}
+        return {
+            "error": UPSTREAM_CAPACITY_MESSAGE,
+            "error_code": UPSTREAM_CAPACITY_ERROR_CODE,
+            "status": 503,
+        }
     if not upstream_url and cached_candidate is None:
         return {"error": "Stream unavailable", "status": 404}
     return {
@@ -1460,6 +1470,11 @@ async def _stream_cso_vod_route(resolver, identity: str):
     config = current_app.config["APP_CONFIG"]
     resolved = await resolver(config)
     if resolved.get("error"):
+        if resolved.get("error_code"):
+            return (
+                jsonify(vod_error_payload(str(resolved["error_code"]), str(resolved["error"]))),
+                int(resolved.get("status") or 503),
+            )
         return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
 
     candidate = resolved["candidate"]
@@ -1523,7 +1538,7 @@ async def _stream_cso_vod_route(resolver, identity: str):
         vod_episode_id,
         start_seconds,
         source_container,
-        upstream_url or "",
+        redacted_url_for_log(upstream_url),
     )
     await upsert_stream_activity(
         identity,
@@ -1584,7 +1599,12 @@ async def _stream_cso_vod_route(resolver, identity: str):
             source_id,
             int(plan.status_code or 503),
         )
-        return Response("Unable to start playback", status=int(plan.status_code or 503))
+        if plan.error_code:
+            return (
+                jsonify(vod_error_payload(plan.error_code, plan.error_message or "Unable to start playback")),
+                int(plan.status_code or 503),
+            )
+        return Response(plan.error_message or "Unable to start playback", status=int(plan.status_code or 503))
 
     logger.info(
         "CSO VOD route stream started path=%s connection_id=%s mode=%s profile=%s source_id=%s content_type=%s status=%s",
@@ -1638,6 +1658,11 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
         config = current_app.config["APP_CONFIG"]
         resolved = await resolver(config)
         if resolved.get("error"):
+            if resolved.get("error_code"):
+                return (
+                    jsonify(vod_error_payload(str(resolved["error_code"]), str(resolved["error"]))),
+                    int(resolved.get("status") or 503),
+                )
             return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
 
         effective_profile = str(resolved.get("effective_profile") or "")
@@ -1667,6 +1692,16 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
         output_session = subscription.session
         candidate = subscription.candidate
         if not output_session:
+            if subscription.error_code:
+                return (
+                    jsonify(
+                        vod_error_payload(
+                            subscription.error_code,
+                            subscription.error_message or "Unable to start CSO HLS stream",
+                        )
+                    ),
+                    subscription.status or 503,
+                )
             return Response(
                 subscription.error_message or "Unable to start CSO HLS stream",
                 status=subscription.status or 503,
@@ -1732,6 +1767,11 @@ async def _stream_cso_vod_hls_segment(resolver):
     config = current_app.config["APP_CONFIG"]
     resolved = await resolver(config)
     if resolved.get("error"):
+        if resolved.get("error_code"):
+            return (
+                jsonify(vod_error_payload(str(resolved["error_code"]), str(resolved["error"]))),
+                int(resolved.get("status") or 503),
+            )
         return Response(str(resolved["error"]), status=int(resolved.get("status") or 404))
 
     effective_profile = str(resolved.get("effective_profile") or "")

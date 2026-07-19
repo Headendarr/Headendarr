@@ -21,7 +21,13 @@ class CsoCapacityRegistry:
         self._external_counts = {}
         self._lock = asyncio.Lock()
 
-    async def try_reserve(self, key, owner_key, limit, slot_id=None):
+    async def try_reserve(
+        self,
+        key: str,
+        owner_key: str,
+        limit: int,
+        slot_id: str | int | None = None,
+    ) -> bool:
         async with self._lock:
             # key -> {owner_key: {slot_id: 1}}
             current = self._allocations.setdefault(key, {})
@@ -39,7 +45,12 @@ class CsoCapacityRegistry:
             owner_slots[slot_id] = 1
             return True
 
-    async def release(self, key, owner_key, slot_id=None):
+    async def release(
+        self,
+        key: str,
+        owner_key: str,
+        slot_id: str | int | None = None,
+    ):
         async with self._lock:
             current = self._allocations.get(key)
             if not current:
@@ -74,7 +85,7 @@ class CsoCapacityRegistry:
                     external_counts[str(key)] = value
             self._external_counts = external_counts
 
-    async def get_usage(self, key):
+    async def get_usage(self, key: str) -> dict[str, int]:
         key_name = str(key or "")
         if not key_name:
             return {"allocations": 0, "external": 0, "total": 0}
@@ -87,6 +98,15 @@ class CsoCapacityRegistry:
                 "external": int(external),
                 "total": int(allocations + external),
             }
+
+    async def has_reservation(
+        self,
+        key: str,
+        owner_key: str,
+        slot_id: str | int | None = None,
+    ) -> bool:
+        async with self._lock:
+            return slot_id in self._allocations.get(key, {}).get(owner_key, {})
 
 
 cso_capacity_registry = CsoCapacityRegistry()

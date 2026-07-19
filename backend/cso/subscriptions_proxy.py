@@ -8,6 +8,12 @@ from .sources import cso_source_from_vod_source
 from .subscriptions_shared import should_use_vod_proxy_session
 from .vod_proxy import vod_proxy_session_manager
 from .vod_cache import vod_cache_manager
+from .vod_errors import (
+    UPSTREAM_CAPACITY_ERROR_CODE,
+    UPSTREAM_CAPACITY_MESSAGE,
+    UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+    UPSTREAM_INVALID_MEDIA_MESSAGE,
+)
 
 logger = logging.getLogger("cso")
 
@@ -72,8 +78,23 @@ async def subscribe_vod_proxy_stream(
         return build_cso_stream_plan(
             None,
             None,
-            "Source capacity limit reached" if reason == "capacity_blocked" else "Unable to start proxy stream",
+            (
+                UPSTREAM_CAPACITY_MESSAGE
+                if reason == "capacity_blocked"
+                else (
+                    UPSTREAM_INVALID_MEDIA_MESSAGE
+                    if reason == "upstream_invalid_media_response"
+                    else "Unable to start proxy stream"
+                )
+            ),
             503 if reason == "capacity_blocked" else 502,
+            error_code=(
+                UPSTREAM_CAPACITY_ERROR_CODE
+                if reason == "capacity_blocked"
+                else UPSTREAM_INVALID_MEDIA_ERROR_CODE
+                if reason == "upstream_invalid_media_response"
+                else None
+            ),
         )
 
     await emit_channel_stream_event(

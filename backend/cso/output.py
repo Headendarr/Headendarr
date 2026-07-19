@@ -18,6 +18,7 @@ from .common import (
     remove_cso_cache_dir,
 )
 from .capacity import cso_capacity_registry
+from .vod_cache import vod_cache_manager
 from .constants import (
     CSO_HLS_CLIENT_IDLE_SECONDS,
     CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS,
@@ -1300,11 +1301,12 @@ class CsoHlsOutputSession:
             if self._capacity_reserved:
                 return True
             usage_before = await cso_capacity_registry.get_usage(self.capacity_key)
-            reserved = await cso_capacity_registry.try_reserve(
+            reserved = await vod_cache_manager.reserve_capacity(
                 self.capacity_key,
-                self.capacity_owner_key,
                 self.capacity_limit,
-                slot_id=self.capacity_slot_id,
+                self.capacity_owner_key,
+                self.capacity_slot_id,
+                purpose="interactive_playback",
             )
             usage_after = await cso_capacity_registry.get_usage(self.capacity_key)
             if reserved:

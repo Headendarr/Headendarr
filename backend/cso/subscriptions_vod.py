@@ -39,6 +39,7 @@ from .subscriptions_shared import resolve_username_for_stream_key
 from .vod_cache import vod_cache_manager
 from .vod_ingest import Vod247ChannelManager, VodIngestSession
 from .vod_hls_capacity import vod_hls_output_session_key
+from .vod_errors import UPSTREAM_CAPACITY_ERROR_CODE, UPSTREAM_CAPACITY_MESSAGE
 
 
 logger = logging.getLogger("cso")
@@ -50,6 +51,7 @@ class VodHlsSubscriptionAttempt:
     error_message: str | None
     status: int
     lifecycle: CsoHlsClientStartResult | None = None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class VodHlsSelectionSubscriptionResult:
     error_message: str | None
     status: int
     lifecycle: CsoHlsClientStartResult | None = None
+    error_code: str | None = None
 
 
 async def subscribe_vod_stream(
@@ -359,12 +362,13 @@ async def subscribe_vod_hls(
         return VodHlsSubscriptionAttempt(
             None,
             (
-                "Source capacity limit reached"
+                UPSTREAM_CAPACITY_MESSAGE
                 if reason == "capacity_blocked"
                 else "VOD unavailable because output pipeline could not be started"
             ),
             503,
             lifecycle,
+            UPSTREAM_CAPACITY_ERROR_CODE if reason == "capacity_blocked" else None,
         )
 
     if lifecycle.output_started:
@@ -439,10 +443,17 @@ async def subscribe_vod_hls_candidates(
                 return VodHlsSelectionSubscriptionResult(None, None, "", "Not found", 404)
             if not upstream_url:
                 error_message = (
-                    "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable"
+                    UPSTREAM_CAPACITY_MESSAGE if selection_error == "capacity_blocked" else "Stream unavailable"
                 )
                 status = 503 if selection_error == "capacity_blocked" else 404
-                return VodHlsSelectionSubscriptionResult(None, candidate, "", error_message, status)
+                return VodHlsSelectionSubscriptionResult(
+                    None,
+                    candidate,
+                    "",
+                    error_message,
+                    status,
+                    error_code=UPSTREAM_CAPACITY_ERROR_CODE if selection_error == "capacity_blocked" else None,
+                )
         attempt = await subscribe_vod_hls(
             config,
             candidate,
@@ -455,7 +466,11 @@ async def subscribe_vod_hls_candidates(
             None,
             start_seconds,
         )
-        if attempt.session is not None or attempt.error_message != "Source capacity limit reached":
+        capacity_failure = attempt.error_code == UPSTREAM_CAPACITY_ERROR_CODE or attempt.error_message in {
+            "Source capacity limit reached",
+            UPSTREAM_CAPACITY_MESSAGE,
+        }
+        if attempt.session is not None or not capacity_failure:
             return VodHlsSelectionSubscriptionResult(
                 attempt.session,
                 candidate,
@@ -463,6 +478,7 @@ async def subscribe_vod_hls_candidates(
                 attempt.error_message,
                 attempt.status,
                 attempt.lifecycle,
+                attempt.error_code,
             )
         selected_index = next((index for index, item in enumerate(remaining) if item is candidate), None)
         if selected_index is None:
@@ -474,8 +490,9 @@ async def subscribe_vod_hls_candidates(
         None,
         candidate,
         upstream_url,
-        "Source capacity limit reached",
+        UPSTREAM_CAPACITY_MESSAGE,
         503,
+        error_code=UPSTREAM_CAPACITY_ERROR_CODE,
     )
 
 

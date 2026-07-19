@@ -264,6 +264,7 @@
 
 <script setup>
 import axios from 'axios';
+import {extractApiError} from 'src/utils/apiErrors';
 import {computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch} from 'vue';
 import TicButtonDropdown from 'components/ui/buttons/TicButtonDropdown.vue';
 import {useVideoStore} from 'stores/video';
@@ -637,15 +638,15 @@ function scheduleVodPreviewMetadataRetry(previewMetadataUrl, attemptNumber) {
   }, delayMs);
 }
 
-async function loadVodPreviewMetadata(attemptNumber = 1) {
-  const previewMetadataUrl = String(videoStore.previewMetadataUrl || '').trim();
+async function loadVodPreviewMetadata(attemptNumber = 1, requestedUrl = '', force = false) {
+  const previewMetadataUrl = String(requestedUrl || videoStore.previewMetadataUrl || '').trim();
   if (!videoStore.isVisible || !previewMetadataUrl || !previewMetadataUrl.includes('/tic-api/cso/vod/')) {
     return;
   }
   const hasDuration = Number(videoStore.durationSeconds || 0) > 0;
   const hasResolution = Number(videoStore.sourceResolution?.width || 0) > 0 &&
     Number(videoStore.sourceResolution?.height || 0) > 0;
-  if (hasDuration && hasResolution) {
+  if (!force && hasDuration && hasResolution) {
     return;
   }
   if (activeVodMetadataUrl.value === previewMetadataUrl) {
@@ -679,6 +680,13 @@ async function loadVodPreviewMetadata(attemptNumber = 1) {
     }
   } catch (error) {
     console.warn('[FloatingPlayer] failed to load VOD preview metadata', error);
+    const providerError = extractApiError(error, '');
+    if (providerError.errorCode === 'upstream_invalid_media_response' ||
+      providerError.errorCode === 'upstream_capacity_reached') {
+      setErrorMessage(providerError.message);
+      isLoading.value = false;
+      return;
+    }
     scheduleVodPreviewMetadataRetry(previewMetadataUrl, attemptNumber + 1);
   } finally {
     if (activeVodMetadataUrl.value === previewMetadataUrl) {
@@ -1239,7 +1247,8 @@ function ensureProxyConnectionId(url, forcedConnectionId = null) {
   if (!value) {
     return value;
   }
-  if (!value.toLowerCase().includes('/tic-hls-proxy/')) {
+  const loweredValue = value.toLowerCase();
+  if (!loweredValue.includes('/tic-hls-proxy/') && !loweredValue.includes('/tic-api/cso/vod/')) {
     return value;
   }
   try {
@@ -1450,16 +1459,19 @@ async function initPlayer() {
         if (failoverToNextPreviewCandidate()) {
           return;
         }
+        void loadVodPreviewMetadata(1, ensureProxyConnectionId(videoStore.streamUrl, currentSessionId.value), true);
         setErrorMessage('Network error while loading the stream.', 4000);
       } else if (mediaError?.code === 3) {
         if (failoverToNextPreviewCandidate()) {
           return;
         }
+        void loadVodPreviewMetadata(1, ensureProxyConnectionId(videoStore.streamUrl, currentSessionId.value), true);
         setErrorMessage('Stream could not be decoded. The format may be unsupported.', 4000);
       } else if (mediaError?.code === 4) {
         if (failoverToNextPreviewCandidate()) {
           return;
         }
+        void loadVodPreviewMetadata(1, ensureProxyConnectionId(videoStore.streamUrl, currentSessionId.value), true);
         setErrorMessage('Stream is not supported or is invalid.');
       } else {
         if (failoverToNextPreviewCandidate()) {

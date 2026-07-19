@@ -63,6 +63,7 @@ from .sources import (
     order_cso_channel_sources,
     resolve_source_url_candidates,
 )
+from .vod_cache import vod_cache_manager
 from .types import CsoSource, CsoStartResult
 
 
@@ -745,12 +746,21 @@ class CsoIngestSession:
 
             capacity_key = source_capacity_key(source)
             capacity_limit = source_capacity_limit(source)
-            reserved = await cso_capacity_registry.try_reserve(
-                capacity_key,
-                self.capacity_owner_key,
-                capacity_limit,
-                slot_id=source.id,
-            )
+            if clean_key(source.source_type).startswith("vod_"):
+                reserved = await vod_cache_manager.reserve_capacity(
+                    capacity_key,
+                    capacity_limit,
+                    self.capacity_owner_key,
+                    source.id,
+                    purpose="interactive_playback",
+                )
+            else:
+                reserved = await cso_capacity_registry.try_reserve(
+                    capacity_key,
+                    self.capacity_owner_key,
+                    capacity_limit,
+                    slot_id=source.id,
+                )
             if not reserved:
                 saw_capacity_block = True
                 continue
@@ -1217,13 +1227,18 @@ class CsoIngestSession:
         async with self.lock:
             if not self.subscribers and not self.lifecycle_references:
                 old_capacity_key = self.current_capacity_key
+                old_source_id = self.current_source.id if self.current_source is not None else None
                 self.current_source = None
                 self.current_source_url = ""
                 self.current_capacity_key = None
                 self.process = None
                 self.running = False
                 if old_capacity_key:
-                    await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key)
+                    await cso_capacity_registry.release(
+                        old_capacity_key,
+                        self.capacity_owner_key,
+                        slot_id=old_source_id,
+                    )
                 return False
 
             failed_source = self.current_source

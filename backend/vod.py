@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -13,6 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
 
 import aiohttp
@@ -41,6 +44,9 @@ from backend.url_resolver import get_tvh_publish_base_url
 from backend.users import user_has_admin_role
 from backend.utils import as_naive_utc, clean_key, clean_text, utc_now
 from backend.xc_hosts import parse_xc_hosts
+
+if TYPE_CHECKING:
+    from backend.cso.types import CsoSource
 
 logger = logging.getLogger("tic.vod")
 
@@ -134,6 +140,33 @@ class VodSourcePlaybackCandidate:
     upstream_episode_id: str | None = None
     internal_id: int | None = None
     cache_internal_id: int | None = None
+
+
+def _vod_provider_error_result(error_code: str) -> dict[str, object]:
+    from backend.cso.vod_errors import (
+        UPSTREAM_CAPACITY_ERROR_CODE,
+        UPSTREAM_CAPACITY_MESSAGE,
+        UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+        UPSTREAM_INVALID_MEDIA_MESSAGE,
+    )
+
+    if error_code == UPSTREAM_CAPACITY_ERROR_CODE:
+        return {
+            "success": False,
+            "error_code": UPSTREAM_CAPACITY_ERROR_CODE,
+            "message": UPSTREAM_CAPACITY_MESSAGE,
+            "retryable": True,
+            "status_code": 503,
+        }
+    if error_code == UPSTREAM_INVALID_MEDIA_ERROR_CODE:
+        return {
+            "success": False,
+            "error_code": UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+            "message": UPSTREAM_INVALID_MEDIA_MESSAGE,
+            "retryable": True,
+            "status_code": 502,
+        }
+    raise ValueError(f"Unknown VOD provider error code: {error_code}")
 
 
 def _truncated_vod_text(value: object, limit: int = _VOD_TITLE_MAX_LENGTH) -> str:
@@ -381,6 +414,10 @@ async def vod_candidate_has_capacity(
         return True
     usage = await cso_capacity_registry.get_usage(capacity_key)
     has_capacity = int(usage.get("total") or 0) < limit
+    if not has_capacity and max(0, int(usage.get("total") or 0) - 1) < limit:
+        from backend.cso import vod_cache_manager
+
+        has_capacity = await vod_cache_manager.has_preemptible_capacity(capacity_key)
     logger.info(
         "VOD HLS capacity selection output_key=%s connection_id=%s capacity_key=%s "
         "limit=%s observed_usage=%s action=%s input=upstream",
@@ -2825,6 +2862,16 @@ def _mark_vod_media_probe_finished(key: str, task: asyncio.Task):
     entry = _vod_media_probe_registry.get(key)
     if not entry or entry.get("task") is not task:
         return
+    if task.cancelled():
+        _vod_media_probe_registry.pop(key, None)
+        return
+    try:
+        result = task.result()
+    except Exception:
+        result = {}
+    if bool((result or {}).get("deferred")):
+        _vod_media_probe_registry.pop(key, None)
+        return
     entry["finished_at"] = time.monotonic()
 
 
@@ -2834,6 +2881,9 @@ async def _get_or_start_vod_media_probe_task(
     source_type: str,
     playlist: Playlist | None = None,
     persist_result: bool = True,
+    capacity_key: str = "",
+    capacity_limit: int = 0,
+    provider_source: CsoSource | None = None,
 ) -> asyncio.Task | None:
     if not clean_text(source_url):
         return None
@@ -2853,18 +2903,75 @@ async def _get_or_start_vod_media_probe_task(
         user_agent = clean_text(getattr(playlist, "user_agent", ""))
 
         async def _runner() -> dict[str, object]:
-            probed_shape = await probe_stream_media_shape(
-                source_url,
-                user_agent=user_agent,
-            )
-            if probed_shape and persist_result and source_id > 0:
-                await persist_source_media_shape(
-                    source_id,
-                    probed_shape,
-                    observed_at=as_naive_utc(utc_now()),
-                    source_type=source_type,
+            reservation_owner = f"vod-media-probe:{registry_key}"
+            provider_url = urlparse(source_url).scheme.lower() in {"http", "https"}
+            reserved = False
+            try:
+                if provider_url:
+                    from backend.cso.vod_cache import probe_vod_upstream_response, vod_cache_manager
+                    from backend.cso.vod_errors import (
+                        UPSTREAM_CAPACITY_ERROR_CODE,
+                        UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+                    )
+
+                    if provider_source is None or not clean_text(capacity_key):
+                        return {
+                            "media_shape": {},
+                            "error_code": UPSTREAM_CAPACITY_ERROR_CODE,
+                            "deferred": True,
+                        }
+                    current_task = asyncio.current_task()
+                    if current_task is None:
+                        return {
+                            "media_shape": {},
+                            "error_code": UPSTREAM_CAPACITY_ERROR_CODE,
+                            "deferred": True,
+                        }
+                    reserved = await vod_cache_manager.reserve_metadata_probe(
+                        capacity_key,
+                        capacity_limit,
+                        reservation_owner,
+                        reservation_owner,
+                        current_task,
+                    )
+                    if not reserved:
+                        return {
+                            "media_shape": {},
+                            "error_code": UPSTREAM_CAPACITY_ERROR_CODE,
+                            "deferred": True,
+                        }
+                    upstream_reason = await probe_vod_upstream_response(provider_source, source_url)
+                    if upstream_reason == UPSTREAM_INVALID_MEDIA_ERROR_CODE:
+                        return {
+                            "media_shape": {},
+                            "error_code": UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+                            "deferred": False,
+                        }
+                    if upstream_reason:
+                        return {"media_shape": {}, "error_code": "", "deferred": False}
+                probed_shape = await probe_stream_media_shape(
+                    source_url,
+                    user_agent=user_agent,
                 )
-            return dict(probed_shape or {})
+                if probed_shape and persist_result and source_id > 0:
+                    await persist_source_media_shape(
+                        source_id,
+                        probed_shape,
+                        observed_at=as_naive_utc(utc_now()),
+                        source_type=source_type,
+                    )
+                return {
+                    "media_shape": dict(probed_shape or {}),
+                    "error_code": "",
+                    "deferred": False,
+                }
+            finally:
+                if reserved:
+                    await vod_cache_manager.release_metadata_probe(
+                        capacity_key,
+                        reservation_owner,
+                        reservation_owner,
+                    )
 
         task = asyncio.create_task(_runner(), name=f"vod-media-probe:{registry_key}")
         _vod_media_probe_registry[registry_key] = {
@@ -2884,28 +2991,44 @@ async def _await_vod_media_probe_result(
     playlist: Playlist | None = None,
     persist_result: bool = True,
     wait_timeout_seconds: float | None = None,
-) -> tuple[dict[str, object], bool]:
+    capacity_key: str = "",
+    capacity_limit: int = 0,
+    provider_source: CsoSource | None = None,
+) -> tuple[dict[str, object], bool, str | None]:
     task = await _get_or_start_vod_media_probe_task(
         source,
         source_url,
         source_type,
         playlist=playlist,
         persist_result=persist_result,
+        capacity_key=capacity_key,
+        capacity_limit=capacity_limit,
+        provider_source=provider_source,
     )
     if task is None:
-        return {}, False
+        return {}, False, None
 
     try:
         if wait_timeout_seconds is None:
             result = await asyncio.shield(task)
         else:
             result = await asyncio.wait_for(asyncio.shield(task), timeout=max(0.1, float(wait_timeout_seconds or 0.0)))
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return {}, True, None
+        raise
     except asyncio.TimeoutError:
-        return {}, True
+        return {}, True, None
     except Exception:
-        return {}, False
+        return {}, False, None
 
-    return dict(result or {}), False
+    payload = dict(result or {})
+    deferred = bool(payload.get("deferred"))
+    return (
+        dict(payload.get("media_shape") or {}),
+        deferred,
+        None if deferred else clean_text(payload.get("error_code")) or None,
+    )
 
 
 def _stream_type_from_media_shape(media_shape: dict[str, object] | None, container_extension: str = "") -> str:
@@ -2918,6 +3041,21 @@ def _stream_type_from_media_shape(media_shape: dict[str, object] | None, contain
     return stream_type_from_container_extension(fallback_extension, fallback_stream_type=extension or "auto")
 
 
+async def _vod_media_probe_capacity_context(
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate,
+    source_url: str,
+) -> tuple[CsoSource, str, int]:
+    from backend.cso.capacity import source_capacity_key, source_capacity_limit
+    from backend.cso.sources import cso_source_from_vod_source
+
+    provider_source = await cso_source_from_vod_source(candidate, source_url)
+    return (
+        provider_source,
+        source_capacity_key(provider_source),
+        source_capacity_limit(provider_source),
+    )
+
+
 async def _refresh_vod_media_shape_if_needed(
     source: XcVodItem | VodCategoryEpisode,
     source_url: str,
@@ -2927,7 +3065,10 @@ async def _refresh_vod_media_shape_if_needed(
     allow_probe: bool = True,
     background_probe: bool = False,
     probe_wait_timeout_seconds: float | None = None,
-) -> tuple[dict[str, object], bool]:
+    capacity_key: str = "",
+    capacity_limit: int = 0,
+    provider_source: CsoSource | None = None,
+) -> tuple[dict[str, object], bool, str | None]:
     existing_shape = load_source_media_shape(source)
     if (
         existing_shape
@@ -2935,32 +3076,40 @@ async def _refresh_vod_media_shape_if_needed(
         and source.stream_probe_at is not None
         and _media_shape_timestamp_is_fresh(source.stream_probe_at)
     ):
-        return existing_shape, False
+        return existing_shape, False, None
 
     should_probe = bool(allow_probe or background_probe)
     if should_probe:
-        await _get_or_start_vod_media_probe_task(
+        task = await _get_or_start_vod_media_probe_task(
             source,
             source_url,
             source_type,
             playlist=playlist,
             persist_result=persist_result,
+            capacity_key=capacity_key,
+            capacity_limit=capacity_limit,
+            provider_source=provider_source,
         )
+    else:
+        task = None
 
     if not allow_probe:
-        return existing_shape, False
+        return existing_shape, bool(task), None
 
-    probed_shape, probe_pending = await _await_vod_media_probe_result(
+    probed_shape, probe_pending, probe_error_code = await _await_vod_media_probe_result(
         source,
         source_url,
         source_type,
         playlist=playlist,
         persist_result=persist_result,
         wait_timeout_seconds=probe_wait_timeout_seconds,
+        capacity_key=capacity_key,
+        capacity_limit=capacity_limit,
+        provider_source=provider_source,
     )
     if probed_shape:
-        return probed_shape, False
-    return existing_shape, probe_pending
+        return probed_shape, False, None
+    return existing_shape, probe_pending, probe_error_code
 
 
 async def list_upstream_vod_items(
@@ -3315,20 +3464,19 @@ async def build_curated_movie_browser_playback(
     if candidate is None:
         return None
     if not upstream_url:
-        return {
-            "success": False,
-            "message": "Source capacity limit reached"
-            if selection_error == "capacity_blocked"
-            else "Stream unavailable",
-            "status_code": 503 if selection_error == "capacity_blocked" else 404,
-        }
+        if selection_error == "capacity_blocked":
+            from backend.cso.vod_errors import UPSTREAM_CAPACITY_ERROR_CODE
+
+            return _vod_provider_error_result(UPSTREAM_CAPACITY_ERROR_CODE)
+        return {"success": False, "message": "Stream unavailable", "status_code": 404}
 
     playlist = getattr(candidate.source_item, "playlist", None)
     if (allow_probe or background_probe) and playlist is None:
         async with Session() as session:
             playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
 
-    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
+    provider_source, capacity_key, capacity_limit = await _vod_media_probe_capacity_context(candidate, upstream_url)
+    media_shape, probe_pending, probe_error_code = await _refresh_vod_media_shape_if_needed(
         candidate.source_item,
         upstream_url,
         "vod_movie",
@@ -3337,7 +3485,12 @@ async def build_curated_movie_browser_playback(
         allow_probe=allow_probe,
         background_probe=background_probe,
         probe_wait_timeout_seconds=probe_wait_timeout_seconds,
+        capacity_key=capacity_key,
+        capacity_limit=capacity_limit,
+        provider_source=provider_source,
     )
+    if probe_error_code:
+        return _vod_provider_error_result(probe_error_code)
     return {
         "success": True,
         "item_id": int(item_id),
@@ -3368,20 +3521,19 @@ async def build_curated_episode_browser_playback(
     if candidate is None:
         return None
     if not upstream_url:
-        return {
-            "success": False,
-            "message": "Source capacity limit reached"
-            if selection_error == "capacity_blocked"
-            else "Stream unavailable",
-            "status_code": 503 if selection_error == "capacity_blocked" else 404,
-        }
+        if selection_error == "capacity_blocked":
+            from backend.cso.vod_errors import UPSTREAM_CAPACITY_ERROR_CODE
+
+            return _vod_provider_error_result(UPSTREAM_CAPACITY_ERROR_CODE)
+        return {"success": False, "message": "Stream unavailable", "status_code": 404}
 
     playlist = getattr(candidate.source_item, "playlist", None)
     if (allow_probe or background_probe) and playlist is None:
         async with Session() as session:
             playlist = await session.get(Playlist, int(candidate.source_item.playlist_id))
 
-    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
+    provider_source, capacity_key, capacity_limit = await _vod_media_probe_capacity_context(candidate, upstream_url)
+    media_shape, probe_pending, probe_error_code = await _refresh_vod_media_shape_if_needed(
         episode,
         upstream_url,
         "vod_episode",
@@ -3390,7 +3542,12 @@ async def build_curated_episode_browser_playback(
         allow_probe=allow_probe,
         background_probe=background_probe,
         probe_wait_timeout_seconds=probe_wait_timeout_seconds,
+        capacity_key=capacity_key,
+        capacity_limit=capacity_limit,
+        provider_source=provider_source,
     )
+    if probe_error_code:
+        return _vod_provider_error_result(probe_error_code)
     return {
         "success": True,
         "episode_id": int(episode_id),
@@ -3449,33 +3606,36 @@ async def build_upstream_browser_playback(
     if not resolved_container_extension:
         resolved_container_extension = clean_text(getattr(source_item, "container_extension", "")).lstrip(".").lower()
 
+    resolved_episode_id = clean_text(upstream_episode_id)
+    cache_internal_id = int(getattr(source_item, "id", 0) or 0) or None
+    if content_type == VOD_KIND_SERIES and resolved_episode_id.isdigit():
+        cache_internal_id = int(resolved_episode_id)
+    candidate = VodSourcePlaybackCandidate(
+        source_item=source_item,
+        content_type=content_type,
+        xc_account=account,
+        host_url="",
+        container_extension=resolved_container_extension or None,
+        upstream_episode_id=resolved_episode_id or None,
+        internal_id=None,
+        cache_internal_id=cache_internal_id,
+    )
+    provider_source, capacity_key, capacity_limit = await _vod_media_probe_capacity_context(candidate, preview_url)
+
     probe_url = preview_url
     try:
-        from backend.cso.sources import cso_source_from_vod_source
         from backend.cso.vod_cache import vod_cache_manager
 
-        cache_internal_id = int(getattr(source_item, "id", 0) or 0) or None
-        resolved_episode_id = clean_text(upstream_episode_id)
-        if content_type == VOD_KIND_SERIES and resolved_episode_id.isdigit():
-            cache_internal_id = int(resolved_episode_id)
-        candidate = VodSourcePlaybackCandidate(
-            source_item=source_item,
-            content_type=content_type,
-            xc_account=account,
-            host_url="",
-            container_extension=resolved_container_extension or None,
-            upstream_episode_id=resolved_episode_id or None,
-            internal_id=None,
-            cache_internal_id=cache_internal_id,
+        cache_entry = await vod_cache_manager.get_or_create(
+            provider_source,
+            preview_url or provider_source.url,
         )
-        cso_source = await cso_source_from_vod_source(candidate, preview_url)
-        cache_entry = await vod_cache_manager.get_or_create(cso_source, preview_url or cso_source.url)
         if cache_entry.complete and cache_entry.final_path.exists():
             probe_url = str(cache_entry.final_path)
     except Exception:
         probe_url = preview_url
 
-    media_shape, probe_pending = await _refresh_vod_media_shape_if_needed(
+    media_shape, probe_pending, probe_error_code = await _refresh_vod_media_shape_if_needed(
         probe_source,
         probe_url,
         source_type,
@@ -3484,7 +3644,12 @@ async def build_upstream_browser_playback(
         allow_probe=allow_probe,
         background_probe=background_probe,
         probe_wait_timeout_seconds=probe_wait_timeout_seconds,
+        capacity_key=capacity_key,
+        capacity_limit=capacity_limit,
+        provider_source=provider_source,
     )
+    if probe_error_code:
+        return _vod_provider_error_result(probe_error_code)
 
     return {
         "success": True,

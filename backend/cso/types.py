@@ -105,6 +105,7 @@ class CsoStreamPlan:
     headers: dict | None = None
     cutoff_seconds: int | None = None
     final_status_code: int | None = None
+    error_code: str | None = None
 
 
 @dataclass
@@ -123,6 +124,15 @@ class VodCacheEntry:
     last_access_ts: float = 0.0
     active_sessions: int = 0
     active_readers: int = 0
+    waiting_consumers: int = 0
+    downloader_started_ts: float = 0.0
+    downloader_purpose: str | None = None
+    last_consumer_attach_ts: float = 0.0
+    last_consumer_detach_ts: float = 0.0
+    preemption_requested: bool = False
+    preemption_reason: str | None = None
+    downloader_capacity_key: str | None = None
+    downloader_slot_id: str | None = None
     downloader_owner_key: str | None = None
     download_task: asyncio.Task | None = None
     probe_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
