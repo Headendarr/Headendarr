@@ -13,9 +13,11 @@ from backend.utils import clean_key, clean_text
 
 from .common import (
     ByteBudgetQueue,
+    bounded_log_value,
     prepare_cso_cache_dir,
     remove_cso_cache_dir,
 )
+from .capacity import cso_capacity_registry
 from .constants import (
     CSO_HLS_CLIENT_IDLE_SECONDS,
     CSO_INGEST_RECOVERY_RETRY_INTERVAL_SECONDS,
@@ -32,6 +34,8 @@ from .ffmpeg import (
     ffmpeg_failure_classification,
     hwaccel_failure_stage,
     log_ffmpeg_start_result_failures,
+    redact_ffmpeg_command_for_log,
+    redact_ffmpeg_error_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
 )
@@ -55,6 +59,7 @@ from .types import (
     CsoStartupEvidence,
 )
 
+
 logger = logging.getLogger("cso")
 
 SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -66,6 +71,21 @@ class CsoOutputStartupProbeResult:
     classification: str
     failure_reason: str
     stderr_summary: str
+
+
+@dataclass(frozen=True)
+class CsoHlsClientStartResult:
+    running: bool
+    output_started: bool
+    output_reused: bool
+    client_added: bool
+    existing_client: bool
+    input_kind: str
+    capacity_key: str | None
+    capacity_limit: int
+    reservation_owner: str | None
+    reservation_slot_id: str | None
+    failure_reason: str | None
 
 
 async def _detach_output_input_subscriptions(session):
@@ -550,9 +570,9 @@ class CsoOutputSession:
                         logger.info(
                             "Starting CSO output channel=%s output_key=%s policy=(%s) command=%s",
                             self.channel_id,
-                            self.key,
+                            bounded_log_value(self.key),
                             policy_log_label(effective_policy),
-                            command,
+                            redact_ffmpeg_command_for_log(command),
                         )
                         process = await spawn_cso_ffmpeg_process(
                             *command,
@@ -998,7 +1018,7 @@ class CsoOutputSession:
                 "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=no_consumer_progress stale_seconds=%s",
                 self.channel_id,
                 self.key,
-                connection_id,
+                bounded_log_value(connection_id),
                 int(stale_seconds),
             )
             await self.remove_client(connection_id)
@@ -1024,7 +1044,7 @@ class CsoOutputSession:
             "CSO output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
             self.channel_id,
             self.key,
-            connection_id,
+            bounded_log_value(connection_id),
             client_count,
             policy_log_label(self.output_policy),
         )
@@ -1061,7 +1081,7 @@ class CsoOutputSession:
                 "CSO output dropping stale client channel=%s output_key=%s connection_id=%s reason=idle_prune stale_seconds=%s",
                 self.channel_id,
                 self.key,
-                connection_id,
+                bounded_log_value(connection_id),
                 int(stale_seconds),
             )
             await self.remove_client(connection_id)
@@ -1079,7 +1099,7 @@ class CsoOutputSession:
             "CSO output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
             self.channel_id,
             self.key,
-            connection_id,
+            bounded_log_value(connection_id),
             remaining,
             policy_log_label(self.output_policy),
         )
@@ -1104,7 +1124,7 @@ class CsoOutputSession:
                 "CSO output preemptively dropping backpressured client channel=%s output_key=%s connection_id=%s reason=capacity_handover elapsed_threshold=%.2fs count_threshold=%s",
                 self.channel_id,
                 self.key,
-                connection_id,
+                bounded_log_value(connection_id),
                 float(min_elapsed_seconds),
                 int(min_drop_count),
             )
@@ -1209,6 +1229,10 @@ class CsoHlsOutputSession:
         input_request_headers=None,
         start_seconds=0,
         finite_event_output: bool = False,
+        capacity_key: str | None = None,
+        capacity_owner_key: str | None = None,
+        capacity_limit: int = 0,
+        capacity_slot_id: int | str | None = None,
     ):
         self.key = key
         self.channel_id = channel_id
@@ -1226,6 +1250,19 @@ class CsoHlsOutputSession:
         self.input_request_headers = sanitise_headers(input_request_headers)
         self.start_seconds = max(0, int(start_seconds or 0))
         self.finite_event_output = bool(finite_event_output)
+        self.capacity_key = clean_text(capacity_key)
+        self.capacity_owner_key = clean_text(capacity_owner_key)
+        self.capacity_limit = max(0, int(capacity_limit or 0))
+        self.capacity_slot_id = clean_text(capacity_slot_id)
+        self.capacity_required = bool(
+            self.input_is_url
+            and self.capacity_key
+            and self.capacity_owner_key
+            and self.capacity_slot_id
+            and self.capacity_limit > 0
+        )
+        self._capacity_reserved = False
+        self._capacity_lock = asyncio.Lock()
         self.process = None
         self.write_task = None
         self.stderr_task = None
@@ -1255,6 +1292,109 @@ class CsoHlsOutputSession:
         self._reader_state_changed = asyncio.Event()
         self.runtime_policy = dict(policy or {})
         self._idle_cleanup_task = None
+
+    async def _ensure_capacity_reservation(self) -> bool:
+        if not self.capacity_required:
+            return True
+        async with self._capacity_lock:
+            if self._capacity_reserved:
+                return True
+            usage_before = await cso_capacity_registry.get_usage(self.capacity_key)
+            reserved = await cso_capacity_registry.try_reserve(
+                self.capacity_key,
+                self.capacity_owner_key,
+                self.capacity_limit,
+                slot_id=self.capacity_slot_id,
+            )
+            usage_after = await cso_capacity_registry.get_usage(self.capacity_key)
+            if reserved:
+                self._capacity_reserved = True
+            logger.info(
+                "CSO VOD HLS capacity reservation output_key=%s capacity_key=%s "
+                "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s resulting_usage=%s "
+                "reserved=%s input=upstream",
+                bounded_log_value(self.key),
+                bounded_log_value(self.capacity_key),
+                bounded_log_value(self.capacity_owner_key),
+                bounded_log_value(self.capacity_slot_id),
+                self.capacity_limit,
+                int(usage_before.get("total") or 0),
+                int(usage_after.get("total") or 0),
+                reserved,
+            )
+            return reserved
+
+    async def _release_capacity_reservation(self, reason: str):
+        if not self.capacity_required:
+            return
+        async with self._capacity_lock:
+            if not self._capacity_reserved:
+                return
+            await cso_capacity_registry.release(
+                self.capacity_key,
+                self.capacity_owner_key,
+                slot_id=self.capacity_slot_id,
+            )
+            self._capacity_reserved = False
+            usage = await cso_capacity_registry.get_usage(self.capacity_key)
+            logger.info(
+                "CSO VOD HLS capacity released output_key=%s capacity_key=%s "
+                "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s reason=%s",
+                bounded_log_value(self.key),
+                bounded_log_value(self.capacity_key),
+                bounded_log_value(self.capacity_owner_key),
+                bounded_log_value(self.capacity_slot_id),
+                self.capacity_limit,
+                int(usage.get("total") or 0),
+                bounded_log_value(clean_text(reason) or "unspecified"),
+            )
+
+    async def _release_capacity_if_upstream_gone(self, reason: str):
+        upstream_gone = bool(
+            self.process is None and self.write_task is None and self.stderr_task is None and self.wait_task is None
+        )
+        if upstream_gone:
+            await self._release_capacity_reservation(reason)
+
+    async def vod_hls_reuse_snapshot(self) -> dict[str, object]:
+        async with self.lock:
+            process = self.process
+            process_active = bool(process is not None and getattr(process, "returncode", None) is None)
+            lifecycle_clean = bool(
+                self.completion_state
+                not in {
+                    "stopped",
+                    "stopping",
+                    "completion_invalid",
+                    "teardown_unconfirmed",
+                    "restart_pending",
+                }
+                and not clean_text(self.last_error)
+            )
+            completed_healthy = bool(
+                self.completed
+                and self.running
+                and self._accepting_readers
+                and self._last_good_playlist_text
+                and self._retain_completed_output_until > time.time()
+            )
+            starting_or_active = bool(
+                self.running
+                and self._accepting_readers
+                and self.completion_state == "starting"
+                and (process_active or self.lifecycle_lock.locked())
+            )
+            reservation_safe = bool(not self.capacity_required or self._capacity_reserved)
+            reusable = bool(lifecycle_clean and reservation_safe and (completed_healthy or starting_or_active))
+            return {
+                "reusable": reusable,
+                "completion_state": self.completion_state,
+                "completed": self.completed,
+                "client_count": len(self.clients),
+                "reservation_owner": self.capacity_owner_key if self._capacity_reserved else None,
+                "reservation_slot_id": self.capacity_slot_id if self._capacity_reserved else None,
+                "input_is_upstream": self.input_is_url,
+            }
 
     def _segmented_input_target(self) -> str:
         if self.ingest_session is None:
@@ -1332,7 +1472,18 @@ class CsoHlsOutputSession:
             names.append(line.split("?", 1)[0])
         return names
 
-    def _ffmpeg_error_summary(self):
+    def _redacted_ffmpeg_error(self, value: object) -> str:
+        sensitive_values = (
+            self.input_target if self.input_is_url else "",
+            self.input_user_agent,
+            *self.input_request_headers.values(),
+        )
+        return redact_ffmpeg_error_for_log(
+            value,
+            sensitive_values=sensitive_values,
+        )
+
+    def _ffmpeg_error_summary(self) -> str:
         lines = [line for line in self._recent_ffmpeg_stderr if line]
         if not lines:
             return ""
@@ -1342,7 +1493,7 @@ class CsoHlsOutputSession:
             if any(token in line.lower() for token in ("error", "invalid", "failed", "could not", "unsupported"))
         ]
         selected = error_lines[-3:] if error_lines else lines[-3:]
-        return " | ".join(selected)
+        return self._redacted_ffmpeg_error(" | ".join(selected))
 
     def _output_mode(self) -> str:
         if self.use_slate_as_input:
@@ -1469,13 +1620,41 @@ class CsoHlsOutputSession:
         self,
         connection_id: str,
         on_disconnect: Any = None,
-    ) -> bool:
+    ) -> CsoHlsClientStartResult:
         async with self.lifecycle_lock:
+            async with self.lock:
+                was_running = bool(self.running)
+                existing_client = str(connection_id) in self.clients
             if not await self._start_with_lifecycle_locked():
-                return False
+                return CsoHlsClientStartResult(
+                    running=False,
+                    output_started=False,
+                    output_reused=False,
+                    client_added=False,
+                    existing_client=existing_client,
+                    input_kind="upstream" if self.input_is_url else "completed_local_cache",
+                    capacity_key=self.capacity_key or None,
+                    capacity_limit=self.capacity_limit,
+                    reservation_owner=self.capacity_owner_key if self._capacity_reserved else None,
+                    reservation_slot_id=self.capacity_slot_id if self._capacity_reserved else None,
+                    failure_reason=self.last_error or "output_not_running",
+                )
             is_new_client = await self._add_client(connection_id, on_disconnect=on_disconnect)
+            result = CsoHlsClientStartResult(
+                running=True,
+                output_started=not was_running,
+                output_reused=was_running,
+                client_added=is_new_client,
+                existing_client=existing_client,
+                input_kind="upstream" if self.input_is_url else "completed_local_cache",
+                capacity_key=self.capacity_key or None,
+                capacity_limit=self.capacity_limit,
+                reservation_owner=self.capacity_owner_key if self._capacity_reserved else None,
+                reservation_slot_id=self.capacity_slot_id if self._capacity_reserved else None,
+                failure_reason=None,
+            )
         self._schedule_idle_cleanup()
-        return is_new_client
+        return result
 
     async def _start_with_lifecycle_locked(self) -> bool:
         try:
@@ -1484,11 +1663,13 @@ class CsoHlsOutputSession:
             self.running = False
             self.last_error = "output_start_cancelled"
             await _detach_output_input_subscriptions(self)
+            await self._release_capacity_if_upstream_gone("startup_cancelled")
             raise
         except Exception as exc:
             self.running = False
             self.last_error = f"output_start_failed:{exc}"
             await _detach_output_input_subscriptions(self)
+            await self._release_capacity_if_upstream_gone("startup_exception")
             raise
         if self.running:
             return True
@@ -1500,7 +1681,7 @@ class CsoHlsOutputSession:
             if self.running:
                 logger.info(
                     "Reusing CSO HLS output output_key=%s mode=%s completion_state=%s clients=%s readers=%s retention_deadline=%s",
-                    self.key,
+                    bounded_log_value(self.key),
                     self._output_mode(),
                     self.completion_state,
                     len(self.clients),
@@ -1532,6 +1713,9 @@ class CsoHlsOutputSession:
                 return
             segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
             use_direct_input = bool(self.input_target or segmented_input_target)
+            if self.input_is_url and not await self._ensure_capacity_reservation():
+                self.last_error = "capacity_blocked"
+                return
             if self.use_slate_as_input:
                 await self.slate_session.start()
                 if not self.slate_session.running:
@@ -1647,10 +1831,10 @@ class CsoHlsOutputSession:
                 logger.info(
                     "Starting CSO HLS output channel=%s output_key=%s mode=%s policy=(%s) command=%s",
                     self.channel_id,
-                    self.key,
+                    bounded_log_value(self.key),
                     self._output_mode(),
                     policy_log_label(self.runtime_policy),
-                    command,
+                    redact_ffmpeg_command_for_log(command),
                 )
                 self.process = await spawn_cso_ffmpeg_process(
                     *command,
@@ -1735,6 +1919,7 @@ class CsoHlsOutputSession:
             log_ffmpeg_start_result_failures(f"hls:{self.key}", start_result)
             self.running = False
             self.last_error = start_result.failure_reason or "output_start_failed"
+            await self._release_capacity_if_upstream_gone("startup_failed")
 
     async def _write_loop(self, token, process):
         exit_reason = "loop_exit"
@@ -1809,13 +1994,23 @@ class CsoHlsOutputSession:
                 self._recent_ffmpeg_stderr.append(rendered)
                 self.last_activity = time.time()
                 if enable_cso_output_command_debug_logging:
-                    logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
+                    logger.info(
+                        "CSO HLS output ffmpeg[%s][%s]: %s",
+                        self.channel_id,
+                        bounded_log_value(self.key),
+                        self._redacted_ffmpeg_error(rendered),
+                    )
         rendered = text_buffer.strip()
         if rendered and token == self.process_token:
             self._recent_ffmpeg_stderr.append(rendered)
             self.last_activity = time.time()
             if enable_cso_output_command_debug_logging:
-                logger.info("CSO HLS output ffmpeg[%s][%s]: %s", self.channel_id, self.key, rendered)
+                logger.info(
+                    "CSO HLS output ffmpeg[%s][%s]: %s",
+                    self.channel_id,
+                    bounded_log_value(self.key),
+                    self._redacted_ffmpeg_error(rendered),
+                )
 
     async def _read_valid_playlist_from_disk(self) -> str | None:
         if not self.playlist_path.exists():
@@ -1941,6 +2136,8 @@ class CsoHlsOutputSession:
             reader_count = self._active_readers
             if process is self.process and process_exited:
                 self.process = None
+        if process_exited:
+            await self._release_capacity_reservation("upstream_process_exited")
         logger.info(
             "CSO HLS process exited output_key=%s mode=%s pid=%s return_code=%s clients=%s readers=%s completion_state=%s",
             self.key,
@@ -2054,7 +2251,7 @@ class CsoHlsOutputSession:
                 "CSO HLS output client connected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
                 self.channel_id,
                 self.key,
-                connection_id,
+                bounded_log_value(connection_id),
                 client_count,
                 policy_log_label(self.runtime_policy),
             )
@@ -2079,7 +2276,7 @@ class CsoHlsOutputSession:
                 "CSO HLS output disconnect hook failed channel=%s output_key=%s connection_id=%s error=%s",
                 self.channel_id,
                 self.key,
-                connection_id,
+                bounded_log_value(connection_id),
                 exc,
             )
 
@@ -2113,7 +2310,7 @@ class CsoHlsOutputSession:
             "CSO HLS output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
             self.channel_id,
             self.key,
-            connection_id,
+            bounded_log_value(connection_id),
             remaining,
             policy_log_label(self.runtime_policy),
         )
@@ -2158,7 +2355,7 @@ class CsoHlsOutputSession:
                     "CSO HLS output dropping idle client channel=%s output_key=%s connection_id=%s idle_seconds=%s",
                     self.channel_id,
                     self.key,
-                    connection_id,
+                    bounded_log_value(connection_id),
                     int(idle_seconds),
                 )
                 await self._finish_client_removal(connection_id, removed, remaining)
@@ -2266,6 +2463,7 @@ class CsoHlsOutputSession:
                 and self.ingest_queue is None
                 and not self.ingest_lifecycle_reference
                 and self.slate_queue is None
+                and not self._capacity_reserved
             ):
                 return
             if not force and self.clients:
@@ -2314,7 +2512,7 @@ class CsoHlsOutputSession:
                 "CSO HLS output client disconnected channel=%s output_key=%s connection_id=%s clients=%s policy=(%s)",
                 self.channel_id,
                 self.key,
-                disconnected_id,
+                bounded_log_value(disconnected_id),
                 0,
                 policy_log_label(self.runtime_policy),
             )
@@ -2338,6 +2536,8 @@ class CsoHlsOutputSession:
                 if self.process is process:
                     self.process = None
         await _detach_output_input_subscriptions(self)
+        if task_cleanup.confirmed and (teardown is None or teardown.confirmed):
+            await self._release_capacity_if_upstream_gone("output_stopped")
         if not self._readers_drained.is_set():
             logger.info(
                 "CSO HLS output cleanup waiting for readers output_key=%s mode=%s clients=%s readers=%s reason=active_readers",

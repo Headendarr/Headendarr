@@ -26,7 +26,7 @@ from backend.models import EpgChannelProgrammes, PlaylistStreams, Session, XcAcc
 from backend.cso import (
     CS_VOD_USE_PROXY_SESSION,
     should_use_vod_proxy_session,
-    subscribe_vod_hls,
+    subscribe_vod_hls_candidates,
     subscribe_vod_proxy_stream,
     subscribe_vod_stream,
 )
@@ -1178,28 +1178,21 @@ async def xc_movie_hls_playlist(username: str, password: str, item_id: int, conn
     candidates = await resolve_movie_playback_candidates(int(item_id))
     if not candidates:
         return jsonify({"error": "Not found"}), 404
-    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
-    if not candidate:
-        return jsonify({"error": "Not found"}), 404
-    if not upstream_url:
-        return Response(
-            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
-            status=503 if selection_error == "capacity_blocked" else 404,
-        )
-
-    profile = "hls"
     config = current_app.config["APP_CONFIG"]
-    output_session, error_message, status = await subscribe_vod_hls(
+    subscription = await subscribe_vod_hls_candidates(
         config,
-        candidate,
-        upstream_url,
+        candidates,
         stream_key,
-        profile,
+        "hls",
         connection_id,
         request_base_url=get_request_base_url(request),
     )
+    output_session = subscription.session
     if not output_session:
-        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+        return Response(
+            subscription.error_message or "Unable to start CSO HLS stream",
+            status=subscription.status or 503,
+        )
     await output_session.touch_client(connection_id)
     playlist_text = await _render_hls_playlist(output_session, connection_id)
     playlist_text = _rewrite_hls_playlist(
@@ -1221,28 +1214,21 @@ async def xc_movie_hls_segment(username: str, password: str, item_id: int, conne
     candidates = await resolve_movie_playback_candidates(int(item_id))
     if not candidates:
         return jsonify({"error": "Not found"}), 404
-    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates)
-    if not candidate:
-        return jsonify({"error": "Not found"}), 404
-    if not upstream_url:
-        return Response(
-            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
-            status=503 if selection_error == "capacity_blocked" else 404,
-        )
-
-    profile = "hls"
     config = current_app.config["APP_CONFIG"]
-    output_session, error_message, status = await subscribe_vod_hls(
+    subscription = await subscribe_vod_hls_candidates(
         config,
-        candidate,
-        upstream_url,
+        candidates,
         stream_key,
-        profile,
+        "hls",
         connection_id,
         request_base_url=get_request_base_url(request),
     )
+    output_session = subscription.session
     if not output_session:
-        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+        return Response(
+            subscription.error_message or "Unable to start CSO HLS stream",
+            status=subscription.status or 503,
+        )
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name, connection_id=connection_id)
     return Response(payload or b"", content_type=content_type_for_media_path(segment_name))
@@ -1257,29 +1243,22 @@ async def xc_series_hls_playlist(username: str, password: str, episode_id: int, 
     candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
     if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
-    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode_map)
-    if not candidate:
-        return jsonify({"error": "Not found"}), 404
-    if not upstream_url:
-        return Response(
-            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
-            status=503 if selection_error == "capacity_blocked" else 404,
-        )
-
-    profile = "hls"
     config = current_app.config["APP_CONFIG"]
-    output_session, error_message, status = await subscribe_vod_hls(
+    subscription = await subscribe_vod_hls_candidates(
         config,
-        candidate,
-        upstream_url,
+        candidates,
         stream_key,
-        profile,
+        "hls",
         connection_id,
-        episode=episode_map,
-        request_base_url=get_request_base_url(request),
+        episode_map,
+        get_request_base_url(request),
     )
+    output_session = subscription.session
     if not output_session:
-        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+        return Response(
+            subscription.error_message or "Unable to start CSO HLS stream",
+            status=subscription.status or 503,
+        )
     await output_session.touch_client(connection_id)
     playlist_text = await _render_hls_playlist(output_session, connection_id)
     playlist_text = _rewrite_hls_playlist(
@@ -1301,29 +1280,22 @@ async def xc_series_hls_segment(username: str, password: str, episode_id: int, c
     candidates, episode_map = await resolve_episode_playback_candidates(int(episode_id))
     if not candidates or episode_map is None:
         return jsonify({"error": "Not found"}), 404
-    candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode_map)
-    if not candidate:
-        return jsonify({"error": "Not found"}), 404
-    if not upstream_url:
-        return Response(
-            "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable",
-            status=503 if selection_error == "capacity_blocked" else 404,
-        )
-
-    profile = "hls"
     config = current_app.config["APP_CONFIG"]
-    output_session, error_message, status = await subscribe_vod_hls(
+    subscription = await subscribe_vod_hls_candidates(
         config,
-        candidate,
-        upstream_url,
+        candidates,
         stream_key,
-        profile,
+        "hls",
         connection_id,
-        episode=episode_map,
-        request_base_url=get_request_base_url(request),
+        episode_map,
+        get_request_base_url(request),
     )
+    output_session = subscription.session
     if not output_session:
-        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+        return Response(
+            subscription.error_message or "Unable to start CSO HLS stream",
+            status=subscription.status or 503,
+        )
     await output_session.touch_client(connection_id)
     payload = await output_session.read_segment_bytes(segment_name, connection_id=connection_id)
     return Response(payload or b"", content_type=content_type_for_media_path(segment_name))

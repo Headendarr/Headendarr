@@ -10,7 +10,7 @@ from typing import Any
 from backend.http_headers import sanitise_headers
 from backend.utils import clean_key, clean_text
 
-from .common import prepare_cso_cache_dir, remove_cso_cache_dir
+from .common import bounded_log_value, prepare_cso_cache_dir, remove_cso_cache_dir
 from .constants import (
     CSO_HLS_SEGMENT_SECONDS,
     CSO_SEGMENT_CACHE_MIN_FREE_BYTES,
@@ -21,7 +21,7 @@ from .ffmpeg import (
     ffmpeg_failure_classification,
     hwaccel_failure_stage,
     log_ffmpeg_start_result_failures,
-    redact_ingest_command_for_log,
+    redact_ffmpeg_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
 )
@@ -32,7 +32,6 @@ from .processes import (
     spawn_cso_ffmpeg_process,
 )
 from .types import CsoFfmpegAttemptResult
-
 
 logger = logging.getLogger("cso")
 
@@ -277,11 +276,11 @@ class SegmentedHandoffSession:
                 self._recent_ffmpeg_stderr.clear()
                 logger.info(
                     "Starting segmented handoff key=%s input=%s policy=%s output_dir=%s command=%s",
-                    self.key,
-                    self.input_target,
+                    bounded_log_value(self.key),
+                    "upstream" if self.input_is_url else "local",
                     dict(effective_policy or {}),
                     self.output_dir,
-                    redact_ingest_command_for_log(command) if self.input_is_url else command,
+                    redact_ffmpeg_command_for_log(command),
                 )
                 process = await spawn_cso_ffmpeg_process(
                     *command,

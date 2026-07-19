@@ -38,7 +38,7 @@ from backend.cso import (
     subscribe_source_hls,
     subscribe_source_stream,
     subscribe_vod_channel_hls,
-    subscribe_vod_hls,
+    subscribe_vod_hls_candidates,
     subscribe_vod_ingest_stream,
     subscribe_vod_proxy_stream,
     subscribe_vod_stream,
@@ -362,7 +362,13 @@ async def _resolve_curated_vod_request(config, stream_type: str, item_id: int) -
         upstream_url = ""
         selection_error = None
     else:
-        candidate, upstream_url, selection_error = await select_vod_playback_target(candidates, episode=episode)
+        candidate, upstream_url, selection_error = await select_vod_playback_target(
+            candidates,
+            episode=episode,
+            profile=effective_profile,
+            start_seconds=_requested_hls_start_seconds(),
+            connection_id=(getattr(request, "view_args", None) or {}).get("connection_id"),
+        )
     if candidate is None:
         return {"error": "Not found", "status": 404}
     use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
@@ -372,6 +378,7 @@ async def _resolve_curated_vod_request(config, stream_type: str, item_id: int) -
         return {"error": "Stream unavailable", "status": 404}
     return {
         "candidate": candidate,
+        "candidates": candidates,
         "episode": episode,
         "upstream_url": upstream_url,
         "effective_profile": effective_profile,
@@ -428,6 +435,7 @@ async def _resolve_upstream_vod_request(
         use_proxy_session = should_use_vod_proxy_session(candidate, effective_profile)
     return {
         "candidate": candidate,
+        "candidates": [candidate],
         "episode": None,
         "upstream_url": upstream_url,
         "effective_profile": effective_profile,
@@ -1467,7 +1475,9 @@ async def _stream_cso_vod_route(resolver, identity: str):
     stream_username = stream_user.username if stream_user is not None else None
     source_item = getattr(candidate, "source_item", None)
     source_id = getattr(source_item, "id", None)
-    requested_container_extension = str(request.args.get("container_extension") or "").strip().lstrip(".").lower() or None
+    requested_container_extension = (
+        str(request.args.get("container_extension") or "").strip().lstrip(".").lower() or None
+    )
     source_container = requested_container_extension or (
         str(getattr(source_item, "container_extension", "") or "").strip().lower() or None
     )
@@ -1635,14 +1645,32 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
         if str(effective_policy.get("container") or "").strip().lower() != "hls":
             return Response("Requested profile is not HLS output", status=400)
 
-        candidate = resolved["candidate"]
         episode = resolved.get("episode")
-        upstream_url = str(resolved.get("upstream_url") or "")
         connection_id = request.view_args.get("connection_id")
         start_seconds = _requested_hls_start_seconds()
         stream_key = get_request_stream_key()
         stream_user = get_request_stream_user()
         stream_username = stream_user.username if stream_user is not None else None
+
+        subscription = await subscribe_vod_hls_candidates(
+            config,
+            list(resolved.get("candidates") or [resolved["candidate"]]),
+            stream_key,
+            effective_profile,
+            str(connection_id),
+            episode,
+            get_request_base_url(request),
+            start_seconds,
+            resolved["candidate"],
+            str(resolved.get("upstream_url") or ""),
+        )
+        output_session = subscription.session
+        candidate = subscription.candidate
+        if not output_session:
+            return Response(
+                subscription.error_message or "Unable to start CSO HLS stream",
+                status=subscription.status or 503,
+            )
 
         vod_item_id = None
         vod_category_id = None
@@ -1650,20 +1678,6 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
             vod_item_id = candidate.group_item.id
             vod_category_id = candidate.group_item.category_id
         vod_episode_id = episode.id if episode is not None else None
-
-        output_session, error_message, status = await subscribe_vod_hls(
-            config,
-            candidate,
-            upstream_url,
-            stream_key,
-            effective_profile,
-            str(connection_id),
-            episode=episode,
-            request_base_url=get_request_base_url(request),
-            start_seconds=start_seconds,
-        )
-        if not output_session:
-            return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
 
         await output_session.touch_client(str(connection_id))
         playlist_text = await _wait_for_hls_playlist(output_session, connection_id=str(connection_id))
@@ -1725,26 +1739,28 @@ async def _stream_cso_vod_hls_segment(resolver):
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
         return Response("Requested profile is not HLS output", status=400)
 
-    candidate = resolved["candidate"]
-    episode = resolved.get("episode")
-    upstream_url = str(resolved.get("upstream_url") or "")
     connection_id = request.view_args.get("connection_id")
     segment_name = request.view_args.get("segment_name")
     start_seconds = _requested_hls_start_seconds()
     stream_key = get_request_stream_key()
-    output_session, error_message, status = await subscribe_vod_hls(
+    subscription = await subscribe_vod_hls_candidates(
         config,
-        candidate,
-        upstream_url,
+        list(resolved.get("candidates") or [resolved["candidate"]]),
         stream_key,
         effective_profile,
         str(connection_id),
-        episode=episode,
-        request_base_url=get_request_base_url(request),
-        start_seconds=start_seconds,
+        resolved.get("episode"),
+        get_request_base_url(request),
+        start_seconds,
+        resolved["candidate"],
+        str(resolved.get("upstream_url") or ""),
     )
+    output_session = subscription.session
     if not output_session:
-        return Response(error_message or "Unable to start CSO HLS stream", status=status or 503)
+        return Response(
+            subscription.error_message or "Unable to start CSO HLS stream",
+            status=subscription.status or 503,
+        )
 
     await output_session.touch_client(str(connection_id))
     payload = await output_session.read_segment_bytes(str(segment_name), connection_id=str(connection_id))

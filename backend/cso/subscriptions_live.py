@@ -64,7 +64,7 @@ async def subscribe_channel_hls(
             ingest_user_agent=ingest_user_agent,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     try:
         ingest_session.app = current_quart_app_object()
     except Exception:
@@ -99,7 +99,7 @@ async def subscribe_channel_hls(
             cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     await output_session.start()
     if not output_session.running:
         reason = output_session.last_error or "output_not_running"
@@ -184,7 +184,7 @@ async def subscribe_source_hls(
             ingest_user_agent=ingest_user_agent,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     await ingest_session.start()
     if not ingest_session.running:
         reason = ingest_session.last_error or "no_available_source"
@@ -215,7 +215,7 @@ async def subscribe_source_hls(
             cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     await output_session.start()
     if not output_session.running:
         reason = output_session.last_error or "output_not_running"
@@ -323,7 +323,7 @@ async def subscribe_channel_stream(
             slate_session=slate_session,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     try:
         ingest_session.app = current_quart_app_object()
     except Exception:
@@ -361,7 +361,7 @@ async def subscribe_channel_stream(
     def _output_factory():
         return CsoOutputSession(output_session_key, channel.id, policy, ingest_session, slate_session)
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     output_session.slate_session = slate_session
     output_session.event_source = None
     await output_session.start()
@@ -538,7 +538,7 @@ async def subscribe_source_stream(
             slate_session=slate_session,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     ingest_session.slate_session = slate_session
     await ingest_session.start()
     if not ingest_session.running:
@@ -581,7 +581,7 @@ async def subscribe_source_stream(
             event_source=source,
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     output_session.slate_session = slate_session
     output_session.event_source = source
     await output_session.start()

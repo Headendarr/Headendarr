@@ -15,7 +15,7 @@ from backend.models import Channel, ChannelSource, Session
 from backend.source_media import load_source_media_shape, persist_source_media_shape
 from backend.utils import clean_key, clean_text, utc_now_naive
 
-from .common import ByteBudgetQueue, build_cso_stream_plan
+from .common import ByteBudgetQueue, build_cso_stream_plan, redacted_url_for_log
 from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
 from .constants import (
     CSO_HTTP_ERROR_THRESHOLD_DEFAULT,
@@ -36,7 +36,7 @@ from .constants import (
 from .events import emit_channel_stream_event, source_event_context
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
-    redact_ingest_command_for_log,
+    redact_ffmpeg_command_for_log,
     terminate_ffmpeg_process,
 )
 from .hls import discover_hls_variants
@@ -439,7 +439,7 @@ class CsoIngestSession:
                 source.id if source is not None else getattr(self.current_source, "id", None),
                 "segmented-handoff",
                 self.current_source_probe or {},
-                source_url,
+                redacted_url_for_log(source_url),
             )
             try:
                 started = await segmented_handoff_session.start()
@@ -489,7 +489,7 @@ class CsoIngestSession:
             source.id if source is not None else getattr(self.current_source, "id", None),
             "copy-only-ingest",
             self.current_source_probe or {},
-            redact_ingest_command_for_log(command),
+            redact_ffmpeg_command_for_log(command),
         )
         return await spawn_cso_ffmpeg_process(
             *command,
@@ -685,7 +685,7 @@ class CsoIngestSession:
             "CSO ingest upstream connected channel=%s source_id=%s source_url=%s subscribers=%s elapsed_ms=%s failover_elapsed_ms=%s",
             self.channel_id,
             getattr(self.current_source, "id", None),
-            self.current_source_url,
+            redacted_url_for_log(self.current_source_url),
             len(self.subscribers),
             int(max(0.0, self.last_source_start_ts - float(self.session_start_ts or self.last_source_start_ts)) * 1000),
             int(
@@ -796,7 +796,7 @@ class CsoIngestSession:
                         variant_position,
                         len(variants),
                         clean_text(selected_variant.get("playlist_type")) or "unknown",
-                        ingest_url,
+                        redacted_url_for_log(ingest_url),
                     )
                 else:
                     program_index = int(self.source_program_index.get(source.id) or 0)
@@ -1510,7 +1510,7 @@ class CsoIngestSession:
                 subscriber_id,
                 replaced_queue_stats["dropped_bytes"],
                 source_id,
-                source_url,
+                redacted_url_for_log(source_url),
             )
         logger.info(
             "CSO ingest subscriber added channel=%s ingest_key=%s subscriber=%s subscribers=%s source_id=%s source_url=%s",
@@ -1519,7 +1519,7 @@ class CsoIngestSession:
             subscriber_id,
             subscriber_count,
             source_id,
-            source_url,
+            redacted_url_for_log(source_url),
         )
         return q
 
@@ -1542,7 +1542,7 @@ class CsoIngestSession:
             lifecycle_references,
             int(queue_stats["dropped_bytes"]) if queue_stats is not None else 0,
             source_id,
-            source_url,
+            redacted_url_for_log(source_url),
         )
         if remaining == 0 and lifecycle_references == 0:
             await self.stop(force=True)
@@ -1564,7 +1564,7 @@ class CsoIngestSession:
             subscriber_count,
             lifecycle_references,
             source_id,
-            source_url,
+            redacted_url_for_log(source_url),
         )
 
     async def remove_lifecycle_reference(self, reference_id: str) -> int:
@@ -1582,7 +1582,7 @@ class CsoIngestSession:
             subscriber_count,
             lifecycle_references,
             source_id,
-            source_url,
+            redacted_url_for_log(source_url),
         )
         if subscriber_count == 0 and lifecycle_references == 0:
             await self.stop(force=True)
@@ -1654,7 +1654,7 @@ class CsoIngestSession:
             self.channel_id,
             self.key,
             source_id,
-            source_url,
+            redacted_url_for_log(source_url),
             subscriber_count,
             cleared_queued_bytes,
             force,

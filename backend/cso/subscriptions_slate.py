@@ -112,7 +112,7 @@ async def subscribe_slate_hls(
             duration_seconds=resolved_duration,
         )
 
-    slate_session = await cso_session_manager.get_or_create_slate(slate_key, _slate_factory)
+    slate_session, _ = await cso_session_manager.get_or_create_slate(slate_key, _slate_factory)
 
     def _output_factory():
         return CsoHlsOutputSession(
@@ -126,7 +126,7 @@ async def subscribe_slate_hls(
             event_source=source,
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_key, _output_factory)
     await output_session.start()
     if not output_session.running:
         return None, "Unable to start CSO HLS slate output", status_code

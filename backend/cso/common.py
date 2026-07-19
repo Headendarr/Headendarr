@@ -5,7 +5,7 @@ import shutil
 import time
 from collections import deque
 from pathlib import Path
-from typing import cast
+from typing import Any, Callable, TypeVar, cast
 
 from backend.config import enable_cso_preserve_segment_cache
 
@@ -15,6 +15,22 @@ from werkzeug.local import LocalProxy
 from .types import CsoStreamPlan
 
 logger = logging.getLogger("cso")
+
+SessionType = TypeVar("SessionType")
+
+
+def bounded_log_value(value: object | None, max_length: int = 128) -> str | None:
+    if value is None:
+        return None
+    length_limit = max(4, int(max_length or 0))
+    text = "".join(character if character.isprintable() else "?" for character in str(value))
+    if len(text) <= length_limit:
+        return text
+    return f"{text[: length_limit - 3]}..."
+
+
+def redacted_url_for_log(value: object | None) -> str | None:
+    return "<redacted-url>" if str(value or "").strip() else None
 
 
 def current_quart_app_object() -> Quart:
@@ -80,17 +96,21 @@ def _retained_lifecycle_state_unlocked(session):
 
 class _SessionMap:
     def __init__(self):
-        self.sessions = {}
+        self.sessions: dict[str, object] = {}
         self.lock = asyncio.Lock()
 
-    async def get_or_create(self, key, factory):
+    async def get_or_create(
+        self,
+        key: str,
+        factory: Callable[[], SessionType],
+    ) -> tuple[SessionType, bool]:
         async with self.lock:
             session = self.sessions.get(key)
             if session is not None:
-                return session
+                return cast(SessionType, session), False
             session = factory()
             self.sessions[key] = session
-            return session
+            return session, True
 
     async def register_unique(self, key, session):
         async with self.lock:
@@ -167,13 +187,25 @@ class CsoRuntimeManager:
         self.output = _SessionMap()
         self.vod_ingest = _SessionMap()
 
-    async def get_or_create_ingest(self, key, factory):
+    async def get_or_create_ingest(
+        self,
+        key: str,
+        factory: Callable[[], SessionType],
+    ) -> tuple[SessionType, bool]:
         return await self.ingest.get_or_create(key, factory)
 
-    async def get_or_create_slate(self, key, factory):
+    async def get_or_create_slate(
+        self,
+        key: str,
+        factory: Callable[[], SessionType],
+    ) -> tuple[SessionType, bool]:
         return await self.slate.get_or_create(key, factory)
 
-    async def get_or_create_output(self, key, factory):
+    async def get_or_create_output(
+        self,
+        key: str,
+        factory: Callable[[], SessionType],
+    ) -> tuple[SessionType, bool]:
         return await self.output.get_or_create(key, factory)
 
     async def register_vod_ingest(self, key, session):

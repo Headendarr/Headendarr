@@ -12,6 +12,7 @@ from backend.utils import clean_key, clean_text
 from .common import (
     ByteBudgetQueue,
     prepare_cso_cache_dir,
+    redacted_url_for_log,
     remove_cso_cache_dir,
 )
 from .constants import (
@@ -29,7 +30,7 @@ from .ffmpeg import (
     CsoFfmpegCommandBuilder,
     ffmpeg_failure_classification,
     hwaccel_failure_stage,
-    redact_ingest_command_for_log,
+    redact_ffmpeg_command_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
     wait_for_process_output_start,
@@ -259,7 +260,7 @@ class VodIngestSession:
                     self.start_seconds,
                     self.duration_seconds,
                     policy_log_label(effective_policy),
-                    redact_ingest_command_for_log(command) if input_is_url else command,
+                    redact_ffmpeg_command_for_log(command),
                 )
                 process = await spawn_cso_ffmpeg_process(
                     *command,
@@ -563,7 +564,7 @@ class Vod247ChannelManager:
         for segment in visible_segments:
             if segment["discontinuity"]:
                 lines.append("#EXT-X-DISCONTINUITY")
-            lines.append(f'#EXTINF:{float(segment["duration"]):.3f},')
+            lines.append(f"#EXTINF:{float(segment['duration']):.3f},")
             lines.append(segment["name"])
         if endlist and (not lines or lines[-1] != "#EXT-X-ENDLIST"):
             lines.append("#EXT-X-ENDLIST")
@@ -612,7 +613,9 @@ class Vod247ChannelManager:
                 )
         self._retired_stitched_segments = kept_retired_segments
 
-    async def _queue_stitched_segment(self, runtime, duration_seconds: float, source_segment_path: Path, discontinuity: bool):
+    async def _queue_stitched_segment(
+        self, runtime, duration_seconds: float, source_segment_path: Path, discontinuity: bool
+    ):
         stitched_name = f"seg_{self._stitched_segment_index:06d}.m4s"
         self._stitched_segment_index += 1
         stitched_path = self.stitched_output_dir / stitched_name
@@ -1199,7 +1202,7 @@ class Vod247ChannelManager:
                         int((next_playback.get("entry") or {}).get("source_item_id") or 0),
                         remaining_to_start,
                         cache_state,
-                        next_upstream_url,
+                        redacted_url_for_log(next_upstream_url),
                     )
                     warmed = await warm_vod_cache(
                         next_candidate,

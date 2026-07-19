@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -609,11 +610,77 @@ class HwaccelFailureStateStore:
 hwaccel_failure_state_store = HwaccelFailureStateStore()
 
 
-def redact_ingest_command_for_log(command):
-    redacted = list(command or [])
-    for idx, token in enumerate(redacted):
-        if token == "-headers" and idx + 1 < len(redacted):
-            redacted[idx + 1] = "<redacted>"
+def _bounded_command_log_token(value: object, max_length: int = 256) -> str:
+    text = "".join(character if character.isprintable() else "?" for character in str(value))
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3]}..."
+
+
+def redact_ffmpeg_error_for_log(
+    value: object,
+    sensitive_values: tuple[object, ...] = (),
+    max_length: int = 1024,
+) -> str:
+    text = "".join(character if character.isprintable() else "?" for character in str(value or ""))
+    for sensitive_value in sorted(
+        {str(item) for item in sensitive_values if str(item or "")},
+        key=len,
+        reverse=True,
+    ):
+        text = text.replace(sensitive_value, "<redacted>")
+    text = re.sub(
+        r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-token)"
+        r"\s*:\s*[^|]+",
+        r"\1: <redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(?:https?|rtsp|rtmp|udp|tcp)://[^\s<>'\"]+",
+        "<redacted-url>",
+        text,
+    )
+    length_limit = max(4, int(max_length or 0))
+    if len(text) <= length_limit:
+        return text
+    return f"{text[: length_limit - 3]}..."
+
+
+def redact_ffmpeg_command_for_log(command: list[str] | tuple[str, ...]) -> list[str]:
+    redacted: list[str] = []
+    redact_next = False
+    redact_input_next = False
+    sensitive_value_flags = {
+        "-authorization",
+        "-cookies",
+        "-headers",
+        "-http_proxy",
+        "-referer",
+        "-user_agent",
+    }
+    for raw_token in command or ():
+        token = str(raw_token)
+        if redact_next:
+            redacted.append("<redacted>")
+            redact_next = False
+            continue
+        if redact_input_next:
+            redacted.append("<redacted-input>")
+            redact_input_next = False
+            continue
+        if token in sensitive_value_flags:
+            redacted.append(token)
+            redact_next = True
+            continue
+        if token == "-i":
+            redacted.append(token)
+            redact_input_next = True
+            continue
+        parsed = urlparse(token)
+        if (parsed.scheme and parsed.netloc) or "://" in token:
+            redacted.append("<redacted-url>")
+            continue
+        redacted.append(_bounded_command_log_token(token))
     return redacted
 
 

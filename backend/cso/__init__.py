@@ -12,7 +12,7 @@ from .events import (
     latest_cso_playback_issue_hint,
     summarize_cso_playback_issue,
 )
-from .common import cso_session_manager
+from .common import bounded_log_value, cso_session_manager
 from .subscriptions_live import (
     subscribe_channel_hls,
     subscribe_channel_stream,
@@ -28,6 +28,7 @@ from .subscriptions_vod import (
     subscribe_vod_channel_hls,
     subscribe_vod_channel_output_stream,
     subscribe_vod_hls,
+    subscribe_vod_hls_candidates,
     subscribe_vod_ingest_stream,
     subscribe_vod_stream,
 )
@@ -37,6 +38,7 @@ from .sources import cso_source_from_vod_source, order_cso_channel_sources, reso
 from .types import CsoSource
 from .vod_cache import cleanup_vod_proxy_cache, vod_cache_manager
 from .vod_proxy import disconnect_vod_proxy_output
+from .vod_hls_capacity import reusable_vod_hls_output_snapshot, vod_hls_output_session_key
 
 
 async def disconnect_active_stream_connection(connection_id: str) -> bool:

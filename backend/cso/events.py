@@ -7,6 +7,7 @@ from sqlalchemy import delete, select
 from backend.models import CsoEventLog, Session, VodCategoryEpisode, VodCategoryItem
 from backend.utils import clean_text, convert_to_int, utc_now_naive
 
+from .common import redacted_url_for_log
 from .types import CsoSource
 
 
@@ -30,7 +31,7 @@ def source_event_context(source: CsoSource, source_url=None):
         "source_priority": source.priority,
     }
     if source_url or source.url:
-        payload["source_url"] = source_url or source.url
+        payload["source_url"] = redacted_url_for_log(source_url or source.url)
     return payload
 
 

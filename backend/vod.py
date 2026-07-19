@@ -307,27 +307,99 @@ async def vod_cache_is_complete(
     return bool(entry.complete and entry.final_path.exists())
 
 
-async def vod_candidate_has_capacity(candidate: VodCuratedPlaybackCandidate, upstream_url: str) -> bool:
+async def vod_candidate_has_capacity(
+    candidate: VodCuratedPlaybackCandidate,
+    upstream_url: str,
+    episode: VodCategoryEpisode | None = None,
+    profile: str | None = None,
+    start_seconds: int = 0,
+    connection_id: str | None = None,
+) -> bool:
     from backend.cso import (
+        bounded_log_value,
         cso_capacity_registry,
         cso_source_from_vod_source,
+        reusable_vod_hls_output_snapshot,
         source_capacity_key,
         source_capacity_limit,
+        vod_hls_output_session_key,
     )
 
     source = await cso_source_from_vod_source(candidate, upstream_url)
     if source is None:
         return False
+    capacity_key = source_capacity_key(source)
     limit = int(source_capacity_limit(source) or 0)
-    if limit <= 0:
+    output_key = None
+    if clean_text(profile):
+        output_key = vod_hls_output_session_key(source.id, profile, start_seconds)
+    if await vod_cache_is_complete(candidate, episode=episode):
+        usage = await cso_capacity_registry.get_usage(capacity_key)
+        logger.info(
+            "VOD HLS capacity selection output_key=%s connection_id=%s capacity_key=%s "
+            "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s "
+            "action=completed_local_cache input=completed_local_cache",
+            bounded_log_value(output_key),
+            bounded_log_value(clean_text(connection_id) or None),
+            bounded_log_value(capacity_key),
+            None,
+            bounded_log_value(source.id),
+            limit,
+            int(usage.get("total") or 0),
+        )
         return True
-    usage = await cso_capacity_registry.get_usage(source_capacity_key(source))
-    return int(usage.get("total") or 0) < limit
+    if clean_text(profile):
+        reusable = await reusable_vod_hls_output_snapshot(output_key)
+        if reusable is not None:
+            usage = await cso_capacity_registry.get_usage(capacity_key)
+            logger.info(
+                "VOD HLS capacity selection output_key=%s connection_id=%s capacity_key=%s "
+                "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s action=reused_existing_output input=%s",
+                bounded_log_value(output_key),
+                bounded_log_value(clean_text(connection_id) or None),
+                bounded_log_value(capacity_key),
+                bounded_log_value(reusable.get("reservation_owner")),
+                bounded_log_value(reusable.get("reservation_slot_id")),
+                limit,
+                int(usage.get("total") or 0),
+                bounded_log_value(reusable.get("input_kind")),
+            )
+            return True
+    if limit <= 0:
+        logger.info(
+            "VOD HLS capacity selection output_key=%s connection_id=%s capacity_key=%s "
+            "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s "
+            "action=new_output_candidate input=upstream",
+            bounded_log_value(output_key),
+            bounded_log_value(clean_text(connection_id) or None),
+            bounded_log_value(capacity_key),
+            None,
+            bounded_log_value(source.id),
+            limit,
+            0,
+        )
+        return True
+    usage = await cso_capacity_registry.get_usage(capacity_key)
+    has_capacity = int(usage.get("total") or 0) < limit
+    logger.info(
+        "VOD HLS capacity selection output_key=%s connection_id=%s capacity_key=%s "
+        "limit=%s observed_usage=%s action=%s input=upstream",
+        bounded_log_value(output_key),
+        bounded_log_value(clean_text(connection_id) or None),
+        bounded_log_value(capacity_key),
+        limit,
+        int(usage.get("total") or 0),
+        "new_output_candidate" if has_capacity else "capacity_blocked",
+    )
+    return has_capacity
 
 
 async def select_vod_playback_target(
     candidates: list[VodCuratedPlaybackCandidate],
     episode: VodCategoryEpisode | None = None,
+    profile: str | None = None,
+    start_seconds: int = 0,
+    connection_id: str | None = None,
 ) -> tuple[VodCuratedPlaybackCandidate | None, str | None, str | None]:
     if not candidates:
         return None, None, "not_found"
@@ -340,7 +412,14 @@ async def select_vod_playback_target(
         if not upstream_url:
             continue
         saw_stream_url = True
-        if not await vod_candidate_has_capacity(candidate, upstream_url):
+        if not await vod_candidate_has_capacity(
+            candidate,
+            upstream_url,
+            episode=episode,
+            profile=profile,
+            start_seconds=start_seconds,
+            connection_id=connection_id,
+        ):
             blocked_capacity = True
             continue
         return candidate, upstream_url, None

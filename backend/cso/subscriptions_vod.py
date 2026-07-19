@@ -2,15 +2,23 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from quart import request
 
+from backend.config import Config
+from backend.models import VodCategoryEpisode
 from backend.stream_profiles import generate_cso_policy_from_profile
-from backend.vod import VodCuratedPlaybackCandidate, VodSourcePlaybackCandidate
+from backend.vod import (
+    VodCuratedPlaybackCandidate,
+    VodSourcePlaybackCandidate,
+    select_vod_playback_target,
+)
 from backend.utils import clean_text
 
-from .common import build_cso_stream_plan, cso_session_manager, current_quart_app_object
+from .common import bounded_log_value, build_cso_stream_plan, cso_session_manager, current_quart_app_object
+from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
 from .constants import (
     CSO_CONSUMER_PROGRESS_LOG_INTERVAL_SECONDS,
     CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES,
@@ -18,7 +26,7 @@ from .constants import (
 )
 from .events import emit_channel_stream_event, source_event_context, summarize_cso_playback_issue
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
-from .output import CsoHlsOutputSession, CsoOutputSession
+from .output import CsoHlsClientStartResult, CsoHlsOutputSession, CsoOutputSession
 from .policy import (
     generate_vod_channel_ingest_policy,
     policy_content_type,
@@ -30,9 +38,28 @@ from .sources import cso_source_from_vod_source
 from .subscriptions_shared import resolve_username_for_stream_key
 from .vod_cache import vod_cache_manager
 from .vod_ingest import Vod247ChannelManager, VodIngestSession
+from .vod_hls_capacity import vod_hls_output_session_key
 
 
 logger = logging.getLogger("cso")
+
+
+@dataclass(frozen=True)
+class VodHlsSubscriptionAttempt:
+    session: CsoHlsOutputSession | None
+    error_message: str | None
+    status: int
+    lifecycle: CsoHlsClientStartResult | None = None
+
+
+@dataclass(frozen=True)
+class VodHlsSelectionSubscriptionResult:
+    session: CsoHlsOutputSession | None
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate | None
+    upstream_url: str
+    error_message: str | None
+    status: int
+    lifecycle: CsoHlsClientStartResult | None = None
 
 
 async def subscribe_vod_stream(
@@ -96,7 +123,7 @@ async def subscribe_vod_stream(
             slate_session=slate_session,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     try:
         ingest_session.app = current_quart_app_object()
     except Exception:
@@ -146,7 +173,7 @@ async def subscribe_vod_stream(
             slate_session,
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     output_session.slate_session = slate_session
     output_session.event_source = source
     await output_session.start()
@@ -239,35 +266,35 @@ async def subscribe_vod_stream(
 
 
 async def subscribe_vod_hls(
-    config,
-    candidate,
-    upstream_url,
-    stream_key,
-    profile,
-    connection_id,
-    episode=None,
-    request_base_url="",
+    config: Config,
+    candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate,
+    upstream_url: str,
+    stream_key: str,
+    profile: str,
+    connection_id: str,
+    episode: VodCategoryEpisode | None = None,
+    request_base_url: str = "",
     on_disconnect=None,
-    start_seconds=0,
-):
+    start_seconds: int = 0,
+) -> VodHlsSubscriptionAttempt:
     """Subscribe a playback client to a VOD item/episode CSO HLS output session."""
     if not candidate:
-        return None, "VOD item not found", 404
+        return VodHlsSubscriptionAttempt(None, "VOD item not found", 404)
 
     item = candidate.group_item if isinstance(candidate, VodCuratedPlaybackCandidate) else None
     source = await cso_source_from_vod_source(candidate, upstream_url)
 
     if not source:
-        return None, "Source not found", 404
+        return VodHlsSubscriptionAttempt(None, "Source not found", 404)
 
     playlist = source.playlist
     if playlist is not None and not bool(getattr(playlist, "enabled", False)):
-        return None, "Source playlist is disabled", 404
+        return VodHlsSubscriptionAttempt(None, "Source playlist is disabled", 404)
 
     source_id = source.id
     policy = generate_cso_policy_from_profile(config, profile)
     start_value = max(0, int(start_seconds or 0))
-    output_session_key = f"cso-vod-hls-output-{source_id}-{profile}-start{start_value}"
+    output_session_key = vod_hls_output_session_key(source_id, profile, start_value)
     ingest_user_agent = resolve_cso_ingest_user_agent(config, source)
     request_headers = {}
     for name, value in dict(getattr(request, "headers", {}) or {}).items():
@@ -279,7 +306,7 @@ async def subscribe_vod_hls(
     input_target = str(cache_entry.final_path) if local_cache_ready else str(source.url or "").strip()
     input_is_url = not local_cache_ready
     if not input_target:
-        return None, "No available stream source", 503
+        return VodHlsSubscriptionAttempt(None, "No available stream source", 503)
 
     vod_category_id = None
     vod_item_id = None
@@ -290,7 +317,7 @@ async def subscribe_vod_hls(
     if episode is not None:
         vod_episode_id = episode.id
 
-    def _output_factory():
+    def _output_factory() -> CsoHlsOutputSession:
         return CsoHlsOutputSession(
             output_session_key,
             None,  # channel_id is None for VOD
@@ -304,27 +331,66 @@ async def subscribe_vod_hls(
             input_request_headers=request_headers,
             start_seconds=start_value,
             finite_event_output=True,
+            capacity_key=source_capacity_key(source),
+            capacity_owner_key=output_session_key,
+            capacity_limit=source_capacity_limit(source),
+            capacity_slot_id=source_id,
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
-    is_new_client = await output_session.start_and_add_client(
+    output_session, _ = await cso_session_manager.get_or_create_output(
+        output_session_key,
+        _output_factory,
+    )
+    lifecycle = await output_session.start_and_add_client(
         connection_id,
         on_disconnect=on_disconnect,
     )
-    if not output_session.running:
-        reason = output_session.last_error or "output_not_running"
+    if not lifecycle.running:
+        reason = lifecycle.failure_reason or "output_not_running"
         await emit_channel_stream_event(
             vod_category_id=vod_category_id,
             vod_item_id=vod_item_id,
             vod_episode_id=vod_episode_id,
             session_id=output_session_key,
-            event_type="playback_unavailable",
+            event_type="capacity_blocked" if reason == "capacity_blocked" else "playback_unavailable",
             severity="warning",
             details={"reason": reason, "profile": profile},
         )
-        return None, "VOD unavailable because output pipeline could not be started", 503
+        return VodHlsSubscriptionAttempt(
+            None,
+            (
+                "Source capacity limit reached"
+                if reason == "capacity_blocked"
+                else "VOD unavailable because output pipeline could not be started"
+            ),
+            503,
+            lifecycle,
+        )
 
-    if is_new_client:
+    if lifecycle.output_started:
+        action = "new_output_created"
+    elif lifecycle.existing_client:
+        action = "existing_connection_reused"
+    else:
+        action = "new_client_joined"
+    capacity_key = lifecycle.capacity_key or source_capacity_key(source)
+    capacity_limit = lifecycle.capacity_limit
+    capacity_usage = await cso_capacity_registry.get_usage(capacity_key)
+    logger.info(
+        "CSO VOD HLS subscription output_key=%s connection_id=%s capacity_key=%s "
+        "reservation_owner=%s slot_id=%s limit=%s observed_usage=%s action=%s input=%s",
+        bounded_log_value(output_session_key),
+        bounded_log_value(connection_id),
+        bounded_log_value(capacity_key),
+        bounded_log_value(lifecycle.reservation_owner),
+        bounded_log_value(lifecycle.reservation_slot_id),
+        capacity_limit,
+        int(capacity_usage.get("total") or 0),
+        action,
+        lifecycle.input_kind,
+    )
+
+    if lifecycle.client_added:
         await emit_channel_stream_event(
             vod_category_id=vod_category_id,
             vod_item_id=vod_item_id,
@@ -335,14 +401,82 @@ async def subscribe_vod_hls(
             severity="info",
             details={
                 "profile": profile,
-                "connection_id": connection_id,
+                "connection_id": bounded_log_value(connection_id),
                 **source_event_context(
                     source,
                     source_url=upstream_url or input_target,
                 ),
             },
         )
-    return output_session, None, 200
+    return VodHlsSubscriptionAttempt(output_session, None, 200, lifecycle)
+
+
+async def subscribe_vod_hls_candidates(
+    config: Config,
+    candidates: list[VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate],
+    stream_key: str,
+    profile: str,
+    connection_id: str,
+    episode: VodCategoryEpisode | None = None,
+    request_base_url: str = "",
+    start_seconds: int = 0,
+    initial_candidate: VodCuratedPlaybackCandidate | VodSourcePlaybackCandidate | None = None,
+    initial_upstream_url: str = "",
+) -> VodHlsSelectionSubscriptionResult:
+    remaining = list(candidates)
+    candidate = initial_candidate
+    upstream_url = initial_upstream_url
+    while remaining:
+        if candidate is None:
+            candidate, upstream_url, selection_error = await select_vod_playback_target(
+                remaining,
+                episode,
+                profile,
+                start_seconds,
+                connection_id,
+            )
+            if candidate is None:
+                return VodHlsSelectionSubscriptionResult(None, None, "", "Not found", 404)
+            if not upstream_url:
+                error_message = (
+                    "Source capacity limit reached" if selection_error == "capacity_blocked" else "Stream unavailable"
+                )
+                status = 503 if selection_error == "capacity_blocked" else 404
+                return VodHlsSelectionSubscriptionResult(None, candidate, "", error_message, status)
+        attempt = await subscribe_vod_hls(
+            config,
+            candidate,
+            upstream_url,
+            stream_key,
+            profile,
+            connection_id,
+            episode,
+            request_base_url,
+            None,
+            start_seconds,
+        )
+        if attempt.session is not None or attempt.error_message != "Source capacity limit reached":
+            return VodHlsSelectionSubscriptionResult(
+                attempt.session,
+                candidate,
+                upstream_url,
+                attempt.error_message,
+                attempt.status,
+                attempt.lifecycle,
+            )
+        selected_index = next((index for index, item in enumerate(remaining) if item is candidate), None)
+        if selected_index is None:
+            break
+        remaining = remaining[selected_index + 1 :]
+        candidate = None
+        upstream_url = ""
+    return VodHlsSelectionSubscriptionResult(
+        None,
+        candidate,
+        upstream_url,
+        "Source capacity limit reached",
+        503,
+    )
 
 
 async def subscribe_vod_channel_output_stream(
@@ -370,7 +504,7 @@ async def subscribe_vod_channel_output_stream(
             requested_policy=requested_policy,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     await ingest_session.start()
     if not ingest_session.running:
         reason = ingest_session.last_error or "no_scheduled_programme"
@@ -387,7 +521,7 @@ async def subscribe_vod_channel_output_stream(
             direct_input_realtime=True,
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     output_session.direct_input_realtime = True
     await output_session.start()
     if not output_session.running:
@@ -439,7 +573,7 @@ async def subscribe_vod_channel_hls(
             requested_policy=requested_policy,
         )
 
-    ingest_session = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
+    ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
     await ingest_session.start()
     if not ingest_session.running:
         reason = ingest_session.last_error or "no_scheduled_programme"
@@ -456,7 +590,7 @@ async def subscribe_vod_channel_hls(
             cache_root_dir=os.path.join(config.config_path, "cache", "cso_hls"),
         )
 
-    output_session = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
+    output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     await output_session.start()
     if not output_session.running:
         return None, "Unable to start VOD channel HLS output", 503
