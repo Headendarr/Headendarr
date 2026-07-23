@@ -45,7 +45,6 @@ from .hls import (
     HlsSelectedPresentation,
     discover_hls_variants,
 )
-from .output import CsoOutputSession
 from .policy import (
     policy_content_type,
     resolve_live_pipe_container,
@@ -254,18 +253,9 @@ class CsoIngestSession:
             self.slate_session.reason = reason_key
             self.slate_session.detail_hint = clean_text(detail_hint)
             self.slate_session.duration_seconds = resolved_duration
-            output_session = CsoOutputSession(
-                key=f"cso-terminal-output-{reason_key}-{unique_suffix}",
-                channel_id=getattr(channel, "id", None) or (source.channel_id if source else self.channel_id),
-                policy=policy,
-                ingest_session=None,
-                slate_session=self.slate_session,
-                event_source=source,
-                use_slate_as_input=True,
-            )
-            subscriber_id = f"{output_session.key}-subscriber"
-            await output_session.start()
-            queue = await output_session.add_client(subscriber_id, prebuffer_bytes=0)
+            subscriber_id = f"cso-terminal-slate-{reason_key}-{unique_suffix}-subscriber"
+            await self.slate_session.start()
+            queue = await self.slate_session.add_subscriber(subscriber_id, prebuffer_bytes=0)
             try:
                 while True:
                     chunk = await queue.get()
@@ -274,11 +264,7 @@ class CsoIngestSession:
                     yield chunk
             finally:
                 try:
-                    await output_session.remove_client(subscriber_id)
-                except Exception:
-                    pass
-                try:
-                    await output_session.stop(force=True)
+                    await self.slate_session.remove_subscriber(subscriber_id)
                 except Exception:
                     pass
 

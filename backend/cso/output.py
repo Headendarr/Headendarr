@@ -1441,8 +1441,13 @@ class CsoHlsOutputSession:
         while time.time() < hard_deadline:
             if process.returncode is not None:
                 return False, self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
-            playlist_text = await self.read_playlist_text()
+            # Startup already owns self.lock. Reading through read_playlist_text()
+            # would try to acquire that lock again and leave the request, FFmpeg,
+            # and idle cleanup waiting indefinitely.
+            playlist_text = await self._read_valid_playlist_from_disk()
             if playlist_text:
+                self._last_good_playlist_text = playlist_text
+                self._last_good_playlist_ts = time.time()
                 return True, ""
             progress_marker = self._startup_progress_marker()
             if progress_marker > last_progress_marker:
@@ -1789,8 +1794,12 @@ class CsoHlsOutputSession:
                     int((time.time() - self.last_activity) * 1000),
                 )
             pipe_input_format = None
-            source = self.event_source or self.ingest_session.current_source
-            if not use_direct_input:
+            source = self.event_source
+            if source is None and self.ingest_session is not None:
+                source = self.ingest_session.current_source
+            if self.use_slate_as_input:
+                pipe_input_format = "mpegts"
+            elif not use_direct_input:
                 ingest_policy = dict(self.ingest_session.ingest_policy or {})
                 if ingest_policy:
                     pipe_input_format = policy_ffmpeg_format(ingest_policy)
@@ -1801,12 +1810,22 @@ class CsoHlsOutputSession:
                     )
                 source = self.ingest_session.current_source
             source_probe = (
-                event_source_probe(source) if use_direct_input else dict(self.ingest_session.current_source_probe or {})
+                dict(getattr(self.slate_session, "media_hint", {}) or {})
+                if self.use_slate_as_input
+                else (
+                    event_source_probe(source)
+                    if use_direct_input
+                    else dict(self.ingest_session.current_source_probe or {})
+                )
             )
             source_identity = (
                 self.input_target
                 if use_direct_input
-                else (self.ingest_session.current_source_url or clean_text(getattr(source, "url", "")))
+                else (
+                    clean_text(getattr(self.slate_session, "key", "")) or self.key
+                    if self.use_slate_as_input
+                    else (self.ingest_session.current_source_url or clean_text(getattr(source, "url", "")))
+                )
             )
             base_runtime_policy = effective_vod_hls_runtime_policy(self.policy, source)
             self.running = True

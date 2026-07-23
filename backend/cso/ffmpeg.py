@@ -1098,6 +1098,7 @@ class CsoFfmpegCommandBuilder:
         low_latency,
         pipe_format=None,
         input_hwaccel_args=None,
+        include_stream_maps=True,
     ):
         pipe_format = CONTAINER_TO_FFMPEG_FORMAT.get(clean_key(pipe_format), self.pipe_input_format)
         command = []
@@ -1110,18 +1111,16 @@ class CsoFfmpegCommandBuilder:
             ]
         command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
         command += list(input_hwaccel_args or [])
-        command += [
-            "-f",
-            pipe_format,
-            "-i",
-            "pipe:0",
-            "-map",
-            "0:v:0?",
-            "-map",
-            "0:a?",
-            "-max_muxing_queue_size",
-            "4096",
-        ]
+        command += ["-f", pipe_format, "-i", "pipe:0"]
+        if include_stream_maps:
+            command += [
+                "-map",
+                "0:v:0?",
+                "-map",
+                "0:a?",
+                "-max_muxing_queue_size",
+                "4096",
+            ]
         command += self._input_resilience_flags()
         return command
 
@@ -1657,6 +1656,8 @@ class CsoFfmpegCommandBuilder:
                 CSO_OUTPUT_FPS_PROBE_SIZE,
                 low_latency=False,
                 pipe_format=self.pipe_input_format,
+                input_hwaccel_args=self._input_hwaccel_args(),
+                include_stream_maps=False,
             )
         video_map = "0:v:0" if require_video else "0:v:0?"
         command += ["-map", video_map]

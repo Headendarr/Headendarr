@@ -5,7 +5,7 @@ from backend.utils import clean_key
 
 from .common import build_cso_stream_plan, cso_session_manager
 from .constants import CSO_UNAVAILABLE_SHOW_SLATE
-from .output import CsoHlsOutputSession, CsoOutputSession
+from .output import CsoHlsOutputSession
 from .policy import policy_content_type
 from .slate import CsoSlateSession, cso_unavailable_duration_seconds, should_allow_unavailable_slate
 from .types import CsoSource
@@ -35,18 +35,9 @@ def subscribe_slate_stream(
     )
 
     async def _generator():
-        output_session = CsoOutputSession(
-            key=f"cso-terminal-output-{reason_key}-{unique_suffix}",
-            channel_id=getattr(channel, "id", None) if channel is not None else None,
-            policy=policy,
-            ingest_session=None,
-            slate_session=slate_session,
-            event_source=source,
-            use_slate_as_input=True,
-        )
-        subscriber_id = f"{output_session.key}-subscriber"
-        await output_session.start()
-        queue = await output_session.add_client(subscriber_id, prebuffer_bytes=0)
+        subscriber_id = f"{slate_session.key}-subscriber"
+        await slate_session.start()
+        queue = await slate_session.add_subscriber(subscriber_id, prebuffer_bytes=0)
         try:
             while True:
                 chunk = await queue.get()
@@ -55,11 +46,7 @@ def subscribe_slate_stream(
                 yield chunk
         finally:
             try:
-                await output_session.remove_client(subscriber_id)
-            except Exception:
-                pass
-            try:
-                await output_session.stop(force=True)
+                await slate_session.remove_subscriber(subscriber_id)
             except Exception:
                 pass
 

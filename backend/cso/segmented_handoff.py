@@ -276,6 +276,51 @@ class SegmentedHandoffSession:
             self.wait_task = wait_task if wait_task in pending_tasks else None
         return teardown, task_cleanup
 
+    async def _playlist_is_ready(self) -> bool:
+        if not self.playlist_path.exists():
+            return False
+        try:
+            playlist_text = await asyncio.to_thread(self.playlist_path.read_text, "utf-8")
+        except Exception:
+            return False
+        first_nonempty_line = next((line.strip() for line in playlist_text.splitlines() if line.strip()), "")
+        if first_nonempty_line != "#EXTM3U":
+            return False
+        referenced_names = []
+        media_segment_count = 0
+        for raw_line in playlist_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#EXT-X-MAP:"):
+                uri_marker = 'URI="'
+                uri_start = line.find(uri_marker)
+                if uri_start >= 0:
+                    uri_start += len(uri_marker)
+                    uri_end = line.find('"', uri_start)
+                    if uri_end > uri_start:
+                        referenced_names.append(line[uri_start:uri_end].split("?", 1)[0])
+                continue
+            if line.startswith("#"):
+                continue
+            referenced_names.append(line.split("?", 1)[0])
+            media_segment_count += 1
+        if media_segment_count == 0:
+            return False
+        output_dir = self.output_dir.resolve()
+        for referenced_name in referenced_names:
+            referenced_path = (self.output_dir / referenced_name).resolve()
+            try:
+                referenced_path.relative_to(output_dir)
+            except ValueError:
+                return False
+            try:
+                if not referenced_path.is_file() or int(referenced_path.stat().st_size or 0) <= 0:
+                    return False
+            except Exception:
+                return False
+        return True
+
     async def _wait_for_startup_ready(self, process, timeout_seconds: float = 10.0) -> tuple[bool, str]:
         startup_idle_timeout = max(1.0, float(timeout_seconds))
         hard_deadline = time.time() + max(30.0, startup_idle_timeout * 6.0)
@@ -291,7 +336,7 @@ class SegmentedHandoffSession:
                 try:
                     playlist_stat = self.playlist_path.stat()
                     last_seen_mtime = max(last_seen_mtime, float(playlist_stat.st_mtime))
-                    if int(playlist_stat.st_size or 0) > 0:
+                    if int(playlist_stat.st_size or 0) > 0 and await self._playlist_is_ready():
                         return True, ""
                 except Exception:
                     pass
