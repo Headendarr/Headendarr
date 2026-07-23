@@ -14,7 +14,7 @@ from .events import (
 )
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
 from .output import CsoHlsOutputSession, CsoOutputSession
-from .policy import policy_content_type
+from .policy import output_profile_requires_audio, policy_content_type
 from .slate import CsoSlateSession, should_allow_unavailable_slate
 from .sources import cso_source_from_channel_source, order_cso_channel_sources
 from .subscriptions_shared import resolve_username_for_stream_key
@@ -45,9 +45,11 @@ async def subscribe_channel_hls(
         return None, "No available stream source for this channel", 503
 
     policy = generate_cso_policy_from_profile(config, profile)
-    ingest_key = f"cso-ingest-{channel.id}"
+    audio_required = output_profile_requires_audio(policy)
+    ingest_contract = "audio" if audio_required else "video"
+    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}"
     output_session_key = f"cso-hls-output-{channel.id}-{profile}"
-    capacity_owner_key = f"cso-channel-{channel.id}"
+    capacity_owner_key = f"cso-channel-{channel.id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = resolve_cso_ingest_user_agent(config, sources[0] if sources else None)
 
@@ -62,6 +64,7 @@ async def subscribe_channel_hls(
             stream_key=stream_key,
             username=username,
             ingest_user_agent=ingest_user_agent,
+            require_audio=audio_required,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -164,9 +167,11 @@ async def subscribe_source_hls(
     channel_id = source.channel_id
     sources = [source]
     policy = generate_cso_policy_from_profile(config, profile)
-    ingest_key = f"cso-source-ingest-{source_id}"
+    audio_required = output_profile_requires_audio(policy)
+    ingest_contract = "audio" if audio_required else "video"
+    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}"
     output_session_key = f"cso-source-hls-output-{source_id}-{profile}"
-    capacity_owner_key = f"cso-source-{source_id}"
+    capacity_owner_key = f"cso-source-{source_id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = resolve_cso_ingest_user_agent(config, source)
 
@@ -182,6 +187,7 @@ async def subscribe_source_hls(
             username=username,
             allow_failover=False,
             ingest_user_agent=ingest_user_agent,
+            require_audio=audio_required,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -291,9 +297,11 @@ async def subscribe_channel_stream(
         return build_cso_stream_plan(None, None, "No available stream source for this channel", 503)
 
     policy = generate_cso_policy_from_profile(config, profile)
-    ingest_key = f"cso-ingest-{channel.id}"
+    audio_required = output_profile_requires_audio(policy)
+    ingest_contract = "audio" if audio_required else "video"
+    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}"
     output_session_key = f"cso-output-{channel.id}-{profile}"
-    capacity_owner_key = f"cso-channel-{channel.id}"
+    capacity_owner_key = f"cso-channel-{channel.id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = resolve_cso_ingest_user_agent(config, sources[0] if sources else None)
     allow_unavailable_slate = should_allow_unavailable_slate(
@@ -321,6 +329,7 @@ async def subscribe_channel_stream(
             username=username,
             ingest_user_agent=ingest_user_agent,
             slate_session=slate_session,
+            require_audio=audio_required,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -505,9 +514,11 @@ async def subscribe_source_stream(
     sources = [source]
 
     policy = generate_cso_policy_from_profile(config, profile)
-    ingest_key = f"cso-source-ingest-{source_id}"
+    audio_required = output_profile_requires_audio(policy)
+    ingest_contract = "audio" if audio_required else "video"
+    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}"
     output_session_key = f"cso-source-output-{source_id}-{profile}"
-    capacity_owner_key = f"cso-source-{source_id}"
+    capacity_owner_key = f"cso-source-{source_id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
     ingest_user_agent = resolve_cso_ingest_user_agent(config, source)
     allow_unavailable_slate = should_allow_unavailable_slate(
@@ -536,6 +547,7 @@ async def subscribe_source_stream(
             allow_failover=False,
             ingest_user_agent=ingest_user_agent,
             slate_session=slate_session,
+            require_audio=audio_required,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)

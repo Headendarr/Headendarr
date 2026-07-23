@@ -54,7 +54,7 @@ USER root
 WORKDIR /var
 
 RUN \
-    echo "** Install python build dependencies (only if base image is minimal python)**" \
+    echo "** Install python build dependencies **" \
         && apt-get update \
         && apt-get install -y --no-install-recommends \
             build-essential \

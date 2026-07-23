@@ -37,6 +37,7 @@ from .ffmpeg import (
     log_ffmpeg_start_result_failures,
     redact_ffmpeg_command_for_log,
     redact_ffmpeg_error_for_log,
+    startup_failure_diagnostics,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
 )
@@ -666,12 +667,12 @@ class CsoOutputSession:
                     if hardware_failures:
                         logger.warning(
                             "CSO output hardware fallback recovered startup channel=%s output_key=%s "
-                            "reason=%s fallback_policy=%s attempts=%s",
+                            "reason=%s fallback_policy=%s diagnostics=%s",
                             self.channel_id,
-                            self.key,
-                            hardware_failures[-1].failure_reason,
-                            start_result.fallback_policy,
-                            start_result.attempts,
+                            bounded_log_value(self.key),
+                            redact_ffmpeg_error_for_log(hardware_failures[-1].failure_reason),
+                            redact_ffmpeg_error_for_log(start_result.fallback_policy, max_length=128),
+                            startup_failure_diagnostics(hardware_failures[-1], start_result),
                         )
                     self.output_policy = dict(start_result.policy)
                     self.process, self.read_task, self.write_task, self.stderr_task = start_result.runtime
@@ -2228,9 +2229,9 @@ class CsoHlsOutputSession:
             logger.warning(
                 "CSO HLS output ended unexpectedly channel=%s output_key=%s return_code=%s stderr=%s",
                 self.channel_id,
-                self.key,
+                bounded_log_value(self.key),
                 return_code,
-                self._ffmpeg_error_summary() or "n/a",
+                redact_ffmpeg_error_for_log(self._ffmpeg_error_summary()) or "n/a",
             )
         await self.stop(force=True)
 

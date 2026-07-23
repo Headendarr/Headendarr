@@ -1,5 +1,6 @@
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from backend.stream_profiles import content_type_for_media_path, generate_cso_policy_from_profile
 from backend.utils import clean_key, clean_text
@@ -40,6 +41,10 @@ def policy_log_label(policy: dict[str, Any] | None) -> str:
         f"deinterlace={bool(data.get('deinterlace', False))}",
     ]
     return ", ".join(parts)
+
+
+def output_profile_requires_audio(policy: dict[str, Any] | None) -> bool:
+    return clean_key((policy or {}).get("audio_codec")) not in {"none", "drop", "disabled"}
 
 
 def resolve_cso_output_policy(policy: dict[str, Any] | None, use_slate_as_input: bool = False) -> dict[str, Any]:
@@ -147,9 +152,9 @@ def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> s
 def source_uses_segmented_handoff(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> bool:
     probe = dict(source_probe or {})
     if source is not None:
-        source_url = clean_text(getattr(source, "url", ""))
-        source_type = clean_key(getattr(source, "source_type", ""))
-        if source_url.lower().endswith(".m3u8") or source_type in {"vod_movie", "vod_episode"}:
+        source_path = (urlparse(clean_text(source.url)).path or "").lower()
+        source_type = clean_key(source.source_type)
+        if source_path.endswith((".m3u8", ".m3u")) or source_type in {"vod_movie", "vod_episode"}:
             return True
     container = clean_key(probe.get("container")) or clean_key(getattr(source, "container_extension", ""))
     if container and container not in {"mpegts", "ts"}:
@@ -169,6 +174,20 @@ def segmented_hls_segment_type(source: CsoSource | None, source_probe: dict[str,
     if container in {"mpegts", "ts"}:
         return "mpegts"
     return "fmp4"
+
+
+def segmented_handoff_subtitle_policy(segment_type: str) -> tuple[str, str]:
+    """Return the explicit subtitle policy for the single-playlist HLS handoff.
+
+    The current handoff writes one media playlist and one segment family. HLS
+    WebVTT and other alternate subtitles require their own rendition playlist,
+    while MP4 subtitle streams are not valid in MPEG-TS segments. Preserve
+    subtitle discovery in the selected input master, but deliberately drop
+    subtitles at this intermediate until the handoff can own separate subtitle
+    playlists.
+    """
+    resolved_segment_type = clean_key(segment_type) or "mpegts"
+    return "drop", f"single_playlist_hls_{resolved_segment_type}_cannot_preserve_alternate_subtitles"
 
 
 def should_prefer_direct_vod_url_input(

@@ -225,7 +225,13 @@ class CsoRuntimeManager:
             "ingest_subscribers=%s slate_subscribers=%s output_clients=%s total_queued_bytes=%s "
             "live_ffmpeg_processes=%s ffmpeg_teardown_failures=%s vod_cache_preemptions_total=%s "
             "vod_cache_preemption_failures_total=%s vod_cache_resumes_total=%s "
-            "vod_upstream_invalid_responses_total=%s vod_provider_capacity_rejections_total=%s",
+            "vod_upstream_invalid_responses_total=%s vod_provider_capacity_rejections_total=%s "
+            "hls_selected_masters_total=%s hls_muxed_audio_selected_variants_total=%s "
+            "hls_external_audio_selected_variants_total=%s hls_multiple_audio_presentations_total=%s "
+            "hls_subtitle_presentations_total=%s hls_ambiguous_probe_attempts_total=%s "
+            "hls_ambiguous_probe_cache_hits_total=%s hls_ambiguous_probe_timeouts_total=%s "
+            "hls_ambiguous_probe_failures_total=%s hls_required_track_failures_total=%s "
+            "hls_selected_master_cleanup_failures_total=%s",
             metrics["ingest_sessions"],
             metrics["slate_sessions"],
             metrics["output_sessions"],
@@ -241,9 +247,21 @@ class CsoRuntimeManager:
             metrics["vod_cache_resumes_total"],
             metrics["vod_upstream_invalid_responses_total"],
             metrics["vod_provider_capacity_rejections_total"],
+            metrics["hls_selected_masters_total"],
+            metrics["hls_muxed_audio_selected_variants_total"],
+            metrics["hls_external_audio_selected_variants_total"],
+            metrics["hls_multiple_audio_presentations_total"],
+            metrics["hls_subtitle_presentations_total"],
+            metrics["hls_ambiguous_probe_attempts_total"],
+            metrics["hls_ambiguous_probe_cache_hits_total"],
+            metrics["hls_ambiguous_probe_timeouts_total"],
+            metrics["hls_ambiguous_probe_failures_total"],
+            metrics["hls_required_track_failures_total"],
+            metrics["hls_selected_master_cleanup_failures_total"],
         )
 
     async def runtime_metrics(self) -> dict[str, int]:
+        from .hls import hls_runtime_metrics
         from .processes import cso_ffmpeg_process_registry
         from .vod_cache import vod_cache_manager
 
@@ -286,6 +304,7 @@ class CsoRuntimeManager:
             metrics["total_queued_bytes"] += int(queue_stats.get("queued_bytes") or 0)
         metrics.update(cso_ffmpeg_process_registry.snapshot())
         metrics.update(await vod_cache_manager.runtime_metrics())
+        metrics.update(await hls_runtime_metrics())
         return metrics
 
     async def get_output_session(self, key):

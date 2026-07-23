@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import secrets
 import shutil
 import time
 from collections import deque
@@ -22,9 +24,11 @@ from .ffmpeg import (
     hwaccel_failure_stage,
     log_ffmpeg_start_result_failures,
     redact_ffmpeg_command_for_log,
+    redact_ffmpeg_error_for_log,
     start_ffmpeg_with_hw_decode_fallback,
     terminate_ffmpeg_process,
 )
+from .hls import HlsSelectedPresentation, increment_hls_runtime_counter
 from .processes import (
     cancel_and_await_tasks,
     cso_lifecycle_cleanup_result,
@@ -69,6 +73,8 @@ class SegmentedHandoffSession:
         start_seconds: int = 0,
         max_duration_seconds: int | None = None,
         realtime: bool = False,
+        selected_presentation: HlsSelectedPresentation | None = None,
+        require_audio: bool = False,
     ):
         self.key = str(key)
         self.policy = dict(policy or {})
@@ -82,6 +88,17 @@ class SegmentedHandoffSession:
         self.start_seconds = max(0, int(start_seconds or 0))
         self.max_duration_seconds = None if max_duration_seconds is None else max(1, int(max_duration_seconds or 0))
         self.realtime = bool(realtime)
+        self.selected_presentation = selected_presentation
+        self.require_audio = bool(require_audio)
+        self.required_audio_stream_count = 0
+        if self.require_audio:
+            self.required_audio_stream_count = 1
+            if self.selected_presentation is not None:
+                self.required_audio_stream_count = max(
+                    1,
+                    self.selected_presentation.expected_audio_stream_count,
+                )
+        self.selected_master_path = self.output_dir / "input" / "selected-master.m3u8"
         self.process = None
         self.stderr_task = None
         self.wait_task = None
@@ -92,6 +109,9 @@ class SegmentedHandoffSession:
         self.process_token = 0
         self._recent_ffmpeg_stderr = deque(maxlen=50)
         self.output_probe = {}
+        self._selected_master_server = None
+        self._selected_master_url = ""
+        self._selected_master_route = ""
 
     def input_path(self) -> str:
         return str(self.playlist_path)
@@ -109,6 +129,116 @@ class SegmentedHandoffSession:
     async def _prepare_output_dir(self):
         self.cache_root_dir.mkdir(parents=True, exist_ok=True)
         await prepare_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
+
+    async def _materialise_selected_master(self):
+        if self.selected_presentation is None:
+            return
+        playlist_text = self.selected_presentation.serialize()
+
+        def _write():
+            input_dir = self.selected_master_path.parent
+            input_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(input_dir, 0o700)
+            temporary_path = input_dir / ".selected-master.tmp"
+            try:
+                descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(playlist_text)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary_path, 0o600)
+                os.replace(temporary_path, self.selected_master_path)
+                os.chmod(self.selected_master_path, 0o600)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+
+        await asyncio.to_thread(_write)
+        counts = self.selected_presentation.rendition_counts()
+        await increment_hls_runtime_counter("hls_selected_masters_total")
+        if counts["audio"]:
+            await increment_hls_runtime_counter("hls_external_audio_selected_variants_total")
+        elif self.selected_presentation.selected_variant.has_audio_metadata():
+            await increment_hls_runtime_counter("hls_muxed_audio_selected_variants_total")
+        if counts["audio"] > 1:
+            await increment_hls_runtime_counter("hls_multiple_audio_presentations_total")
+        if counts["subtitles"]:
+            await increment_hls_runtime_counter("hls_subtitle_presentations_total")
+        logger.info(
+            "CSO selected HLS master materialised key=%s generation=%s path=input/selected-master.m3u8 "
+            "variant_position=%s variant_count=%s audio_renditions=%s subtitle_renditions=%s "
+            "video_renditions=%s closed_caption_renditions=%s expected_video_streams=1 "
+            "expected_audio_streams=%s expected_subtitle_streams=0",
+            bounded_log_value(self.key),
+            self.process_token + 1,
+            self.selected_presentation.variant_position,
+            self.selected_presentation.variant_count,
+            counts["audio"],
+            counts["subtitles"],
+            counts["video"],
+            counts["closed-captions"],
+            self.required_audio_stream_count,
+        )
+
+    async def _serve_selected_master(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        status = "404 Not Found"
+        body = b""
+        try:
+            request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2.0)
+            request_line = request.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+            method, path, _ = request_line.split(" ", 2)
+            if method in {"GET", "HEAD"} and path == self._selected_master_route:
+                status = "200 OK"
+                body = await asyncio.to_thread(self.selected_master_path.read_bytes)
+                if method == "HEAD":
+                    body = b""
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError, ValueError, OSError):
+            status = "400 Bad Request"
+        response_headers = [
+            f"HTTP/1.1 {status}",
+            "Content-Type: application/vnd.apple.mpegurl",
+            f"Content-Length: {len(body)}",
+            "Cache-Control: no-store",
+            "Connection: close",
+            "",
+            "",
+        ]
+        writer.write("\r\n".join(response_headers).encode("ascii") + body)
+        try:
+            await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    async def _start_selected_master_server(self) -> str:
+        if self.selected_presentation is None:
+            return ""
+        if self._selected_master_server is not None:
+            return self._selected_master_url
+        self._selected_master_route = f"/{secrets.token_urlsafe(24)}/selected-master.m3u8"
+        server = await asyncio.start_server(
+            self._serve_selected_master,
+            host="127.0.0.1",
+            port=0,
+            limit=128 * 1024,
+        )
+        socket = server.sockets[0]
+        port = int(socket.getsockname()[1])
+        self._selected_master_server = server
+        self._selected_master_url = f"http://127.0.0.1:{port}{self._selected_master_route}"
+        return self._selected_master_url
+
+    async def _close_selected_master_server(self):
+        server = self._selected_master_server
+        if server is None:
+            return
+        server.close()
+        await server.wait_closed()
+        self._selected_master_server = None
+        self._selected_master_url = ""
+        self._selected_master_route = ""
 
     async def _ensure_capacity(self):
         try:
@@ -138,6 +268,8 @@ class SegmentedHandoffSession:
     async def _cleanup_failed_start_attempt(self, process, stderr_task, wait_task):
         teardown = await terminate_ffmpeg_process(process)
         task_cleanup = await cancel_and_await_tasks((stderr_task, wait_task))
+        if self.selected_presentation is not None and (not teardown.confirmed or not task_cleanup.confirmed):
+            await increment_hls_runtime_counter("hls_selected_master_cleanup_failures_total")
         if not task_cleanup.confirmed:
             pending_tasks = set(task_cleanup.pending_tasks)
             self.stderr_task = stderr_task if stderr_task in pending_tasks else None
@@ -195,6 +327,38 @@ class SegmentedHandoffSession:
         selected = error_lines[-3:] if error_lines else lines[-3:]
         return " | ".join(selected)
 
+    def _classified_start_failure(self, failure_reason: str) -> tuple[str, str, str]:
+        raw_reason = clean_text(failure_reason)
+        raw_reason_lower = raw_reason.lower()
+        cleanup_reason = ""
+        for marker in ("teardown_unconfirmed", "task_cleanup_unconfirmed"):
+            if marker in raw_reason_lower:
+                cleanup_reason = marker
+                break
+        missing_audio_map = (
+            ("stream map '0:a:" in raw_reason_lower or 'stream map "0:a:' in raw_reason_lower)
+            and "matches no streams" in raw_reason_lower
+        ) or ("failed to set value '0:a:" in raw_reason_lower and "for option 'map'" in raw_reason_lower)
+        if self.require_audio and (
+            missing_audio_map
+            or "stream map '0:a' matches no streams" in raw_reason_lower
+            or 'stream map "0:a" matches no streams' in raw_reason_lower
+            or "audio map matches no streams" in raw_reason_lower
+            or "failed to set value '0:a' for option 'map'" in raw_reason_lower
+        ):
+            bounded_reason = "hls_required_audio_missing"
+            if self.required_audio_stream_count > 1:
+                bounded_reason = "hls_handoff_track_mismatch"
+            if cleanup_reason:
+                bounded_reason = f"{bounded_reason}:{cleanup_reason}"
+            return bounded_reason.partition(":")[0], bounded_reason, ""
+        classification = ffmpeg_failure_classification(raw_reason)
+        hardware_stage = hwaccel_failure_stage(raw_reason)
+        bounded_reason = classification
+        if cleanup_reason:
+            bounded_reason = f"{bounded_reason}:{cleanup_reason}"
+        return classification, bounded_reason, hardware_stage
+
     async def _stderr_loop(self, token: int, process):
         if process is None or process.stderr is None:
             return
@@ -223,16 +387,16 @@ class SegmentedHandoffSession:
             self.last_error = "segmented_handoff_ended"
             logger.warning(
                 "Segmented handoff ended unexpectedly key=%s return_code=%s stderr=%s",
-                self.key,
+                bounded_log_value(self.key),
                 return_code,
-                self._ffmpeg_error_summary() or "n/a",
+                redact_ffmpeg_error_for_log(self._ffmpeg_error_summary()) or "n/a",
             )
         async with self.lock:
             self.running = False
             if self.process is process and process_exited:
                 self.process = None
 
-    async def start(self):
+    async def start(self) -> bool:
         async with self.lock:
             if self.running:
                 return True
@@ -258,6 +422,31 @@ class SegmentedHandoffSession:
             except Exception:
                 return False
             await self._prepare_output_dir()
+            self.output_probe = {}
+            try:
+                await self._materialise_selected_master()
+            except Exception:
+                self.last_error = "hls_selected_master_write_failed"
+                logger.exception(
+                    "Failed to materialise selected HLS master key=%s path=input/selected-master.m3u8",
+                    bounded_log_value(self.key),
+                )
+                return False
+            effective_input_target = self.input_target
+            effective_input_is_url = self.input_is_url
+            input_uses_network = self.input_is_url
+            if self.selected_presentation is not None:
+                try:
+                    effective_input_target = await self._start_selected_master_server()
+                except Exception:
+                    self.last_error = "hls_selected_master_server_failed"
+                    logger.exception(
+                        "Failed to start selected HLS master server key=%s",
+                        bounded_log_value(self.key),
+                    )
+                    return False
+                effective_input_is_url = True
+                input_uses_network = True
 
             async def _attempt_start(
                 effective_policy: dict[str, Any],
@@ -265,19 +454,29 @@ class SegmentedHandoffSession:
                 builder = CsoFfmpegCommandBuilder(effective_policy)
                 command = builder.build_hls_output_command(
                     self.output_dir,
-                    input_target=self.input_target,
-                    input_is_url=self.input_is_url,
+                    input_target=effective_input_target,
+                    input_is_url=effective_input_is_url,
+                    input_uses_network=input_uses_network,
                     start_seconds=self.start_seconds,
                     max_duration_seconds=self.max_duration_seconds,
                     realtime=self.realtime,
                     user_agent=self.user_agent,
                     request_headers=self.request_headers,
+                    input_protocol_whitelist=(
+                        "http,https,tcp,tls,crypto" if self.selected_presentation is not None else ""
+                    ),
+                    require_video=self.selected_presentation is not None,
+                    required_audio_stream_count=self.required_audio_stream_count,
                 )
                 self._recent_ffmpeg_stderr.clear()
                 logger.info(
                     "Starting segmented handoff key=%s input=%s policy=%s output_dir=%s command=%s",
                     bounded_log_value(self.key),
-                    "upstream" if self.input_is_url else "local",
+                    (
+                        "selected-master"
+                        if self.selected_presentation is not None
+                        else ("upstream" if self.input_is_url else "local")
+                    ),
                     dict(effective_policy or {}),
                     self.output_dir,
                     redact_ffmpeg_command_for_log(command),
@@ -296,7 +495,7 @@ class SegmentedHandoffSession:
                     name=f"segmented-stderr-{self.key}",
                 )
                 wait_task = asyncio.create_task(self._wait_loop(token, process), name=f"segmented-wait-{self.key}")
-                startup_timeout_seconds = 30.0 if self.input_is_url else 10.0
+                startup_timeout_seconds = 30.0 if input_uses_network else 10.0
                 try:
                     started, failure_reason = await self._wait_for_startup_ready(
                         process,
@@ -321,7 +520,7 @@ class SegmentedHandoffSession:
                         (process, stderr_task, wait_task),
                         "",
                         "",
-                        self._ffmpeg_error_summary(),
+                        redact_ffmpeg_error_for_log(self._ffmpeg_error_summary()),
                         "",
                     )
                 teardown, task_cleanup = await self._cleanup_failed_start_attempt(
@@ -337,19 +536,22 @@ class SegmentedHandoffSession:
                 if not teardown.confirmed or not task_cleanup.confirmed:
                     cleanup_reason = "teardown_unconfirmed" if not teardown.confirmed else "task_cleanup_unconfirmed"
                     failure_reason = f"{failure_reason or 'segmented_handoff_start_failed'}:{cleanup_reason}"
+                classification, bounded_reason, hardware_stage = self._classified_start_failure(failure_reason)
+                if classification in {"hls_required_audio_missing", "hls_handoff_track_mismatch"}:
+                    await increment_hls_runtime_counter("hls_required_track_failures_total")
                 return CsoFfmpegAttemptResult(
                     dict(effective_policy),
                     False,
                     None,
-                    ffmpeg_failure_classification(failure_reason),
-                    failure_reason,
-                    self._ffmpeg_error_summary(),
-                    hwaccel_failure_stage(failure_reason),
+                    classification,
+                    bounded_reason,
+                    redact_ffmpeg_error_for_log(failure_reason),
+                    hardware_stage,
                 )
 
             start_result = await start_ffmpeg_with_hw_decode_fallback(
                 self.policy,
-                self.input_target,
+                effective_input_target,
                 _attempt_start,
             )
             self.policy = dict(start_result.policy)
@@ -357,6 +559,8 @@ class SegmentedHandoffSession:
                 log_ffmpeg_start_result_failures(self.key, start_result)
                 self.last_error = start_result.failure_reason or "segmented_handoff_start_failed"
                 self.running = False
+                if self.process is None and self.stderr_task is None and self.wait_task is None:
+                    await self._close_selected_master_server()
                 return False
 
             self.process, self.stderr_task, self.wait_task = start_result.runtime
@@ -396,6 +600,8 @@ class SegmentedHandoffSession:
             if probe_path.exists() and probe_path.is_file():
                 break
             segment_candidates = sorted(self.output_dir.glob("seg_*.m4s"))
+            if not segment_candidates:
+                segment_candidates = sorted(self.output_dir.glob("seg_*.ts"))
             if segment_candidates:
                 probe_path = segment_candidates[0]
                 break
@@ -404,36 +610,61 @@ class SegmentedHandoffSession:
             return {}
         payload = await self._ffprobe_path(probe_path)
         streams = payload.get("streams") or []
-        probe = {}
+        probe = {
+            "video_stream_count": 0,
+            "audio_stream_count": 0,
+            "subtitle_stream_count": 0,
+            "audio_languages": [],
+            "subtitle_languages": [],
+        }
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
             codec_type = clean_key(stream.get("codec_type"))
-            if codec_type == "video" and not probe.get("video_codec"):
-                probe["video_codec"] = clean_key(stream.get("codec_name"))
-                probe["width"] = int(stream.get("width") or 0)
-                probe["height"] = int(stream.get("height") or 0)
-                probe["pixel_format"] = clean_key(stream.get("pix_fmt"))
-                avg_frame_rate = clean_text(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
-                fps_value = _parse_rate(avg_frame_rate)
-                if fps_value > 0:
-                    probe["fps"] = fps_value
-                    probe["avg_frame_rate"] = avg_frame_rate
-                sample_aspect_ratio = clean_text(stream.get("sample_aspect_ratio"))
-                if sample_aspect_ratio:
-                    probe["sample_aspect_ratio"] = sample_aspect_ratio
-            elif codec_type == "audio" and not probe.get("audio_codec"):
-                probe["audio_codec"] = clean_key(stream.get("codec_name"))
-                probe["audio_sample_rate"] = int(stream.get("sample_rate") or 0)
-                probe["audio_channels"] = int(stream.get("channels") or 0)
-                channel_layout = clean_key(stream.get("channel_layout"))
-                if channel_layout:
-                    probe["audio_channel_layout"] = channel_layout
+            if codec_type == "video":
+                probe["video_stream_count"] += 1
+                if not probe.get("video_codec"):
+                    probe["video_codec"] = clean_key(stream.get("codec_name"))
+                    probe["width"] = int(stream.get("width") or 0)
+                    probe["height"] = int(stream.get("height") or 0)
+                    probe["pixel_format"] = clean_key(stream.get("pix_fmt"))
+                    avg_frame_rate = clean_text(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+                    fps_value = _parse_rate(avg_frame_rate)
+                    if fps_value > 0:
+                        probe["fps"] = fps_value
+                        probe["avg_frame_rate"] = avg_frame_rate
+                    sample_aspect_ratio = clean_text(stream.get("sample_aspect_ratio"))
+                    if sample_aspect_ratio:
+                        probe["sample_aspect_ratio"] = sample_aspect_ratio
+            elif codec_type == "audio":
+                probe["audio_stream_count"] += 1
+                language = clean_text((stream.get("tags") or {}).get("language"))
+                if language:
+                    probe["audio_languages"].append(language)
+                if not probe.get("audio_codec"):
+                    probe["audio_codec"] = clean_key(stream.get("codec_name"))
+                    probe["audio_sample_rate"] = int(stream.get("sample_rate") or 0)
+                    probe["audio_channels"] = int(stream.get("channels") or 0)
+                    channel_layout = clean_key(stream.get("channel_layout"))
+                    if channel_layout:
+                        probe["audio_channel_layout"] = channel_layout
+            elif codec_type == "subtitle":
+                probe["subtitle_stream_count"] += 1
+                language = clean_text((stream.get("tags") or {}).get("language"))
+                if language:
+                    probe["subtitle_languages"].append(language)
+        probe["audio_languages"] = tuple(probe["audio_languages"])
+        probe["subtitle_languages"] = tuple(probe["subtitle_languages"])
         self.output_probe = probe
         return dict(probe)
 
     async def release_cache(self):
-        await remove_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
+        try:
+            await remove_cso_cache_dir(self.output_dir, logger, f"segmented-handoff:{self.key}")
+        except Exception:
+            if self.selected_presentation is not None:
+                await increment_hls_runtime_counter("hls_selected_master_cleanup_failures_total")
+            raise
 
     async def stop(self, force: bool = False, release_cache: bool = True):
         async with self.lock:
@@ -456,6 +687,10 @@ class SegmentedHandoffSession:
                 if self.process is process:
                     self.process = None
         result = cso_lifecycle_cleanup_result(teardown, task_cleanup)
-        if result.confirmed and release_cache:
-            await self.release_cache()
+        if self.selected_presentation is not None and not result.confirmed:
+            await increment_hls_runtime_counter("hls_selected_master_cleanup_failures_total")
+        if result.confirmed:
+            await self._close_selected_master_server()
+            if release_cache:
+                await self.release_cache()
         return result

@@ -37,14 +37,20 @@ from .events import emit_channel_stream_event, source_event_context
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
     redact_ffmpeg_command_for_log,
+    redact_ffmpeg_error_for_log,
     terminate_ffmpeg_process,
 )
-from .hls import discover_hls_variants
+from .hls import (
+    HlsPresentationError,
+    HlsSelectedPresentation,
+    discover_hls_variants,
+)
 from .output import CsoOutputSession
 from .policy import (
     policy_content_type,
     resolve_live_pipe_container,
     resolve_vod_pipe_container,
+    segmented_handoff_subtitle_policy,
     segmented_hls_segment_type,
     source_uses_segmented_handoff,
 )
@@ -146,6 +152,7 @@ class CsoIngestSession:
         ingest_user_agent=None,
         slate_session=None,
         vod_pipe_output_format_override="",
+        require_audio: bool = True,
     ):
         self.key = key
         self.channel_id = channel_id
@@ -188,7 +195,7 @@ class CsoIngestSession:
         self.last_reader_end_ts = 0.0
         self._recent_ffmpeg_stderr = deque(maxlen=50)
         self.http_error_timestamps = deque(maxlen=200)
-        self.hls_variants = []
+        self.hls_variant_count = 0
         self.current_variant_position = None
         self.current_program_index = 0
         self.source_program_index = {}
@@ -212,6 +219,7 @@ class CsoIngestSession:
         self._current_source_probe_input_section_closed = False
         self.first_healthy_stream_seen = False
         self.vod_pipe_output_format_override = vod_pipe_output_format_override
+        self.require_audio = bool(require_audio)
         self.ingest_policy = {
             "output_mode": "force_remux",
             "container": "mpegts",
@@ -372,11 +380,21 @@ class CsoIngestSession:
                 self.failover_exhausted = True
                 return
 
-    async def _spawn_ingest_process(self, source_url, program_index, source: CsoSource = None):
-        playlist = getattr(source, "playlist", None) if source is not None else None
-        source_user_agent = clean_text(getattr(playlist, "user_agent", "")) or self.ingest_user_agent
-        source_headers = resolve_cso_ingest_headers(source)
-        source_user_agent = get_header_value(source_headers, "User-Agent") or source_user_agent
+    async def _spawn_ingest_process(
+        self,
+        source_url: str,
+        program_index: int,
+        source: CsoSource | None = None,
+        selected_presentation: HlsSelectedPresentation | None = None,
+        source_user_agent: str | None = None,
+        source_headers: dict[str, str] | None = None,
+    ) -> asyncio.subprocess.Process | None:
+        resolved_headers = dict(source_headers or resolve_cso_ingest_headers(source))
+        resolved_user_agent = clean_text(source_user_agent)
+        if not resolved_user_agent:
+            playlist = source.playlist if source is not None else None
+            resolved_user_agent = clean_text(getattr(playlist, "user_agent", "")) or self.ingest_user_agent
+        resolved_user_agent = get_header_value(resolved_headers, "User-Agent") or resolved_user_agent
 
         # Load existing probe details from the adapter
         source_probe = {}
@@ -385,7 +403,10 @@ class CsoIngestSession:
         elif source is not None:
             source_probe = load_source_media_shape(source)
 
-        use_segmented_handoff = source_uses_segmented_handoff(source, source_probe=source_probe)
+        use_segmented_handoff = selected_presentation is not None or source_uses_segmented_handoff(
+            source,
+            source_probe=source_probe,
+        )
         if self.vod_pipe_output_format_override:
             pipe_format = self.vod_pipe_output_format_override
         else:
@@ -414,12 +435,13 @@ class CsoIngestSession:
         self._current_source_probe_input_section_closed = False
         if use_segmented_handoff:
             segment_type = segmented_hls_segment_type(source, source_probe=source_probe)
+            subtitle_mode, subtitle_policy_reason = segmented_handoff_subtitle_policy(segment_type)
             segmented_policy = {
                 "output_mode": "force_remux",
                 "container": "hls",
                 "video_codec": "copy",
                 "audio_codec": "copy",
-                "subtitle_mode": "drop",
+                "subtitle_mode": subtitle_mode,
                 "hls_segment_type": segment_type,
                 "hls_playlist_mode": "live",
                 "hls_list_size": 13,
@@ -430,10 +452,22 @@ class CsoIngestSession:
                 policy=segmented_policy,
                 input_target=source_url,
                 input_is_url=True,
-                user_agent=source_user_agent,
-                request_headers=source_headers,
+                user_agent=resolved_user_agent,
+                request_headers=resolved_headers,
+                selected_presentation=selected_presentation,
+                require_audio=self.require_audio,
             )
             self.segmented_handoff_session = segmented_handoff_session
+            if selected_presentation is not None and selected_presentation.expected_subtitles:
+                logger.info(
+                    "CSO segmented handoff subtitle policy channel=%s source=%s mode=%s reason=%s "
+                    "selected_subtitle_renditions=%s",
+                    self.channel_id,
+                    source.id if source is not None else getattr(self.current_source, "id", None),
+                    subtitle_mode,
+                    subtitle_policy_reason,
+                    selected_presentation.rendition_counts()["subtitles"],
+                )
             logger.info(
                 "Starting segmented CSO ingest channel=%s source=%s policy=(%s) source_probe=%s input=%s",
                 self.channel_id,
@@ -481,8 +515,8 @@ class CsoIngestSession:
         command = CsoFfmpegCommandBuilder(pipe_output_format=pipe_format).build_ingest_command(
             source_url,
             program_index=program_index,
-            user_agent=source_user_agent,
-            request_headers=source_headers,
+            user_agent=resolved_user_agent,
+            request_headers=resolved_headers,
         )
         logger.info(
             "Starting CSO ingest channel=%s source=%s policy=(%s) source_probe=%s command=%s",
@@ -719,7 +753,7 @@ class CsoIngestSession:
         preferred_source_id=None,
         excluded_source_ids=None,
         ignore_hold_down=False,
-    ):
+    ) -> CsoStartResult:
         now = time.time()
         excluded_ids = set(excluded_source_ids or [])
         candidates = await order_cso_channel_sources(self.sources, channel_id=self.channel_id)
@@ -744,6 +778,8 @@ class CsoIngestSession:
             if not source.url:
                 continue
 
+            self.last_error = None
+            source_failure_reason = ""
             capacity_key = source_capacity_key(source)
             capacity_limit = source_capacity_limit(source)
             if clean_key(source.source_type).startswith("vod_"):
@@ -778,36 +814,131 @@ class CsoIngestSession:
 
             process = None
             resolved_url = ""
-            variants = []
-            variant_position = None
             remembered_variant_position = self.source_variant_position.get(source.id)
-            last_error = None
+            source_exception = None
+            source_headers = resolve_cso_ingest_headers(source)
+            playlist_user_agent = clean_text(getattr(source.playlist, "user_agent", ""))
+            source_user_agent = get_header_value(source_headers, "User-Agent")
+            if not source_user_agent:
+                source_user_agent = playlist_user_agent or self.ingest_user_agent
             for candidate_url in source_urls:
-                variants = await discover_hls_variants(candidate_url)
+                variant_count = 0
                 variant_position = None
-                ingest_url = candidate_url
-                url_path = urlparse(candidate_url).path.lower()
-                if (url_path.endswith(".m3u8") or url_path.endswith(".m3u")) and variants:
-                    if remembered_variant_position is not None and 0 <= int(remembered_variant_position) < len(
-                        variants
-                    ):
-                        variant_position = int(remembered_variant_position)
-                    if variant_position is None:
-                        variant_position = len(variants) - 1
-                    selected_variant = variants[variant_position]
-                    program_index = int(selected_variant.get("ffmpeg_program_index") or 0)
-                    ingest_url = (selected_variant.get("variant_url") or "").strip() or candidate_url
-                    logger.info(
-                        "CSO HLS ingest selected variant channel=%s source_id=%s "
-                        "program_index=%s variant_position=%s variant_count=%s playlist_type=%s ingest_url=%s",
+                source_failure_reason = ""
+                source_exception = None
+                candidate_path = urlparse(candidate_url).path.lower()
+                candidate_is_hls = candidate_path.endswith((".m3u8", ".m3u"))
+                try:
+                    discovered_presentation = await discover_hls_variants(
+                        candidate_url,
+                        user_agent=source_user_agent,
+                        request_headers=source_headers,
+                        request_context_identity=(
+                            f"{source.source_type}:playlist={source.playlist_id}:account={source.xc_account_id or 0}"
+                        ),
+                    )
+                except HlsPresentationError as exc:
+                    source_failure_reason = exc.reason
+                    logger.warning(
+                        "CSO HLS presentation rejected channel=%s source_id=%s reason=%s",
                         self.channel_id,
                         source.id,
-                        program_index,
-                        variant_position,
-                        len(variants),
-                        clean_text(selected_variant.get("playlist_type")) or "unknown",
-                        redacted_url_for_log(ingest_url),
+                        exc.reason,
                     )
+                    continue
+                if candidate_is_hls and discovered_presentation is None:
+                    source_failure_reason = "hls_discovery_failed"
+                    logger.warning(
+                        "CSO HLS discovery returned no presentation channel=%s source_id=%s",
+                        self.channel_id,
+                        source.id,
+                    )
+                    continue
+                selected_presentation = None
+                ingest_url = candidate_url
+                if discovered_presentation is not None:
+                    variant_count = len(discovered_presentation.selectable_variants())
+                    group_counts = {}
+                    for media_type, _ in discovered_presentation.media_groups:
+                        group_counts[media_type.lower()] = group_counts.get(media_type.lower(), 0) + 1
+                    logger.info(
+                        "CSO HLS presentation discovered channel=%s source_id=%s playlist_type=%s "
+                        "variant_count=%s selectable_variant_count=%s media_group_counts=%s",
+                        self.channel_id,
+                        source.id,
+                        discovered_presentation.playlist_type,
+                        len(discovered_presentation.variants),
+                        variant_count,
+                        group_counts,
+                    )
+                    for excluded_variant, exclusion_reason in discovered_presentation.selection_exclusions():
+                        logger.info(
+                            "CSO HLS variant excluded channel=%s source_id=%s declaration_position=%s "
+                            "bandwidth=%s resolution=%sx%s codecs=%s reason=%s",
+                            self.channel_id,
+                            source.id,
+                            excluded_variant.declaration_position,
+                            excluded_variant.bandwidth,
+                            excluded_variant.width,
+                            excluded_variant.height,
+                            ",".join(excluded_variant.codecs),
+                            exclusion_reason,
+                        )
+                    if discovered_presentation.playlist_type == "media":
+                        ingest_url = discovered_presentation.final_url
+                        program_index = 0
+                    else:
+                        if (
+                            remembered_variant_position is not None
+                            and 0 <= int(remembered_variant_position) < variant_count
+                        ):
+                            variant_position = int(remembered_variant_position)
+                        if variant_position is None:
+                            variant_position = variant_count - 1
+                        try:
+                            selected_presentation = discovered_presentation.select(variant_position)
+                        except HlsPresentationError as exc:
+                            source_failure_reason = exc.reason
+                            logger.warning(
+                                "CSO HLS selected presentation rejected channel=%s source_id=%s "
+                                "variant_position=%s reason=%s",
+                                self.channel_id,
+                                source.id,
+                                variant_position,
+                                exc.reason,
+                            )
+                            continue
+                        selected_variant = selected_presentation.selected_variant
+                        program_index = 0
+                        ingest_url = selected_variant.resolved_uri
+                        rendition_counts = selected_presentation.rendition_counts()
+                        logger.info(
+                            "CSO HLS ingest selected variant channel=%s source_id=%s "
+                            "program_index=%s variant_position=%s declaration_position=%s "
+                            "variant_count=%s playlist_type=master "
+                            "bandwidth=%s average_bandwidth=%s resolution=%sx%s frame_rate=%s codecs=%s "
+                            "audio_group=%s subtitle_group=%s video_group=%s closed_captions_group=%s "
+                            "renditions=%s selection_reason=%s ingest_url=%s",
+                            self.channel_id,
+                            source.id,
+                            program_index,
+                            variant_position,
+                            selected_variant.declaration_position,
+                            variant_count,
+                            selected_variant.bandwidth,
+                            selected_variant.average_bandwidth,
+                            selected_variant.width,
+                            selected_variant.height,
+                            selected_variant.frame_rate,
+                            ",".join(selected_variant.codecs),
+                            selected_variant.referenced_group_id("AUDIO"),
+                            selected_variant.referenced_group_id("SUBTITLES"),
+                            selected_variant.referenced_group_id("VIDEO"),
+                            selected_variant.referenced_group_id("CLOSED-CAPTIONS"),
+                            rendition_counts,
+                            selected_presentation.selection_reason,
+                            redacted_url_for_log(ingest_url),
+                        )
                 else:
                     program_index = int(self.source_program_index.get(source.id) or 0)
                     if source.id is not None and source.id in self.source_program_index:
@@ -819,11 +950,25 @@ class CsoIngestSession:
                             program_index,
                         )
                 try:
-                    process = await self._spawn_ingest_process(ingest_url, program_index, source=source)
+                    process = await self._spawn_ingest_process(
+                        ingest_url,
+                        program_index,
+                        source=source,
+                        selected_presentation=selected_presentation,
+                        source_user_agent=source_user_agent,
+                        source_headers=source_headers,
+                    )
+                    if process is None:
+                        source_failure_reason = clean_text(self.last_error) or source_failure_reason
+                        self.last_error = None
+                        if self.segmented_handoff_session is not None:
+                            break
+                        continue
                     resolved_url = ingest_url
                     break
                 except Exception as exc:
-                    last_error = exc
+                    source_exception = exc
+                    source_failure_reason = str(exc)
                     await self._handle_source_failure(source, "ingest_start_failed", {"error": str(exc)})
                     await emit_channel_stream_event(
                         channel_id=self.channel_id,
@@ -843,15 +988,16 @@ class CsoIngestSession:
                     continue
 
             if not process:
-                source_failure_reason = clean_text(self.last_error) or (str(last_error) if last_error else "")
+                if not source_failure_reason and source_exception is not None:
+                    source_failure_reason = str(source_exception)
                 if source_failure_reason:
                     start_failure_reason = source_failure_reason
-                if last_error or source_failure_reason:
+                if source_exception or source_failure_reason:
                     logger.warning(
                         "CSO ingest failed for all URLs on source channel=%s source_id=%s error=%s",
                         self.channel_id,
                         source.id,
-                        source_failure_reason or last_error,
+                        source_failure_reason or source_exception,
                     )
                 self.current_source = None
                 self.current_source_url = ""
@@ -859,6 +1005,7 @@ class CsoIngestSession:
                 self.running = False
                 await cso_capacity_registry.release(capacity_key, self.capacity_owner_key, slot_id=source.id)
                 if self.segmented_handoff_session is not None:
+                    self.last_error = source_failure_reason or "segmented_handoff_cleanup_unconfirmed"
                     logger.error(
                         "CSO ingest source fallback blocked by retained segmented lifecycle "
                         "channel=%s ingest_key=%s source_id=%s pid=%s",
@@ -878,7 +1025,7 @@ class CsoIngestSession:
             self.current_source = source
             self.current_source_url = resolved_url
             self.current_capacity_key = capacity_key
-            self.hls_variants = variants
+            self.hls_variant_count = variant_count
             self.current_variant_position = variant_position
             self.current_program_index = program_index
             if source.id is not None:
@@ -891,18 +1038,21 @@ class CsoIngestSession:
                     "reason": reason,
                     "pipeline": "ingest",
                     "program_index": self.current_program_index,
-                    "variant_count": len(self.hls_variants),
+                    "variant_count": self.hls_variant_count,
                 }
             else:
                 self.pending_switch_success = None
             self._activate_process_unlocked(process)
+            self.last_error = None
             if old_capacity_key:
                 await cso_capacity_registry.release(old_capacity_key, self.capacity_owner_key, slot_id=old_source_id)
             return CsoStartResult(success=True)
 
+        final_reason = "capacity_blocked" if saw_capacity_block else start_failure_reason or "no_available_source"
+        self.last_error = final_reason
         return CsoStartResult(
             success=False,
-            reason="capacity_blocked" if saw_capacity_block else start_failure_reason or "no_available_source",
+            reason=final_reason,
         )
 
     async def _stderr_loop(self, token, process):
@@ -1203,7 +1353,7 @@ class CsoIngestSession:
                 self.channel_id,
                 return_code,
                 failover_reason,
-                self._ffmpeg_error_summary() or "n/a",
+                redact_ffmpeg_error_for_log(self._ffmpeg_error_summary()) or "n/a",
             )
         switched = await self._switch_source_after_failure(
             reason=failover_reason,
@@ -1283,7 +1433,7 @@ class CsoIngestSession:
             self.current_source = None
             self.current_source_url = ""
             self.current_capacity_key = None
-            self.hls_variants = []
+            self.hls_variant_count = 0
             self.current_variant_position = None
             self.current_program_index = 0
             self.startup_jump_done = False
@@ -1633,7 +1783,7 @@ class CsoIngestSession:
             source_url = self.current_source_url
             self.current_source = None
             self.current_source_url = ""
-            self.hls_variants = []
+            self.hls_variant_count = 0
             self.current_variant_position = None
             self.current_program_index = 0
             self.startup_jump_done = False

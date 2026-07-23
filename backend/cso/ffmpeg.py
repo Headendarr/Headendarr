@@ -43,7 +43,7 @@ from .types import (
 logger = logging.getLogger("cso")
 
 
-def _format_ffmpeg_headers_arg(headers):
+def format_ffmpeg_request_headers(headers: dict[str, str] | None) -> str | None:
     lines = []
     for key, value in (headers or {}).items():
         key_name = clean_key(key)
@@ -492,9 +492,9 @@ def log_hwaccel_failure(
     }[stage]
     logger.error(
         f"{title} context=%s video_codec=%s reason=%s diagnostics=%s. {advice}",
-        context,
+        redact_ffmpeg_error_for_log(context, max_length=256),
         clean_key(attempt.policy.get("video_codec")) or "",
-        attempt.failure_reason or "unknown",
+        redact_ffmpeg_error_for_log(attempt.failure_reason or "unknown"),
         startup_failure_diagnostics(attempt, start_result),
     )
     return True
@@ -506,24 +506,42 @@ def startup_failure_diagnostics(
 ) -> dict[str, Any]:
     evidence = attempt.evidence
     return {
-        "classification": attempt.classification,
-        "hardware_failure_stage": attempt.hardware_failure_stage or None,
+        "classification": redact_ffmpeg_error_for_log(attempt.classification, max_length=128),
+        "hardware_failure_stage": (
+            redact_ffmpeg_error_for_log(attempt.hardware_failure_stage, max_length=128)
+            if attempt.hardware_failure_stage
+            else None
+        ),
         "first_ingest_chunk": evidence.first_ingest_chunk,
         "input_bytes": evidence.input_bytes,
-        "input_mode": evidence.input_mode,
+        "input_mode": redact_ffmpeg_error_for_log(evidence.input_mode, max_length=128),
         "output_process_pid": evidence.output_process_pid,
         "ingest_process_pid": evidence.ingest_process_pid,
         "ingest_running": evidence.ingest_running,
         "ingest_last_chunk_age_seconds": evidence.ingest_last_chunk_age_seconds,
         "ingest_attempt_start": evidence.ingest_attempt_start,
-        "ingest_reader_end_reason": evidence.ingest_reader_end_reason,
+        "ingest_reader_end_reason": redact_ffmpeg_error_for_log(
+            evidence.ingest_reader_end_reason,
+            max_length=256,
+        ),
         "ingest_reader_end_return_code": evidence.ingest_reader_end_return_code,
         "ingest_bytes_produced": evidence.ingest_bytes_produced,
         "ingest_bytes_added_to_history": evidence.ingest_bytes_added_to_history,
         "ingest_bytes_dispatched": evidence.ingest_bytes_dispatched,
         "ingest_subscriber_bytes_dispatched": evidence.ingest_subscriber_bytes_dispatched,
-        "fallback_policy": start_result.fallback_policy,
-        "attempts": start_result.attempts,
+        "fallback_policy": redact_ffmpeg_error_for_log(start_result.fallback_policy, max_length=128),
+        "attempts": [
+            {
+                "classification": redact_ffmpeg_error_for_log(item.classification, max_length=128),
+                "failure_reason": redact_ffmpeg_error_for_log(item.failure_reason),
+                "stderr_summary": redact_ffmpeg_error_for_log(item.stderr_summary),
+                "hardware_failure_stage": redact_ffmpeg_error_for_log(
+                    item.hardware_failure_stage,
+                    max_length=128,
+                ),
+            }
+            for item in start_result.attempts
+        ],
     }
 
 
@@ -534,8 +552,8 @@ def log_ffmpeg_start_failure(
 ):
     logger.error(
         "CSO FFmpeg startup failed context=%s reason=%s diagnostics=%s",
-        context,
-        attempt.failure_reason or start_result.failure_reason or "output_start_failed",
+        redact_ffmpeg_error_for_log(context, max_length=256),
+        redact_ffmpeg_error_for_log(attempt.failure_reason or start_result.failure_reason or "output_start_failed"),
         startup_failure_diagnostics(attempt, start_result),
     )
 
@@ -636,7 +654,7 @@ def redact_ffmpeg_error_for_log(
         text,
     )
     text = re.sub(
-        r"(?i)\b(?:https?|rtsp|rtmp|udp|tcp)://[^\s<>'\"]+",
+        r"(?i)\b(?:file|https?|rtsp|rtmp|udp|tcp)://[^\s<>'\"]+",
         "<redacted-url>",
         text,
     )
@@ -1131,7 +1149,7 @@ class CsoFfmpegCommandBuilder:
         referer_value = get_header_value(header_values, "Referer")
         if referer_value:
             command += ["-referer", referer_value]
-        extra_headers = _format_ffmpeg_headers_arg(header_values)
+        extra_headers = format_ffmpeg_request_headers(header_values)
         if extra_headers:
             command += ["-headers", extra_headers]
         if not is_hls_input:
@@ -1226,7 +1244,7 @@ class CsoFfmpegCommandBuilder:
                 referer_value = get_header_value(header_values, "Referer")
                 if referer_value:
                     command += ["-referer", referer_value]
-                extra_headers = _format_ffmpeg_headers_arg(header_values)
+                extra_headers = format_ffmpeg_request_headers(header_values)
                 if extra_headers:
                     command += ["-headers", extra_headers]
                 command += [
@@ -1371,7 +1389,7 @@ class CsoFfmpegCommandBuilder:
             referer_value = get_header_value(header_values, "Referer")
             if referer_value:
                 command += ["-referer", referer_value]
-            extra_headers = _format_ffmpeg_headers_arg(header_values)
+            extra_headers = format_ffmpeg_request_headers(header_values)
             if extra_headers:
                 command += ["-headers", extra_headers]
             command += [
@@ -1461,7 +1479,7 @@ class CsoFfmpegCommandBuilder:
             referer_value = get_header_value(header_values, "Referer")
             if referer_value:
                 command += ["-referer", referer_value]
-            extra_headers = _format_ffmpeg_headers_arg(header_values)
+            extra_headers = format_ffmpeg_request_headers(header_values)
             if extra_headers:
                 command += ["-headers", extra_headers]
             if seekable_url_input:
@@ -1532,15 +1550,20 @@ class CsoFfmpegCommandBuilder:
         output_dir: Path,
         input_target: str = "",
         input_is_url: bool = False,
+        input_uses_network: bool | None = None,
         start_seconds: int = 0,
         max_duration_seconds: int | None = None,
         realtime: bool = False,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
-    ):
+        input_protocol_whitelist: str = "",
+        require_video: bool = False,
+        required_audio_stream_count: int = 0,
+    ) -> list[str]:
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         input_target_value = str(input_target or "").strip()
-        input_is_hls_url = input_is_url and (urlparse(input_target_value).path or "").lower().endswith(".m3u8")
+        input_is_hls = (urlparse(input_target_value).path or "").lower().endswith(".m3u8")
+        nested_network_resources = input_is_url if input_uses_network is None else bool(input_uses_network)
         start_value = max(0, int(start_seconds or 0))
         input_seek_value = start_value
         trim_seek_value = 0
@@ -1548,30 +1571,37 @@ class CsoFfmpegCommandBuilder:
             trim_seek_value = min(2, start_value)
             input_seek_value = max(0, start_value - trim_seek_value)
         if input_target_value:
-            if input_is_url:
+            if nested_network_resources:
                 header_values = sanitise_headers(request_headers)
                 user_agent_value = clean_text(user_agent) or get_header_value(header_values, "User-Agent")
                 command += [
                     "-progress",
                     "pipe:2",
-                    "-reconnect",
-                    "1",
-                    "-reconnect_on_network_error",
-                    "1",
-                    "-reconnect_delay_max",
-                    str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
                 ]
+                # For a local HLS master, reconnect and connect-timeout options survive
+                # playlist opening and are then rejected by the nested segment demuxer.
+                # Keep them for an HTTP top-level input; rw_timeout and request headers
+                # are accepted and propagated when the local input is forced to HLS.
+                if input_is_url:
+                    command += [
+                        "-reconnect",
+                        "1",
+                        "-reconnect_on_network_error",
+                        "1",
+                        "-reconnect_delay_max",
+                        str(max(1, int(CSO_INGEST_RECONNECT_DELAY_MAX_SECONDS))),
+                    ]
                 if user_agent_value:
                     command += ["-user_agent", user_agent_value]
                 referer_value = get_header_value(header_values, "Referer")
                 if referer_value:
                     command += ["-referer", referer_value]
-                extra_headers = _format_ffmpeg_headers_arg(header_values)
+                extra_headers = format_ffmpeg_request_headers(header_values)
                 if extra_headers:
                     command += ["-headers", extra_headers]
-                if input_is_hls_url:
+                if input_is_url and input_is_hls:
                     command += ["-reconnect_streamed", "0"]
-                else:
+                elif input_is_url:
                     command += [
                         "-reconnect_at_eof",
                         "1",
@@ -1583,9 +1613,12 @@ class CsoFfmpegCommandBuilder:
                 command += [
                     "-rw_timeout",
                     str(max(1_000_000, int(CSO_INGEST_RW_TIMEOUT_US))),
-                    "-timeout",
-                    str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
                 ]
+                if input_is_url:
+                    command += [
+                        "-timeout",
+                        str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
+                    ]
             if input_seek_value > 0:
                 command += ["-ss", str(input_seek_value)]
             if realtime:
@@ -1594,7 +1627,7 @@ class CsoFfmpegCommandBuilder:
             probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
             analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
             fps_probe_size = int(CSO_INGEST_FPS_PROBE_SIZE)
-            if input_is_hls_url:
+            if input_is_hls:
                 probe_size_bytes = max(probe_size_bytes, 10 * 1024 * 1024)
                 analyse_duration_us = max(analyse_duration_us, 10_000_000)
                 fps_probe_size = max(fps_probe_size, 128)
@@ -1604,6 +1637,16 @@ class CsoFfmpegCommandBuilder:
                 fps_probe_size,
             )
             command += self._input_resilience_flags()
+            protocol_whitelist = clean_text(input_protocol_whitelist)
+            if protocol_whitelist:
+                command += ["-protocol_whitelist", protocol_whitelist]
+            elif nested_network_resources and not input_is_url:
+                command += [
+                    "-protocol_whitelist",
+                    "file,http,https,tcp,tls,crypto",
+                ]
+            if input_is_hls and not input_is_url:
+                command += ["-f", "hls"]
             command += ["-i", input_target_value]
             if trim_seek_value > 0:
                 command += ["-ss", str(trim_seek_value)]
@@ -1615,7 +1658,15 @@ class CsoFfmpegCommandBuilder:
                 low_latency=False,
                 pipe_format=self.pipe_input_format,
             )
-        command += ["-map", "0:v:0?", "-map", "0:a?", "-max_muxing_queue_size", "4096"]
+        video_map = "0:v:0" if require_video else "0:v:0?"
+        command += ["-map", video_map]
+        required_audio_streams = max(0, int(required_audio_stream_count or 0))
+        if required_audio_streams:
+            for stream_index in range(required_audio_streams):
+                command += ["-map", f"0:a:{stream_index}"]
+        else:
+            command += ["-map", "0:a?"]
+        command += ["-max_muxing_queue_size", "4096"]
         subtitle_mode = self._apply_stream_selection(command)
         hls_policy = dict(self.policy or {})
         mode = hls_policy.get("output_mode") or "force_remux"
