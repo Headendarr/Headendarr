@@ -103,9 +103,12 @@ async def subscribe_channel_hls(
         )
 
     output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
-    await output_session.start()
-    if not output_session.running:
-        reason = output_session.last_error or "output_not_running"
+    start_result = await output_session.start_and_add_client(
+        connection_id,
+        on_disconnect=on_disconnect,
+    )
+    if not start_result.running:
+        reason = start_result.failure_reason or output_session.last_error or "output_not_running"
         logger.warning(
             "CSO HLS output failed to start channel=%s output_key=%s reason=%s",
             channel.id,
@@ -122,7 +125,7 @@ async def subscribe_channel_hls(
         )
         return None, "Channel unavailable because output pipeline could not be started", 503
 
-    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    is_new_client = start_result.client_added
     if is_new_client:
         await emit_channel_stream_event(
             channel_id=channel.id,
@@ -222,9 +225,12 @@ async def subscribe_source_hls(
         )
 
     output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
-    await output_session.start()
-    if not output_session.running:
-        reason = output_session.last_error or "output_not_running"
+    start_result = await output_session.start_and_add_client(
+        connection_id,
+        on_disconnect=on_disconnect,
+    )
+    if not start_result.running:
+        reason = start_result.failure_reason or output_session.last_error or "output_not_running"
         logger.warning(
             "CSO source HLS output failed to start channel=%s source_id=%s output_key=%s reason=%s",
             channel_id,
@@ -242,7 +248,7 @@ async def subscribe_source_hls(
         )
         return None, "Channel unavailable because output pipeline could not be started", 503
 
-    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    is_new_client = start_result.client_added
     if is_new_client:
         await emit_channel_stream_event(
             channel_id=channel_id,

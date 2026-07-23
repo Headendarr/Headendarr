@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from .constants import (
     CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES,
     CSO_OUTPUT_CLIENT_STALE_SECONDS,
     CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH,
+    CSO_OUTPUT_FPS_PROBE_SIZE,
     CSO_OUTPUT_SLATE_POLL_INTERVAL_SECONDS,
 )
 from .events import emit_channel_stream_event, source_event_context
@@ -1283,6 +1285,7 @@ class CsoHlsOutputSession:
         self.process_token = 0
         self._last_good_playlist_text = None
         self._last_good_playlist_ts = 0.0
+        self.playlist_generation = uuid.uuid4().hex
         self._retain_completed_output_until = 0.0
         self.completed = False
         self.completion_state = "idle"
@@ -1615,6 +1618,7 @@ class CsoHlsOutputSession:
         await prepare_cso_cache_dir(self.output_dir, logger, f"hls-output:{self.key}")
         self._last_good_playlist_text = None
         self._last_good_playlist_ts = 0.0
+        self.playlist_generation = uuid.uuid4().hex
         self._retain_completed_output_until = 0.0
         self.completed = False
         self.completion_state = "starting"
@@ -1730,10 +1734,21 @@ class CsoHlsOutputSession:
                     self.last_error = "slate_not_running"
                     return
             elif not use_direct_input:
+                # Claim the ingest before starting it. Segmented HLS startup can
+                # take several seconds, during which the periodic idle cleaner
+                # must not mistake this session for an abandoned ingest.
+                await self.ingest_session.add_lifecycle_reference(self.key)
+                self.ingest_lifecycle_reference = True
                 await self.ingest_session.start()
                 if not self.ingest_session.running:
                     self.last_error = self.ingest_session.last_error or "ingest_not_running"
                     return
+                # A segmented ingest can be recreated while recovering from a
+                # cancelled/failed HLS request. Resolve its local playlist only
+                # after start() so this output does not incorrectly subscribe to
+                # the byte queue used by non-segmented ingests.
+                segmented_input_target = self._segmented_input_target()
+                use_direct_input = bool(self.input_target or segmented_input_target)
 
             await self._prepare_output_dir()
             self.ingest_queue = None
@@ -1744,13 +1759,17 @@ class CsoHlsOutputSession:
                     prebuffer_bytes=256 * 1024,
                 )
             elif segmented_input_target:
-                await self.ingest_session.add_lifecycle_reference(self.key)
-                self.ingest_lifecycle_reference = True
+                if not self.ingest_lifecycle_reference:
+                    await self.ingest_session.add_lifecycle_reference(self.key)
+                    self.ingest_lifecycle_reference = True
             elif not use_direct_input:
                 self.ingest_queue = await self.ingest_session.add_subscriber(
                     self.key,
                     prebuffer_bytes=256 * 1024,
                 )
+                if self.ingest_lifecycle_reference:
+                    await self.ingest_session.remove_lifecycle_reference(self.key)
+                    self.ingest_lifecycle_reference = False
             self._pending_input_chunks.clear()
             primed_bytes = 0
             if use_direct_input:
@@ -1828,6 +1847,20 @@ class CsoHlsOutputSession:
                 )
             )
             base_runtime_policy = effective_vod_hls_runtime_policy(self.policy, source)
+            if self.use_slate_as_input:
+                # Slates are already H.264/AAC MPEG-TS with output-safe stream
+                # parameters. Remux them directly instead of decoding and
+                # encoding the same synthetic media a second time.
+                base_runtime_policy = {
+                    **base_runtime_policy,
+                    "output_mode": "force_remux",
+                    "video_codec": "copy",
+                    "audio_codec": "copy",
+                    "subtitle_mode": "drop",
+                    "hwaccel": False,
+                    "hardware_decode": False,
+                    "deinterlace": False,
+                }
             self.running = True
             self.last_error = None
             self.last_activity = time.time()
@@ -1848,6 +1881,9 @@ class CsoHlsOutputSession:
                     start_seconds=self.start_seconds,
                     user_agent=self.input_user_agent,
                     request_headers=self.input_request_headers,
+                    pipe_probe_size_bytes=256 * 1024 if self.use_slate_as_input else 2 * 1024 * 1024,
+                    pipe_analyse_duration_us=750_000 if self.use_slate_as_input else 5_000_000,
+                    pipe_fps_probe_size=16 if self.use_slate_as_input else CSO_OUTPUT_FPS_PROBE_SIZE,
                 )
                 self._recent_ffmpeg_stderr.clear()
                 logger.info(
@@ -2241,7 +2277,7 @@ class CsoHlsOutputSession:
                 self.key,
                 client_count,
             )
-            asyncio.create_task(self.start())
+            asyncio.create_task(self._restart_after_process_exit(token, process))
             return
         if still_running and client_count > 0:
             self.last_error = "output_reader_ended"
@@ -2253,6 +2289,49 @@ class CsoHlsOutputSession:
                 redact_ffmpeg_error_for_log(self._ffmpeg_error_summary()) or "n/a",
             )
         await self.stop(force=True)
+
+    async def _restart_after_process_exit(self, token, process):
+        # Let the wait task return before inspecting the previous generation.
+        await asyncio.sleep(0)
+        async with self.lifecycle_lock:
+            async with self.lock:
+                if (
+                    token != self.process_token
+                    or self.running
+                    or not self.clients
+                    or (self.process is not None and self.process is not process)
+                ):
+                    return
+                write_task = self.write_task
+                stderr_task = self.stderr_task
+                wait_task = self.wait_task
+                self.write_task = None
+                self.stderr_task = None
+                self.wait_task = None
+
+            task_cleanup = await cancel_and_await_tasks((write_task, stderr_task, wait_task))
+            if not task_cleanup.confirmed:
+                pending_tasks = set(task_cleanup.pending_tasks)
+                async with self.lock:
+                    self.write_task = write_task if write_task in pending_tasks else None
+                    self.stderr_task = stderr_task if stderr_task in pending_tasks else None
+                    self.wait_task = wait_task if wait_task in pending_tasks else None
+                    self.last_error = "previous_task_cleanup_unconfirmed"
+                    self.completion_state = "restart_blocked"
+                logger.error(
+                    "CSO HLS output restart blocked by previous lifecycle cleanup "
+                    "channel=%s output_key=%s pending_tasks=%s",
+                    self.channel_id,
+                    bounded_log_value(self.key),
+                    len(task_cleanup.pending_tasks),
+                )
+                return
+
+            async with self.lock:
+                if token != self.process_token or self.running or not self.clients:
+                    return
+                self.completion_state = "restarting"
+            await self._start_with_lifecycle_locked()
 
     async def _add_client(self, connection_id: str, on_disconnect: Any = None) -> bool:
         async with self.lock:

@@ -96,6 +96,7 @@ async def subscribe_slate_hls(
             config_path=config.config_path,
             reason=reason_key,
             detail_hint=detail_hint,
+            media_hint={"width": 1280, "height": 720, "fps": 30},
             duration_seconds=resolved_duration,
         )
 
@@ -114,9 +115,11 @@ async def subscribe_slate_hls(
         )
 
     output_session, _ = await cso_session_manager.get_or_create_output(output_key, _output_factory)
-    await output_session.start()
-    if not output_session.running:
+    start_result = await output_session.start_and_add_client(
+        connection_id,
+        on_disconnect=on_disconnect,
+    )
+    if not start_result.running:
         return None, "Unable to start CSO HLS slate output", status_code
 
-    await output_session.add_client(connection_id, on_disconnect=on_disconnect)
     return output_session, None, 200

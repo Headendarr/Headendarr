@@ -93,6 +93,8 @@ from backend.channel_stream_health import (
 
 CONNECTION_LIMIT_REACHED_MESSAGE = "Channel unavailable due to connection limits"
 logger = logging.getLogger("cso.api")
+_hls_playlist_continuity = {}
+_hls_playlist_continuity_lock = asyncio.Lock()
 
 
 def _get_connection_id() -> str:
@@ -305,7 +307,158 @@ def _is_restartable_vod_output_profile(profile_id: str) -> bool:
     return clean_profile not in {"hls", "mpegts", "matroska", "mp4", "webm"}
 
 
-def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_string: str = "") -> str:
+def _hls_playlist_media_window(playlist_text: str) -> tuple[int, int]:
+    media_sequence = 0
+    segment_count = 0
+    for raw_line in str(playlist_text or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            media_sequence = max(0, int_or_none(line.split(":", 1)[1]) or 0)
+        elif line and not line.startswith("#"):
+            segment_count += 1
+    return media_sequence, segment_count
+
+
+def _hls_playlist_discontinuity_sequence(playlist_text: str) -> int:
+    for raw_line in str(playlist_text or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:"):
+            return max(0, int_or_none(line.split(":", 1)[1]) or 0)
+    return 0
+
+
+async def _hls_continuity_metadata(
+    playlist_text: str,
+    continuity_key: str,
+    output_generation: str,
+) -> tuple[int, int | None, int]:
+    source_media_sequence, segment_count = _hls_playlist_media_window(playlist_text)
+    now_value = time.time()
+    async with _hls_playlist_continuity_lock:
+        stale_keys = [
+            key
+            for key, value in _hls_playlist_continuity.items()
+            if (now_value - float(value.get("last_touch") or 0.0)) > 300
+        ]
+        for stale_key in stale_keys:
+            _hls_playlist_continuity.pop(stale_key, None)
+
+        state = _hls_playlist_continuity.get(continuity_key)
+        if state is None:
+            state = {
+                "generation": output_generation,
+                "sequence_offset": 0,
+                "last_end_sequence": source_media_sequence + max(0, segment_count - 1),
+                "discontinuity_count": 0,
+                "boundary_sequence": None,
+                "last_touch": now_value,
+            }
+            _hls_playlist_continuity[continuity_key] = state
+        elif state["generation"] != output_generation:
+            first_sequence = int(state["last_end_sequence"]) + 1
+            state["generation"] = output_generation
+            state["sequence_offset"] = first_sequence - source_media_sequence
+            state["discontinuity_count"] = int(state["discontinuity_count"]) + 1
+            state["boundary_sequence"] = first_sequence
+
+        rendered_media_sequence = source_media_sequence + int(state["sequence_offset"])
+        rendered_end_sequence = rendered_media_sequence + max(0, segment_count - 1)
+        state["last_end_sequence"] = max(int(state["last_end_sequence"]), rendered_end_sequence)
+        state["last_touch"] = now_value
+        return (
+            rendered_media_sequence,
+            state["boundary_sequence"],
+            int(state["discontinuity_count"]),
+        )
+
+
+def _rewrite_hls_playlist_continuity(
+    playlist_text: str,
+    media_sequence: int,
+    boundary_sequence: int | None,
+    discontinuity_count: int,
+) -> str:
+    source_lines = str(playlist_text or "").splitlines()
+    lines = []
+    media_sequence_written = False
+    discontinuity_sequence_written = False
+    transition_marker_written = False
+    segment_index = 0
+    last_sequence = media_sequence + max(0, _hls_playlist_media_window(playlist_text)[1] - 1)
+    boundary_in_window = boundary_sequence is not None and media_sequence <= int(boundary_sequence) <= last_sequence
+    source_discontinuity_sequence = _hls_playlist_discontinuity_sequence(playlist_text)
+    discontinuities_before_window = source_discontinuity_sequence + discontinuity_count
+    if boundary_in_window:
+        discontinuities_before_window = source_discontinuity_sequence + max(0, discontinuity_count - 1)
+
+    for raw_line in source_lines:
+        line = raw_line.strip()
+        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            lines.append(f"#EXT-X-MEDIA-SEQUENCE:{media_sequence}")
+            media_sequence_written = True
+            if boundary_sequence is not None and not discontinuity_sequence_written:
+                lines.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{discontinuities_before_window}")
+                discontinuity_sequence_written = True
+            continue
+        if line.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:"):
+            if boundary_sequence is not None and not discontinuity_sequence_written:
+                lines.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{discontinuities_before_window}")
+                discontinuity_sequence_written = True
+            continue
+        rendered_sequence = media_sequence + segment_index
+        if (
+            line.startswith("#EXTINF:")
+            and boundary_in_window
+            and rendered_sequence == int(boundary_sequence)
+            and not transition_marker_written
+        ):
+            lines.append("#EXT-X-DISCONTINUITY")
+            transition_marker_written = True
+        if line and not line.startswith("#"):
+            if boundary_in_window and rendered_sequence == int(boundary_sequence) and not transition_marker_written:
+                lines.append("#EXT-X-DISCONTINUITY")
+                transition_marker_written = True
+            segment_index += 1
+        lines.append(raw_line)
+
+    if not media_sequence_written:
+        insertion_index = 1 if lines and lines[0].strip() == "#EXTM3U" else 0
+        additions = [f"#EXT-X-MEDIA-SEQUENCE:{media_sequence}"]
+        if boundary_sequence is not None:
+            additions.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{discontinuities_before_window}")
+        lines[insertion_index:insertion_index] = additions
+    return "\n".join(lines) + "\n"
+
+
+async def _render_hls_playlist(
+    playlist_text: str,
+    segment_base_path: str,
+    query_string: str = "",
+    output_session=None,
+    continuity_key: str = "",
+) -> str:
+    output_key = str(getattr(output_session, "key", "") or "").strip()
+    output_generation = str(getattr(output_session, "playlist_generation", "") or "").strip()
+    if output_key and output_generation and continuity_key:
+        media_sequence, boundary_sequence, discontinuity_count = await _hls_continuity_metadata(
+            playlist_text,
+            continuity_key,
+            f"{output_key}:{output_generation}",
+        )
+        playlist_text = _rewrite_hls_playlist_continuity(
+            playlist_text,
+            media_sequence,
+            boundary_sequence,
+            discontinuity_count,
+        )
+        generation_query = urlencode(
+            {
+                "hls_output": output_key,
+                "hls_generation": output_generation,
+            }
+        )
+        query_string = f"{query_string}&{generation_query}" if query_string else generation_query
+
     lines = []
     suffix = f"?{query_string}" if query_string else ""
     for raw_line in str(playlist_text or "").splitlines():
@@ -325,6 +478,33 @@ def _render_hls_playlist(playlist_text: str, segment_base_path: str, query_strin
         segment_name = line.split("?", 1)[0]
         lines.append(f"{segment_base_path.rstrip('/')}/{segment_name}{suffix}")
     return "\n".join(lines) + "\n"
+
+
+async def _hls_generation_segment_response(
+    channel_id: int,
+    connection_id: str,
+    segment_name: str,
+) -> Response | None:
+    output_key = str(request.args.get("hls_output") or "").strip()
+    if not output_key:
+        return None
+    output_generation = str(request.args.get("hls_generation") or "").strip()
+    if len(output_key) > 256 or not output_key.startswith("cso-"):
+        return Response("HLS output generation not found", status=404)
+    if len(output_generation) != 32:
+        return Response("HLS output generation not found", status=404)
+    output_session = await cso_session_manager.get_output_session(output_key)
+    if output_session is None or int(getattr(output_session, "channel_id", 0) or 0) != int(channel_id):
+        return Response("HLS output generation not found", status=404)
+    if output_generation != str(getattr(output_session, "playlist_generation", "") or ""):
+        return Response("HLS output generation expired", status=404)
+    if not await output_session.has_client(connection_id):
+        return Response("HLS output generation expired", status=404)
+    await output_session.touch_client(connection_id)
+    payload = await output_session.read_segment_bytes(segment_name, connection_id=connection_id)
+    if payload is None:
+        return Response("HLS segment not found", status=404)
+    return Response(payload, content_type=content_type_for_media_path(segment_name))
 
 
 def _resolve_requested_vod_profile(config, default_profile: str) -> str:
@@ -929,7 +1109,13 @@ async def _build_hls_slate_response(
         profile=effective_profile,
     )
     segment_base_path = request_path.rsplit("/", 1)[0]
-    rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+    rendered_playlist = await _render_hls_playlist(
+        playlist_text,
+        segment_base_path,
+        query_string=query_string,
+        output_session=output_session,
+        continuity_key=f"{request_path}|{connection_id}",
+    )
     return Response(rendered_playlist, content_type="application/vnd.apple.mpegurl")
 
 
@@ -1054,7 +1240,13 @@ async def stream_channel_hls_playlist(channel_id: int, connection_id: str):
         profile=effective_profile,
     )
     segment_base_path = request.path.rsplit("/", 1)[0]
-    rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+    rendered_playlist = await _render_hls_playlist(
+        playlist_text,
+        segment_base_path,
+        query_string=query_string,
+        output_session=output_session,
+        continuity_key=f"{request.path}|{connection_id}",
+    )
     await upsert_stream_activity(
         f"/tic-api/cso/channel/{int(channel_id)}",
         connection_id=str(connection_id),
@@ -1087,6 +1279,13 @@ async def stream_channel_hls_segment(channel_id: int, connection_id: str, segmen
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
         return Response("Requested profile is not HLS output", status=400)
+    generation_response = await _hls_generation_segment_response(
+        int(channel_id),
+        connection_id,
+        segment_name,
+    )
+    if generation_response is not None:
+        return generation_response
     is_vod_channel = bool(channel is not None and is_vod_channel_type(getattr(channel, "channel_type", None)))
     output_session_key = (
         f"cso-vod-channel-hls-output-{int(channel_id)}-{effective_profile}"
@@ -1316,7 +1515,13 @@ async def stream_source_hls_playlist(stream_id, connection_id):
         profile=effective_profile,
     )
     segment_base_path = request.path.rsplit("/", 1)[0]
-    rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+    rendered_playlist = await _render_hls_playlist(
+        playlist_text,
+        segment_base_path,
+        query_string=query_string,
+        output_session=output_session,
+        continuity_key=f"{request.path}|{connection_id}",
+    )
     source_identity = f"/tic-api/cso/channel_stream/{int(stream_id)}"
     source_name = str(getattr(source, "playlist_stream_name", "") or getattr(channel, "name", "") or "").strip()
     details_override = source_identity if not source_name else f"{source_name}\n{source_identity}"
@@ -1375,6 +1580,13 @@ async def stream_source_hls_segment(stream_id, connection_id, segment_name):
     effective_policy = generate_cso_policy_from_profile(config, effective_profile)
     if str(effective_policy.get("container") or "").strip().lower() != "hls":
         return Response("Requested profile is not HLS output", status=400)
+    generation_response = await _hls_generation_segment_response(
+        int(channel.id),
+        connection_id,
+        segment_name,
+    )
+    if generation_response is not None:
+        return generation_response
     output_session_key = f"cso-source-hls-output-{int(source.id)}-{effective_profile}"
     existing_client = await _hls_output_has_client(output_session_key, connection_id)
     has_active_ingest = await cso_session_manager.has_active_ingest_for_source(int(source.id))
@@ -1726,7 +1938,11 @@ async def _stream_cso_vod_hls_playlist(resolver, segment_base_path: str, identit
             start_seconds=start_seconds,
             container_extension=request.args.get("container_extension"),
         )
-        rendered_playlist = _render_hls_playlist(playlist_text, segment_base_path, query_string=query_string)
+        rendered_playlist = await _render_hls_playlist(
+            playlist_text,
+            segment_base_path,
+            query_string=query_string,
+        )
         activity_metadata = dict(resolved.get("activity_metadata") or {})
         try:
             await upsert_stream_activity(

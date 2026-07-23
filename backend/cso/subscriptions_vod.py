@@ -612,11 +612,14 @@ async def subscribe_vod_channel_hls(
         )
 
     output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
-    await output_session.start()
-    if not output_session.running:
+    start_result = await output_session.start_and_add_client(
+        connection_id,
+        on_disconnect=on_disconnect,
+    )
+    if not start_result.running:
         return None, "Unable to start VOD channel HLS output", 503
 
-    is_new_client = await output_session.add_client(connection_id, on_disconnect=on_disconnect)
+    is_new_client = start_result.client_added
     if is_new_client:
         await emit_channel_stream_event(
             channel_id=int(channel_id),

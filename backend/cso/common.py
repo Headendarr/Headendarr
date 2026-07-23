@@ -154,11 +154,22 @@ class _SessionMap:
                     or getattr(session, "lifecycle_references", None)
                 )
                 running = bool(session.running)
-            if running and has_subscribers:
+            # Ownership can be attached while a slow HLS start is in progress.
+            # Never force-stop an owned session, even when a cleanup tick made
+            # its initial decision before that ownership was registered.
+            if has_subscribers:
                 continue
-            teardown = await session.stop(force=True)
+            teardown = await session.stop(force=False)
             async with session.lock:
                 retained_process, retained_runtimes, retained_tasks = _retained_lifecycle_state_unlocked(session)
+                has_subscribers = bool(
+                    getattr(session, "subscribers", None)
+                    or getattr(session, "clients", None)
+                    or getattr(session, "lifecycle_references", None)
+                )
+                running = bool(session.running)
+            if has_subscribers or running:
+                continue
             if (
                 retained_process is not None
                 or retained_runtimes
@@ -177,7 +188,24 @@ class _SessionMap:
                 continue
             async with self.lock:
                 if self.sessions.get(key) is session:
-                    self.sessions.pop(key, None)
+                    async with session.lock:
+                        retained_process, retained_runtimes, retained_tasks = _retained_lifecycle_state_unlocked(
+                            session
+                        )
+                        has_subscribers = bool(
+                            getattr(session, "subscribers", None)
+                            or getattr(session, "clients", None)
+                            or getattr(session, "lifecycle_references", None)
+                        )
+                        running = bool(session.running)
+                    if (
+                        not has_subscribers
+                        and not running
+                        and retained_process is None
+                        and not retained_runtimes
+                        and not retained_tasks
+                    ):
+                        self.sessions.pop(key, None)
 
 
 class CsoRuntimeManager:

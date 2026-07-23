@@ -1558,6 +1558,9 @@ class CsoFfmpegCommandBuilder:
         input_protocol_whitelist: str = "",
         require_video: bool = False,
         required_audio_stream_count: int = 0,
+        pipe_probe_size_bytes: int = 2 * 1024 * 1024,
+        pipe_analyse_duration_us: int = 5_000_000,
+        pipe_fps_probe_size: int = CSO_OUTPUT_FPS_PROBE_SIZE,
     ) -> list[str]:
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         input_target_value = str(input_target or "").strip()
@@ -1651,9 +1654,9 @@ class CsoFfmpegCommandBuilder:
                 command += ["-ss", str(trim_seek_value)]
         else:
             command += self._build_pipe_input(
-                2 * 1024 * 1024,
-                5_000_000,
-                CSO_OUTPUT_FPS_PROBE_SIZE,
+                pipe_probe_size_bytes,
+                pipe_analyse_duration_us,
+                pipe_fps_probe_size,
                 low_latency=False,
                 pipe_format=self.pipe_input_format,
                 input_hwaccel_args=self._input_hwaccel_args(),
@@ -1738,7 +1741,7 @@ class CsoFfmpegCommandBuilder:
         startup_height = int(slate_media_hint.get("height") or 720)
         startup_fps = int(slate_media_hint.get("fps") or 25)
         startup_pix_fmt = clean_key(slate_media_hint.get("pixel_format")) or "yuv420p"
-        render_fps = 60
+        render_fps = startup_fps if float(dict(media_hint or {}).get("fps") or 0.0) > 0 else 60
         layout_scale = min(float(startup_width) / 1280.0, float(startup_height) / 720.0)
         title_font_size = max(28, int(round(52 * layout_scale)))
         subtitle_font_size = max(14, int(round(20 * layout_scale)))
@@ -1823,7 +1826,7 @@ class CsoFfmpegCommandBuilder:
             f"[blob2]scale=w={blob2_side_size}:h={blob2_side_size}[blob2_side]",
             "[bg3][blob1_side]overlay=x='W*0.06+sin(2*PI*t/9+0.35)*18':y='H*0.28+cos(2*PI*t/9+0.95)*14':shortest=1[bg4]",
             "[bg4][blob2_side]overlay=x='W-w-W*0.07+cos(2*PI*t/9+1.15)*20':y='H*0.72+sin(2*PI*t/9+0.55)*12':shortest=1[bg5]",
-            "[bg5]gblur=sigma=42:steps=3,fps=60[bg_blur]",
+            f"[bg5]gblur=sigma=42:steps=3,fps={render_fps}[bg_blur]",
         ]
         input_args = [
             "ffmpeg",
