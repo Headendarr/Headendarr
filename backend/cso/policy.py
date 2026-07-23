@@ -150,6 +150,17 @@ def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> s
 
 
 def source_uses_segmented_handoff(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> bool:
+    try:
+        from quart import current_app
+        if current_app:
+            app_config = current_app.config.get("APP_CONFIG")
+            if app_config and getattr(app_config, "settings", None):
+                settings = app_config.settings.get("settings") or {}
+                if settings.get("cso_force_segmented_handoff", True):
+                    return True
+    except Exception:
+        pass
+
     probe = dict(source_probe or {})
     if source is not None:
         source_path = (urlparse(clean_text(source.url)).path or "").lower()

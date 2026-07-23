@@ -237,6 +237,7 @@ class Config:
                 "tvh_cso_stream_profile": "mpegts",
                 "route_playlists_through_tvh": False,
                 "cache_channel_logos": True,
+                "cso_force_segmented_handoff": True,
                 "stream_profiles": {
                     profile_key: {"enabled": True, "hwaccel": False, "deinterlace": False}
                     for profile_key in SUPPORTED_STREAM_PROFILES.keys()

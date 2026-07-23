@@ -166,6 +166,14 @@
                     is required. For best compatibility, software decoding paired with hardware encoding is recommended.
                   </AdmonitionBanner>
                 </div>
+                <div>
+                  <TicToggleInput
+                    v-model="csoForceSegmentedHandoff"
+                    @update:model-value="triggerImmediateAutoSave"
+                    label="Use Segmented Handoff for Live Streams"
+                    description="When enabled (recommended), CSO uses temporary HLS segment files to transfer stream data between the ingest and output processes. This completely prevents playback deadlocks and 'first_output_timeout' errors on unstable streams. Disabling this may decrease initial stream startup time by 1–2 seconds, but streams will be less reliable."
+                  />
+                </div>
 
                 <q-separator />
 
@@ -481,6 +489,7 @@ export default defineComponent({
       routePlaylistsThroughCso: ref(true),
       routePlaylistsThroughTvh: ref(false),
       enableHwDecode: ref(false),
+      csoForceSegmentedHandoff: ref(true),
       cacheChannelLogos: ref(true),
       streamProfiles: ref({}),
       userAgents: ref([]),
@@ -506,6 +515,7 @@ export default defineComponent({
         routePlaylistsThroughCso: true,
         routePlaylistsThroughTvh: false,
         enableHwDecode: false,
+        csoForceSegmentedHandoff: true,
         cacheChannelLogos: true,
         streamProfiles: {},
         auditLogRetentionDays: 7,
@@ -584,6 +594,9 @@ export default defineComponent({
       this.queueAutoSave();
     },
     enableHwDecode() {
+      this.queueAutoSave();
+    },
+    csoForceSegmentedHandoff() {
       this.queueAutoSave();
     },
     cacheChannelLogos() {

@@ -104,6 +104,43 @@ VOD 24/7 channels also use CSO, but with a different runtime shape from a normal
 
 For the full behaviour and configuration details, see [VOD 24/7 Channels](./vod-24-7-channels.md).
 
+## Segmented Handoff
+
+CSO supports two modes for transferring stream data between the ingest FFmpeg process and the output FFmpeg process:
+
+### Direct memory pipe (legacy)
+
+By default (when Segmented Handoff is disabled), the ingest process writes MPEG-TS to `stdout` (`pipe:1`) and Headendarr forwards those bytes to the output process's `stdin` (`pipe:0`).
+
+This is the fastest path with the lowest startup latency, but it is susceptible to a class of deadlocks:
+
+1. At stream startup, the initial packets sent through the pipe may contain corrupt or incomplete codec data before a keyframe arrives.
+2. The output FFmpeg process attempts to probe the stream from the pipe, but the pipe's fixed buffer size limits how much data can be buffered in-flight.
+3. If FFmpeg's probe phase stalls (because it cannot resolve codec parameters from the available data), the output process stops reading from `stdin`.
+4. Because the output process has stopped reading, Headendarr's write loop blocks on `stdin.drain()`, which in turn prevents additional data from flowing through the pipe.
+5. The pipeline hangs until Headendarr's 8-second startup watchdog fires a `first_output_timeout` and kills the stream.
+
+### Segmented Handoff (recommended)
+
+When **Use Segmented Handoff for Live Streams** is enabled (the default), CSO uses a fundamentally different transfer mechanism:
+
+1. The ingest process writes temporary HLS segment files (`.ts`) and an `index.m3u8` playlist to the local cache directory.
+2. The output FFmpeg process is launched with the local `index.m3u8` as its input instead of `pipe:0`.
+3. Because the output process reads from completed segment files rather than a memory pipe, it can probe and decode at its own pace without blocking the ingest writer.
+
+This completely eliminates the pipe deadlock described above. The trade-off is a small increase in startup latency (typically 1–2 seconds) while the first HLS segments are written to the cache.
+
+:::tip
+The cache directory is recommended to be mounted as a `tmpfs` (RAM-backed filesystem). All documented Docker deploy methods configure this automatically, so Segmented Handoff runs entirely in memory with no physical disk I/O.
+:::
+
+### Configuration
+
+The setting is located in **Application Settings** under the stream profiles section:
+
+- **Use Segmented Handoff for Live Streams**: Toggle on (recommended) or off.
+- See [Application Settings](./application-settings.md) for the full setting reference.
+
 ## When to use CSO-centric routing
 
 Prefer CSO-centric paths when:

@@ -43,6 +43,11 @@ These settings define how Headendarr interacts with external services and how cl
   - `Deinterlace` adds a small processing overhead when enabled.
   - If a stream is not interlaced, enabling `Deinterlace` does not materially change visual output.
   - If a client requests a disabled profile, Headendarr falls back to `default`.
+- **Enable hardware accelerated decoding and filters**: When enabled, CSO attempts to use hardware accelerated decoding and video filters (VAAPI). If hardware decoding fails during startup, CSO falls back to software decoding automatically. Software decoding is recommended for maximum compatibility with upstream formats.
+- **Use Segmented Handoff for Live Streams** _(enabled by default)_: Controls how CSO transfers stream data between the ingest and output FFmpeg processes for live channels.
+  - **Enabled (recommended)**: CSO writes temporary HLS segment files to the cache directory and the output process reads from the local playlist. This completely prevents playback deadlocks and `first_output_timeout` errors that can occur with certain IPTV streams.
+  - **Disabled**: CSO uses direct memory pipes (`pipe:0`) to transfer data between processes. This may reduce initial stream startup time by 1–2 seconds, but streams may be less reliable and some sources may trigger `first_output_timeout` failures.
+  - See [Channel Stream Organiser — Segmented Handoff](./channel-stream-organiser.md#segmented-handoff) for technical details.
 
 ### Routing Toggles Explained
 
