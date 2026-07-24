@@ -655,7 +655,11 @@ async def update_playlist(config, playlist_id, data):
         async with session.begin():
             result = await session.execute(select(Playlist).where(Playlist.id == playlist_id))
             playlist = result.scalar_one()
-            playlist.enabled = data.get("enabled", playlist.enabled)
+            was_enabled = playlist.enabled
+            new_enabled = data.get("enabled", playlist.enabled)
+            playlist.enabled = new_enabled
+            if was_enabled and not new_enabled:
+                await session.execute(delete(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist.id))
             playlist.name = data.get("name", playlist.name)
             # NOTE: We need to set account_type first so URL serialisation below applies the target type
             # (XC requires JSON host-list storage; non-XC keeps raw URL text).
@@ -1166,7 +1170,12 @@ async def read_stream_details_from_all_playlists():
         if account.playlist_id not in primary_accounts:
             primary_accounts[account.playlist_id] = account
     async with Session() as session:
-        streams_result = await session.execute(select(PlaylistStreams).options(joinedload(PlaylistStreams.playlist)))
+        streams_result = await session.execute(
+            select(PlaylistStreams)
+            .join(Playlist)
+            .where(Playlist.enabled.is_(True))
+            .options(joinedload(PlaylistStreams.playlist))
+        )
         stream_rows = streams_result.scalars().all()
     for result in stream_rows:
         stream_url = result.url
@@ -1221,7 +1230,7 @@ async def read_filtered_stream_details_from_all_playlists(
             if account.playlist_id not in primary_accounts:
                 primary_accounts[account.playlist_id] = account
 
-        filters = []
+        filters = [Playlist.enabled.is_(True)]
         playlist_id = request_json.get("playlist_id")
         if playlist_id:
             filters.append(PlaylistStreams.playlist_id == playlist_id)
@@ -1238,11 +1247,12 @@ async def read_filtered_stream_details_from_all_playlists(
                 )
             )
 
-        total_stmt = select(func.count()).select_from(PlaylistStreams)
+        total_stmt = select(func.count()).select_from(PlaylistStreams).join(Playlist).where(Playlist.enabled.is_(True))
         results["records_total"] = int((await session.scalar(total_stmt)) or 0)
 
         filtered_ids_query = (
             select(func.min(PlaylistStreams.id).label("id"))
+            .join(Playlist)
             .where(*filters)
             .group_by(PlaylistStreams.playlist_id, PlaylistStreams.url)
             .subquery()

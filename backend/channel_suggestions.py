@@ -6,7 +6,7 @@ import unicodedata
 from sqlalchemy import delete, select
 from sqlalchemy.orm import joinedload
 
-from backend.models import Channel, ChannelSuggestion, PlaylistStreams, Session
+from backend.models import Channel, ChannelSuggestion, PlaylistStreams, Session, Playlist
 
 
 NOISE_TOKENS = {
@@ -113,6 +113,16 @@ def _regions_match(channel_regions, stream_regions):
 async def update_channel_suggestions_for_playlist(playlist_id, *, score_threshold=0.70, limit_per_channel=5):
     async with Session() as session:
         async with session.begin():
+            playlist_result = await session.execute(
+                select(Playlist).where(Playlist.id == playlist_id)
+            )
+            playlist = playlist_result.scalar_one_or_none()
+            if not playlist or not playlist.enabled:
+                await session.execute(
+                    delete(ChannelSuggestion).where(ChannelSuggestion.playlist_id == playlist_id)
+                )
+                return
+
             streams_result = await session.execute(
                 select(PlaylistStreams)
                 .options(joinedload(PlaylistStreams.playlist))

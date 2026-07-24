@@ -393,7 +393,11 @@ async def _fetch_channel_suggestion_counts():
                 ChannelSuggestion.channel_id,
                 func.count(ChannelSuggestion.id),
             )
-            .where(ChannelSuggestion.dismissed.is_(False))
+            .join(Playlist, Playlist.id == ChannelSuggestion.playlist_id)
+            .where(
+                ChannelSuggestion.dismissed.is_(False),
+                Playlist.enabled.is_(True),
+            )
             .group_by(ChannelSuggestion.channel_id)
         )
         rows = result.all()
@@ -442,9 +446,11 @@ async def api_get_channel_stream_suggestions(channel_id):
     async with Session() as session:
         result = await session.execute(
             select(ChannelSuggestion)
+            .join(Playlist, Playlist.id == ChannelSuggestion.playlist_id)
             .where(
                 ChannelSuggestion.channel_id == channel_id,
                 ChannelSuggestion.dismissed.is_(False),
+                Playlist.enabled.is_(True),
             )
             .order_by(ChannelSuggestion.score.desc())
         )
