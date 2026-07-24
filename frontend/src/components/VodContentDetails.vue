@@ -12,6 +12,9 @@
       </q-inner-loading>
 
       <template v-if="detailItem && !loading">
+        <AdmonitionBanner v-if="detailItem.failed" type="warning" class="q-mb-md">
+          This item has failed diagnostics or returned invalid content from the upstream provider.
+        </AdmonitionBanner>
         <div class="row q-col-gutter-lg items-start vod-content-details__top">
           <div class="col-auto vod-content-details__poster-col">
             <div class="vod-content-details__poster-wrap">
@@ -146,9 +149,11 @@
               v-for="episode in visibleEpisodes"
               :key="`${detailItem.id}-${episode.id || `${episode.season_number}-${episode.episode_number}-${episode.title}`}`"
               class="vod-content-details__episode-item"
+              :class="{ 'vod-content-details__episode-item--failed': episode.failed }"
             >
               <q-item-section>
-                <q-item-label class="text-weight-medium">
+                <q-item-label class="text-weight-medium flex items-center">
+                  <q-icon v-if="episode.failed" name="warning" color="negative" size="16px" class="q-mr-xs" />
                   {{ episodeLabel(episode) }}
                 </q-item-label>
                 <q-item-label caption lines="2">
@@ -172,11 +177,12 @@
 
 <script>
 import {defineComponent} from 'vue';
-import {TicActionButton, TicButton, TicDialogWindow, TicListActions} from 'components/ui';
+import {AdmonitionBanner, TicActionButton, TicButton, TicDialogWindow, TicListActions} from 'components/ui';
 
 export default defineComponent({
   name: 'VodContentDetails',
   components: {
+    AdmonitionBanner,
     TicActionButton,
     TicButton,
     TicDialogWindow,
@@ -435,6 +441,10 @@ export default defineComponent({
 
 .vod-content-details__episode-item {
   min-height: 76px;
+}
+
+.vod-content-details__episode-item--failed {
+  background: color-mix(in srgb, var(--q-negative) 4%, transparent);
 }
 
 .vod-content-details__footer-actions {

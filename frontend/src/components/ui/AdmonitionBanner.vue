@@ -98,24 +98,31 @@ export default defineComponent({
   margin-bottom: 0;
 }
 
-/* Improve warning readability in light theme and keep strong contrast in dark theme. */
-.admonition-banner--warning .admonition-banner__heading,
-.admonition-banner--warning .admonition-banner__content {
+/* Improve warning readability in light theme */
+.admonition-banner--warning,
+.admonition-banner--warning * {
   color: #6b4300;
 }
 
-:global(body.body--dark) .admonition-banner--warning .admonition-banner__heading,
-:global(body.body--dark) .admonition-banner--warning .admonition-banner__content {
-  color: #ffe7a6;
-}
-
-.admonition-banner--note .admonition-banner__heading,
-.admonition-banner--note .admonition-banner__content {
+.admonition-banner--note,
+.admonition-banner--note * {
   color: #0e4d63;
 }
+</style>
 
-:global(body.body--dark) .admonition-banner--note .admonition-banner__heading,
-:global(body.body--dark) .admonition-banner--note .admonition-banner__content {
-  color: #bfefff;
+<style>
+/* Global theme overrides to guarantee readability in dark mode */
+.body--dark .admonition-banner--warning,
+.body--dark .admonition-banner--warning * {
+  color: #fff8e1 !important;
+}
+
+.body--dark .admonition-banner--warning {
+  background: rgba(242, 192, 55, 0.24) !important;
+}
+
+.body--dark .admonition-banner--note,
+.body--dark .admonition-banner--note * {
+  color: #bfefff !important;
 }
 </style>

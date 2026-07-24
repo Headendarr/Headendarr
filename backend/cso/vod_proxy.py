@@ -398,6 +398,23 @@ class VodProxySession:
                         validation.classification,
                         redacted_url_for_log(self.upstream_url),
                     )
+                    source_id = getattr(self.source, "id", None)
+                    source_type = getattr(self.source, "source_type", "channel")
+                    if source_id:
+                        try:
+                            from backend.source_media import persist_source_media_error
+                            await persist_source_media_error(
+                                source_id=source_id,
+                                error_code=self.last_error,
+                                details={
+                                    "status": self.status_code,
+                                    "content_type": validation.content_type,
+                                    "classification": validation.classification,
+                                },
+                                source_type=source_type,
+                            )
+                        except Exception as exc:
+                            logger.debug("Failed to persist VOD proxy play error: %s", exc)
                     await self._cleanup_failed_start()
                     return False
                 self.blocking_iterator = self.blocking_response.iter_content(chunk_size=64 * 1024)

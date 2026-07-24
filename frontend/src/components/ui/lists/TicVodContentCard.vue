@@ -1,6 +1,7 @@
 <template>
   <q-card
     class="vod-content-card cursor-pointer"
+    :class="{ 'vod-content-card--failed': failed }"
     flat
     bordered
     @click="$emit('select')"
@@ -22,6 +23,11 @@
 
       <div v-if="yearLabel" class="vod-content-card__chip vod-content-card__chip--year">
         {{ yearLabel }}
+      </div>
+
+      <div v-if="failed" class="vod-content-card__failed-banner">
+        <q-icon name="warning" size="14px" class="q-mr-xs" />
+        Upstream Issue
       </div>
     </div>
 
@@ -78,6 +84,10 @@ export default defineComponent({
       type: String,
       default: 'movie',
     },
+    failed: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ['select'],
 });
@@ -93,6 +103,32 @@ export default defineComponent({
   border-radius: 0;
   overflow: hidden;
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vod-content-card--failed {
+  border-color: color-mix(in srgb, var(--q-negative) 40%, var(--q-separator-color));
+}
+
+.vod-content-card--failed:hover {
+  border-color: var(--q-negative);
+}
+
+.vod-content-card__failed-banner {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--q-negative) 85%, transparent);
+  color: white;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  border-top: 1px solid var(--q-negative);
 }
 
 .vod-content-card:hover {

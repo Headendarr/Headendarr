@@ -2741,6 +2741,18 @@ def _vod_item_summary_fields(summary_json: str | None) -> dict[str, object]:
     }
 
 
+def _is_source_failed(source_item) -> bool:
+    if source_item and source_item.stream_probe_details:
+        try:
+            import json
+            details = json.loads(source_item.stream_probe_details)
+            if isinstance(details, dict) and details.get("error") == "upstream_invalid_media_response":
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _flatten_series_episode_payload(payload: dict[str, object]) -> list[dict[str, object]]:
     episodes_by_season = payload.get("episodes")
     if not isinstance(episodes_by_season, dict):
@@ -2942,6 +2954,13 @@ async def _get_or_start_vod_media_probe_task(
                         }
                     upstream_reason = await probe_vod_upstream_response(provider_source, source_url)
                     if upstream_reason == UPSTREAM_INVALID_MEDIA_ERROR_CODE:
+                        if persist_result and source_id > 0:
+                            from backend.source_media import persist_source_media_error
+                            await persist_source_media_error(
+                                source_id=source_id,
+                                error_code=UPSTREAM_INVALID_MEDIA_ERROR_CODE,
+                                source_type=source_type,
+                            )
                         return {
                             "media_shape": {},
                             "error_code": UPSTREAM_INVALID_MEDIA_ERROR_CODE,
@@ -3307,6 +3326,10 @@ async def list_curated_library_items(
             .join(VodCategoryItemSource, VodCategoryItemSource.category_item_id == VodCategoryItem.id)
             .join(XcVodItem, XcVodItem.id == VodCategoryItemSource.source_item_id)
             .join(Playlist, Playlist.id == XcVodItem.playlist_id)
+            .options(
+                selectinload(VodCategoryItem.source_links).selectinload(VodCategoryItemSource.source_item),
+                selectinload(VodCategoryItem.episode_cache),
+            )
             .where(
                 VodCategory.enabled.is_(True),
                 VodCategory.content_type == content_type,
@@ -3340,6 +3363,15 @@ async def list_curated_library_items(
             continue
         seen_item_ids.add(item_id)
         summary_fields = _vod_item_summary_fields(item.summary_json)
+        failed = False
+        if content_type == VOD_KIND_MOVIE:
+            failed = len(item.source_links) > 0 and all(
+                _is_source_failed(link.source_item) for link in item.source_links
+            )
+        elif content_type == VOD_KIND_SERIES:
+            failed = len(item.episode_cache) > 0 and all(
+                _is_source_failed(ep) for ep in item.episode_cache
+            )
         item_payload = {
             "id": item_id,
             "content_type": content_type,
@@ -3352,6 +3384,7 @@ async def list_curated_library_items(
             "category_name": clean_text(group.name),
             "plot": summary_fields["plot"],
             "genre": summary_fields["genre"],
+            "failed": failed,
         }
         if content_type == VOD_KIND_MOVIE:
             item_payload["container_extension"] = _resolve_group_output_extension(
@@ -3380,6 +3413,10 @@ async def fetch_curated_library_item_details(
         result = await session.execute(
             select(VodCategoryItem, VodCategory)
             .join(VodCategory, VodCategory.id == VodCategoryItem.category_id)
+            .options(
+                selectinload(VodCategoryItem.source_links).selectinload(VodCategoryItemSource.source_item),
+                selectinload(VodCategoryItem.episode_cache),
+            )
             .where(
                 VodCategoryItem.id == int(item_id),
                 VodCategoryItem.item_type == content_type,
@@ -3391,6 +3428,16 @@ async def fetch_curated_library_item_details(
         return None
 
     item, category = row
+    failed = False
+    if content_type == VOD_KIND_MOVIE:
+        failed = len(item.source_links) > 0 and all(
+            _is_source_failed(link.source_item) for link in item.source_links
+        )
+    elif content_type == VOD_KIND_SERIES:
+        failed = len(item.episode_cache) > 0 and all(
+            _is_source_failed(ep) for ep in item.episode_cache
+        )
+
     summary_fields = _vod_item_summary_fields(item.summary_json)
     detail = {
         "id": int(item.id),
@@ -3407,6 +3454,7 @@ async def fetch_curated_library_item_details(
         "trailer": summary_fields["trailer"],
         "category_id": int(category.id),
         "category_name": clean_text(category.name),
+        "failed": failed,
         "episodes": [],
     }
 
@@ -3447,6 +3495,13 @@ async def fetch_curated_library_item_details(
         detail["tmdb_id"] = clean_text(_first_summary_value(payload, "tmdb_id", "tmdb")) or detail["tmdb_id"]
         detail["trailer"] = clean_text(_first_summary_value(payload, "trailer")) or detail["trailer"]
         detail["episodes"] = _flatten_series_episode_payload(payload)
+        episodes_failed_map = {
+            int(ep.id): _is_source_failed(ep)
+            for ep in item.episode_cache
+            if ep.id is not None
+        }
+        for ep in detail["episodes"]:
+            ep["failed"] = episodes_failed_map.get(ep.get("id"), False)
     return detail
 
 

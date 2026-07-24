@@ -264,6 +264,7 @@
 
 <script setup>
 import axios from 'axios';
+import { useQuasar } from 'quasar';
 import {extractApiError} from 'src/utils/apiErrors';
 import {computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch} from 'vue';
 import TicButtonDropdown from 'components/ui/buttons/TicButtonDropdown.vue';
@@ -279,12 +280,14 @@ import {
 
 const videoStore = useVideoStore();
 const {isMobile} = useMobile();
+const $q = useQuasar();
 
 const playerRoot = ref(null);
 const videoArea = ref(null);
 const videoEl = ref(null);
 const isLoading = ref(false);
 const errorMessage = ref('');
+const isFatalProviderError = ref(false);
 const dragState = ref(null);
 const resizeState = ref(null);
 const hlsInstance = ref(null);
@@ -554,6 +557,9 @@ async function waitForMpegtsStartupReady(player, el, timeoutMs = 2500) {
 }
 
 function clearErrorMessage() {
+  if (isFatalProviderError.value) {
+    return;
+  }
   if (errorAutoClearTimer.value) {
     clearTimeout(errorAutoClearTimer.value);
     errorAutoClearTimer.value = null;
@@ -683,7 +689,16 @@ async function loadVodPreviewMetadata(attemptNumber = 1, requestedUrl = '', forc
     const providerError = extractApiError(error, '');
     if (providerError.errorCode === 'upstream_invalid_media_response' ||
       providerError.errorCode === 'upstream_capacity_reached') {
+      $q.notify({
+        color: 'negative',
+        position: 'top',
+        icon: 'error',
+        message: providerError.message,
+        timeout: 10000,
+        actions: [{ icon: 'close', color: 'white', round: true }],
+      });
       setErrorMessage(providerError.message);
+      isFatalProviderError.value = true;
       isLoading.value = false;
       return;
     }
@@ -752,6 +767,9 @@ function setPlaybackRate(rate) {
 }
 
 function setErrorMessage(message, autoClearMs = 0) {
+  if (isFatalProviderError.value && message) {
+    return;
+  }
   if (errorAutoClearTimer.value) {
     clearTimeout(errorAutoClearTimer.value);
     errorAutoClearTimer.value = null;
@@ -2261,6 +2279,8 @@ watch(
     if (!nextKey || nextKey === previousKey) {
       return;
     }
+    isFatalProviderError.value = false;
+    errorMessage.value = '';
     void requestPlayerInit();
   },
 );
@@ -2272,6 +2292,8 @@ watch(
       clearVodPreviewMetadataRetry();
       activeVodMetadataUrl.value = '';
       cleanupPlayer();
+      isFatalProviderError.value = false;
+      errorMessage.value = '';
       return;
     }
     const defaultPosition = {right: 24, bottom: 24, left: null, top: null};
@@ -2298,6 +2320,8 @@ watch(
   () => {
     clearVodPreviewMetadataRetry();
     activeVodMetadataUrl.value = '';
+    isFatalProviderError.value = false;
+    errorMessage.value = '';
     if (videoStore.isVisible) {
       void loadVodPreviewMetadata();
     }

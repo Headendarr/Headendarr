@@ -256,3 +256,36 @@ async def get_source_media_shape(source_id, source_type="channel"):
     if source is None:
         return {}
     return load_source_media_shape(source)
+
+
+async def persist_source_media_error(source_id, error_code, details=None, observed_at=None, source_type="channel"):
+    try:
+        parsed_source_id = int(source_id)
+    except Exception:
+        return False
+    if parsed_source_id <= 0:
+        return False
+
+    observed_value = observed_at if isinstance(observed_at, datetime) else datetime.utcnow()
+
+    payload_dict = {
+        "error": error_code,
+        "details": details or {}
+    }
+    payload = json.dumps(payload_dict)
+
+    async with Session() as session:
+        async with session.begin():
+            if source_type == "vod_movie":
+                source = await session.get(XcVodItem, parsed_source_id)
+            elif source_type == "vod_episode":
+                source = await session.get(VodCategoryEpisode, parsed_source_id)
+            else:
+                source = await session.get(ChannelSource, parsed_source_id)
+
+            if source is None:
+                return False
+            source.stream_probe_at = observed_value
+            source.stream_probe_details = payload
+    return True
+

@@ -136,6 +136,20 @@ async def _probe_vod_cache_metadata(
                     if validation.classification != "upstream_status"
                     else f"upstream_status_{int(response.status or 0)}"
                 )
+                try:
+                    from backend.source_media import persist_source_media_error
+                    await persist_source_media_error(
+                        source_id=source.id,
+                        error_code=reason,
+                        details={
+                            "status": int(response.status or 0),
+                            "content_type": validation.content_type,
+                            "classification": validation.classification,
+                        },
+                        source_type=source.source_type,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to persist VOD cache probe error: %s", exc)
                 return {
                     "size": None,
                     "headers": dict(response.headers),

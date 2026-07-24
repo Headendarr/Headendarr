@@ -50,6 +50,7 @@
             :type-label="activeTab === 'movie' ? 'Movie' : 'Series'"
             :year-label="displayYear(item)"
             :content-type="activeTab"
+            :failed="item.failed"
             @select="openItemDetails(item)"
           />
         </div>
