@@ -566,6 +566,11 @@ class Vod247ChannelManager:
     def get_output_input_target(self):
         return self._stitched_server_url or str(self.stitched_playlist_path)
 
+    def get_output_hls_input_options(self) -> dict[str, Any]:
+        # The stitched playlist owns reader-aware retention, so its oldest
+        # advertised segment is deliberately the output start position.
+        return {"live_start_index": 0, "prefer_x_start": False}
+
     def is_hunting_for_stream(self):
         if not self.running:
             return True

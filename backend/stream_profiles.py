@@ -354,6 +354,8 @@ DEFAULT_PROFILE_TEMPLATE = {
     "subtitle_mode": "copy",
     "transcode": False,
     "tvh_profile_name": "pass",
+    "preserve_multiple_audio": False,
+    "preferred_audio_language": "",
 }
 
 
@@ -566,6 +568,8 @@ def generate_cso_policy_from_profile(config, profile):
         "target_video_bufsize": "",
         "audio_bitrate": "",
         "hls_segment_type": profile_data.get("hls_segment_type", "mpegts"),
+        "preserve_multiple_audio": bool(profile_data.get("preserve_multiple_audio", False)),
+        "preferred_audio_language": str(profile_data.get("preferred_audio_language") or "").strip().lower(),
     }
     return apply_stream_profile_modifiers(policy, parsed_profile["modifiers"])
 

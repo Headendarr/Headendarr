@@ -1125,9 +1125,16 @@ class CsoFfmpegCommandBuilder:
         command += self._input_resilience_flags()
         return command
 
-    def build_ingest_command(self, source_url, program_index=0, user_agent=None, request_headers=None):
+    def build_ingest_command(
+        self,
+        source_url,
+        program_index=0,
+        user_agent=None,
+        request_headers=None,
+        hls_live_input: bool = True,
+    ):
         map_program = max(0, int(program_index or 0))
-        is_hls_input = (urlparse(source_url or "").path or "").lower().endswith(".m3u8")
+        is_hls_input = (urlparse(source_url or "").path or "").lower().endswith((".m3u8", ".m3u"))
         probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
         analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_INGEST_FPS_PROBE_SIZE)
@@ -1173,6 +1180,8 @@ class CsoFfmpegCommandBuilder:
             analyse_duration_us,
             fps_probe_size,
         )
+        if is_hls_input and hls_live_input:
+            command += ["-live_start_index", "-3", "-prefer_x_start", "1"]
         if is_hls_input:
             stream_maps = [
                 "-map",
@@ -1217,6 +1226,7 @@ class CsoFfmpegCommandBuilder:
         input_is_url: bool = False,
         realtime: bool = False,
         hls_live_start_index: int | None = None,
+        hls_prefer_x_start: bool = False,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
     ):
@@ -1225,7 +1235,7 @@ class CsoFfmpegCommandBuilder:
         analyse_duration_us = int(CSO_OUTPUT_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_OUTPUT_FPS_PROBE_SIZE)
         use_direct_input = bool(clean_text(input_target))
-        input_is_hls = (urlparse(str(input_target or "")).path or "").lower().endswith(".m3u8")
+        input_is_hls = (urlparse(str(input_target or "")).path or "").lower().endswith((".m3u8", ".m3u"))
         if (
             not use_direct_input
             and self.pipe_input_format == "mpegts"
@@ -1264,6 +1274,8 @@ class CsoFfmpegCommandBuilder:
                 ]
             if input_is_hls and hls_live_start_index is not None:
                 command += ["-live_start_index", str(int(hls_live_start_index))]
+            if input_is_hls and hls_prefer_x_start:
+                command += ["-prefer_x_start", "1"]
             command += self._input_hwaccel_args()
             command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
             command += self._input_resilience_flags()
@@ -1564,6 +1576,7 @@ class CsoFfmpegCommandBuilder:
         max_duration_seconds: int | None = None,
         realtime: bool = False,
         hls_live_start_index: int | None = None,
+        hls_prefer_x_start: bool = False,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
         input_protocol_whitelist: str = "",
@@ -1575,7 +1588,7 @@ class CsoFfmpegCommandBuilder:
     ) -> list[str]:
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
         input_target_value = str(input_target or "").strip()
-        input_is_hls = (urlparse(input_target_value).path or "").lower().endswith(".m3u8")
+        input_is_hls = (urlparse(input_target_value).path or "").lower().endswith((".m3u8", ".m3u"))
         nested_network_resources = input_is_url if input_uses_network is None else bool(input_uses_network)
         start_value = max(0, int(start_seconds or 0))
         input_seek_value = start_value
@@ -1643,6 +1656,8 @@ class CsoFfmpegCommandBuilder:
                 ]
             if input_is_hls and hls_live_start_index is not None:
                 command += ["-live_start_index", str(int(hls_live_start_index))]
+            if input_is_hls and hls_prefer_x_start:
+                command += ["-prefer_x_start", "1"]
             command += self._input_hwaccel_args(policy=self.policy)
             probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
             analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
@@ -1722,10 +1737,13 @@ class CsoFfmpegCommandBuilder:
         segment_pattern = str(output_dir / f"seg_%06d.{segment_extension}")
         playlist_path = str(output_dir / "index.m3u8")
         hls_flags = ["temp_file", "independent_segments"]
+        delete_segments = bool(hls_policy.get("hls_delete_segments", True))
         if playlist_is_event:
             hls_flags.append("append_list")
         else:
-            hls_flags.extend(["delete_segments", "omit_endlist"])
+            if delete_segments:
+                hls_flags.append("delete_segments")
+            hls_flags.append("omit_endlist")
         command += [
             "-f",
             "hls",
@@ -1744,8 +1762,9 @@ class CsoFfmpegCommandBuilder:
             command += ["-hls_fmp4_init_filename", "init.mp4"]
         if playlist_is_event:
             command += ["-hls_playlist_type", "event"]
-        else:
-            command += ["-hls_delete_threshold", "2"]
+        elif delete_segments:
+            delete_threshold = max(1, convert_to_int(hls_policy.get("hls_delete_threshold"), 2))
+            command += ["-hls_delete_threshold", str(delete_threshold)]
         command.append(playlist_path)
         return command
 

@@ -17,6 +17,9 @@ from .constants import (
     CSO_HLS_SEGMENT_SECONDS,
     CSO_SEGMENT_CACHE_MIN_FREE_BYTES,
     CSO_SEGMENT_CACHE_ROOT,
+    CSO_SEGMENTED_HANDOFF_RETIRED_GRACE_SECONDS,
+    CSO_SEGMENTED_HANDOFF_RETIRED_MAX_BYTES,
+    CSO_SEGMENTED_HANDOFF_RETIRED_MIN_SEGMENTS,
 )
 from .ffmpeg import (
     CsoFfmpegCommandBuilder,
@@ -76,6 +79,8 @@ class SegmentedHandoffSession:
         selected_presentation: HlsSelectedPresentation | None = None,
         require_audio: bool = False,
         source_probe: dict[str, Any] | None = None,
+        live_input: bool = False,
+        minimum_prebuffer_segments: int = 1,
     ):
         self.key = str(key)
         self.policy = dict(policy or {})
@@ -92,6 +97,8 @@ class SegmentedHandoffSession:
         self.selected_presentation = selected_presentation
         self.require_audio = bool(require_audio)
         self.source_probe = dict(source_probe or {})
+        self.live_input = bool(live_input)
+        self.minimum_prebuffer_segments = max(1, int(minimum_prebuffer_segments or 1))
         self.required_audio_stream_count = 0
         if self.require_audio:
             self.required_audio_stream_count = 1
@@ -104,6 +111,7 @@ class SegmentedHandoffSession:
         self.process = None
         self.stderr_task = None
         self.wait_task = None
+        self.prune_task = None
         self.running = False
         self.lock = asyncio.Lock()
         self.last_activity = time.time()
@@ -114,9 +122,19 @@ class SegmentedHandoffSession:
         self._selected_master_server = None
         self._selected_master_url = ""
         self._selected_master_route = ""
+        self._retired_segment_since: dict[str, float] = {}
+        self._consumer_references: set[str] = set()
 
     def input_path(self) -> str:
         return str(self.playlist_path)
+
+    async def add_consumer_reference(self, reference_id: str):
+        async with self.lock:
+            self._consumer_references.add(str(reference_id))
+
+    async def remove_consumer_reference(self, reference_id: str):
+        async with self.lock:
+            self._consumer_references.discard(str(reference_id))
 
     def init_segment_path(self) -> Path:
         return self.output_dir / "init.mp4"
@@ -307,7 +325,7 @@ class SegmentedHandoffSession:
                 continue
             referenced_names.append(line.split("?", 1)[0])
             media_segment_count += 1
-        if media_segment_count == 0:
+        if media_segment_count < self.minimum_prebuffer_segments:
             return False
         output_dir = self.output_dir.resolve()
         for referenced_name in referenced_names:
@@ -322,6 +340,75 @@ class SegmentedHandoffSession:
             except Exception:
                 return False
         return True
+
+    async def _prune_retired_segments_once(self):
+        if not self.playlist_path.exists():
+            return
+        try:
+            playlist_text = await asyncio.to_thread(self.playlist_path.read_text, "utf-8")
+        except Exception:
+            return
+        referenced_names = {
+            line.strip().split("?", 1)[0]
+            for line in playlist_text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        now_value = time.time()
+        candidates = []
+        for pattern in ("seg_*.m4s", "seg_*.ts"):
+            for path in self.output_dir.glob(pattern):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                candidates.append((path, int(stat.st_size or 0), float(stat.st_mtime)))
+        current_names = {path.name for path, _, _ in candidates}
+        for name in tuple(self._retired_segment_since):
+            if name in referenced_names or name not in current_names:
+                self._retired_segment_since.pop(name, None)
+        retired = []
+        for path, size, mtime in candidates:
+            if path.name in referenced_names:
+                continue
+            retired_since = self._retired_segment_since.setdefault(path.name, now_value)
+            retired.append((path, size, mtime, retired_since))
+        if not retired:
+            return
+        retired.sort(key=lambda item: (item[2], item[0].name))
+        async with self.lock:
+            active_consumers = len(self._consumer_references)
+        minimum_retired = int(CSO_SEGMENTED_HANDOFF_RETIRED_MIN_SEGMENTS) if active_consumers else 0
+        protected_names = {item[0].name for item in retired[-minimum_retired:]} if minimum_retired else set()
+        retired_bytes = sum(item[1] for item in retired)
+        max_retired_bytes = int(CSO_SEGMENTED_HANDOFF_RETIRED_MAX_BYTES)
+        grace_seconds = float(CSO_SEGMENTED_HANDOFF_RETIRED_GRACE_SECONDS) if active_consumers else 0.0
+        for path, size, _, retired_since in retired:
+            if active_consumers and retired_bytes <= max_retired_bytes:
+                break
+            if path.name in protected_names:
+                continue
+            if (now_value - retired_since) < grace_seconds:
+                continue
+            # Once the grace has elapsed and the retired tail exceeds its byte
+            # budget, prune in playlist order. The ceiling is intentionally
+            # soft: current playlist files and the protected consumer tail
+            # always win over storage pressure.
+            try:
+                await asyncio.to_thread(path.unlink, missing_ok=True)
+            except OSError:
+                continue
+            retired_bytes = max(0, retired_bytes - size)
+            self._retired_segment_since.pop(path.name, None)
+
+    async def _prune_loop(self):
+        while self.running:
+            await asyncio.sleep(0.5)
+            try:
+                await self._prune_retired_segments_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Segmented handoff retired-segment prune failed key=%s", bounded_log_value(self.key))
 
     async def _wait_for_startup_ready(self, process, timeout_seconds: float = 10.0) -> tuple[bool, str]:
         startup_idle_timeout = max(1.0, float(timeout_seconds))
@@ -447,7 +534,7 @@ class SegmentedHandoffSession:
         async with self.lock:
             if self.running:
                 return True
-            retained_tasks = (self.stderr_task, self.wait_task)
+            retained_tasks = (self.stderr_task, self.wait_task, self.prune_task)
             if self.process is not None or any(task is not None for task in retained_tasks):
                 self.last_error = (
                     "previous_process_teardown_unconfirmed"
@@ -507,6 +594,8 @@ class SegmentedHandoffSession:
                     start_seconds=self.start_seconds,
                     max_duration_seconds=self.max_duration_seconds,
                     realtime=self.realtime,
+                    hls_live_start_index=-3 if self.live_input else None,
+                    hls_prefer_x_start=self.live_input,
                     user_agent=self.user_agent,
                     request_headers=self.request_headers,
                     input_protocol_whitelist=(
@@ -612,6 +701,11 @@ class SegmentedHandoffSession:
 
             self.process, self.stderr_task, self.wait_task = start_result.runtime
             self.running = True
+            if not bool(self.policy.get("hls_delete_segments", True)):
+                self.prune_task = asyncio.create_task(
+                    self._prune_loop(),
+                    name=f"segmented-prune-{self.key}",
+                )
             self.last_error = None
             self.last_activity = time.time()
             return True
@@ -720,15 +814,18 @@ class SegmentedHandoffSession:
             self.process_token += 1
             stderr_task = self.stderr_task
             wait_task = self.wait_task
+            prune_task = self.prune_task
         self.stderr_task = None
         self.wait_task = None
+        self.prune_task = None
         teardown = await terminate_ffmpeg_process(process) if process is not None else None
-        task_cleanup = await cancel_and_await_tasks((stderr_task, wait_task))
+        task_cleanup = await cancel_and_await_tasks((stderr_task, wait_task, prune_task))
         if not task_cleanup.confirmed:
             pending_tasks = set(task_cleanup.pending_tasks)
             async with self.lock:
                 self.stderr_task = stderr_task if stderr_task in pending_tasks else None
                 self.wait_task = wait_task if wait_task in pending_tasks else None
+                self.prune_task = prune_task if prune_task in pending_tasks else None
         if process is not None and teardown is not None and teardown.confirmed:
             async with self.lock:
                 if self.process is process:

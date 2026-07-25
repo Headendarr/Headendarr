@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from collections import deque
+from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -26,6 +27,7 @@ from .constants import (
     CSO_INGEST_SUBSCRIBER_QUEUE_MAX_BYTES,
     CSO_SOURCE_HOLD_DOWN_SECONDS,
     CSO_SPEED_STALE_SECONDS_DEFAULT,
+    CSO_SEGMENTED_HANDOFF_MIN_PREBUFFER_SEGMENTS,
     CSO_STALL_SECONDS_DEFAULT,
     CSO_STARTUP_GRACE_SECONDS_DEFAULT,
     CSO_UNAVAILABLE_SHOW_SLATE,
@@ -152,6 +154,8 @@ class CsoIngestSession:
         slate_session=None,
         vod_pipe_output_format_override="",
         require_audio: bool = True,
+        preserve_multiple_audio: bool = False,
+        preferred_audio_language: str = "",
     ):
         self.key = key
         self.channel_id = channel_id
@@ -219,6 +223,8 @@ class CsoIngestSession:
         self.first_healthy_stream_seen = False
         self.vod_pipe_output_format_override = vod_pipe_output_format_override
         self.require_audio = bool(require_audio)
+        self.preserve_multiple_audio = bool(preserve_multiple_audio)
+        self.preferred_audio_language = clean_text(preferred_audio_language)
         self.ingest_policy = {
             "output_mode": "force_remux",
             "container": "mpegts",
@@ -232,6 +238,10 @@ class CsoIngestSession:
         if self.segmented_handoff_session is None:
             return ""
         return self.segmented_handoff_session.input_path()
+
+    def get_output_hls_input_options(self) -> dict[str, Any]:
+        live_input = bool(getattr(self.segmented_handoff_session, "live_input", False))
+        return {"live_start_index": -3 if live_input else 0, "prefer_x_start": False}
 
     def build_unavailable_stream_plan(
         self, policy, reason, detail_hint="", profile_name="", channel=None, source: CsoSource = None, status_code=503
@@ -420,6 +430,7 @@ class CsoIngestSession:
         self._current_source_probe_persisted = False
         self._current_source_probe_input_section_closed = False
         if use_segmented_handoff:
+            live_input = source is None or source.source_type not in {"vod_movie", "vod_episode"}
             segment_type = segmented_hls_segment_type(source, source_probe=source_probe)
             subtitle_mode, subtitle_policy_reason = segmented_handoff_subtitle_policy(segment_type)
             segmented_policy = {
@@ -431,6 +442,9 @@ class CsoIngestSession:
                 "hls_segment_type": segment_type,
                 "hls_playlist_mode": "live",
                 "hls_list_size": 13,
+                # Headendarr prunes only segments absent from the latest
+                # playlist, retaining a consumer-safe tail first.
+                "hls_delete_segments": False,
             }
             self.ingest_policy = dict(segmented_policy)
             segmented_handoff_session = SegmentedHandoffSession(
@@ -442,6 +456,9 @@ class CsoIngestSession:
                 request_headers=resolved_headers,
                 selected_presentation=selected_presentation,
                 require_audio=self.require_audio,
+                source_probe=source_probe,
+                live_input=live_input,
+                minimum_prebuffer_segments=(CSO_SEGMENTED_HANDOFF_MIN_PREBUFFER_SEGMENTS if live_input else 1),
             )
             self.segmented_handoff_session = segmented_handoff_session
             if selected_presentation is not None and selected_presentation.expected_subtitles:
@@ -503,6 +520,7 @@ class CsoIngestSession:
             program_index=program_index,
             user_agent=resolved_user_agent,
             request_headers=resolved_headers,
+            hls_live_input=source is None or source.source_type not in {"vod_movie", "vod_episode"},
         )
         logger.info(
             "Starting CSO ingest channel=%s source=%s policy=(%s) source_probe=%s command=%s",
@@ -882,7 +900,15 @@ class CsoIngestSession:
                         if variant_position is None:
                             variant_position = variant_count - 1
                         try:
-                            selected_presentation = discovered_presentation.select(variant_position)
+                            source_probe = dict(source.probe_details or {})
+                            preferred_audio_language = self.preferred_audio_language or clean_text(
+                                source_probe.get("preferred_audio_language") or source_probe.get("audio_language")
+                            )
+                            selected_presentation = discovered_presentation.select(
+                                variant_position,
+                                preferred_audio_language=preferred_audio_language,
+                                preserve_multiple_audio=self.preserve_multiple_audio,
+                            )
                         except HlsPresentationError as exc:
                             source_failure_reason = exc.reason
                             logger.warning(
@@ -1706,6 +1732,9 @@ class CsoIngestSession:
             subscriber_count = len(self.subscribers)
             source_id = getattr(self.current_source, "id", None)
             source_url = self.current_source_url
+            segmented_handoff_session = self.segmented_handoff_session
+        if segmented_handoff_session is not None:
+            await segmented_handoff_session.add_consumer_reference(reference_id)
             self.last_activity = time.time()
         logger.info(
             "CSO ingest lifecycle reference added channel=%s ingest_key=%s reference=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
@@ -1725,6 +1754,9 @@ class CsoIngestSession:
             subscriber_count = len(self.subscribers)
             source_id = getattr(self.current_source, "id", None)
             source_url = self.current_source_url
+            segmented_handoff_session = self.segmented_handoff_session
+        if segmented_handoff_session is not None:
+            await segmented_handoff_session.remove_consumer_reference(reference_id)
         logger.info(
             "CSO ingest lifecycle reference removed channel=%s ingest_key=%s reference=%s subscribers=%s lifecycle_references=%s source_id=%s source_url=%s",
             self.channel_id,

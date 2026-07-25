@@ -12,6 +12,7 @@ from .events import (
     source_event_context,
     summarize_cso_playback_issue,
 )
+from .hls import hls_audio_selection_contract
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
 from .output import CsoHlsOutputSession, CsoOutputSession
 from .policy import output_profile_requires_audio, policy_content_type
@@ -47,7 +48,7 @@ async def subscribe_channel_hls(
     policy = generate_cso_policy_from_profile(config, profile)
     audio_required = output_profile_requires_audio(policy)
     ingest_contract = "audio" if audio_required else "video"
-    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}"
+    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}-{hls_audio_selection_contract(policy)}"
     output_session_key = f"cso-hls-output-{channel.id}-{profile}"
     capacity_owner_key = f"cso-channel-{channel.id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
@@ -65,6 +66,8 @@ async def subscribe_channel_hls(
             username=username,
             ingest_user_agent=ingest_user_agent,
             require_audio=audio_required,
+            preserve_multiple_audio=bool(policy.get("preserve_multiple_audio", False)),
+            preferred_audio_language=policy.get("preferred_audio_language", ""),
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -172,7 +175,7 @@ async def subscribe_source_hls(
     policy = generate_cso_policy_from_profile(config, profile)
     audio_required = output_profile_requires_audio(policy)
     ingest_contract = "audio" if audio_required else "video"
-    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}"
+    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}-{hls_audio_selection_contract(policy)}"
     output_session_key = f"cso-source-hls-output-{source_id}-{profile}"
     capacity_owner_key = f"cso-source-{source_id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
@@ -191,6 +194,8 @@ async def subscribe_source_hls(
             allow_failover=False,
             ingest_user_agent=ingest_user_agent,
             require_audio=audio_required,
+            preserve_multiple_audio=bool(policy.get("preserve_multiple_audio", False)),
+            preferred_audio_language=policy.get("preferred_audio_language", ""),
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -305,7 +310,7 @@ async def subscribe_channel_stream(
     policy = generate_cso_policy_from_profile(config, profile)
     audio_required = output_profile_requires_audio(policy)
     ingest_contract = "audio" if audio_required else "video"
-    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}"
+    ingest_key = f"cso-ingest-{channel.id}-{ingest_contract}-{hls_audio_selection_contract(policy)}"
     output_session_key = f"cso-output-{channel.id}-{profile}"
     capacity_owner_key = f"cso-channel-{channel.id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
@@ -336,6 +341,8 @@ async def subscribe_channel_stream(
             ingest_user_agent=ingest_user_agent,
             slate_session=slate_session,
             require_audio=audio_required,
+            preserve_multiple_audio=bool(policy.get("preserve_multiple_audio", False)),
+            preferred_audio_language=policy.get("preferred_audio_language", ""),
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -522,7 +529,7 @@ async def subscribe_source_stream(
     policy = generate_cso_policy_from_profile(config, profile)
     audio_required = output_profile_requires_audio(policy)
     ingest_contract = "audio" if audio_required else "video"
-    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}"
+    ingest_key = f"cso-source-ingest-{source_id}-{ingest_contract}-{hls_audio_selection_contract(policy)}"
     output_session_key = f"cso-source-output-{source_id}-{profile}"
     capacity_owner_key = f"cso-source-{source_id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
@@ -554,6 +561,8 @@ async def subscribe_source_stream(
             ingest_user_agent=ingest_user_agent,
             slate_session=slate_session,
             require_audio=audio_required,
+            preserve_multiple_audio=bool(policy.get("preserve_multiple_audio", False)),
+            preferred_audio_language=policy.get("preferred_audio_language", ""),
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)

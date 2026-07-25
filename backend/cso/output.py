@@ -28,6 +28,9 @@ from .constants import (
     CSO_OUTPUT_CLIENT_STALE_SECONDS,
     CSO_OUTPUT_CLIENT_STALE_SECONDS_TVH,
     CSO_OUTPUT_FPS_PROBE_SIZE,
+    CSO_OUTPUT_STARTUP_HARD_SECONDS,
+    CSO_OUTPUT_STARTUP_IDLE_SECONDS,
+    CSO_OUTPUT_STARTUP_PREBUFFER_BYTES,
     CSO_OUTPUT_SLATE_POLL_INTERVAL_SECONDS,
 )
 from .events import emit_channel_stream_event, source_event_context
@@ -67,6 +70,44 @@ from .types import (
 logger = logging.getLogger("cso")
 
 SAFE_HLS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _segmented_hls_input_options(ingest_session) -> tuple[int, bool]:
+    getter = getattr(ingest_session, "get_output_hls_input_options", None)
+    if callable(getter):
+        try:
+            options = dict(getter() or {})
+            return int(options.get("live_start_index", -3)), bool(options.get("prefer_x_start", False))
+        except Exception:
+            pass
+    # Unknown rolling handoffs are safer near the live edge. Managed VOD
+    # explicitly overrides this with index zero.
+    return -3, False
+
+
+async def _collect_startup_prebuffer(queue, append_chunk) -> tuple[int, bool]:
+    target_bytes = max(1, int(CSO_OUTPUT_STARTUP_PREBUFFER_BYTES))
+    idle_seconds = max(1.0, float(CSO_OUTPUT_STARTUP_IDLE_SECONDS))
+    started = time.monotonic()
+    idle_deadline = started + idle_seconds
+    hard_deadline = started + max(idle_seconds, float(CSO_OUTPUT_STARTUP_HARD_SECONDS))
+    collected_bytes = 0
+    while collected_bytes < target_bytes and time.monotonic() < hard_deadline:
+        remaining_idle = idle_deadline - time.monotonic()
+        if remaining_idle <= 0:
+            break
+        try:
+            chunk = await asyncio.wait_for(queue.get(), timeout=min(0.5, remaining_idle))
+        except asyncio.TimeoutError:
+            continue
+        if chunk is None:
+            return collected_bytes, True
+        if not chunk:
+            continue
+        append_chunk(chunk)
+        collected_bytes += len(chunk)
+        idle_deadline = time.monotonic() + idle_seconds
+    return collected_bytes, False
 
 
 @dataclass
@@ -277,36 +318,52 @@ class CsoOutputSession:
         self,
         process: asyncio.subprocess.Process,
         stderr_task: asyncio.Task,
-        timeout_seconds: float = 8.0,
+        timeout_seconds: float = CSO_OUTPUT_STARTUP_IDLE_SECONDS,
     ) -> CsoOutputStartupProbeResult:
         self._first_output_event = asyncio.Event()
         wait_task = asyncio.create_task(process.wait())
         output_task = asyncio.create_task(self._first_output_event.wait())
         started = False
         failure_reason = ""
+        idle_timeout = max(1.0, float(timeout_seconds))
+        idle_deadline = time.monotonic() + idle_timeout
+        hard_deadline = time.monotonic() + max(idle_timeout, float(CSO_OUTPUT_STARTUP_HARD_SECONDS))
+        progress_marker = (self.input_bytes_received, tuple(self._recent_ffmpeg_stderr))
         try:
-            done, _ = await asyncio.wait(
-                {wait_task, output_task},
-                timeout=max(1.0, float(timeout_seconds)),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if output_task in done and output_task.done() and not output_task.cancelled():
-                started = True
-            elif wait_task in done and wait_task.done() and not wait_task.cancelled():
-                await asyncio.wait({stderr_task}, timeout=0.25)
-                failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
-            elif process.returncode is not None:
-                await asyncio.wait({stderr_task}, timeout=0.25)
-                failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
-            elif self._is_failover_remux_startup_failure():
-                failure_reason = self._ffmpeg_error_summary() or "startup_failed_during_ingest_failover"
-            elif self.first_ingest_chunk_logged and not self._ffmpeg_error_summary():
-                if self._recent_ingest_failover_active():
-                    failure_reason = "startup_timeout_during_ingest_failover"
+            while time.monotonic() < hard_deadline:
+                done, _ = await asyncio.wait(
+                    {wait_task, output_task},
+                    timeout=min(0.25, max(0.0, hard_deadline - time.monotonic())),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if output_task in done and output_task.done() and not output_task.cancelled():
+                    started = True
+                    break
+                if wait_task in done and wait_task.done() and not wait_task.cancelled():
+                    await asyncio.wait({stderr_task}, timeout=0.25)
+                    failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
+                    break
+                if process.returncode is not None:
+                    await asyncio.wait({stderr_task}, timeout=0.25)
+                    failure_reason = self._ffmpeg_error_summary() or f"ffmpeg_exit:{process.returncode}"
+                    break
+                current_marker = (self.input_bytes_received, tuple(self._recent_ffmpeg_stderr))
+                if current_marker != progress_marker:
+                    progress_marker = current_marker
+                    idle_deadline = time.monotonic() + idle_timeout
+                elif time.monotonic() >= idle_deadline:
+                    break
+            if not started and not failure_reason:
+                if self._is_failover_remux_startup_failure():
+                    failure_reason = self._ffmpeg_error_summary() or "startup_failed_during_ingest_failover"
+                elif self.first_ingest_chunk_logged and not self._ffmpeg_error_summary():
+                    failure_reason = (
+                        "startup_timeout_during_ingest_failover"
+                        if self._recent_ingest_failover_active()
+                        else "first_output_timeout"
+                    )
                 else:
-                    failure_reason = "first_output_timeout"
-            else:
-                failure_reason = self._ffmpeg_error_summary() or "startup_timeout_no_output"
+                    failure_reason = self._ffmpeg_error_summary() or "startup_timeout_no_output"
         finally:
             task_cleanup = await cancel_and_await_tasks((wait_task, output_task))
             self.startup_tasks = task_cleanup.pending_tasks
@@ -497,6 +554,7 @@ class CsoOutputSession:
                 self.first_ingest_chunk_logged = False
                 self._input_mode = "slate" if self.use_slate_as_input else "ingest"
                 segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
+                self._pending_input_chunks.clear()
                 try:
                     if self.ingest_session is not None:
                         await self.ingest_session.start()
@@ -507,6 +565,27 @@ class CsoOutputSession:
                             self.ingest_queue = await self.ingest_session.add_subscriber(
                                 self.key,
                                 prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
+                            )
+                            primed_bytes, ingest_ended = await _collect_startup_prebuffer(
+                                self.ingest_queue,
+                                lambda chunk: self._pending_input_chunks.append(("ingest", chunk)),
+                            )
+                            if primed_bytes < int(CSO_OUTPUT_STARTUP_PREBUFFER_BYTES):
+                                self.last_error = (
+                                    "ingest_ended_before_startup_prebuffer"
+                                    if ingest_ended
+                                    else "ingest_startup_prebuffer_timeout"
+                                )
+                                await _detach_output_input_subscriptions(self)
+                                return
+                            logger.info(
+                                "CSO output primed ingest input channel=%s output_key=%s "
+                                "primed_bytes=%s pending_chunks=%s elapsed_ms=%s",
+                                self.channel_id,
+                                self.key,
+                                primed_bytes,
+                                len(self._pending_input_chunks),
+                                int(max(0.0, time.time() - float(self.start_ts or time.time())) * 1000),
                             )
                     if self.use_slate_as_input and self.slate_session is not None:
                         await self.slate_session.start()
@@ -573,14 +652,17 @@ class CsoOutputSession:
                             effective_policy,
                             pipe_input_format=pipe_input_format,
                             source_probe=source_probe,
-                        ).build_output_command(
+                        )
+                        hls_start_index, hls_prefer_x_start = _segmented_hls_input_options(self.ingest_session)
+                        command = command.build_output_command(
                             input_target=segmented_input_target,
                             input_is_url=bool(
                                 segmented_input_target.startswith("http://")
                                 or segmented_input_target.startswith("https://")
                             ),
                             realtime=self.direct_input_realtime and bool(segmented_input_target),
-                            hls_live_start_index=0 if segmented_input_target else None,
+                            hls_live_start_index=hls_start_index if segmented_input_target else None,
+                            hls_prefer_x_start=hls_prefer_x_start if segmented_input_target else False,
                         )
                         self._recent_ffmpeg_stderr.clear()
                         logger.info(
@@ -602,7 +684,7 @@ class CsoOutputSession:
                         read_task = asyncio.create_task(self._read_loop())
                         write_task = None if segmented_input_target else asyncio.create_task(self._write_loop())
                         stderr_task = asyncio.create_task(self._stderr_loop(process))
-                        startup_timeout_seconds = 20.0 if segmented_input_target else 8.0
+                        startup_timeout_seconds = float(CSO_OUTPUT_STARTUP_IDLE_SECONDS)
                         try:
                             probe_result = await self._wait_for_startup_ready(
                                 process,
@@ -1791,9 +1873,20 @@ class CsoHlsOutputSession:
                 prime_deadline = time.time() + 2.0
                 target_prime_bytes = 128 * 1024
             else:
-                prime_deadline = time.time() + 2.5
-                target_prime_bytes = 256 * 1024
+                prime_deadline = time.time()
+                target_prime_bytes = int(CSO_OUTPUT_STARTUP_PREBUFFER_BYTES)
             input_queue = self.slate_queue if self.use_slate_as_input else self.ingest_queue
+            if input_queue is not None and not use_direct_input and not self.use_slate_as_input:
+                primed_bytes, ingest_ended = await _collect_startup_prebuffer(
+                    input_queue,
+                    self._pending_input_chunks.append,
+                )
+                if primed_bytes < target_prime_bytes:
+                    self.last_error = (
+                        "ingest_ended_before_startup_prebuffer" if ingest_ended else "ingest_startup_prebuffer_timeout"
+                    )
+                    await _detach_output_input_subscriptions(self)
+                    return
             while input_queue and time.time() < prime_deadline:
                 probe_has_video = (
                     True if self.use_slate_as_input else self._probe_has_video(self.ingest_session.current_source_probe)
@@ -1890,12 +1983,14 @@ class CsoHlsOutputSession:
                 effective_input_is_url = bool(
                     effective_input_target.startswith("http://") or effective_input_target.startswith("https://")
                 )
+                hls_start_index, hls_prefer_x_start = _segmented_hls_input_options(self.ingest_session)
                 command = builder.build_hls_output_command(
                     self.output_dir,
                     input_target=effective_input_target,
                     input_is_url=effective_input_is_url,
                     realtime=bool(segmented_input_target),
-                    hls_live_start_index=0 if segmented_input_target else None,
+                    hls_live_start_index=hls_start_index if segmented_input_target else None,
+                    hls_prefer_x_start=hls_prefer_x_start if segmented_input_target else False,
                     start_seconds=self.start_seconds,
                     user_agent=self.input_user_agent if self.input_target else None,
                     request_headers=self.input_request_headers if self.input_target else None,
@@ -1926,9 +2021,9 @@ class CsoHlsOutputSession:
                     write_task = asyncio.create_task(self._write_loop(token, self.process))
                 stderr_task = asyncio.create_task(self._stderr_loop(token, self.process))
                 wait_task = asyncio.create_task(self._wait_loop(token, self.process))
-                startup_timeout_seconds = 8.0
+                startup_timeout_seconds = float(CSO_OUTPUT_STARTUP_IDLE_SECONDS)
                 if use_direct_input:
-                    startup_timeout_seconds = 20.0 if self.start_seconds > 0 else 12.0
+                    startup_timeout_seconds = 20.0 if self.start_seconds > 0 else float(CSO_OUTPUT_STARTUP_IDLE_SECONDS)
                 try:
                     started, failure_reason = await self._wait_for_startup_ready(
                         self.process,

@@ -91,6 +91,18 @@ _hls_runtime_counters = {
 _hls_runtime_counters_lock = asyncio.Lock()
 
 
+def hls_audio_selection_contract(policy: dict | None) -> str:
+    resolved = dict(policy or {})
+    if bool(resolved.get("preserve_multiple_audio", False)):
+        return "multi"
+    language = "".join(
+        character
+        for character in str(resolved.get("preferred_audio_language") or "").strip().lower().replace("_", "-")
+        if character.isalnum() or character == "-"
+    )
+    return f"single-{language or 'auto'}"
+
+
 async def increment_hls_runtime_counter(name: str) -> int:
     async with _hls_runtime_counters_lock:
         if name not in _hls_runtime_counters:
@@ -248,7 +260,12 @@ class HlsMasterPresentation:
             exclusions.append((variant, reason or "not_video_quality"))
         return exclusions
 
-    def select(self, variant_position: int) -> HlsSelectedPresentation:
+    def select(
+        self,
+        variant_position: int,
+        preferred_audio_language: str = "",
+        preserve_multiple_audio: bool = False,
+    ) -> HlsSelectedPresentation:
         if self.playlist_type != "master":
             raise HlsPresentationError("hls_variant_selection_not_applicable")
         variants = self.selectable_variants()
@@ -268,6 +285,8 @@ class HlsMasterPresentation:
             if not renditions:
                 reason_type = media_type.lower().replace("-", "_")
                 raise HlsPresentationError(f"hls_selected_{reason_type}_group_missing")
+            if media_type == "AUDIO" and not preserve_multiple_audio:
+                renditions = (_preferred_audio_rendition(renditions, preferred_audio_language),)
             selected_groups[group_key] = renditions
         selection_reason = "highest_bandwidth_video"
         if selected_variant.video_confirmed_by_probe:
@@ -281,6 +300,39 @@ class HlsMasterPresentation:
             variant_count=len(variants),
             selection_reason=selection_reason,
         )
+
+
+def _preferred_audio_rendition(
+    renditions: tuple[HlsMediaRendition, ...],
+    preferred_language: str = "",
+) -> HlsMediaRendition:
+    preferred = str(preferred_language or "").strip().lower().replace("_", "-")
+
+    def _yes(value: str) -> bool:
+        return str(value or "").strip().upper() == "YES"
+
+    def _language_rank(rendition: HlsMediaRendition) -> int:
+        if not preferred:
+            return 1
+        language = str(rendition.language or "").strip().lower().replace("_", "-")
+        if language == preferred:
+            return 0
+        if language and language.split("-", 1)[0] == preferred.split("-", 1)[0]:
+            return 0
+        return 1
+
+    return min(
+        renditions,
+        key=lambda rendition: (
+            0 if _yes(rendition.attributes.get("DEFAULT", "")) else 1,
+            0 if _yes(rendition.attributes.get("AUTOSELECT", "")) else 1,
+            _language_rank(rendition),
+            rendition.declaration_position,
+            rendition.language.lower(),
+            rendition.name.lower(),
+            rendition.resolved_uri,
+        ),
+    )
 
 
 async def discover_hls_variants(

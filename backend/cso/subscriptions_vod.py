@@ -25,6 +25,7 @@ from .constants import (
     CSO_UNAVAILABLE_SHOW_SLATE,
 )
 from .events import emit_channel_stream_event, source_event_context, summarize_cso_playback_issue
+from .hls import hls_audio_selection_contract
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
 from .output import CsoHlsClientStartResult, CsoHlsOutputSession, CsoOutputSession
 from .policy import (
@@ -99,7 +100,7 @@ async def subscribe_vod_stream(
     policy = generate_cso_policy_from_profile(config, profile)
     audio_required = output_profile_requires_audio(policy)
     ingest_contract = "audio" if audio_required else "video"
-    ingest_key = f"cso-vod-ingest-{source_id}-{ingest_contract}"
+    ingest_key = f"cso-vod-ingest-{source_id}-{ingest_contract}-{hls_audio_selection_contract(policy)}"
     output_session_key = f"cso-vod-output-{source_id}-{profile}"
     capacity_owner_key = f"cso-vod-{source_id}-{ingest_contract}"
     username = await resolve_username_for_stream_key(config, stream_key)
@@ -127,6 +128,8 @@ async def subscribe_vod_stream(
             ingest_user_agent=ingest_user_agent,
             slate_session=slate_session,
             require_audio=audio_required,
+            preserve_multiple_audio=bool(policy.get("preserve_multiple_audio", False)),
+            preferred_audio_language=policy.get("preferred_audio_language", ""),
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)

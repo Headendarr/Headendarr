@@ -97,6 +97,13 @@ CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES = 90_000_000
 # they do not join after the first TS headers/keyframe have already been emitted.
 CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES = 2 * 1024 * 1024
 
+# Do not launch an output-side FFmpeg against a live byte pipe until ingest has
+# produced enough media for probing. Progress extends the idle deadline, while
+# the hard ceiling still bounds a source that trickles indefinitely.
+CSO_OUTPUT_STARTUP_PREBUFFER_BYTES = 512 * 1024
+CSO_OUTPUT_STARTUP_IDLE_SECONDS = 15.0
+CSO_OUTPUT_STARTUP_HARD_SECONDS = 90.0
+
 # Idle/stale timeout for normal output clients before cleanup.
 CSO_OUTPUT_CLIENT_STALE_SECONDS = 15.0
 
@@ -115,6 +122,16 @@ CSO_HLS_SEGMENT_SECONDS = 2
 
 # HLS live playlist depth exposed to clients.
 CSO_HLS_LIST_SIZE = 13
+
+# Generic live segmented handoffs expose at least three complete segments so a
+# reader starting at live_start_index=-3 has a fully materialised start window.
+# Once segments leave the advertised playlist, keep at least ten of them plus a
+# time grace. The byte ceiling applies only to retired segments; files still
+# referenced by the current playlist are never pruned.
+CSO_SEGMENTED_HANDOFF_MIN_PREBUFFER_SEGMENTS = 3
+CSO_SEGMENTED_HANDOFF_RETIRED_MIN_SEGMENTS = 10
+CSO_SEGMENTED_HANDOFF_RETIRED_GRACE_SECONDS = 20.0
+CSO_SEGMENTED_HANDOFF_RETIRED_MAX_BYTES = 20 * 1024 * 1024
 
 # Idle timeout for HLS clients before an output can be cleaned up.
 CSO_HLS_CLIENT_IDLE_SECONDS = max(10, int(CSO_HLS_SEGMENT_SECONDS) * 3)
