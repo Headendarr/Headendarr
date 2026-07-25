@@ -553,19 +553,30 @@ class CsoOutputSession:
                 self.first_output_chunk_logged = False
                 self.first_ingest_chunk_logged = False
                 self._input_mode = "slate" if self.use_slate_as_input else "ingest"
-                segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
+                segmented_input_target = ""
                 self._pending_input_chunks.clear()
                 try:
                     if self.ingest_session is not None:
+                        # Reserve ownership before a potentially slow segmented
+                        # handoff startup. Otherwise idle cleanup can wait behind
+                        # ingest.start(), win the lock before this output attaches,
+                        # and remove the playlist underneath downstream FFmpeg.
+                        await self.ingest_session.add_lifecycle_reference(self.key)
+                        self.ingest_lifecycle_reference = True
                         await self.ingest_session.start()
+                        segmented_input_target = "" if self.use_slate_as_input else self._segmented_input_target()
                         if segmented_input_target:
+                            # The startup reference may have been attached before
+                            # the child handoff existed. Reapply it now so segment
+                            # retention also sees the active downstream consumer.
                             await self.ingest_session.add_lifecycle_reference(self.key)
-                            self.ingest_lifecycle_reference = True
                         else:
                             self.ingest_queue = await self.ingest_session.add_subscriber(
                                 self.key,
                                 prebuffer_bytes=int(CSO_INGEST_SUBSCRIBER_PREBUFFER_BYTES),
                             )
+                            await self.ingest_session.remove_lifecycle_reference(self.key)
+                            self.ingest_lifecycle_reference = False
                             primed_bytes, ingest_ended = await _collect_startup_prebuffer(
                                 self.ingest_queue,
                                 lambda chunk: self._pending_input_chunks.append(("ingest", chunk)),

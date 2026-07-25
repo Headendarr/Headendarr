@@ -154,10 +154,12 @@ class _SessionMap:
                     or getattr(session, "lifecycle_references", None)
                 )
                 running = bool(session.running)
+                last_activity = float(getattr(session, "last_activity", 0.0) or 0.0)
             # Ownership can be attached while a slow HLS start is in progress.
-            # Never force-stop an owned session, even when a cleanup tick made
-            # its initial decision before that ownership was registered.
-            if has_subscribers:
+            # Repeat the complete eligibility check after waiting for the session
+            # lock: startup may have completed and refreshed the session while the
+            # cleanup tick was blocked behind it.
+            if has_subscribers or (running and (now - last_activity) < idle_timeout):
                 continue
             teardown = await session.stop(force=False)
             async with session.lock:

@@ -359,6 +359,11 @@ class CsoIngestSession:
             self.failover_failed_sources.clear()
             self.history.clear()
             self.history_bytes = 0
+            # A segmented handoff can spend several seconds producing its startup
+            # playlist while holding this lock. Refresh activity before that wait
+            # so an idle-cleanup tick cannot treat the newly started session as an
+            # old, unowned runtime after it finally acquires the lock.
+            self.last_activity = time.time()
             logger.info(
                 "CSO ingest start requested channel=%s sources=%s",
                 self.channel_id,
