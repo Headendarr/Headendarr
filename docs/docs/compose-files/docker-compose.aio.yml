@@ -6,6 +6,7 @@ services:
   # -- Headendarr --
   headendarr:
     image: ghcr.io/headendarr/headendarr:latest
+    stop_grace_period: 30s
 
     # NETWORK:
     networks:

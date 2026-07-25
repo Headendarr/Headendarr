@@ -85,6 +85,11 @@ CSO_OUTPUT_ANALYSE_DURATION_US = 2_000_000
 # Frame-rate probe sample size for output-side ffmpeg startup and format detection.
 CSO_OUTPUT_FPS_PROBE_SIZE = 32
 
+# Initial media duration that a realtime output may read without pacing before
+# settling to -readrate 1. This is deliberately much smaller than the 30-second
+# 24/7 VOD stitched lead.
+CSO_OUTPUT_READRATE_INITIAL_BURST_SECONDS = 3
+
 # Per-client output queue ceiling before old data is dropped.
 CSO_OUTPUT_CLIENT_QUEUE_MAX_BYTES = 90_000_000
 
@@ -118,8 +123,28 @@ CSO_HLS_CLIENT_IDLE_SECONDS = max(10, int(CSO_HLS_SEGMENT_SECONDS) * 3)
 # Lead time before starting the next VOD channel segment ingest.
 VOD_CHANNEL_NEXT_SEGMENT_PRESTART_SECONDS = 20
 
-# Time to keep VOD 24/7 stitched segment files after they leave the live playlist.
-VOD_CHANNEL_STITCHED_SEGMENT_DELETE_GRACE_SECONDS = 20
+# Lead time for caching the next 24/7 VOD channel airing into its segmented
+# timeshift handoff. The producer is capacity-gated and may retry until the
+# scheduled boundary when the source is busy.
+VOD_CHANNEL_NEXT_SEGMENT_CACHE_SECONDS = 2 * 60
+
+# Duration-owned buffer for the internal 24/7 VOD stitched playlist. The
+# stitcher, rather than FFmpeg's segment-count based HLS defaults, maintains a
+# 30-second target, refills before 20 seconds remain, and trims opportunistically
+# above 45 seconds. Natural copy-mode GOPs may overshoot these soft bounds.
+VOD_CHANNEL_STITCHED_TARGET_SECONDS = 30
+VOD_CHANNEL_STITCHED_MIN_SECONDS = 20
+VOD_CHANNEL_STITCHED_MAX_SECONDS = VOD_CHANNEL_STITCHED_TARGET_SECONDS + 15
+
+# Declare a conservative HLS target duration from the first playlist revision.
+# This is an upper bound for rounded EXTINF values, not the desired segment
+# length. Holding it at 45 seconds avoids changing TARGETDURATION when a later
+# copy-mode episode has a longer GOP than the episode that opened the channel.
+VOD_CHANNEL_STITCHED_HLS_TARGET_DURATION_SECONDS = 45
+
+# Keep retired segment URLs briefly for a reader that fetched the preceding
+# playlist immediately before it advanced.
+VOD_CHANNEL_STITCHED_SEGMENT_DELETE_GRACE_SECONDS = VOD_CHANNEL_STITCHED_MAX_SECONDS
 
 # How long the VOD 24/7 stitcher waits without a real segment before inserting filler.
 VOD_CHANNEL_STITCHED_FILLER_GRACE_SECONDS = max(4.0, float(CSO_HLS_SEGMENT_SECONDS) * 3.0)
@@ -129,6 +154,10 @@ VOD_CHANNEL_NEXT_SEGMENT_BUFFER_BYTES = 256 * 1024 * 1024
 
 # Root directory used for VOD cache and timeshift files.
 VOD_CACHE_ROOT = Path("/timeshift/vod")
+
+# Ephemeral, offset-aware HLS/fMP4 cache used only by 24/7 VOD channels. These
+# are generated handoff segments rather than copies of the original VOD files.
+VOD_CHANNEL_SEGMENT_CACHE_ROOT = Path("/timeshift/24-7-channel-cache")
 
 # Root directory for local segmented ingest/output handoff.
 CSO_SEGMENT_CACHE_ROOT = Path("/tmp/cache")

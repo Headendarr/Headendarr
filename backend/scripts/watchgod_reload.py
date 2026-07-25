@@ -31,20 +31,26 @@ def start_process(cmd):
     return subprocess.Popen(cmd, env=os.environ.copy())
 
 
-def stop_process(proc):
+def stop_process(proc, timeout_seconds: float = 8.0):
     if not proc or proc.poll() is not None:
         return
     proc.terminate()
     try:
-        proc.wait(timeout=5)
+        proc.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=5)
 
 
+def handle_shutdown_signal(_signum, _frame):
+    raise KeyboardInterrupt
+
+
 def main():
     watch_path = os.getenv("WATCHGOD_PATH", "/app/backend")
     cmd = sys.argv[1:] or [sys.executable, os.getenv("FLASK_APP", "/app/run.py")]
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
     proc = start_process(cmd)
 
     try:

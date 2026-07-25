@@ -14,6 +14,8 @@ logger = logging.getLogger("cso")
 
 VOD_CHANNEL_TS_SAFE_VIDEO_CODECS = {"h264", "h265", "hevc", "mpeg2video"}
 LIVE_PIPE_TS_SAFE_AUDIO_CODECS = {"", "aac", "ac3", "eac3", "mp2", "mp3"}
+VOD_CHANNEL_FMP4_COPY_VIDEO_CODECS = {"h264", "h265", "hevc"}
+VOD_CHANNEL_FMP4_COPY_AUDIO_CODECS = {"aac", "ac3"}
 
 
 def policy_content_type(policy: dict[str, Any] | None) -> str:
@@ -90,6 +92,84 @@ def generate_vod_channel_ingest_policy(config: Any, output_policy: dict[str, Any
     return resolved
 
 
+def _normalise_vod_channel_video_codec(codec: object) -> str:
+    codec_key = clean_key(codec)
+    return "h265" if codec_key == "hevc" else codec_key
+
+
+def generate_vod_channel_segment_cache_policy(
+    config: Any,
+    source_probe: dict[str, Any] | None = None,
+    canonical_probe: dict[str, Any] | None = None,
+    optimistic_unknown: bool = False,
+) -> dict[str, Any]:
+    """Build the shared 24/7-channel intermediate policy.
+
+    The timeshift cache is profile-independent. Preserve compatible H.264/H.265
+    video and AAC/AC-3 audio, and transcode only streams that cannot be safely
+    joined to the canonical channel handoff established by the first airing.
+    """
+
+    source = dict(source_probe or {})
+    canonical = dict(canonical_probe or {})
+    resolved = dict(generate_cso_policy_from_profile(config, "h264-aac-mpegts") or {})
+
+    source_video_codec = clean_key(source.get("video_codec"))
+    source_video_policy_codec = _normalise_vod_channel_video_codec(source_video_codec)
+    canonical_video_codec = clean_key(canonical.get("video_codec"))
+    canonical_video_policy_codec = _normalise_vod_channel_video_codec(canonical_video_codec)
+
+    copy_video = source_video_codec in VOD_CHANNEL_FMP4_COPY_VIDEO_CODECS or (
+        optimistic_unknown and not source_video_codec
+    )
+    if canonical_video_policy_codec and source_video_codec:
+        copy_video = copy_video and source_video_policy_codec == canonical_video_policy_codec
+        for field_name in ("width", "height", "pixel_format"):
+            expected = canonical.get(field_name)
+            observed = source.get(field_name)
+            if expected not in {None, "", 0} and observed not in {None, "", 0} and observed != expected:
+                copy_video = False
+        expected_fps = float(canonical.get("fps") or 0.0)
+        observed_fps = float(source.get("fps") or 0.0)
+        if expected_fps > 0.0 and observed_fps > 0.0 and abs(expected_fps - observed_fps) > 0.05:
+            copy_video = False
+
+    source_audio_codec = clean_key(source.get("audio_codec"))
+    canonical_audio_codec = clean_key(canonical.get("audio_codec"))
+    copy_audio = source_audio_codec in VOD_CHANNEL_FMP4_COPY_AUDIO_CODECS or (
+        optimistic_unknown and not source_audio_codec
+    )
+    if canonical_audio_codec and source_audio_codec:
+        copy_audio = copy_audio and source_audio_codec == canonical_audio_codec
+        for field_name in ("audio_sample_rate", "audio_channels"):
+            expected = canonical.get(field_name)
+            observed = source.get(field_name)
+            if expected not in {None, "", 0} and observed not in {None, "", 0} and observed != expected:
+                copy_audio = False
+
+    resolved["output_mode"] = "force_remux" if copy_video and copy_audio else "force_transcode"
+    resolved["video_codec"] = "" if copy_video else (canonical_video_policy_codec or "h264")
+    resolved["audio_codec"] = "" if copy_audio else (canonical_audio_codec or "aac")
+    resolved["container"] = "hls"
+    resolved["hls_segment_type"] = "fmp4"
+    resolved["hls_playlist_mode"] = "event"
+    resolved["hls_list_size"] = 0
+    resolved["target_width"] = int(canonical.get("width") or 0)
+    resolved["target_height"] = int(canonical.get("height") or 0)
+    resolved["output_fps"] = float(canonical.get("fps") or 0.0)
+    resolved["output_pixel_format"] = clean_key(canonical.get("pixel_format")) or ""
+    resolved["target_video_bitrate"] = ""
+    resolved["target_video_maxrate"] = ""
+    resolved["target_video_bufsize"] = ""
+    resolved["audio_sample_rate"] = int(canonical.get("audio_sample_rate") or source.get("audio_sample_rate") or 48000)
+    resolved["audio_channels"] = int(canonical.get("audio_channels") or source.get("audio_channels") or 2)
+    resolved["subtitle_mode"] = "drop"
+    resolved["deinterlace"] = False
+    resolved["hardware_decode"] = not copy_video
+    resolved["transcode"] = resolved["output_mode"] == "force_transcode"
+    return resolved
+
+
 def resolve_vod_channel_output_policy(policy: dict[str, Any] | None, ingest_policy: dict[str, Any]) -> dict[str, Any]:
     resolved = dict(policy or {})
     resolved["subtitle_mode"] = "drop"
@@ -152,6 +232,7 @@ def resolve_live_pipe_container(source_probe: dict[str, Any] | None = None) -> s
 def source_uses_segmented_handoff(source: CsoSource | None, source_probe: dict[str, Any] | None = None) -> bool:
     try:
         from quart import current_app
+
         if current_app:
             app_config = current_app.config.get("APP_CONFIG")
             if app_config and getattr(app_config, "settings", None):

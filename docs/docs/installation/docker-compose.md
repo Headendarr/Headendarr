@@ -21,6 +21,7 @@ services:
   headendarr:
     image: ghcr.io/headendarr/headendarr:latest
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "9985:9985" # Headendarr Web UI
       - "9981:9981" # TVHeadend Web UI
@@ -112,6 +113,7 @@ services:
   headendarr:
     image: ghcr.io/headendarr/headendarr:latest
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "9985:9985"
       - "9981:9981"

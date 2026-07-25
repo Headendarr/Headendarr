@@ -129,6 +129,7 @@ services:
   headendarr:
     image: josh5/headendarr:latest
     container_name: headendarr
+    stop_grace_period: 30s
     ports:
       - 9985:9985
     volumes:

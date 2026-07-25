@@ -75,6 +75,7 @@ class SegmentedHandoffSession:
         realtime: bool = False,
         selected_presentation: HlsSelectedPresentation | None = None,
         require_audio: bool = False,
+        source_probe: dict[str, Any] | None = None,
     ):
         self.key = str(key)
         self.policy = dict(policy or {})
@@ -90,6 +91,7 @@ class SegmentedHandoffSession:
         self.realtime = bool(realtime)
         self.selected_presentation = selected_presentation
         self.require_audio = bool(require_audio)
+        self.source_probe = dict(source_probe or {})
         self.required_audio_stream_count = 0
         if self.require_audio:
             self.required_audio_stream_count = 1
@@ -496,7 +498,7 @@ class SegmentedHandoffSession:
             async def _attempt_start(
                 effective_policy: dict[str, Any],
             ) -> CsoFfmpegAttemptResult:
-                builder = CsoFfmpegCommandBuilder(effective_policy)
+                builder = CsoFfmpegCommandBuilder(effective_policy, source_probe=self.source_probe)
                 command = builder.build_hls_output_command(
                     self.output_dir,
                     input_target=effective_input_target,

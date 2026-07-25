@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 from typing import TypedDict
 from urllib.parse import urlparse
 
@@ -29,6 +30,7 @@ from backend.api.tasks import (
 )
 from backend.api.routes_hls_proxy import cleanup_hls_proxy_state
 from backend.cso import cleanup_vod_proxy_cache, vod_cache_manager
+from backend.cso.processes import kill_all_cso_ffmpeg_processes
 from backend.stream_activity import load_stream_activity_state, persist_stream_activity_state
 from backend.auth import cleanup_stream_audit_logs, audit_stream_event
 from backend import create_app, config
@@ -112,7 +114,8 @@ def _get_build_commit_sha() -> str:
             if raw:
                 line = raw.splitlines()[0].strip()
                 import re
-                matches = re.findall(r'\[([^\]]+)\]', line)
+
+                matches = re.findall(r"\[([^\]]+)\]", line)
                 if matches:
                     return matches[-1].strip()
         except Exception:
@@ -123,7 +126,9 @@ def _get_build_commit_sha() -> str:
 def _load_sentry_config() -> SentryRuntimeConfig | None:
     parsed_sentry_config = _load_sentry_json_config()
     if parsed_sentry_config:
-        bootstrap_logger.info("Detected SENTRY_CONFIG JSON with keys: %s", ", ".join(sorted(parsed_sentry_config.keys())))
+        bootstrap_logger.info(
+            "Detected SENTRY_CONFIG JSON with keys: %s", ", ".join(sorted(parsed_sentry_config.keys()))
+        )
     elif os.environ.get("SENTRY_DSN"):
         bootstrap_logger.info("Detected SENTRY_DSN environment variable")
 
@@ -483,7 +488,28 @@ async def hourly_epg_check():
 
 
 async def main():
+    shutdown_event = asyncio.Event()
+    shutdown_task: asyncio.Task[None] | None = None
+    loop = asyncio.get_running_loop()
+
+    async def initiate_shutdown():
+        try:
+            # Stop producer/output FFmpeg groups before asking Hypercorn to
+            # drain requests. Otherwise a streaming response can keep the
+            # server in its graceful-shutdown wait until the worker timeout.
+            await kill_all_cso_ffmpeg_processes()
+        finally:
+            shutdown_event.set()
+
+    def request_shutdown():
+        nonlocal shutdown_task
+        if shutdown_task is None:
+            shutdown_task = loop.create_task(initiate_shutdown(), name="cso-fast-shutdown")
+
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signal_number, request_shutdown)
     async with app.app_context():
+        await vod_cache_manager.cleanup_vod_channel_segment_cache("app_startup", force=True)
         await load_stream_activity_state()
         await vod_cache_manager.import_existing_files()
         try:
@@ -504,11 +530,23 @@ async def main():
     try:
         # Start Quart server
         app.logger.info("Starting Quart server...")
-        await app.run_task(host=config.flask_run_host, port=config.flask_run_port, debug=config.enable_app_debugging)
+        await app.run_task(
+            host=config.flask_run_host,
+            port=config.flask_run_port,
+            debug=config.enable_app_debugging,
+            shutdown_trigger=shutdown_event.wait,
+        )
         app.logger.info("Quart server completed.")
     finally:
         async with app.app_context():
             await persist_stream_activity_state()
+            # Keep shutdown bounded and leave PostgreSQL/TVHeadend available to
+            # application teardown. Cache directories are lease-aware during
+            # normal runtime and any abrupt-shutdown leftovers are swept on the
+            # next startup.
+            if shutdown_task is not None:
+                await shutdown_task
+            await kill_all_cso_ffmpeg_processes()
 
 
 if __name__ == "__main__":

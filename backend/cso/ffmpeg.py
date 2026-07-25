@@ -29,6 +29,7 @@ from .constants import (
     CSO_OUTPUT_ANALYSE_DURATION_US,
     CSO_OUTPUT_FPS_PROBE_SIZE,
     CSO_OUTPUT_PROBE_SIZE_BYTES,
+    CSO_OUTPUT_READRATE_INITIAL_BURST_SECONDS,
     MPEGTS_CHUNK_BYTES,
 )
 from .policy import policy_ffmpeg_format
@@ -1215,6 +1216,7 @@ class CsoFfmpegCommandBuilder:
         input_target: str = "",
         input_is_url: bool = False,
         realtime: bool = False,
+        hls_live_start_index: int | None = None,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
     ):
@@ -1223,6 +1225,7 @@ class CsoFfmpegCommandBuilder:
         analyse_duration_us = int(CSO_OUTPUT_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_OUTPUT_FPS_PROBE_SIZE)
         use_direct_input = bool(clean_text(input_target))
+        input_is_hls = (urlparse(str(input_target or "")).path or "").lower().endswith(".m3u8")
         if (
             not use_direct_input
             and self.pipe_input_format == "mpegts"
@@ -1253,7 +1256,14 @@ class CsoFfmpegCommandBuilder:
                     str(max(1_000_000, int(CSO_INGEST_TIMEOUT_US))),
                 ]
             if realtime:
-                command += ["-readrate", "1"]
+                command += [
+                    "-readrate",
+                    "1",
+                    "-readrate_initial_burst",
+                    str(float(CSO_OUTPUT_READRATE_INITIAL_BURST_SECONDS)),
+                ]
+            if input_is_hls and hls_live_start_index is not None:
+                command += ["-live_start_index", str(int(hls_live_start_index))]
             command += self._input_hwaccel_args()
             command += self._probe_flags(probe_size_bytes, analyse_duration_us, fps_probe_size)
             command += self._input_resilience_flags()
@@ -1553,6 +1563,7 @@ class CsoFfmpegCommandBuilder:
         start_seconds: int = 0,
         max_duration_seconds: int | None = None,
         realtime: bool = False,
+        hls_live_start_index: int | None = None,
         user_agent: str | None = None,
         request_headers: dict[str, str] | None = None,
         input_protocol_whitelist: str = "",
@@ -1624,7 +1635,14 @@ class CsoFfmpegCommandBuilder:
             if input_seek_value > 0:
                 command += ["-ss", str(input_seek_value)]
             if realtime:
-                command += ["-readrate", "1"]
+                command += [
+                    "-readrate",
+                    "1",
+                    "-readrate_initial_burst",
+                    str(float(CSO_OUTPUT_READRATE_INITIAL_BURST_SECONDS)),
+                ]
+            if input_is_hls and hls_live_start_index is not None:
+                command += ["-live_start_index", str(int(hls_live_start_index))]
             command += self._input_hwaccel_args(policy=self.policy)
             probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
             analyse_duration_us = int(CSO_INGEST_ANALYSE_DURATION_US)
@@ -1684,12 +1702,19 @@ class CsoFfmpegCommandBuilder:
             self._apply_transcode_options(command, subtitle_mode, policy=hls_policy)
         else:
             command += ["-c", "copy"]
-            if segment_type == "fmp4":
-                command += ["-bsf:a", "aac_adtstoasc"]
             if subtitle_mode == "drop":
                 command.append("-sn")
             if segment_type == "mpegts":
                 command += self._mpegts_output_flags(zero_latency=False)
+
+        source_audio_codec = clean_key(self.source_probe.get("audio_codec"))
+        source_video_codec = clean_key(self.source_probe.get("video_codec"))
+        video_is_copied = clean_key(hls_policy.get("video_codec")) in {"", "copy"}
+        audio_is_copied = clean_key(hls_policy.get("audio_codec")) in {"", "copy"}
+        if segment_type == "fmp4" and audio_is_copied and source_audio_codec == "aac":
+            command += ["-bsf:a", "aac_adtstoasc"]
+        if segment_type == "fmp4" and video_is_copied and source_video_codec in {"h265", "hevc"}:
+            command += ["-tag:v", "hvc1"]
 
         command += self._drop_data_streams()
         if max_duration_seconds is not None:

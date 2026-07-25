@@ -20,10 +20,12 @@ from backend.utils import clean_key, clean_text, convert_to_int
 from .capacity import cso_capacity_registry, source_capacity_key, source_capacity_limit
 from .common import bounded_log_value, redacted_url_for_log
 from .constants import (
+    CSO_SEGMENT_CACHE_ROOT,
     VOD_CACHE_CHUNK_BYTES,
     VOD_CACHE_METADATA_TIMEOUT_SECONDS,
     VOD_CACHE_ROOT,
     VOD_CACHE_TTL_SECONDS,
+    VOD_CHANNEL_SEGMENT_CACHE_ROOT,
     VOD_HEAD_PROBE_STATE_TTL_SECONDS,
 )
 from .sources import cso_source_from_vod_source
@@ -138,6 +140,7 @@ async def _probe_vod_cache_metadata(
                 )
                 try:
                     from backend.source_media import persist_source_media_error
+
                     await persist_source_media_error(
                         source_id=source.id,
                         error_code=reason,
@@ -676,6 +679,146 @@ class VodCacheManager:
         self._runtime_counters_lock = asyncio.Lock()
         self._metadata_probes: dict[str, dict[str, tuple[asyncio.Task, str | int, float]]] = {}
         self._metadata_probes_lock = asyncio.Lock()
+        self.vod_channel_segment_cache_root = Path(VOD_CHANNEL_SEGMENT_CACHE_ROOT)
+        self.cso_segment_cache_root = Path(CSO_SEGMENT_CACHE_ROOT)
+        self._vod_channel_cache_ledger: dict[str, dict[str, object]] = {}
+        self._vod_channel_cache_ledger_lock = asyncio.Lock()
+
+    @staticmethod
+    def _vod_channel_cache_path_key(path: Path | str) -> str:
+        return str(Path(path).resolve())
+
+    async def register_vod_channel_cache_path(
+        self,
+        path: Path | str,
+        owner_key: str,
+        channel_id: int,
+        cache_kind: str,
+        scheduled_stop_ts: int = 0,
+    ):
+        cache_path = Path(path).resolve()
+        path_key = self._vod_channel_cache_path_key(cache_path)
+        now_ts = time.time()
+        async with self._vod_channel_cache_ledger_lock:
+            existing = self._vod_channel_cache_ledger.get(path_key)
+            created_ts = float(existing.get("created_ts") or now_ts) if existing else now_ts
+            self._vod_channel_cache_ledger[path_key] = {
+                "path": cache_path,
+                "owner_key": clean_text(owner_key),
+                "channel_id": int(channel_id),
+                "cache_kind": clean_key(cache_kind),
+                "scheduled_stop_ts": int(scheduled_stop_ts or 0),
+                "created_ts": created_ts,
+                "last_used_ts": now_ts,
+                "active": True,
+            }
+
+    async def release_vod_channel_cache_path(self, path: Path | str):
+        path_key = self._vod_channel_cache_path_key(path)
+        async with self._vod_channel_cache_ledger_lock:
+            lease = self._vod_channel_cache_ledger.get(path_key)
+            if lease is None:
+                return
+            lease["active"] = False
+            lease["last_used_ts"] = time.time()
+
+    @staticmethod
+    def _remove_vod_channel_cache_tree(path: Path) -> tuple[int, int]:
+        removed_files = 0
+        removed_bytes = 0
+        if not path.exists():
+            return removed_files, removed_bytes
+        for child in path.rglob("*"):
+            if not child.is_file():
+                continue
+            removed_files += 1
+            try:
+                removed_bytes += int(child.stat().st_size)
+            except OSError:
+                pass
+        shutil.rmtree(path)
+        return removed_files, removed_bytes
+
+    async def cleanup_vod_channel_segment_cache(
+        self,
+        reason: str = "periodic",
+        force: bool = False,
+    ) -> dict[str, int]:
+        """Remove unowned 24/7 producer and stitched cache directories."""
+
+        segment_root = self.vod_channel_segment_cache_root.resolve()
+        stitched_root = self.cso_segment_cache_root.resolve()
+        await asyncio.to_thread(segment_root.mkdir, 0o755, True, True)
+
+        producer_paths = []
+        for channel_path in segment_root.glob("channel-*"):
+            if not channel_path.is_dir():
+                continue
+            producer_paths.extend(child.resolve() for child in channel_path.iterdir() if child.is_dir())
+        stitched_paths = [path.resolve() for path in stitched_root.glob("cso-vod-channel-ingest-*") if path.is_dir()]
+        candidate_paths = producer_paths + stitched_paths
+
+        removed_paths = 0
+        removed_files = 0
+        removed_bytes = 0
+        skipped_active = 0
+        async with self._vod_channel_cache_ledger_lock:
+            for cache_path in candidate_paths:
+                path_key = self._vod_channel_cache_path_key(cache_path)
+                lease = self._vod_channel_cache_ledger.get(path_key)
+                if not force and lease is not None and bool(lease.get("active")):
+                    skipped_active += 1
+                    continue
+                try:
+                    path_files, path_bytes = await asyncio.to_thread(
+                        self._remove_vod_channel_cache_tree,
+                        cache_path,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to clean 24/7 VOD cache path reason=%s path=%s",
+                        clean_text(reason) or "unspecified",
+                        cache_path,
+                        exc_info=True,
+                    )
+                    continue
+                self._vod_channel_cache_ledger.pop(path_key, None)
+                removed_paths += 1
+                removed_files += path_files
+                removed_bytes += path_bytes
+
+            if force:
+                self._vod_channel_cache_ledger.clear()
+            else:
+                missing_released_paths = [
+                    path_key
+                    for path_key, lease in self._vod_channel_cache_ledger.items()
+                    if not bool(lease.get("active")) and not Path(lease["path"]).exists()
+                ]
+                for path_key in missing_released_paths:
+                    self._vod_channel_cache_ledger.pop(path_key, None)
+
+        for channel_path in segment_root.glob("channel-*"):
+            try:
+                await asyncio.to_thread(channel_path.rmdir)
+            except OSError:
+                pass
+
+        if removed_paths or force:
+            logger.info(
+                "Cleaned 24/7 VOD cache reason=%s removed_paths=%s removed_files=%s removed_bytes=%s skipped_active=%s",
+                clean_text(reason) or "unspecified",
+                removed_paths,
+                removed_files,
+                removed_bytes,
+                skipped_active,
+            )
+        return {
+            "removed_paths": removed_paths,
+            "removed_files": removed_files,
+            "removed_bytes": removed_bytes,
+            "skipped_active": skipped_active,
+        }
 
     async def increment_runtime_counter(self, name: str) -> int:
         async with self._runtime_counters_lock:
@@ -1152,6 +1295,8 @@ class VodCacheManager:
             if not removed_entry:
                 continue
             removed += 1
+        channel_cleanup = await self.cleanup_vod_channel_segment_cache()
+        removed += int(channel_cleanup["removed_paths"])
         return removed
 
     async def purge_oldest_for_space(

@@ -221,6 +221,11 @@ class CsoFfmpegProcessRegistry:
             "live_ffmpeg_pids": sorted(self._processes),
         }
 
+    def active_processes(self) -> tuple[Any, ...]:
+        for tracked in list(self._processes.values()):
+            self.mark_exited(tracked.process)
+        return tuple(tracked.process for tracked in self._processes.values())
+
     def reset_for_tests(self) -> None:
         self._processes.clear()
         self._teardown_locks.clear()
@@ -548,3 +553,28 @@ async def terminate_cso_ffmpeg_process(
             terminate_timeout_seconds=terminate_timeout_seconds,
             kill_timeout_seconds=kill_timeout_seconds,
         )
+
+
+async def kill_all_cso_ffmpeg_processes() -> tuple[CsoFfmpegTeardownResult, ...]:
+    processes = cso_ffmpeg_process_registry.active_processes()
+    if not processes:
+        return ()
+    logger.info("Fast-stopping CSO FFmpeg processes count=%s", len(processes))
+    results = await asyncio.gather(
+        *(
+            terminate_cso_ffmpeg_process(
+                process,
+                terminate_timeout_seconds=0.05,
+                kill_timeout_seconds=1.0,
+            )
+            for process in processes
+        ),
+        return_exceptions=True,
+    )
+    teardown_results = []
+    for result in results:
+        if isinstance(result, CsoFfmpegTeardownResult):
+            teardown_results.append(result)
+        else:
+            logger.error("Failed to fast-stop CSO FFmpeg process", exc_info=result)
+    return tuple(teardown_results)

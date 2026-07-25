@@ -374,23 +374,31 @@ class CsoOutputSession:
         )
         if self.ingest_session is None:
             return evidence
-        ingest_process = self.ingest_session.process
+        # Not every CSO ingest adapter exposes the byte-stream diagnostics used
+        # by ``VodIngestSession``. In particular, 24/7 VOD uses a segmented
+        # handoff manager and feeds this output through its local HLS target.
+        # Startup evidence must stay best-effort and must never fail a healthy
+        # output merely because an optional diagnostic field is unavailable.
+        ingest_process = getattr(self.ingest_session, "process", None)
         evidence.ingest_process_pid = ingest_process.pid if ingest_process is not None else None
-        evidence.ingest_running = self.ingest_session.running
-        if self.ingest_session.last_chunk_ts:
+        evidence.ingest_running = bool(getattr(self.ingest_session, "running", False))
+        ingest_last_chunk_ts = float(getattr(self.ingest_session, "last_chunk_ts", 0.0) or 0.0)
+        if ingest_last_chunk_ts:
             evidence.ingest_last_chunk_age_seconds = round(
-                max(0.0, now_value - self.ingest_session.last_chunk_ts),
+                max(0.0, now_value - ingest_last_chunk_ts),
                 3,
             )
-        evidence.ingest_attempt_start = self.ingest_session.current_attempt_start_ts or None
-        evidence.ingest_reader_end_reason = self.ingest_session.last_reader_end_reason
-        evidence.ingest_reader_end_return_code = self.ingest_session.last_reader_end_return_code
-        evidence.ingest_bytes_produced = self.ingest_session.current_attempt_bytes_produced
-        evidence.ingest_bytes_added_to_history = self.ingest_session.current_attempt_bytes_added_to_history
-        evidence.ingest_bytes_dispatched = self.ingest_session.current_attempt_bytes_dispatched
-        evidence.ingest_subscriber_bytes_dispatched = (
-            self.ingest_session.current_attempt_subscriber_bytes_dispatched.get(self.key, 0)
+        evidence.ingest_attempt_start = getattr(self.ingest_session, "current_attempt_start_ts", 0.0) or None
+        evidence.ingest_reader_end_reason = getattr(self.ingest_session, "last_reader_end_reason", None)
+        evidence.ingest_reader_end_return_code = getattr(self.ingest_session, "last_reader_end_return_code", None)
+        evidence.ingest_bytes_produced = int(getattr(self.ingest_session, "current_attempt_bytes_produced", 0) or 0)
+        evidence.ingest_bytes_added_to_history = int(
+            getattr(self.ingest_session, "current_attempt_bytes_added_to_history", 0) or 0
         )
+        evidence.ingest_bytes_dispatched = int(getattr(self.ingest_session, "current_attempt_bytes_dispatched", 0) or 0)
+        subscriber_bytes = getattr(self.ingest_session, "current_attempt_subscriber_bytes_dispatched", {})
+        if isinstance(subscriber_bytes, dict):
+            evidence.ingest_subscriber_bytes_dispatched = int(subscriber_bytes.get(self.key, 0) or 0)
         return evidence
 
     @staticmethod
@@ -567,8 +575,12 @@ class CsoOutputSession:
                             source_probe=source_probe,
                         ).build_output_command(
                             input_target=segmented_input_target,
-                            input_is_url=False,
+                            input_is_url=bool(
+                                segmented_input_target.startswith("http://")
+                                or segmented_input_target.startswith("https://")
+                            ),
                             realtime=self.direct_input_realtime and bool(segmented_input_target),
+                            hls_live_start_index=0 if segmented_input_target else None,
                         )
                         self._recent_ffmpeg_stderr.clear()
                         logger.info(
@@ -1874,13 +1886,19 @@ class CsoHlsOutputSession:
                     pipe_input_format=pipe_input_format,
                     source_probe=source_probe,
                 )
+                effective_input_target = (self.input_target or segmented_input_target) if use_direct_input else ""
+                effective_input_is_url = bool(
+                    effective_input_target.startswith("http://") or effective_input_target.startswith("https://")
+                )
                 command = builder.build_hls_output_command(
                     self.output_dir,
-                    input_target=(self.input_target or segmented_input_target) if use_direct_input else "",
-                    input_is_url=self.input_is_url,
+                    input_target=effective_input_target,
+                    input_is_url=effective_input_is_url,
+                    realtime=bool(segmented_input_target),
+                    hls_live_start_index=0 if segmented_input_target else None,
                     start_seconds=self.start_seconds,
-                    user_agent=self.input_user_agent,
-                    request_headers=self.input_request_headers,
+                    user_agent=self.input_user_agent if self.input_target else None,
+                    request_headers=self.input_request_headers if self.input_target else None,
                     pipe_probe_size_bytes=256 * 1024 if self.use_slate_as_input else 2 * 1024 * 1024,
                     pipe_analyse_duration_us=750_000 if self.use_slate_as_input else 5_000_000,
                     pipe_fps_probe_size=16 if self.use_slate_as_input else CSO_OUTPUT_FPS_PROBE_SIZE,

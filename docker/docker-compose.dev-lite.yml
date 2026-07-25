@@ -6,6 +6,7 @@ services:
   # -- Headendarr --
   headendarr:
     image: ghcr.io/headendarr/headendarr-lite:latest
+    stop_grace_period: 30s
     build:
       context: ..
       dockerfile: docker/Dockerfile

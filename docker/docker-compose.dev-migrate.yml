@@ -5,6 +5,7 @@ networks:
 services:
   headendarr-migrate:
     image: ghcr.io/headendarr/headendarr:latest
+    stop_grace_period: 30s
     build:
       context: ..
       dockerfile: docker/Dockerfile

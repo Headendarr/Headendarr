@@ -28,7 +28,6 @@ from .events import emit_channel_stream_event, source_event_context, summarize_c
 from .live_ingest import CsoIngestSession, resolve_cso_ingest_user_agent
 from .output import CsoHlsClientStartResult, CsoHlsOutputSession, CsoOutputSession
 from .policy import (
-    generate_vod_channel_ingest_policy,
     output_profile_requires_audio,
     policy_content_type,
     policy_log_label,
@@ -509,8 +508,6 @@ async def subscribe_vod_channel_output_stream(
     request_headers: dict[str, str] | None = None,
 ) -> Any:
     requested_policy = generate_cso_policy_from_profile(config, profile)
-    ingest_policy = generate_vod_channel_ingest_policy(config, requested_policy)
-    policy = resolve_vod_channel_output_policy(requested_policy, ingest_policy=ingest_policy)
     ingest_key = f"cso-vod-channel-ingest-{int(channel_id)}"
     output_session_key = f"cso-vod-channel-output-{int(channel_id)}-{profile}"
 
@@ -521,8 +518,6 @@ async def subscribe_vod_channel_output_stream(
             int(channel_id),
             stream_key=stream_key,
             request_headers=request_headers,
-            output_policy=policy,
-            requested_policy=requested_policy,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -532,6 +527,11 @@ async def subscribe_vod_channel_output_stream(
         if reason == "no_scheduled_programme":
             return build_cso_stream_plan(None, None, "No scheduled VOD programme is currently available", 404)
         return build_cso_stream_plan(None, None, "Unable to start VOD channel ingest", 503)
+
+    policy = resolve_vod_channel_output_policy(
+        requested_policy,
+        ingest_policy=dict(ingest_session.ingest_policy or {}),
+    )
 
     def _output_factory():
         return CsoOutputSession(
@@ -544,14 +544,16 @@ async def subscribe_vod_channel_output_stream(
 
     output_session, _ = await cso_session_manager.get_or_create_output(output_session_key, _output_factory)
     output_session.direct_input_realtime = True
+    # Register the first MPEG-TS reader before output FFmpeg starts. A retained
+    # fMP4 playlist can be consumed fast enough during startup to fill more
+    # than the normal client prebuffer; attaching afterwards would then replay
+    # only the tail of that history and omit the PAT/PMT and H.264 parameter
+    # sets at the beginning of the transport stream.
+    queue = await output_session.add_client(connection_id, prebuffer_bytes=0)
     await output_session.start()
     if not output_session.running:
+        await output_session.remove_client(connection_id)
         return build_cso_stream_plan(None, None, "Unable to start VOD channel output", 503)
-
-    queue = await output_session.add_client(
-        connection_id,
-        prebuffer_bytes=int(CSO_OUTPUT_CLIENT_START_PREBUFFER_BYTES),
-    )
     content_type = policy_content_type(policy)
 
     async def _generator():
@@ -578,8 +580,6 @@ async def subscribe_vod_channel_hls(
     on_disconnect: Any = None,
 ) -> tuple[Any | None, str | None, int]:
     requested_policy = generate_cso_policy_from_profile(config, profile)
-    ingest_policy = generate_vod_channel_ingest_policy(config, requested_policy)
-    policy = resolve_vod_channel_output_policy(requested_policy, ingest_policy=ingest_policy)
     ingest_key = f"cso-vod-channel-ingest-{int(channel_id)}"
     output_session_key = f"cso-vod-channel-hls-output-{int(channel_id)}-{profile}"
 
@@ -590,8 +590,6 @@ async def subscribe_vod_channel_hls(
             int(channel_id),
             stream_key=stream_key,
             request_headers=request_headers,
-            output_policy=policy,
-            requested_policy=requested_policy,
         )
 
     ingest_session, _ = await cso_session_manager.get_or_create_ingest(ingest_key, _ingest_factory)
@@ -601,6 +599,11 @@ async def subscribe_vod_channel_hls(
         if reason == "no_scheduled_programme":
             return None, "No scheduled VOD programme is currently available", 404
         return None, "Unable to start VOD channel ingest", 503
+
+    policy = resolve_vod_channel_output_policy(
+        requested_policy,
+        ingest_policy=dict(ingest_session.ingest_policy or {}),
+    )
 
     def _output_factory():
         return CsoHlsOutputSession(

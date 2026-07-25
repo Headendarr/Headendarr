@@ -5,7 +5,7 @@
 # File Created: Monday, 13th May 2024 4:20:35 pm
 # Author: Josh.5 (jsunnex@gmail.com)
 # -----
-# Last Modified: Friday, 13th March 2026 2:47:03 pm
+# Last Modified: Monday, 3rd August 2026 10:02:01 am
 # Modified By: Josh.5 (jsunnex@gmail.com)
 ###
 
@@ -60,18 +60,40 @@ kill_pid() {
     fi
 }
 
-# Catch term signal and terminate any child processes
-_term() {
-    print_log info "Received termination signal; shutting down services"
-    kill_pid "tic" "$tic_pid"
-    kill_pid "tvheadend" "$tvh_pid"
+stop_postgres() {
     if [ -n "${PG_BINDIR:-}" ] && [ -n "${POSTGRES_DIR:-}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
         print_log info "Stopping Postgres via pg_ctl"
-        "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" stop -m fast || true
+        "${PG_BINDIR}/pg_ctl" -D "${POSTGRES_DIR}" stop -m fast -w -t 10 || true
+    elif [ -n "${pg_pid:-}" ]; then
+        kill_pid "postgres" "$pg_pid" 10
     else
-        kill_pid "postgres" "$pg_pid"
+        print_log info "Using external Postgres; no local Postgres process to stop"
     fi
-    kill_pid "proxy" "$proxy_pid"
+}
+
+# Catch term signal and terminate child processes
+_term() {
+    if [ "${shutdown_started:-false}" = "true" ]; then
+        return
+    fi
+    shutdown_started=true
+    trap '' SIGTERM SIGINT
+    print_log info "Received termination signal; shutting down services"
+    # TIC may need both TVHeadend and Postgres while Quart and application
+    # contexts are closing. Stop it first; Python fast-kills registered FFmpeg
+    # groups and leaves orphaned cache files for the next startup sweep.
+    kill_pid "tic" "${tic_pid:-}" 12
+
+    # Once TIC has exited, its dependencies can stop concurrently. The bounded
+    # waits keep the whole sequence inside the documented 30-second container
+    # stop grace period.
+    kill_pid "tvheadend" "${tvh_pid:-}" 10 &
+    local tvh_stop_pid=$!
+    stop_postgres &
+    local postgres_stop_pid=$!
+    kill_pid "proxy" "$proxy_pid" &
+    local proxy_stop_pid=$!
+    wait "$tvh_stop_pid" "$postgres_stop_pid" "$proxy_stop_pid" 2>/dev/null || true
 }
 trap _term SIGTERM SIGINT
 
