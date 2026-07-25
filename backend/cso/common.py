@@ -88,8 +88,11 @@ def _retained_lifecycle_state_unlocked(session):
     retained_tasks = tuple(
         name
         for name, task in vars(session).items()
-        if (name.endswith("_task") and task is not None)
-        or (name.endswith("_tasks") and any(retained is not None for retained in task or ()))
+        if name != "_validated_retention_task"
+        and (
+            (name.endswith("_task") and task is not None and not getattr(task, "done", lambda: False)())
+            or (name.endswith("_tasks") and any(retained is not None and not getattr(retained, "done", lambda: False)() for retained in task or ()))
+        )
     )
     return retained_process, retained_runtimes, retained_tasks
 

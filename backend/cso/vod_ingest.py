@@ -2542,6 +2542,7 @@ class Vod247ChannelManager:
                 self.segment_task = None
                 boundary_retention_task = self._boundary_retention_task
                 self._boundary_retention_task = None
+                self._validated_retention_task = None
             retention_cleanup = None
             if boundary_retention_task is not asyncio.current_task():
                 retention_cleanup = await cancel_and_await_tasks((boundary_retention_task,))
