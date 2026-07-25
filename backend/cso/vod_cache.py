@@ -736,7 +736,10 @@ class VodCacheManager:
                 removed_bytes += int(child.stat().st_size)
             except OSError:
                 pass
-        shutil.rmtree(path)
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
         return removed_files, removed_bytes
 
     async def cleanup_vod_channel_segment_cache(
