@@ -795,6 +795,20 @@ class CsoFfmpegCommandBuilder:
             vaapi_device,
         ]
 
+    def _vaapi_encode_device(self, policy=None) -> str | None:
+        effective_policy = dict(policy or self.policy or {})
+        if not bool(effective_policy.get("hwaccel")):
+            return None
+        if clean_key(effective_policy.get("video_codec")) not in {"h264", "h265", "av1"}:
+            return None
+        return detect_vaapi_device_path()
+
+    def _vaapi_global_args(self, policy=None) -> list[str]:
+        vaapi_device = self._vaapi_encode_device(policy)
+        if not vaapi_device:
+            return []
+        return ["-vaapi_device", vaapi_device]
+
     @staticmethod
     def _build_slate_media_hint(media_hint):
         hint = dict(media_hint or {})
@@ -992,7 +1006,6 @@ class CsoFfmpegCommandBuilder:
                     if deinterlace or target_width > 0:
                         filters.append("setsar=1")
                     filters += ["format=nv12", "hwupload"]
-                command += ["-vaapi_device", vaapi_device]
                 if filters:
                     command += ["-vf", ",".join(filters)]
                 command += [
@@ -1231,6 +1244,8 @@ class CsoFfmpegCommandBuilder:
         request_headers: dict[str, str] | None = None,
     ):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        if (self.policy.get("output_mode") or "force_remux") == "force_transcode":
+            command += self._vaapi_global_args()
         probe_size_bytes = int(CSO_OUTPUT_PROBE_SIZE_BYTES)
         analyse_duration_us = int(CSO_OUTPUT_ANALYSE_DURATION_US)
         fps_probe_size = int(CSO_OUTPUT_FPS_PROBE_SIZE)
@@ -1325,6 +1340,8 @@ class CsoFfmpegCommandBuilder:
         realtime=False,
     ):
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        if (self.policy.get("output_mode") or "force_remux") == "force_transcode":
+            command += self._vaapi_global_args()
         start_value = max(0, int(start_seconds or 0))
         duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
         if realtime:
@@ -1469,6 +1486,7 @@ class CsoFfmpegCommandBuilder:
     ) -> list[str]:
         effective_policy = dict(policy or self.policy or {})
         command = self._ffmpeg_logging_command(enable_cso_ingest_command_debug_logging, quiet_level="info")
+        command += self._vaapi_global_args(effective_policy)
         start_value = max(0, int(start_seconds or 0))
         duration_value = max(1, int(max_duration_seconds or 0)) if max_duration_seconds is not None else None
         probe_size_bytes = int(CSO_INGEST_PROBE_SIZE_BYTES)
@@ -1587,6 +1605,8 @@ class CsoFfmpegCommandBuilder:
         pipe_fps_probe_size: int = CSO_OUTPUT_FPS_PROBE_SIZE,
     ) -> list[str]:
         command = self._ffmpeg_logging_command(enable_cso_output_command_debug_logging)
+        if (self.policy.get("output_mode") or "force_remux") == "force_transcode":
+            command += self._vaapi_global_args()
         input_target_value = str(input_target or "").strip()
         input_is_hls = (urlparse(input_target_value).path or "").lower().endswith((".m3u8", ".m3u"))
         nested_network_resources = input_is_url if input_uses_network is None else bool(input_uses_network)
