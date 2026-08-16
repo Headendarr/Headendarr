@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# -*- coding:utf-8 -*-
-from quart import jsonify, request, current_app
-from backend.api import blueprint
-from backend.stream_diagnostics import start_probe, get_probe_status, delete_probe
-from backend.auth import admin_auth_required, get_request_user
-from backend.http_headers import parse_headers_json, sanitise_headers
-from backend.models import ChannelSource, Session
-from backend.streaming import append_stream_key, is_tic_stream_url
-from backend.url_resolver import get_request_origin
-from backend.channel_stream_health import apply_stream_probe_result_to_source
+from quart import current_app, jsonify, request
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
+
+from backend.api import blueprint
+from backend.auth import admin_auth_required, get_request_user
+from backend.channel_stream_health import apply_stream_probe_result_to_source
+from backend.http_headers import parse_headers_json, sanitise_headers
+from backend.models import ChannelSource, Session
+from backend.stream_diagnostics import delete_probe, get_probe_status, start_probe
+from backend.streaming import append_stream_key, is_tic_stream_url
+from backend.url_resolver import get_request_origin
 
 
 @blueprint.route("/tic-api/diagnostics/stream/test", methods=["POST"])
@@ -45,9 +45,7 @@ async def test_stream():
     if source_id is not None:
         async with Session() as session:
             result = await session.execute(
-                select(ChannelSource)
-                .options(joinedload(ChannelSource.playlist))
-                .where(ChannelSource.id == source_id)
+                select(ChannelSource).options(joinedload(ChannelSource.playlist)).where(ChannelSource.id == source_id)
             )
             source = result.scalar_one_or_none()
         playlist = getattr(source, "playlist", None) if source is not None else None
@@ -95,6 +93,6 @@ async def get_test_status(task_id):
 
 @blueprint.route("/tic-api/diagnostics/stream/test/<task_id>", methods=["DELETE"])
 @admin_auth_required
-async def delete_test(task_id):
-    delete_probe(task_id)
+async def delete_test(task_id: str):
+    await delete_probe(task_id)
     return jsonify({"success": True})

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-# -*- coding:utf-8 -*-
 import asyncio
+import base64
 import ipaddress
 import logging
+import shutil
 import socket
 import time
-import aiohttp
-import base64
-import shutil
+from contextlib import suppress
 from urllib.parse import parse_qsl, urlparse, urlunparse
+
+import aiohttp
+
 from backend.config import flask_run_port
 from backend.hls_multiplexer import get_header_value
 from backend.http_headers import sanitise_headers
@@ -39,7 +41,7 @@ class StreamProbe:
         self.no_data_timeout_seconds = max(5, int(no_data_timeout_seconds or 30))
         self.hard_timeout_seconds = max(self.probe_window_seconds + 5, int(hard_timeout_seconds or 45))
         self.include_geo_lookup = bool(include_geo_lookup)
-        self.task_id = None
+        self.task_id: str | None = None
         self.status = "pending"
         self.report = {
             "url": url,
@@ -65,22 +67,62 @@ class StreamProbe:
         self._running = False
         self._cancel_requested = False
         self._cancel_reason = ""
-        self._ffmpeg_process = None
+        self._ffmpeg_process: asyncio.subprocess.Process | None = None
+        self._task: asyncio.Task | None = None
 
     def cancel(self, reason="cancelled"):
         self._cancel_requested = True
         self._cancel_reason = str(reason or "cancelled")
         process = self._ffmpeg_process
         if process and process.returncode is None:
-            try:
+            with suppress(ProcessLookupError):
                 process.terminate()
-            except Exception:
-                pass
 
     def log(self, message):
         timestamp = time.strftime("%H:%M:%S")
         self.report["logs"].append(f"[{timestamp}] {message}")
         logger.info(f"[{self.url}] {message}")
+
+    async def _stop_subprocess(
+        self,
+        process: asyncio.subprocess.Process | None,
+        label: str,
+        grace_seconds: float = 2.0,
+    ):
+        if process is None or process.returncode is not None:
+            return
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            self.log(f"Failed to terminate {label}: {type(exc).__name__}: {exc}")
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=max(0.1, float(grace_seconds)))
+            return
+        except TimeoutError:
+            self.log(f"{label} did not terminate within {grace_seconds:.1f}s; killing it.")
+        except Exception as exc:
+            self.log(f"Failed while waiting for {label} to terminate: {type(exc).__name__}: {exc}")
+
+        if process.returncode is not None:
+            return
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            self.log(f"Failed to kill {label}: {type(exc).__name__}: {exc}")
+            return
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=max(0.1, float(grace_seconds)))
+        except TimeoutError:
+            self.log(f"Killed {label} did not report process exit within {grace_seconds:.1f}s.")
+        except Exception as exc:
+            self.log(f"Failed while waiting for killed {label}: {type(exc).__name__}: {exc}")
 
     @staticmethod
     def _is_localhost(hostname):
@@ -110,7 +152,7 @@ class StreamProbe:
 
     @staticmethod
     def _is_timeout_error(exc: Exception) -> bool:
-        if isinstance(exc, asyncio.TimeoutError):
+        if isinstance(exc, TimeoutError):
             return True
         return exc.__class__.__name__ in {"SocketTimeoutError", "ServerTimeoutError"}
 
@@ -373,11 +415,15 @@ class StreamProbe:
                     self.log("Diagnostic test completed with errors.")
                 else:
                     self.log("Diagnostic test completed successfully.")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.status = "finished"
             self.report["errors"].append("Diagnostic timed out (hard limit reached).")
             self.log("Test reached global timeout limit. Returning partial results.")
             self._generate_summary()
+        except asyncio.CancelledError:
+            self.status = "cancelled"
+            self.log(f"Diagnostic was cancelled: {self._cancel_reason or 'task cancelled'}")
+            raise
         except Exception as e:
             self.status = "error"
             if str(e) not in self.report["errors"]:
@@ -424,9 +470,9 @@ class StreamProbe:
                 self.log(f"Resolved to {primary_ip}")
             else:
                 self.log("DNS returned no addresses.")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.log("DNS resolution timed out.")
-            raise Exception("DNS Timeout")
+            raise Exception("DNS Timeout") from None
         except Exception as e:
             self.log(f"DNS failed: {e}")
             raise
@@ -437,19 +483,21 @@ class StreamProbe:
         if not ip:
             return
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://ip-api.com/json/{ip}", timeout=5) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("status") == "success":
-                            self.report["geo"] = {
-                                "ip": ip,
-                                "country": data.get("country"),
-                                "city": data.get("city"),
-                                "isp": data.get("isp"),
-                            }
-                            self.log(f"Location: {data.get('city')}, {data.get('country')} ({data.get('isp')})")
-        except:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(f"http://ip-api.com/json/{ip}", timeout=5) as resp,
+            ):
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("status") == "success":
+                        self.report["geo"] = {
+                            "ip": ip,
+                            "country": data.get("country"),
+                            "city": data.get("city"),
+                            "isp": data.get("isp"),
+                        }
+                        self.log(f"Location: {data.get('city')}, {data.get('country')} ({data.get('isp')})")
+        except Exception:
             pass
 
     async def _run_route_trace(self):
@@ -478,7 +526,12 @@ class StreamProbe:
             "20",
             target,
         ]
-        self.report["trace"] = {"target": target, "protocol": protocol, "hops": [], "completed": False}
+        self.report["trace"] = {
+            "target": target,
+            "protocol": protocol,
+            "hops": [],
+            "completed": False,
+        }
         self.log(f"Starting route trace to {target} using TCP/{target_port}.")
 
         process = None
@@ -537,19 +590,22 @@ class StreamProbe:
                         self.log(f"Route hop {hop_number}: {hop['address']}")
                     else:
                         self.log(f"Route hop {hop_number}: {hop['address']} {latency_ms:.1f} ms")
-            self.report["trace"] = {"target": target, "protocol": protocol, "hops": hops, "completed": True}
+            self.report["trace"] = {
+                "target": target,
+                "protocol": protocol,
+                "hops": hops,
+                "completed": True,
+            }
             if hops:
                 self.log(f"Route trace completed with {len(hops)} hop(s).")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.log("Traceroute timed out; returning partial route results if available.")
-            if process and process.returncode is None:
-                process.kill()
-                await process.wait()
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self.log(f"Traceroute failed: {exc}")
-            if process and process.returncode is None:
-                process.kill()
-                await process.wait()
+        finally:
+            await self._stop_subprocess(process, "traceroute", grace_seconds=1.0)
 
     def _extract_pcr(self, packet):
         if len(packet) < 188 or packet[0] != 0x47:
@@ -557,11 +613,8 @@ class StreamProbe:
         afc = (packet[3] & 0x30) >> 4
         if afc < 2 or packet[4] == 0 or not (packet[5] & 0x10):
             return None
-        try:
-            b = packet[6:11]
-            return (b[0] << 25) | (b[1] << 17) | (b[2] << 9) | (b[3] << 1) | (b[4] >> 7)
-        except:
-            return None
+        b = packet[6:11]
+        return (b[0] << 25) | (b[1] << 17) | (b[2] << 9) | (b[3] << 1) | (b[4] >> 7)
 
     async def _run_hybrid_probe(self):
         self.log(f"Starting hybrid FFmpeg/Python probe ({int(self.probe_window_seconds)}s wall-clock limit)...")
@@ -591,27 +644,29 @@ class StreamProbe:
         if user_agent is None:
             for candidate in user_agent_candidates:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
+                    async with (
+                        aiohttp.ClientSession() as session,
+                        session.get(
                             self.url,
                             headers={**base_headers, "User-Agent": candidate},
                             timeout=aiohttp.ClientTimeout(total=None, connect=6, sock_connect=6, sock_read=6),
-                        ) as preflight:
-                            if preflight.status >= 400:
-                                raise Exception(f"Preflight failed with HTTP {preflight.status}")
-                            self._record_connection_endpoint(preflight)
-                            # For live stream endpoints, do not wait for full body completion.
-                            # A successful status + ability to read initial bytes is enough.
-                            try:
-                                await asyncio.wait_for(preflight.content.read(1), timeout=6.0)
-                            except Exception as read_exc:
-                                if self._is_streaming_proxy_endpoint(self.url) and self._is_timeout_error(read_exc):
-                                    self.log(
-                                        "Preflight received successful response from stream proxy endpoint; "
-                                        "continuing despite delayed first media byte."
-                                    )
-                                else:
-                                    raise
+                        ) as preflight,
+                    ):
+                        if preflight.status >= 400:
+                            raise Exception(f"Preflight failed with HTTP {preflight.status}")
+                        self._record_connection_endpoint(preflight)
+                        # For live stream endpoints, do not wait for full body completion.
+                        # A successful status + ability to read initial bytes is enough.
+                        try:
+                            await asyncio.wait_for(preflight.content.read(1), timeout=6.0)
+                        except Exception as read_exc:
+                            if self._is_streaming_proxy_endpoint(self.url) and self._is_timeout_error(read_exc):
+                                self.log(
+                                    "Preflight received successful response from stream proxy endpoint; "
+                                    "continuing despite delayed first media byte."
+                                )
+                            else:
+                                raise
                     user_agent = candidate
                     break
                 except Exception as exc:
@@ -639,8 +694,6 @@ class StreamProbe:
             self.log("Preflight succeeded using source-configured user-agent.")
         elif self.preferred_user_agent and user_agent != self.preferred_user_agent:
             self.log("Preflight succeeded using fallback browser user-agent.")
-
-        route_trace_task = asyncio.create_task(self._run_route_trace())
 
         media_shape = await probe_stream_media_shape(
             self.url,
@@ -691,6 +744,9 @@ class StreamProbe:
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         self._ffmpeg_process = process
+        route_trace_task = asyncio.create_task(
+            self._run_route_trace(), name=f"stream-route-trace-{self.task_id or 'probe'}"
+        )
 
         start_time = time.time()
         sample_start_time = None
@@ -761,23 +817,10 @@ class StreamProbe:
                                 dur += (2**33) / 90000.0
                             self.report["probe"]["avg_speed"] = dur / elapsed
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
-            # Hard cleanup of subprocess
-            if process.returncode is None:
-                try:
-                    process.terminate()
-                    # Give it 2s to terminate gracefully, then kill
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=2.0)
-                    except asyncio.TimeoutError:
-                        self.log("FFmpeg did not terminate gracefully. Killing...")
-                        process.kill()
-                        await process.wait()
-                except:
-                    pass
-            elif process.returncode != 0:
+            if process.returncode is not None and process.returncode != 0:
                 if self._cancel_requested and process.returncode in (-15, 255):
                     return
                 try:
@@ -805,32 +848,25 @@ class StreamProbe:
 
         except Exception as e:
             self.log(f"Probe error: {e}")
-            if process.returncode is None:
-                try:
-                    process.kill()
-                    await process.wait()
-                except:
-                    pass
         finally:
-            if "route_trace_task" in locals():
-                try:
-                    await route_trace_task
-                except Exception:
-                    pass
+            await self._stop_subprocess(process, "FFmpeg probe")
             self._ffmpeg_process = None
+            if not route_trace_task.done():
+                route_trace_task.cancel()
+            await asyncio.gather(route_trace_task, return_exceptions=True)
 
 
-_active_probes = {}
+_active_probes: dict[str, StreamProbe] = {}
 
 
 async def start_probe(
-    url,
-    bypass_proxies=False,
-    request_host_url=None,
-    preferred_user_agent=None,
-    preferred_headers=None,
+    url: str,
+    bypass_proxies: bool = False,
+    request_host_url: str | None = None,
+    preferred_user_agent: str | None = None,
+    preferred_headers: dict[str, str] | None = None,
     on_complete=None,
-):
+) -> str:
     import uuid
 
     task_id = str(uuid.uuid4())
@@ -854,15 +890,22 @@ async def start_probe(
                 except Exception as exc:
                     logger.exception("Failed to execute stream diagnostics completion hook: %s", exc)
 
-    asyncio.create_task(_run_and_complete())
+    probe._task = asyncio.create_task(_run_and_complete(), name=f"stream-diagnostics-{task_id}")
     return task_id
 
 
-def get_probe_status(task_id):
+def get_probe_status(task_id: str) -> dict | None:
     probe = _active_probes.get(task_id)
     return {"status": probe.status, "report": probe.report} if probe else None
 
 
-def delete_probe(task_id):
-    if task_id in _active_probes:
-        del _active_probes[task_id]
+async def delete_probe(task_id: str):
+    probe = _active_probes.pop(task_id, None)
+    if probe is None:
+        return
+    probe.cancel(reason="diagnostic deleted")
+    task = probe._task
+    if task is None or task.done():
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
