@@ -527,14 +527,15 @@ if [ $# -gt 0 ]; then
 fi
 
 sync_packages
-setup_postgres
+[ "${POSTGRES_HOST:-127.0.0.1}" == "127.0.0.1" ] && setup_postgres
+
 if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ] || [ "${PRINT_CURRENT_MIGRATION}" = "true" ]; then
     if [ "${ROLLBACK_LAST_MIGRATION}" = "true" ]; then
         rollback_last_migration
-        stop_postgres_for_migration_mode "rollback mode"
+        [ "${POSTGRES_HOST:-127.0.0.1}" == "127.0.0.1" ] && stop_postgres_for_migration_mode "rollback mode"
     else
         print_current_migration
-        stop_postgres_for_migration_mode "current migration mode"
+        [ "${POSTGRES_HOST:-127.0.0.1}" == "127.0.0.1" ] && stop_postgres_for_migration_mode "current migration mode"
     fi
     exit 0
 fi

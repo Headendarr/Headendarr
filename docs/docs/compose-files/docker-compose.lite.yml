@@ -33,6 +33,12 @@ services:
       - ENABLE_APP_DEBUGGING=false
       # Enables debug logging for DB queries
       - ENABLE_SQLALCHEMY_DEBUGGING=false
+      # Set these to your existing database server to disable the built-in Postgresql daemon
+      # - POSGRES_HOST=my-external-db
+      # - POSTGRES_PORT="5432"
+      # - POSTGRES_DB=tic
+      # - POSTGRES_USER=tic
+      # - POSTGRES_PASSWORD=tic
 
     # VOLUMES:
     volumes:
